@@ -299,8 +299,15 @@ func (a *app) removeCommand() *cobra.Command {
 					return err
 				}
 			}
+			m, err := a.services()
+			if err != nil {
+				return err
+			}
 			for _, name := range args {
 				if err := a.stopTunnel(cmd, name, nil, true); err != nil {
+					return err
+				}
+				if err := m.RemoveLogs(name); err != nil {
 					return err
 				}
 			}

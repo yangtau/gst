@@ -31,6 +31,8 @@ type Manager interface {
 	// Stop stops the service and deletes its definition. Stopping a
 	// tunnel without a service does nothing.
 	Stop(name string) error
+	// RemoveLogs deletes the log files that gst keeps for a stopped tunnel.
+	RemoveLogs(name string) error
 	Status(name string) (Status, error)
 	// Logs writes the last lines of the service's log to w and then, if
 	// follow is set, new lines until ctx is done.

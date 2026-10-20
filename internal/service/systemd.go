@@ -90,6 +90,9 @@ func (s *systemd) Status(name string) (Status, error) {
 	return Down, nil
 }
 
+// RemoveLogs does nothing: journald owns the log and expires it.
+func (s *systemd) RemoveLogs(string) error { return nil }
+
 func (s *systemd) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
 	args := []string{"--user", "--unit", unitName(name), "--lines", strconv.Itoa(lines), "--no-pager", "--output", "short-iso"}
 	if follow {

@@ -15,13 +15,23 @@ import (
 // runCommand runs a tunnel in the foreground. The background service runs
 // it; its log omits addresses, paths, and users.
 func (a *app) runCommand() *cobra.Command {
-	return &cobra.Command{
+	var logPath string
+	cmd := &cobra.Command{
 		Use:    "run <name>",
 		Short:  "Run a tunnel in the foreground until it fails or is interrupted",
 		Long:   "Run a tunnel in the foreground until it fails or receives SIGINT or SIGTERM. The background service uses this command; do not run it while the tunnel is started.",
 		Hidden: true,
 		Args:   a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
+			if logPath != "" {
+				l, err := openLog(logPath, []int{1, 2})
+				if err != nil {
+					log.Print("log file open failed")
+					return &exitError{exitFailure}
+				}
+				defer l.Close()
+				log.SetOutput(l)
+			}
 			f, err := a.load()
 			if err != nil {
 				log.Print(err)
@@ -47,4 +57,6 @@ func (a *app) runCommand() *cobra.Command {
 			return nil
 		}),
 	}
+	cmd.Flags().StringVar(&logPath, "log-file", "", "write the log to this file, rotating it at 1 MiB")
+	return cmd
 }

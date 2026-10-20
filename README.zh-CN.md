@@ -129,7 +129,7 @@ gst set myhost --cleanup-listeners=false
 - 每个启动的 tunnel 是一个用户级后台服务：Linux 上是 systemd 用户服务 `gst-<name>.service`，macOS 上是 launchd 代理 `local.gst.<name>`。服务由 gst 创建和删除，不需要手动管理。
 - tunnel 退出后 5 秒自动重启，没有次数限制。
 - `gst list` 中的状态：`running` 正在运行；`down` 失败后正在等待重启，用 `gst logs` 和 `gst check` 排查；`stopped` 已停止。
-- 日志：Linux 上在 journald，macOS 上在 `~/Library/Logs/gst/<name>.log`。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
+- 日志：Linux 上在 journald。macOS 上在 `~/Library/Logs/gst/<name>.log`，超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 tunnel 的日志最多约 2 MiB；`gst remove` 会删除它们。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
 - Linux 上，要让 tunnel 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，tunnel 在登录后启动、注销后停止。
 
 ## 排查问题

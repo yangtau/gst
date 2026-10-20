@@ -129,7 +129,7 @@ Limitations:
 - Each started tunnel is a user service: a systemd user service `gst-<name>.service` on Linux, a launchd agent `local.gst.<name>` on macOS. gst creates and deletes them; you never manage them yourself.
 - A tunnel that exits restarts after 5 seconds, without a limit.
 - Status in `gst list`: `running`; `down` means it failed and is waiting to restart, so check `gst logs` and `gst check`; `stopped`.
-- Logs go to journald on Linux and to `~/Library/Logs/gst/<name>.log` on macOS. For privacy, the log records no server addresses, users, key paths, or forward addresses. Forwards appear by number (such as `forward 2`), matching `gst forward list`.
+- Logs go to journald on Linux. On macOS they go to `~/Library/Logs/gst/<name>.log`; at 1 MiB gst moves it to `<name>.log.1`, replacing the older one, so a tunnel keeps at most about 2 MiB of logs. `gst remove` deletes them. For privacy, the log records no server addresses, users, key paths, or forward addresses. Forwards appear by number (such as `forward 2`), matching `gst forward list`.
 - On Linux, to keep tunnels running after you log out and start them at boot, run `loginctl enable-linger "$USER"`; gst tells you when lingering is off. On macOS, tunnels start at login and stop at logout.
 
 ## Troubleshooting

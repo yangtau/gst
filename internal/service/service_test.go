@@ -119,7 +119,8 @@ func TestLaunchd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(plist), "<string>a&lt;b&amp;c</string>") || !strings.Contains(string(plist), filepath.Join(home, "Library/Logs/gst/myhost.log")) {
+	logPath := filepath.Join(home, "Library/Logs/gst/myhost.log")
+	if !strings.Contains(string(plist), "<string>a&lt;b&amp;c</string>\n\t\t<string>--log-file</string>\n\t\t<string>"+logPath+"</string>\n\t</array>") {
 		t.Fatalf("unexpected plist:\n%s", plist)
 	}
 	want := []string{"launchctl enable gui/501/local.gst.myhost", "launchctl print gui/501/local.gst.myhost", "launchctl bootstrap gui/501 " + filepath.Join(home, "Library/LaunchAgents/local.gst.myhost.plist")}
@@ -149,5 +150,17 @@ func TestLaunchd(t *testing.T) {
 	fake.calls = nil
 	if err := l.Logs(context.Background(), "myhost", 5, false, io.Discard); err != nil || len(fake.calls) != 0 {
 		t.Fatalf("logs without a log file ran %v: %v", fake.calls, err)
+	}
+
+	for _, path := range []string{logPath, logPath + ".1"} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.RemoveLogs("myhost"); err != nil || fileExists(logPath) || fileExists(logPath+".1") {
+		t.Fatalf("logs remain after RemoveLogs: %v", err)
+	}
+	if err := l.RemoveLogs("myhost"); err != nil {
+		t.Fatalf("removing missing logs: %v", err)
 	}
 }

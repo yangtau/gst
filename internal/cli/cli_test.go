@@ -52,6 +52,11 @@ func (f *fakeServices) Status(name string) (service.Status, error) {
 	return service.Stopped, nil
 }
 
+func (f *fakeServices) RemoveLogs(name string) error {
+	f.calls = append(f.calls, "remove-logs "+name)
+	return nil
+}
+
 func (f *fakeServices) Logs(_ context.Context, name string, lines int, follow bool, w io.Writer) error {
 	f.calls = append(f.calls, "logs "+name)
 	return nil
@@ -356,7 +361,7 @@ func TestLifecycle(t *testing.T) {
 
 	e.services.calls = nil
 	e.mustGst("rm", "myhost", "db")
-	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || !slices.Equal(e.services.calls, []string{"stop db", "stop myhost"}) && !slices.Equal(e.services.calls, []string{"stop myhost", "stop db"}) {
+	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || !slices.Equal(e.services.calls, []string{"stop myhost", "remove-logs myhost", "stop db", "remove-logs db"}) {
 		t.Fatalf("remove left %+v, calls %v", f.Tunnels, e.services.calls)
 	}
 	if out := e.mustGst("list"); !strings.Contains(out, "No tunnels") {

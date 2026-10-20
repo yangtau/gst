@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"text/template"
 	"time"
@@ -50,6 +53,7 @@ func (l *launchd) Start(name string, command []string) error {
 			return err
 		}
 	}
+	command = append(slices.Clip(command), "--log-file", l.logPath(name))
 	plist, err := launchdPlist(label(name), command, l.logPath(name))
 	if err != nil {
 		return err
@@ -105,6 +109,15 @@ func (l *launchd) unload(name string) error {
 	return nil
 }
 
+func (l *launchd) RemoveLogs(name string) error {
+	for _, path := range []string{l.logPath(name), l.logPath(name) + ".1"} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 var launchdState = regexp.MustCompile(`(?m)^\tstate = (\S+)$`)
 
 func (l *launchd) Status(name string) (Status, error) {
@@ -135,8 +148,8 @@ func (l *launchd) Logs(ctx context.Context, name string, lines int, follow bool,
 }
 
 // The agent starts at login, restarts at least 5 s apart after every exit,
-// and gets 15 s to exit after SIGTERM. Its output goes to a log file that
-// is not rotated; the tunnel logs little.
+// and gets 15 s to exit after SIGTERM. gst run writes and rotates the log
+// itself; launchd sends output there only until gst opens it.
 var plistTemplate = template.Must(template.New("plist").Funcs(template.FuncMap{"xml": xmlEscape}).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
