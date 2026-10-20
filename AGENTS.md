@@ -5,6 +5,10 @@ gst keeps SSH port forwards running as per-tunnel user services (systemd on Linu
 ## Commands
 
 - `make build`, `make test`, `make test-integration` (see `Makefile`).
+- `nix develop` provides Go, gopls, Make, and OpenSSH. `nix build` builds gst;
+  `nix flake check` runs the unit tests and both vet checks as part of the build.
+- After changing Go dependencies, update `vendorHash` in `flake.nix` using the
+  hash reported by a build with `vendorHash = pkgs.lib.fakeHash;`.
 - `go vet ./... && go vet -tags integration ./integration` before finishing; integration files only compile with the tag.
 
 ## Layout

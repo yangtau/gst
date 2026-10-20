@@ -1,4 +1,5 @@
 /bin/
+/result
 /integration/local.mk
 /tunnel.json
 /.envrc

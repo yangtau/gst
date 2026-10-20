@@ -15,6 +15,22 @@
 go install github.com/yangtau/ssh-tunnel/cmd/gst@latest
 ```
 
+使用 Nix（需启用 flakes）：
+
+```bash
+nix profile add github:yangtau/ssh-tunnel
+```
+
+也可以在项目目录中执行：
+
+```bash
+nix build                 # result/bin/gst
+nix run . -- --help
+nix profile add .         # 从本地项目安装
+```
+
+Nix 包附带 Bash、Zsh 和 Fish 的补全脚本。
+
 后台运行的 tunnel 会记住 gst 的路径。升级或移动 gst 后，执行 `gst restart --all`。
 
 ## 使用前准备

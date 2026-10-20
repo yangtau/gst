@@ -15,6 +15,22 @@ English | [简体中文](README.zh-CN.md)
 go install github.com/yangtau/ssh-tunnel/cmd/gst@latest
 ```
 
+With Nix (flakes enabled):
+
+```bash
+nix profile add github:yangtau/ssh-tunnel
+```
+
+From a checkout:
+
+```bash
+nix build                 # result/bin/gst
+nix run . -- --help
+nix profile add .         # install from the local checkout
+```
+
+The Nix package includes completion scripts for Bash, Zsh, and Fish.
+
 Background tunnels remember the path of gst. After upgrading or moving gst, run `gst restart --all`.
 
 ## Before you start
