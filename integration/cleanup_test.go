@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 func TestCleanupKillsStaleListenerOfLoginUser(t *testing.T) {
@@ -87,7 +87,7 @@ func TestBusyPortWithoutCleanupFails(t *testing.T) {
 	if code, _ := tunnel.waitExit(t, 10*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}
-	if !strings.Contains(tunnel.logs(), "listener start failed for mapping 1") {
+	if !strings.Contains(tunnel.logs(), "listener start failed for forward 1") {
 		t.Fatal("missing listener failure log")
 	}
 	if !s.hasProcess("tunnel", "nc") {

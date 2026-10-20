@@ -31,7 +31,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
 )
 
 // forwardPorts are the container ports tests may use as remote listen ports.
@@ -78,8 +79,8 @@ func setup(dir string) error {
 		return errors.New("no container runtime found; install podman or docker, or set CONTAINER_RUNTIME")
 	}
 
-	tunnelBinary = filepath.Join(dir, "reverse-ssh-tunnel")
-	if out, err := exec.Command("go", "build", "-o", tunnelBinary, "..").CombinedOutput(); err != nil {
+	tunnelBinary = filepath.Join(dir, "gst")
+	if out, err := exec.Command("go", "build", "-o", tunnelBinary, "../cmd/gst").CombinedOutput(); err != nil {
 		return fmt.Errorf("build tunnel binary: %w\n%s", err, out)
 	}
 	return ensureImage()
@@ -230,12 +231,11 @@ func (s *sshServer) writeKnownHosts() {
 	writeFile(s.t, s.knownHosts, []byte(knownhosts.Line([]string{s.addr}, key)+"\n"))
 }
 
-// config returns a configuration for the "tunnel" user with a one-second
+// config returns a tunnel for the "tunnel" user with a one-second
 // keepalive interval and a two-second keepalive timeout.
-func (s *sshServer) config(cleanup bool, forwards ...config.Forward) config.Config {
-	return config.Config{
-		Server:                   s.addr,
-		User:                     "tunnel",
+func (s *sshServer) config(cleanup bool, forwards ...config.Forward) config.Tunnel {
+	return config.Tunnel{
+		Destination:              "ssh://tunnel@" + s.addr,
 		IdentityFile:             s.identity,
 		KnownHostsFile:           s.knownHosts,
 		ConnectTimeoutSeconds:    10,
@@ -307,20 +307,23 @@ type tunnelProcess struct {
 	output strings.Builder
 }
 
-func startTunnel(t *testing.T, cfg config.Config) *tunnelProcess {
+// startTunnel runs the tunnel in the foreground with "gst run", ignoring
+// the user's ssh configuration.
+func startTunnel(t *testing.T, tunnel config.Tunnel) *tunnelProcess {
 	t.Helper()
-	data, err := json.Marshal(cfg)
+	data, err := json.Marshal(config.File{Tunnels: map[string]*config.Tunnel{"it": &tunnel}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "tunnel.json")
+	path := filepath.Join(t.TempDir(), "config.json")
 	writeFile(t, path, data)
 
 	p := &tunnelProcess{
-		cmd:    exec.Command(tunnelBinary, path),
+		cmd:    exec.Command(tunnelBinary, "--config", path, "run", "it"),
 		ready:  make(chan struct{}),
 		exited: make(chan struct{}),
 	}
+	p.cmd.Env = append(os.Environ(), sshconfig.ConfigFileEnv+"=/dev/null")
 	stderr, err := p.cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)

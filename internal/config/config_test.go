@@ -1,153 +1,204 @@
 package config
 
 import (
-	"net/netip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 )
 
-const validConfig = `{"server":"ssh.example.com:22","user":"tunnel","identity_file":"~/.ssh/id_ed25519","known_hosts_file":"~/.ssh/known_hosts","connect_timeout_seconds":15,"keepalive_interval_seconds":15,"keepalive_count_max":3,"cleanup_listeners":false,"forwards":[{"direction":"remote","listen":"0.0.0.0:2222","target":"127.0.0.1:22"}]}`
+func validTunnel() *Tunnel {
+	return &Tunnel{
+		Destination: "myhost",
+		Forwards: []Forward{
+			{Direction: Remote, Listen: "0.0.0.0:2222", Target: "127.0.0.1:22"},
+			{Direction: Local, Listen: "0.0.0.0:2222", Target: "db.internal:5432"},
+		},
+	}
+}
 
-func replace(old, new string) string { return strings.Replace(validConfig, old, new, 1) }
+func TestUpdateAndLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gst", "config.json")
+	f, err := Load(path)
+	if err != nil || len(f.Tunnels) != 0 {
+		t.Fatalf("missing file must load as empty: %v", err)
+	}
 
-func TestParseValid(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cfg, err := Parse([]byte(validConfig))
+	err = Update(path, func(f *File) error {
+		f.Tunnels["myhost"] = validTunnel()
+		f.Tunnels["bare"] = &Tunnel{Destination: "ssh://u@192.0.2.1:2200"}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{
-		Server:                   "ssh.example.com:22",
-		User:                     "tunnel",
-		IdentityFile:             filepath.Join(home, ".ssh/id_ed25519"),
-		KnownHostsFile:           filepath.Join(home, ".ssh/known_hosts"),
-		ConnectTimeoutSeconds:    15,
-		KeepaliveIntervalSeconds: 15,
-		KeepaliveCountMax:        3,
-		Forwards:                 []Forward{{Direction: Remote, Listen: "0.0.0.0:2222", Target: "127.0.0.1:22"}},
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config not private: %v %v", info.Mode(), err)
 	}
-	if !reflect.DeepEqual(cfg, want) {
-		t.Fatalf("got %+v, want %+v", cfg, want)
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"forwards": []`) {
+		t.Fatalf("forwards of a bare tunnel must be written as []:\n%s", data)
 	}
-	if cfg.ConnectTimeout() != 15*time.Second || cfg.KeepaliveInterval() != 15*time.Second || cfg.KeepaliveTimeout() != 45*time.Second {
-		t.Fatal("wrong durations")
+	f, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Forwards[0].ListenAddr() != netip.MustParseAddrPort("0.0.0.0:2222") {
-		t.Fatal("wrong listen address")
+	if !reflect.DeepEqual(f.Tunnels["myhost"], validTunnel()) || len(f.Tunnels) != 2 {
+		t.Fatalf("round trip changed the config: %+v", f.Tunnels)
 	}
 
-	cfg, err = Parse([]byte(replace(`"cleanup_listeners":false,`, ``)))
-	if err != nil || cfg.CleanupListeners {
-		t.Errorf("missing cleanup_listeners must default to false: %v", err)
+	before, _ := os.ReadFile(path)
+	if err := Update(path, func(f *File) error { return fmt.Errorf("refused") }); err == nil {
+		t.Fatal("fn error ignored")
 	}
-
-	for _, listen := range []string{"[::]:2222", "127.0.0.1:2222"} {
-		if _, err := Parse([]byte(replace("0.0.0.0:2222", listen))); err != nil {
-			t.Errorf("listen %q: %v", listen, err)
-		}
+	if err := Update(path, func(f *File) error {
+		f.Tunnels["Bad"] = validTunnel()
+		return nil
+	}); err == nil {
+		t.Fatal("invalid result written")
 	}
-
-	cfg, err = Parse([]byte(replace("0.0.0.0:2222", "0.0.0.0:02222")))
-	if err != nil || cfg.Forwards[0].ListenAddr().Port() != 2222 {
-		t.Errorf("leading zero port: %v", err)
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("failed update changed the file")
 	}
+}
 
-	// The two directions bind on different machines, so they may share an address.
-	cfg, err = Parse([]byte(replace(`}]`, `},{"direction":"local","listen":"0.0.0.0:2222","target":"db.internal:5432"}]`)))
-	if err != nil || cfg.Forwards[1].Direction != Local {
-		t.Errorf("local forward: %v", err)
+func TestConcurrentUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			if err := Update(path, func(f *File) error {
+				f.Tunnels[fmt.Sprintf("t%d", i)] = &Tunnel{Destination: "myhost"}
+				return nil
+			}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	f, err := Load(path)
+	if err != nil || len(f.Tunnels) != 20 {
+		t.Fatalf("lost updates: %d tunnels, %v", len(f.Tunnels), err)
 	}
 }
 
 func TestParseInvalid(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	const tunnel = `{"destination":"myhost","forwards":[{"direction":"remote","listen":"0.0.0.0:2222","target":"127.0.0.1:22"}]}`
+	doc := func(name, tunnel string) string { return `{"tunnels":{"` + name + `":` + tunnel + `}}` }
+	replace := func(old, new string) string { return doc("myhost", strings.Replace(tunnel, old, new, 1)) }
 	tests := map[string]string{
-		"unknown":               replace(`"user"`, `"extra":true,"user"`),
-		"missing":               replace(`"user":"tunnel",`, ``),
-		"null":                  replace(`"server":"ssh.example.com:22"`, `"server":null`),
-		"wrong type":            replace(`"cleanup_listeners":false`, `"cleanup_listeners":"false"`),
-		"empty user":            replace(`"tunnel"`, `""`),
-		"user control":          replace(`"tunnel"`, `"tun\nnel"`),
-		"zero timeout":          replace(`"connect_timeout_seconds":15`, `"connect_timeout_seconds":0`),
-		"negative interval":     replace(`"keepalive_interval_seconds":15`, `"keepalive_interval_seconds":-1`),
-		"zero count":            replace(`"keepalive_count_max":3`, `"keepalive_count_max":0`),
-		"overflow duration":     replace(`"connect_timeout_seconds":15`, `"connect_timeout_seconds":9223372036854775807`),
-		"overflow product":      replace(`"keepalive_count_max":3`, `"keepalive_count_max":9223372036854775807`),
-		"float":                 replace(`"connect_timeout_seconds":15`, `"connect_timeout_seconds":1.5`),
-		"empty path":            replace(`"~/.ssh/id_ed25519"`, `""`),
-		"other home":            replace(`"~/.ssh/id_ed25519"`, `"~other/key"`),
-		"nul path":              replace(`"~/.ssh/id_ed25519"`, `"key\u0000"`),
-		"missing server port":   replace(`ssh.example.com:22`, `ssh.example.com`),
-		"hostname listener":     replace(`0.0.0.0:2222`, `localhost:2222`),
-		"empty listener host":   replace(`0.0.0.0:2222`, `:2222`),
-		"wildcard listener":     replace(`0.0.0.0:2222`, `*:2222`),
-		"zoned listener":        replace(`0.0.0.0:2222`, `[fe80::1%eth0]:2222`),
-		"zero port":             replace(`0.0.0.0:2222`, `0.0.0.0:0`),
-		"port overflow":         replace(`0.0.0.0:2222`, `0.0.0.0:65536`),
-		"signed port":           replace(`0.0.0.0:2222`, `0.0.0.0:+22`),
-		"port injection":        replace(`0.0.0.0:2222`, `0.0.0.0:22;id`),
-		"target service":        replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
-		"target whitespace":     replace(`127.0.0.1:22`, `bad host:22`),
-		"target null":           replace(`"127.0.0.1:22"`, `null`),
-		"mapping unknown":       replace(`"target"`, `"options":[],"target"`),
-		"mapping null":          replace(`}]`, `},null]`),
-		"duplicate mapping":     replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:02222","target":"localhost:80"}]`),
-		"duplicate mapped ipv4": replace(`}]`, `},{"direction":"remote","listen":"[::ffff:0.0.0.0]:2222","target":"localhost:80"}]`),
-		"missing direction":     replace(`"direction":"remote",`, ``),
-		"unknown direction":     replace(`"remote"`, `"both"`),
-		"duplicate local":       strings.ReplaceAll(replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:2222","target":"localhost:80"}]`), `"remote"`, `"local"`),
-		"empty mappings":        replace(`[{"direction":"remote","listen":"0.0.0.0:2222","target":"127.0.0.1:22"}]`, `[]`),
-		"trailing":              validConfig + `{}`,
-		"truncated":             validConfig[:len(validConfig)-1],
-		"root null":             `null`,
+		"unknown field":       replace(`"destination"`, `"extra":1,"destination"`),
+		"trailing data":       doc("myhost", tunnel) + `{}`,
+		"null tunnel":         doc("myhost", "null"),
+		"uppercase name":      doc("MyHost", tunnel),
+		"long name":           doc(strings.Repeat("a", 33), tunnel),
+		"name with dot":       doc("a.b", tunnel),
+		"empty destination":   replace(`"myhost"`, `""`),
+		"option destination":  replace(`"myhost"`, `"-oProxyCommand=x"`),
+		"space destination":   replace(`"myhost"`, `"a b"`),
+		"relative identity":   replace(`"destination"`, `"identity_file":"key","destination"`),
+		"negative timeout":    replace(`"destination"`, `"connect_timeout_seconds":-1,"destination"`),
+		"huge interval":       replace(`"destination"`, `"keepalive_interval_seconds":9223372036,"destination"`),
+		"huge count":          replace(`"destination"`, `"keepalive_count_max":1001,"destination"`),
+		"bad direction":       replace(`"remote"`, `"both"`),
+		"hostname listener":   replace(`0.0.0.0:2222`, `localhost:2222`),
+		"bad target":          replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
+		"duplicate listener":  replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:02222","target":"h:1"}]`),
+		"duplicate mapped v4": replace(`}]`, `},{"direction":"remote","listen":"[::ffff:0.0.0.0]:2222","target":"h:1"}]`),
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(data)); err == nil {
+			if _, err := parse([]byte(data)); err == nil {
 				t.Fatal("accepted invalid config")
 			}
 		})
 	}
+	if _, err := parse([]byte(doc("myhost", tunnel))); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
 }
 
-func TestExpandHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	tests := map[string]string{
-		"~":             home,
-		"~/":            home,
-		"~/a/b":         filepath.Join(home, "a/b"),
-		"relative/key":  "relative/key",
-		"/absolute/key": "/absolute/key",
+func TestParseForward(t *testing.T) {
+	tests := map[string]Forward{
+		"2222:localhost:22":           {Remote, "127.0.0.1:2222", "localhost:22"},
+		"localhost:2222:host:22":      {Remote, "127.0.0.1:2222", "host:22"},
+		"*:8080:localhost:3000":       {Remote, "0.0.0.0:8080", "localhost:3000"},
+		":8080:localhost:3000":        {Remote, "0.0.0.0:8080", "localhost:3000"},
+		"0.0.0.0:2222:127.0.0.1:22":   {Remote, "0.0.0.0:2222", "127.0.0.1:22"},
+		"[::1]:2222:[::1]:22":         {Remote, "[::1]:2222", "[::1]:22"},
+		"[::]:2222:db.example.com:22": {Remote, "[::]:2222", "db.example.com:22"},
 	}
-	for path, want := range tests {
-		if got, err := expandHome(path); err != nil || got != want {
-			t.Errorf("expandHome(%q) = %q, %v; want %q", path, got, err, want)
+	for spec, want := range tests {
+		got, err := ParseForward(Remote, spec)
+		if err != nil || got != want {
+			t.Errorf("ParseForward(%q) = %+v, %v; want %+v", spec, got, err, want)
+			continue
+		}
+		again, err := ParseForward(Remote, strings.TrimPrefix(got.Spec(), "-R "))
+		if err != nil || again != got {
+			t.Errorf("Spec %q does not round-trip: %+v, %v", got.Spec(), again, err)
+		}
+	}
+	for _, spec := range []string{"2222", "2222:host", "a:1:b:2:c", "host:2222:h:22", "0:h:22", "65536:h:22", "2222:h:ssh", "2222:bad host:22", "2222::22", "[fe80::1%en0]:2222:h:22"} {
+		if f, err := ParseForward(Local, spec); err == nil {
+			t.Errorf("ParseForward(%q) accepted: %+v", spec, f)
 		}
 	}
 }
 
-func TestLoadExample(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if _, err := Load("../../tunnel.example.json"); err != nil {
-		t.Fatal(err)
+func TestParseListener(t *testing.T) {
+	tests := map[string]Forward{
+		"2222":                      {Local, "127.0.0.1:2222", ""},
+		"*:2222":                    {Local, "0.0.0.0:2222", ""},
+		"[::]:2222":                 {Local, "[::]:2222", ""},
+		"0.0.0.0:2222:127.0.0.1:22": {Local, "0.0.0.0:2222", "127.0.0.1:22"},
+	}
+	for spec, want := range tests {
+		if got, err := ParseListener(Local, spec); err != nil || got != want {
+			t.Errorf("ParseListener(%q) = %+v, %v; want %+v", spec, got, err, want)
+		}
+	}
+	if _, err := ParseListener(Local, "host:2222"); err == nil {
+		t.Error("hostname listener accepted")
+	}
+
+	mapped := Forward{Direction: Local, Listen: "[::ffff:127.0.0.1]:2222"}
+	if !mapped.SameListener(tests["2222"]) || mapped.SameListener(Forward{Direction: Remote, Listen: "127.0.0.1:2222"}) {
+		t.Error("SameListener must unmap addresses and compare directions")
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.json")
-	if _, err := Load(path); err == nil || strings.Contains(err.Error(), path) {
-		t.Fatalf("unexpected error: %v", err)
+func TestPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if p, err := DefaultPath(); err != nil || p != filepath.Join(home, ".config/gst/config.json") {
+		t.Errorf("DefaultPath() = %q, %v", p, err)
 	}
-	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
-		t.Fatal(err)
+	t.Setenv("XDG_CONFIG_HOME", "/xdg")
+	if p, _ := DefaultPath(); p != "/xdg/gst/config.json" {
+		t.Errorf("DefaultPath() = %q with XDG_CONFIG_HOME", p)
 	}
-	if _, err := Load(path); err != nil {
-		t.Fatal(err)
+
+	wd, _ := os.Getwd()
+	for path, want := range map[string]string{
+		"~":        home,
+		"~/a/b":    filepath.Join(home, "a/b"),
+		"/abs/key": "/abs/key",
+		"rel/key":  filepath.Join(wd, "rel/key"),
+	} {
+		if got, err := AbsPath(path); err != nil || got != want {
+			t.Errorf("AbsPath(%q) = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	for _, path := range []string{"", "~other/key", "a\x00b"} {
+		if _, err := AbsPath(path); err == nil {
+			t.Errorf("AbsPath(%q) accepted", path)
+		}
 	}
 }

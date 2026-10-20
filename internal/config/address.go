@@ -1,11 +1,8 @@
 package config
 
 import (
-	"errors"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -50,6 +47,7 @@ func isDialAddress(address string) bool {
 	}
 	return isHostname(host)
 }
+
 func parseIP(host string) (netip.Addr, bool) {
 	addr, err := netip.ParseAddr(host)
 	if err != nil || addr.Zone() != "" {
@@ -81,23 +79,4 @@ func isHostnameLabel(label string) bool {
 		}
 	}
 	return true
-}
-
-// expandHome resolves a leading "~" or "~/" to the current user's home
-// directory. Other users' homes ("~name") are not supported.
-func expandHome(path string) (string, error) {
-	if path == "" || strings.ContainsRune(path, 0) {
-		return "", errors.New("invalid credential path")
-	}
-	if !strings.HasPrefix(path, "~") {
-		return path, nil
-	}
-	if path != "~" && !strings.HasPrefix(path, "~/") {
-		return "", errors.New("unsupported home path")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", errors.New("home directory lookup failed")
-	}
-	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
 }

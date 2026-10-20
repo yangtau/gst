@@ -1,150 +1,147 @@
-# SSH tunnel
+# gst
 
-使用 Go 和 `golang.org/x/crypto/ssh` 实现 SSH 隧道，不启动本机 `ssh` 子进程。支持两个方向的映射：远端转发（类似 `ssh -R`，服务器端口映射到本机）和本地转发（类似 `ssh -L`，本机端口映射到服务器）。程序本身不含平台相关逻辑，客户端和服务器均可为 Linux 或 macOS；后台运行在 Linux 上使用 systemd 用户服务，在 macOS 上使用 launchd 用户代理。
+`gst`（go ssh tunnel）让 SSH 端口转发在后台持续运行。它用 Go 和 `golang.org/x/crypto/ssh` 建立连接，不依赖 `ssh` 进程保持隧道；只在解析配置时调用 `ssh -G`。支持 Linux 和 macOS。
 
-## 文件
+- **tunnel**：一个有名字的 SSH 连接。目标地址按你的 ssh 配置（`~/.ssh/config`）解析。
+- **forward**：tunnel 上的一条转发，写法与 ssh 相同。
+  - `-R [bind_address:]port:host:hostport`：在服务器上监听，由本机连接 `host:hostport`。
+  - `-L [bind_address:]port:host:hostport`：在本机监听，由服务器连接 `host:hostport`。
 
-- `main.go`：命令行入口，处理参数、信号和退出码。
-- `internal/config`：读取并严格校验 `tunnel.json`。
-- `internal/tunnel`：SSH 连接、保活、远端和本地监听、双向转发和远端清理（`cleanup.sh`）及其测试。
-- `integration`：在容器中的真实 OpenSSH 上运行的集成测试，以及测试用的 sshd 镜像（`integration/sshd`）。
-- `go.mod`、`go.sum`：Go 依赖及校验信息。
-- `tunnel.example.json`：示例配置，含远端转发和本地转发各一条。
-- `tunnel.json`：本机部署配置，由示例复制而来，不纳入 Git。
-- `deploy/service.sh`：安装和控制后台服务，按系统选择 systemd 或 launchd。
-- `deploy/reverse-ssh-tunnel.service`：Linux 的 systemd 用户服务。
-- `deploy/local.reverse-ssh-tunnel.plist.in`：macOS 的 launchd 用户代理模板。
-- `Makefile`：构建、测试、安装和运维命令。
-- `bin/reverse-ssh-tunnel`：构建产物，不纳入 Git。
-
-## 配置
-
-从示例复制出 `tunnel.json` 再编辑：`cp tunnel.example.json tunnel.json`。除 `cleanup_listeners`（缺省为 `false`）外，所有字段都必须显式填写，未知字段会被拒绝；字段名匹配不区分大小写，重复字段以最后一个为准：
-
-| 字段 | 含义 |
-| --- | --- |
-| `server` | SSH 服务器的 `主机:端口`，不读取 OpenSSH config 的 Host 别名 |
-| `user` | 远端登录用户 |
-| `identity_file` | 本机私钥文件，支持 `~/` 路径 |
-| `known_hosts_file` | 已核验的服务器公钥记录，支持 `~/` 路径 |
-| `connect_timeout_seconds` | TCP/SSH 握手、本机目标拨号及远端清理的超时秒数 |
-| `keepalive_interval_seconds` | SSH 保活间隔秒数 |
-| `keepalive_count_max` | 单个保活请求的响应超时为间隔 × 此数值，超时关闭连接 |
-| `cleanup_listeners` | 连接前是否清理远端转发端口上的监听进程，缺省为 `false` |
-| `forwards` | 至少一条映射，每条含 `direction`、`listen` 和 `target` |
-
-每条映射的 `direction` 必填：
-
-| `direction` | `listen` 所在 | `target` 由谁连接 |
-| --- | --- | --- |
-| `remote` | 服务器 | 本机（Go 程序所在机器） |
-| `local` | 本机 | 服务器 |
-
-映射示例：服务器的 `2222` 转发到本机的 `22`；本机的 `15432` 转发到服务器可访问的 `127.0.0.1:5432`。
-
-```json
-[
-  {
-    "direction": "remote",
-    "listen": "0.0.0.0:2222",
-    "target": "127.0.0.1:22"
-  },
-  {
-    "direction": "local",
-    "listen": "127.0.0.1:15432",
-    "target": "127.0.0.1:5432"
-  }
-]
-```
-
-`listen` 使用 IP 地址和端口；IPv6 使用方括号，如 `[::1]:2222`。同一方向的 `listen` 不能重复，不同方向分别在两台机器上监听，可以相同。`target` 可用主机名，由连接它的一方解析：`local` 映射的 `127.0.0.1` 指服务器自身。远端转发的实际监听范围仍受 sshd 的 `GatewayPorts` 控制；`0.0.0.0` 不代表仅局域网可访问，应通过远端防火墙限制访问。本地转发监听 `0.0.0.0` 时同样会对本机所在网络开放。
-
-程序使用私钥认证并严格校验 known_hosts，不自动接受未知主机密钥。不读取 ssh-agent 或 OpenSSH 配置；需要交互输入口令的加密私钥不受支持。连接参数显式配置在 JSON 中。
-
-**清理注意事项：** `cleanup_listeners=true` 时，通过 SSH session 在远端执行 Bash 清理逻辑，尝试终止 `remote` 映射端口上属于实际登录用户的监听进程，先 SIGTERM、必要时 SIGKILL，**不限于 SSH 进程**。这些端口必须专用于隧道。不独占端口时应关闭清理；端口冲突会导致启动失败，由服务管理器重试。`local` 映射的本机端口不做清理，被占用时同样启动失败。
-
-清理只是兜底手段，主要用于 macOS 服务器。清理通过 `lsof` 查找进程，只能看到登录用户自己的普通进程。Linux 上 sshd 会话进程不可转储，旧隧道遗留的 sshd 会话因此无法被清理；其他用户的进程也不会被清理。端口仍被占用时，清理以 `remote listener cleanup failed` 失败，由服务管理器重试。macOS 上的 sshd 不受此限制，但未在真实 macOS 上验证。清理脚本兼容 macOS 自带的 Bash 3.2。无论哪种系统，都应在远端 sshd 配置中设置 `ClientAliveInterval`（例如 `15`）和 `ClientAliveCountMax`（例如 `3`），让 sshd 及时断开客户端已失联的会话、释放端口。
+运行中的 tunnel 是一个后台服务（Linux 上是 systemd 用户服务，macOS 上是 launchd 用户代理），登录后自动启动，断线后自动重连。服务由 gst 创建和删除，用户不需要直接管理。
 
 ## 安装
 
-前置条件：
-
-- 本机安装与 `go.mod` 相容的 Go 工具链、GNU Make；Linux 上需有可用的 systemd 用户实例，macOS 上使用自带的 launchd。
-- 私钥可非交互登录远端；已核验服务器主机密钥并写入指定 known_hosts 文件。
-- 远端 sshd 允许所用方向的端口转发：`AllowTcpForwarding` 为 `yes`，或只用远端转发时为 `remote`、只用本地转发时为 `local`。sshd 拒绝本地转发时，每个连接都以 `target connection failed` 失败。
-- 启用清理时，远端需在 SSH 非交互会话的 `PATH` 中具备 `bash`（3.2 及以上）、lsof、ps、id 等命令；Linux 上还需可读的 `/proc/net/tcp`，其他系统需 `netstat`。
-- 远端 sshd 建议设置 `ClientAliveInterval` 和 `ClientAliveCountMax`，见上文清理注意事项。
-- `remote` 映射的本机目标、`local` 映射的服务器侧目标正在监听相应端口。
-
 ```bash
-cd ~/ssh-tunnel
-cp tunnel.example.json tunnel.json  # 然后按实际环境编辑
-make test
-make setup
+go install github.com/yangtau/ssh-tunnel/cmd/gst@latest
 ```
 
-`make setup` 构建程序，安装后台服务，启用自启并启动。**已经运行的服务不会重启**；应用更新需执行 `make restart`。两个平台都会把以下路径软链接到仓库，替换已有文件；不要移动或删除仓库：
+后台服务会记录 gst 的绝对路径。移动或升级 gst 后执行 `gst tunnel restart --all`。
 
-- `~/.local/bin/reverse-ssh-tunnel`
-- `~/.config/ssh-tunnel/tunnel.json`
-
-### Linux：systemd 用户服务
-
-服务名 `reverse-ssh-tunnel.service`，unit 文件软链接到 `~/.config/systemd/user/reverse-ssh-tunnel.service`。退出后每 5 秒重启，无重启频率限制；停止时发送 SIGTERM，15 秒后强杀。日志进入 journald。
-
-退出登录后保持运行及开机启动用户服务需要开启 linger（可能需要管理员权限）：
+## 快速开始
 
 ```bash
-loginctl enable-linger "$USER"
+# 使用 ~/.ssh/config 里的 Host myhost；在服务器的 2222 端口访问本机的 SSH
+gst tunnel add myhost -R 2222:localhost:22
+
+# 在本机的 15432 端口访问服务器上的数据库
+gst forward add myhost -L 15432:127.0.0.1:5432
+
+gst tunnel list            # 查看所有 tunnel 及状态
+gst tunnel check myhost    # 逐步诊断连接问题
+gst tunnel logs myhost -f  # 查看日志
+gst tunnel stop myhost     # 停止并删除后台服务，保留配置
+gst tunnel start myhost    # 重新创建后台服务并启动
+gst tunnel remove myhost   # 停止并删除 tunnel
 ```
 
-### macOS：launchd 用户代理
+每个命令都可以用 `--help` 查看详细说明和示例。`gst completion bash|zsh|fish` 生成 shell 补全脚本。
 
-Label 为 `local.reverse-ssh-tunnel`。launchd 不展开 `~` 和变量，所以 `make setup` 和 `make restart` 用 `deploy/local.reverse-ssh-tunnel.plist.in` 生成含绝对路径的 `~/Library/LaunchAgents/local.reverse-ssh-tunnel.plist`，而不是软链接。修改模板后执行 `make restart` 生效。
+## 命令
 
-- 退出后至少间隔 5 秒重启（`KeepAlive`、`ThrottleInterval`）；停止时发送 SIGTERM，15 秒后强杀（`ExitTimeOut`）。
-- 日志写入 `~/Library/Logs/reverse-ssh-tunnel.log`，不自动轮转；程序只在启动失败和断线时写日志，体积很小。
-- 代理运行在登录用户的 `gui/<uid>` 域：用户登录后自动启动，注销后停止。需要不登录就运行时，应改为 `/Library/LaunchDaemons` 下带 `UserName` 的守护进程（需要管理员权限），本仓库未提供。
-- `make stop` 卸载代理，下次登录仍会自动加载；`make disable` 在 launchd 中持久禁用，之后 `make start` 会失败，需先 `make enable`。
+| 命令 | 作用 |
+| --- | --- |
+| `gst tunnel add <name> [destination] [-R spec]... [-L spec]...` | 添加 tunnel 并在后台启动 |
+| `gst tunnel set <name> [flags]` | 修改目标地址或覆盖 ssh 配置的设置 |
+| `gst tunnel start\|stop\|restart <name>... \| --all` | 启动、停止、重启 |
+| `gst tunnel remove <name>...` | 停止并删除 |
+| `gst tunnel list` / `show <name>` | 查看 tunnel、状态和 ssh 解析结果 |
+| `gst tunnel logs <name> [-f] [-n N]` | 查看日志 |
+| `gst tunnel check <name>` | 诊断：ssh 配置、私钥、known_hosts、网络、登录 |
+| `gst forward add <tunnel> (-R spec \| -L spec)...` | 添加 forward |
+| `gst forward remove <tunnel> (-R [bind:]port \| -L [bind:]port)...` | 删除 forward |
+| `gst forward list <tunnel>` | 列出 forward |
 
-launchd 流程仅在 Linux 上用替身 `launchctl` 验证过命令顺序和生成的 plist，未在真实 macOS 上运行。
+约定：
 
-## 运维
+- 结果输出到 stdout，错误和提示输出到 stderr；失败时通常附带 `hint:`，给出下一步该执行的命令。
+- 退出码：`0` 成功，`1` 执行失败（包括 `check` 未通过），`2` 参数无效。
+- `list`、`show`、`check`、`forward list` 支持 `--json`，字段结构固定。
+- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会报错，也不会做任何改动；监听地址相同但 target 不同则报错。
+- 修改运行中 tunnel 的 forward 或设置后，gst 会自动重启该 tunnel，并在输出中说明；加 `--no-restart` 可以跳过。
+- `tunnel list` 中的状态：`running`（运行中）、`down`（服务存在，进程失败后正在等待重启，可用 `logs` 和 `check` 排查）、`stopped`（没有后台服务）。
+
+## ssh 配置
+
+`destination` 使用 ssh 的写法：`host`、`user@host` 或 `ssh://user@host:port`，省略时等于 tunnel 名。每次启动 tunnel 时，gst 都会执行 `ssh -G <destination>`，读取以下配置：
+
+| ssh 配置 | 用途 | 覆盖参数 | 都未设置时 |
+| --- | --- | --- | --- |
+| `HostName`、`Port`、`User` | 服务器地址和登录用户 | `tunnel set --destination` | ssh 的默认值 |
+| `IdentityFile` | 私钥，依次尝试，跳过不存在或有口令的 | `--identity` | ssh 的默认私钥列表 |
+| `UserKnownHostsFile`、`GlobalKnownHostsFile` | 主机密钥校验 | `--known-hosts` | ssh 的默认文件 |
+| `ConnectTimeout` | 连接和登录超时 | `--connect-timeout` | 15 秒 |
+| `ServerAliveInterval` | 保活间隔 | `--keepalive-interval` | 15 秒 |
+| `ServerAliveCountMax` | 保活请求无响应超过 间隔 × 此值 后断开重连 | `--keepalive-count` | 3 |
+
+限制：
+
+- 只使用没有口令的私钥，不读取 ssh-agent。
+- 严格校验 known_hosts，不接受未知主机。首次使用前先用 `ssh` 连接一次并核验主机密钥。
+- 不支持 `ProxyJump`、`ProxyCommand`、`HostKeyAlias`，配置了会报错。
+
+`tunnel add`、`set`、`start` 和 `restart` 会先离线检查私钥和 known_hosts，不通过时不会保存配置，也不会启动服务。
+
+## forward
+
+- 省略 `bind_address` 时只监听 loopback（`127.0.0.1`）；`*` 或空的 `bind_address`（如 `:8080:localhost:3000`）监听所有接口；IPv6 地址加方括号。
+- `host` 可以是主机名，由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己。
+- 服务器上实际的监听范围还受 sshd 的 `GatewayPorts` 控制。监听所有接口时，应通过防火墙限制访问来源。
+- sshd 的 `AllowTcpForwarding` 需要允许所用的方向：同时使用两个方向时设为 `yes`，只用 `-R` 时可设为 `remote`，只用 `-L` 时可设为 `local`。sshd 拒绝 `-L` 时，日志中每个连接都会记录 `target connection failed`。
+
+**清理远端监听（`--cleanup-listeners`）：** 每次建立连接后、开始监听前，在服务器上用 Bash 终止占用 `-R` 端口、属于登录用户的监听进程，先发 SIGTERM，必要时再发 SIGKILL。被终止的**不限于 SSH 进程**，所以这些端口必须专用于这个 tunnel。这个功能只是兜底：Linux 上残留的 sshd 会话进程无法被清理，其他用户的进程也不会被清理，端口仍被占用时会以 `remote listener cleanup failed` 失败并重试。服务器需要在非交互 SSH 会话的 `PATH` 中提供 `bash`（3.2 及以上）、`lsof`、`ps`、`id`；Linux 上还需要可读的 `/proc/net/tcp`，其他系统需要 `netstat`。无论是否开启清理，都建议在服务器的 sshd 配置中设置 `ClientAliveInterval 15` 和 `ClientAliveCountMax 3`，让 sshd 及时回收失联的会话，释放端口。
+
+## 后台服务
+
+| | Linux | macOS |
+| --- | --- | --- |
+| 服务 | `~/.config/systemd/user/gst-<name>.service` | `~/Library/LaunchAgents/local.gst.<name>.plist` |
+| 日志 | journald | `~/Library/Logs/gst/<name>.log`（不轮转，日志量很小） |
+| 生命周期 | 每次退出后 5 秒重启，没有频率限制 | 每次退出后至少间隔 5 秒重启 |
+
+- 两个平台上，停止时都先发送 SIGTERM，15 秒后强制结束。
+- Linux 上，要让 tunnel 在退出登录后继续运行、并在开机时启动，需要开启 linger：`loginctl enable-linger "$USER"`。gst 检测到未开启时会给出提示。
+- macOS 上，用户代理在登录后启动、注销后停止。
+
+## 配置文件
+
+tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，后台服务会沿用同一个路径。
+
+这个文件由 gst 维护，不需要手动编辑。写入时加锁，并通过"临时文件 + rename"原子替换，多个 gst 命令并发执行也不会互相覆盖。文件权限为 `0600`。
+
+## 隐私
+
+- 后台服务的日志不记录服务器地址、用户、密钥路径和转发地址，转发只按编号记录，例如 `forward 2`；编号与 `gst forward list` 的顺序一致。因此日志中的错误信息比较简略，详细原因用 `gst tunnel check` 查看。
+- 服务进程的参数只包含 gst 路径、配置文件路径和 tunnel 名。解析配置时临时运行的 `ssh -G` 会在参数中带上 destination。
+- 这些措施不防御本机管理员读取文件、内存或观察网络连接。
+
+## 开发
 
 ```bash
-make help     # 默认命令
-make build    # 构建到 bin/
-make test     # 运行本地测试，不连接真实远端
-make test-integration  # 在容器中的真实 sshd 上运行集成测试
-make status   # 查看服务状态
-make logs     # 实时日志，Ctrl-C 退出
-make restart  # 构建、重新加载服务定义并重启
-make stop     # 停止，保留自启
-make start    # 启动
-make disable  # 禁用自启并停止
-make enable   # 启用自启并启动
+make build             # 构建 bin/gst
+make test              # 单元测试，不连接真实服务器
+make test-integration  # 在容器中的真实 OpenSSH sshd 上运行集成测试
 ```
 
-服务命令由 `deploy/service.sh` 按 `uname -s` 选择 systemd 或 launchd。可使用 `make -C ~/ssh-tunnel <命令>`。代码、配置或服务定义修改后执行 `make restart` 生效。服务管理器负责自动重启；Go 程序负责 SSH 连接、保活、远端和本地监听、双向转发和退出时释放连接。
+代码结构：
 
-也可以前台运行（不要与服务同时占用相同端口）：
+- `cmd/gst`：程序入口。
+- `internal/cli`：命令行。
+- `internal/config`：配置文件和 forward 的写法。
+- `internal/sshconfig`：调用 `ssh -G` 解析 destination。
+- `internal/tunnel`：SSH 连接、保活、两个方向的转发、远端清理（`cleanup.sh`）和诊断。
+- `internal/service`：systemd 和 launchd 服务。
+- `integration`：集成测试及其 sshd 镜像。
 
-```bash
-./bin/reverse-ssh-tunnel ./tunnel.json
-```
-
-## 集成测试
-
-`make test-integration` 编译程序，并让它连接容器中的真实 OpenSSH sshd。每个用例启动一个全新的容器，用完自动删除；密钥、主机密钥和端口都随机生成，不使用本机的 SSH 配置。sshd 镜像按 `integration/sshd` 的内容打标签，内容不变时复用已有镜像。
+集成测试编译 gst，并用 `gst run` 连接容器中的 sshd。每个用例使用一个全新的容器，用完自动删除；密钥、主机密钥和端口都随机生成。测试通过 `GST_SSH_CONFIG=/dev/null` 忽略本机的 ssh 配置，这个变量会作为 `ssh -F` 传给 `ssh -G`。sshd 镜像按 `integration/sshd` 的内容打标签，内容不变时复用已有镜像。
 
 覆盖的场景：
 
-- 转发：多条映射上的并发大流量与半关闭、目标拒绝连接、SIGTERM 正常退出并释放远端端口、日志不泄露地址和路径；远端转发与本地转发同时工作，本地转发经服务器连到容器内的 sshd。
-- 保活：正常连接长时间不误判；sshd 会话被 SIGSTOP 冻结（TCP 仍在）时因保活超时退出；sshd 会话被杀或容器被杀时退出。上述异常都以退出码 1 退出，由服务管理器重启。
-- 清理：杀掉登录用户自己的占用进程；不杀其他用户的进程并报错；关闭清理时端口被占即报错；客户端失联的旧会话由 sshd 的 `ClientAliveInterval` 回收后，新隧道能接管端口。
-- 启动：主机密钥不匹配、服务器不可达。
+- 转发：多条 forward 并发大流量与半关闭、目标拒绝连接、SIGTERM 正常退出并释放端口、日志不泄露地址和路径、两个方向同时工作。
+- 保活：正常连接长时间运行不误判断线；sshd 会话被 SIGSTOP 冻结时因保活超时退出；sshd 会话或容器被杀时退出。
+- 清理：终止登录用户自己的占用进程；不终止其他用户的进程并报错；未开启清理时端口被占用会报错；失联的旧会话被 sshd 回收后，新连接能接管端口。
+- 启动和诊断：主机密钥不匹配、服务器不可达、`gst tunnel check` 通过。
 
-需要 podman 或 docker（自动选择，也可用 `CONTAINER_RUNTIME` 指定）。可选环境变量：
+需要 podman 或 docker，自动选择，也可以用 `CONTAINER_RUNTIME` 指定。可选的环境变量：
 
 | 变量 | 含义 |
 | --- | --- |
@@ -159,10 +156,4 @@ IT_APT_MIRROR := http://mirrors.example.com
 IT_BUILD_FLAGS := --isolation=chroot
 ```
 
-在 cgroup v1 的机器上，非 root 运行的 podman 可能还需要 `~/.config/containers/containers.conf` 中设置 `cgroups = "disabled"` 和 `cgroup_manager = "cgroupfs"`，镜像构建需要 `--isolation=chroot`。
-
-## 隐私边界
-
-进程参数只包含程序和配置文件路径，不包含具体远端地址、用户、密钥路径或转发参数。常规日志不输出这些配置及底层错误中的地址；这也意味着排障信息较简略。
-
-这不防御本机管理员读取文件、内存或观察网络连接。`tunnel.json`、密钥内容和 known_hosts 都不纳入 Git。不要把口令、私钥等秘密写入仓库。
+在 cgroup v1 的机器上，非 root 运行的 podman 可能需要在 `~/.config/containers/containers.conf` 中设置 `cgroups = "disabled"` 和 `cgroup_manager = "cgroupfs"`，构建镜像时还需要 `--isolation=chroot`。

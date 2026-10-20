@@ -12,16 +12,31 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
-// Run connects to the server and serves the configured forwards until ctx is
+// Options are the resolved settings of one tunnel.
+type Options struct {
+	Server            string        // host:port of the SSH server
+	User              string        // remote login user
+	IdentityFiles     []string      // private keys to offer; missing and passphrase-protected ones are skipped
+	KnownHostsFiles   []string      // host key databases; missing files are skipped
+	ConnectTimeout    time.Duration // bounds TCP connects, the SSH handshake, and remote cleanup
+	KeepaliveInterval time.Duration // time between keepalive probes
+	KeepaliveTimeout  time.Duration // how long one probe may stay unanswered
+	CleanupListeners  bool
+	Forwards          []config.Forward
+}
+
+// Run connects to the server and serves the forwards until ctx is
 // cancelled (returning nil) or the tunnel fails (returning the first error).
-func Run(ctx context.Context, cfg config.Config) error {
-	clientConfig, err := newClientConfig(cfg)
+// Errors omit addresses and paths so that they are safe to log.
+func Run(ctx context.Context, opts Options) error {
+	clientConfig, err := newClientConfig(opts)
 	if err != nil {
 		return err
 	}
@@ -29,13 +44,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	client, err := dial(ctx, cfg.Server, clientConfig, cfg.ConnectTimeout())
+	client, err := dial(ctx, opts.Server, clientConfig, opts.ConnectTimeout)
 	if err != nil {
 		return err
 	}
 
 	t := &tunnel{
-		cfg:             cfg,
+		opts:            opts,
 		client:          client,
 		failure:         make(chan error, 1),
 		listenersClosed: make(chan struct{}),
@@ -46,7 +61,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 
 // tunnel holds the state of one SSH connection and its listeners.
 type tunnel struct {
-	cfg       config.Config
+	opts      Options
 	client    *ssh.Client
 	listeners []net.Listener
 	workers   sync.WaitGroup
@@ -57,7 +72,7 @@ type tunnel struct {
 
 func (t *tunnel) serve(ctx context.Context) error {
 	t.workers.Go(func() {
-		if err := keepalive(ctx, t.client, t.cfg.KeepaliveInterval(), t.cfg.KeepaliveTimeout()); err != nil {
+		if err := keepalive(ctx, t.client, t.opts.KeepaliveInterval, t.opts.KeepaliveTimeout); err != nil {
 			// Report before closing, so the failure is not attributed to
 			// the connection loss that the close causes. Closing also
 			// unblocks requests stalled behind the probe, such as ListenTCP.
@@ -70,12 +85,12 @@ func (t *tunnel) serve(ctx context.Context) error {
 		t.fail(errors.New("SSH connection closed"))
 	})
 
-	if t.cfg.CleanupListeners {
-		if err := cleanupListeners(t.client, t.cfg.Forwards, t.cfg.ConnectTimeout()); err != nil {
+	if t.opts.CleanupListeners {
+		if err := cleanupListeners(t.client, t.opts.Forwards, t.opts.ConnectTimeout); err != nil {
 			return err
 		}
 	}
-	for i, fwd := range t.cfg.Forwards {
+	for i, fwd := range t.opts.Forwards {
 		if err := t.listen(ctx, i+1, fwd); err != nil {
 			return err
 		}
@@ -106,7 +121,7 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 		r.dial = t.client.DialContext
 	}
 	if err != nil {
-		return fmt.Errorf("listener start failed for mapping %d", id)
+		return fmt.Errorf("listener start failed for forward %d", id)
 	}
 	t.listeners = append(t.listeners, r.listener)
 	t.workers.Go(func() { t.accept(ctx, r) })
@@ -115,7 +130,7 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 
 // route is one active forward: a listener and the target it feeds.
 type route struct {
-	id       int // 1-based position in the configuration, logged instead of addresses
+	id       int // 1-based position in the tunnel's forwards, logged instead of addresses
 	listener net.Listener
 	dial     func(ctx context.Context, network, address string) (net.Conn, error)
 	target   string

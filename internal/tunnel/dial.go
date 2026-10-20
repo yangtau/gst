@@ -3,37 +3,88 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
-
-	"reverse-ssh-tunnel/internal/config"
 )
 
-// newClientConfig authenticates with the configured private key and
-// verifies the server strictly against the known_hosts file.
-func newClientConfig(cfg config.Config) (*ssh.ClientConfig, error) {
-	key, err := os.ReadFile(cfg.IdentityFile)
-	if err != nil {
-		return nil, errors.New("identity read failed")
+// newClientConfig authenticates with every usable identity and verifies
+// the server strictly against the known_hosts files.
+func newClientConfig(opts Options) (*ssh.ClientConfig, error) {
+	var signers []ssh.Signer
+	for _, id := range loadIdentities(opts.IdentityFiles) {
+		if id.signer != nil {
+			signers = append(signers, id.signer)
+		}
 	}
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return nil, errors.New("identity parse failed")
+	if len(signers) == 0 {
+		return nil, errors.New("no usable identity")
 	}
-	hostKeyCallback, err := knownhosts.New(cfg.KnownHostsFile)
+	hostKeyCallback, _, err := loadKnownHosts(opts.KnownHostsFiles)
 	if err != nil {
 		return nil, errors.New("known hosts load failed")
 	}
 	return &ssh.ClientConfig{
-		User:              cfg.User,
-		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		User:              opts.User,
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signers...)},
 		HostKeyCallback:   hostKeyCallback,
-		HostKeyAlgorithms: knownHostKeyAlgorithms(hostKeyCallback, cfg.Server),
+		HostKeyAlgorithms: knownHostKeyAlgorithms(hostKeyCallback, opts.Server),
 	}, nil
+}
+
+// identity is a candidate private key file. Exactly one of signer and
+// problem is set.
+type identity struct {
+	path    string
+	signer  ssh.Signer
+	problem string
+}
+
+func loadIdentities(paths []string) []identity {
+	ids := make([]identity, 0, len(paths))
+	for _, path := range paths {
+		id := identity{path: path}
+		key, err := os.ReadFile(path)
+		var missing *ssh.PassphraseMissingError
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			id.problem = "missing"
+		case err != nil:
+			id.problem = "unreadable"
+		default:
+			id.signer, err = ssh.ParsePrivateKey(key)
+			switch {
+			case errors.As(err, &missing):
+				id.problem = "protected by a passphrase"
+			case err != nil:
+				id.problem = "not a supported private key"
+			}
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// loadKnownHosts reads the existing files among paths and returns them.
+func loadKnownHosts(paths []string) (ssh.HostKeyCallback, []string, error) {
+	var existing []string
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			existing = append(existing, path)
+		}
+	}
+	if len(existing) == 0 {
+		return nil, nil, errors.New("no known_hosts file exists")
+	}
+	callback, err := knownhosts.New(existing...)
+	if err != nil {
+		return nil, existing, err
+	}
+	return callback, existing, nil
 }
 
 // knownHostKeyAlgorithms returns the algorithms of the host keys recorded for

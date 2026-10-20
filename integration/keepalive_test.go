@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 // The server configuration uses a 1 s keepalive interval and a 2 s timeout.

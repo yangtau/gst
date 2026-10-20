@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 //go:embed cleanup.sh

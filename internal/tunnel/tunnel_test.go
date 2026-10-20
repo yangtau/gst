@@ -2,10 +2,14 @@ package tunnel
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 func TestReverseForwardingAndCancellation(t *testing.T) {
@@ -48,11 +52,11 @@ func TestReverseForwardingAndCancellation(t *testing.T) {
 		}
 	})
 
-	s.config.Forwards = []config.Forward{
+	s.opts.Forwards = []config.Forward{
 		{Direction: config.Remote, Listen: "127.0.0.1:2222", Target: local.Addr().String()},
 		{Direction: config.Remote, Listen: "127.0.0.1:3000", Target: local.Addr().String()},
 	}
-	cancel, result := runAsync(t, s.config)
+	cancel, result := runAsync(t, s.opts)
 	await(t, logs.ready)
 	remote := []net.Listener{await(t, s.forwards), await(t, s.forwards)}
 
@@ -115,11 +119,11 @@ func TestLocalForwarding(t *testing.T) {
 	logs := captureLog(t)
 	s := startServer(t, serverOptions{})
 	listen := []string{freeAddr(t), freeAddr(t)}
-	s.config.Forwards = []config.Forward{
+	s.opts.Forwards = []config.Forward{
 		{Direction: config.Local, Listen: listen[0], Target: startEchoTarget(t)},
 		{Direction: config.Local, Listen: listen[1], Target: freeAddr(t)},
 	}
-	cancel, result := runAsync(t, s.config)
+	cancel, result := runAsync(t, s.opts)
 	await(t, logs.ready)
 
 	var clients sync.WaitGroup
@@ -137,7 +141,7 @@ func TestLocalForwarding(t *testing.T) {
 		t.Fatal("refused target produced a reply")
 	}
 	eventually(t, "missing target failure log", func() bool {
-		return strings.Contains(logs.String(), "target connection failed for mapping 2")
+		return strings.Contains(logs.String(), "target connection failed for forward 2")
 	})
 	if strings.Contains(logs.String(), "SECRET") {
 		t.Fatal("remote rejection leaked")
@@ -165,10 +169,10 @@ func TestListenerFailureClosesEarlierListeners(t *testing.T) {
 	} {
 		t.Run(second.Direction, func(t *testing.T) {
 			s := startServer(t, serverOptions{rejectForward: 2})
-			s.config.Forwards = append(s.config.Forwards, second)
-			_, result := runAsync(t, s.config)
+			s.opts.Forwards = append(s.opts.Forwards, second)
+			_, result := runAsync(t, s.opts)
 			ln := await(t, s.forwards)
-			if err := await(t, result); err == nil || err.Error() != "listener start failed for mapping 2" {
+			if err := await(t, result); err == nil || err.Error() != "listener start failed for forward 2" {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			eventually(t, "listener survived failed startup", func() bool {
@@ -187,28 +191,28 @@ func TestHostKeys(t *testing.T) {
 	for _, mode := range []string{"valid", "unknown", "changed", "revoked", "malformed", "missing"} {
 		t.Run(mode, func(t *testing.T) {
 			s := startServer(t, serverOptions{})
-			content := knownhosts.Line([]string{s.config.Server}, s.hostKey.PublicKey()) + "\n"
+			content := knownhosts.Line([]string{s.opts.Server}, s.hostKey.PublicKey()) + "\n"
 			switch mode {
 			case "unknown":
 				content = ""
 			case "changed":
 				key, _ := newKey(t)
-				content = knownhosts.Line([]string{s.config.Server}, key.PublicKey()) + "\n"
+				content = knownhosts.Line([]string{s.opts.Server}, key.PublicKey()) + "\n"
 			case "revoked":
 				content = "@revoked " + content
 			case "malformed":
 				content = "SECRET invalid known_hosts"
 			}
 			if mode == "missing" {
-				os.Remove(s.config.KnownHostsFile)
+				os.Remove(s.opts.KnownHostsFiles[0])
 			} else {
-				writeFile(t, s.config.KnownHostsFile, content)
+				writeFile(t, s.opts.KnownHostsFiles[0], content)
 			}
 
-			clientConfig, err := newClientConfig(s.config)
+			clientConfig, err := newClientConfig(s.opts)
 			if err == nil {
 				var client *ssh.Client
-				client, err = dial(context.Background(), s.config.Server, clientConfig, time.Second)
+				client, err = dial(context.Background(), s.opts.Server, clientConfig, time.Second)
 				if client != nil {
 					client.Close()
 				}
@@ -319,7 +323,7 @@ func TestKeepaliveCancellationWithPendingReply(t *testing.T) {
 
 func TestRunReportsKeepaliveTimeout(t *testing.T) {
 	s := startServer(t, serverOptions{hangKeepalive: true})
-	_, result := runAsync(t, s.config)
+	_, result := runAsync(t, s.opts)
 	// Closing the connection after the timeout must not be reported as the
 	// cause instead.
 	if err := await(t, result); err == nil || err.Error() != "SSH keepalive timed out" {
@@ -329,7 +333,7 @@ func TestRunReportsKeepaliveTimeout(t *testing.T) {
 
 func TestStalledForwardRequest(t *testing.T) {
 	s := startServer(t, serverOptions{hangForward: true})
-	_, result := runAsync(t, s.config)
+	_, result := runAsync(t, s.opts)
 	if err := await(t, result); err == nil {
 		t.Fatal("stalled global request did not fail")
 	}
@@ -340,18 +344,18 @@ func TestCleanup(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			logs := captureLog(t)
 			s := startServer(t, serverOptions{cleanupStatus: status})
-			s.config.CleanupListeners = true
-			s.config.Forwards = append(s.config.Forwards,
+			s.opts.CleanupListeners = true
+			s.opts.Forwards = append(s.opts.Forwards,
 				config.Forward{Direction: config.Remote, Listen: "127.0.0.1:3000", Target: "localhost:1"},
 				config.Forward{Direction: config.Local, Listen: freeAddr(t), Target: "localhost:1"},
 			)
-			cancel, result := runAsync(t, s.config)
+			cancel, result := runAsync(t, s.opts)
 
 			call := await(t, s.cleanups)
 			if call.command != "bash -s -- 2222 3000" {
 				t.Fatalf("unexpected command %q", call.command)
 			}
-			if !strings.Contains(call.script, "login_uid=$(id -u)") || strings.Contains(call.script, s.config.User) {
+			if !strings.Contains(call.script, "login_uid=$(id -u)") || strings.Contains(call.script, s.opts.User) {
 				t.Fatal("cleanup does not use remote identity")
 			}
 			if status == 0 {
@@ -372,7 +376,7 @@ func TestCleanup(t *testing.T) {
 		s := startServer(t, serverOptions{hangCleanup: true})
 		client := s.connect(t, context.Background())
 		result := make(chan error, 1)
-		go func() { result <- cleanupListeners(client, s.config.Forwards, 100*time.Millisecond) }()
+		go func() { result <- cleanupListeners(client, s.opts.Forwards, 100*time.Millisecond) }()
 		if err := await(t, result); err == nil {
 			t.Fatal("stalled cleanup succeeded")
 		}
@@ -445,7 +449,7 @@ func TestTargetHalfClose(t *testing.T) {
 		received <- string(data)
 	}()
 
-	s.config.Forwards[0].Target = target.Addr().String()
+	s.opts.Forwards[0].Target = target.Addr().String()
 	cancel, result, ln := startTunnel(t, s, logs)
 
 	c, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
@@ -477,7 +481,7 @@ func TestRuntimeLogPrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.config.Forwards[0].Target = target.Addr().String()
+	s.opts.Forwards[0].Target = target.Addr().String()
 	target.Close()
 
 	cancel, result, ln := startTunnel(t, s, logs)
@@ -494,13 +498,71 @@ func TestRuntimeLogPrivacy(t *testing.T) {
 	await(t, result)
 
 	text := logs.String()
-	if !strings.Contains(text, "target connection failed for mapping 1") {
+	if !strings.Contains(text, "target connection failed for forward 1") {
 		t.Fatal("missing stage error")
 	}
-	fwd := s.config.Forwards[0]
-	for _, secret := range []string{s.config.Server, s.config.User, s.config.IdentityFile, s.config.KnownHostsFile, fwd.Listen, fwd.Target, "127.0.0.1"} {
+	fwd := s.opts.Forwards[0]
+	for _, secret := range []string{s.opts.Server, s.opts.User, s.opts.IdentityFiles[0], s.opts.KnownHostsFiles[0], fwd.Listen, fwd.Target, "127.0.0.1"} {
 		if strings.Contains(text, secret) {
 			t.Fatal("runtime log leaked config")
 		}
+	}
+}
+
+func TestDiagnose(t *testing.T) {
+	encrypted := func(t *testing.T, dir string) string {
+		_, private, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		block, err := ssh.MarshalPrivateKeyWithPassphrase(private, "", []byte("secret"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "encrypted")
+		writeFile(t, path, string(pem.EncodeToMemory(block)))
+		return path
+	}
+	tests := map[string]struct {
+		change   func(t *testing.T, s *testServer)
+		failStep string // empty when every step passes
+	}{
+		"ok": {},
+		"skips unusable identities": {change: func(t *testing.T, s *testServer) {
+			s.opts.IdentityFiles = append([]string{encrypted(t, t.TempDir()), "/missing/key"}, s.opts.IdentityFiles...)
+		}},
+		"only encrypted identity": {change: func(t *testing.T, s *testServer) {
+			s.opts.IdentityFiles = []string{encrypted(t, t.TempDir())}
+		}, failStep: "identity"},
+		"unknown host": {change: func(t *testing.T, s *testServer) {
+			writeFile(t, s.opts.KnownHostsFiles[0], "")
+		}, failStep: "known_hosts"},
+		"changed host key": {change: func(t *testing.T, s *testServer) {
+			key, _ := newKey(t)
+			writeFile(t, s.opts.KnownHostsFiles[0], knownhosts.Line([]string{s.opts.Server}, key.PublicKey())+"\n")
+		}, failStep: "login"},
+		"unauthorized identity": {change: func(t *testing.T, s *testServer) {
+			_, private := newKey(t)
+			writeFile(t, s.opts.IdentityFiles[0], string(private))
+		}, failStep: "login"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := startServer(t, serverOptions{})
+			if test.change != nil {
+				test.change(t, s)
+			}
+			steps := Diagnose(context.Background(), s.opts, true)
+			last := steps[len(steps)-1]
+			if test.failStep == "" {
+				if len(steps) != 4 || !last.OK {
+					t.Fatalf("unexpected steps %+v", steps)
+				}
+				return
+			}
+			if last.Name != test.failStep || last.OK || last.Hint == "" {
+				t.Fatalf("unexpected steps %+v", steps)
+			}
+		})
 	}
 }

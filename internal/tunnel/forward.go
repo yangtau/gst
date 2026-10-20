@@ -13,12 +13,12 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	defer incoming.Close()
 	defer closeOnDone(ctx, incoming)()
 
-	dialCtx, cancel := context.WithTimeout(ctx, t.cfg.ConnectTimeout())
+	dialCtx, cancel := context.WithTimeout(ctx, t.opts.ConnectTimeout)
 	outgoing, err := r.dial(dialCtx, "tcp", r.target)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("target connection failed for mapping %d", r.id)
+			log.Printf("target connection failed for forward %d", r.id)
 		}
 		return
 	}

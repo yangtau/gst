@@ -22,7 +22,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 // serverOptions selects how the test SSH server misbehaves.
@@ -40,7 +40,7 @@ type cleanupCall struct{ command, script string }
 // Remote forwards are served on ephemeral local ports, published on forwards.
 type testServer struct {
 	options      serverOptions
-	config       config.Config
+	opts         Options
 	hostKey      ssh.Signer
 	ecdsaHostKey ssh.Signer // not recorded in known_hosts
 	authKey      ssh.PublicKey
@@ -80,19 +80,19 @@ func startServer(t *testing.T, options serverOptions) *testServer {
 		cleanups:     make(chan cleanupCall, 1),
 		ctx:          ctx,
 		cancel:       cancel,
-		config: config.Config{
-			Server:                   listener.Addr().String(),
-			User:                     "remote-user",
-			IdentityFile:             filepath.Join(dir, "key"),
-			KnownHostsFile:           filepath.Join(dir, "known_hosts"),
-			ConnectTimeoutSeconds:    2,
-			KeepaliveIntervalSeconds: 1,
-			KeepaliveCountMax:        1,
-			Forwards:                 []config.Forward{{Direction: config.Remote, Listen: "127.0.0.1:2222", Target: "127.0.0.1:1"}},
+		opts: Options{
+			Server:            listener.Addr().String(),
+			User:              "remote-user",
+			IdentityFiles:     []string{filepath.Join(dir, "key")},
+			KnownHostsFiles:   []string{filepath.Join(dir, "known_hosts")},
+			ConnectTimeout:    2 * time.Second,
+			KeepaliveInterval: time.Second,
+			KeepaliveTimeout:  time.Second,
+			Forwards:          []config.Forward{{Direction: config.Remote, Listen: "127.0.0.1:2222", Target: "127.0.0.1:1"}},
 		},
 	}
-	writeFile(t, s.config.IdentityFile, string(privateKey))
-	writeFile(t, s.config.KnownHostsFile, knownhosts.Line([]string{s.config.Server}, hostKey.PublicKey())+"\n")
+	writeFile(t, s.opts.IdentityFiles[0], string(privateKey))
+	writeFile(t, s.opts.KnownHostsFiles[0], knownhosts.Line([]string{s.opts.Server}, hostKey.PublicKey())+"\n")
 
 	s.wg.Go(func() {
 		raw, err := listener.Accept()
@@ -281,11 +281,11 @@ func (s *testServer) startForward(ctx context.Context, conn *ssh.ServerConn, req
 // connect opens a client to the test server without starting a tunnel.
 func (s *testServer) connect(t *testing.T, ctx context.Context) *ssh.Client {
 	t.Helper()
-	clientConfig, err := newClientConfig(s.config)
+	clientConfig, err := newClientConfig(s.opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := dial(ctx, s.config.Server, clientConfig, time.Second)
+	client, err := dial(ctx, s.opts.Server, clientConfig, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func (c *capturedLog) String() string {
 // startTunnel runs the tunnel against s and waits for its first remote listener.
 func startTunnel(t *testing.T, s *testServer, logs *capturedLog) (context.CancelFunc, <-chan error, net.Listener) {
 	t.Helper()
-	cancel, result := runAsync(t, s.config)
+	cancel, result := runAsync(t, s.opts)
 	await(t, logs.ready)
 	return cancel, result, await(t, s.forwards)
 }
@@ -439,11 +439,11 @@ func eventually(t *testing.T, msg string, cond func() bool) {
 
 // runAsync starts Run in the background and returns its cancel function and
 // a channel that receives its result.
-func runAsync(t *testing.T, cfg config.Config) (context.CancelFunc, <-chan error) {
+func runAsync(t *testing.T, opts Options) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
-	go func() { result <- Run(ctx, cfg) }()
+	go func() { result <- Run(ctx, opts) }()
 	return cancel, result
 }

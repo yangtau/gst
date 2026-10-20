@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"reverse-ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
 func TestForwardsConcurrentTrafficOnAllMappings(t *testing.T) {
@@ -96,10 +96,10 @@ func TestRefusedTargetClosesOnlyThatConnection(t *testing.T) {
 		t.Fatal("refused target produced a reply")
 	}
 	eventually(t, 5*time.Second, "missing target failure log", func() bool {
-		return strings.Contains(tunnel.logs(), "target connection failed for mapping 1")
+		return strings.Contains(tunnel.logs(), "target connection failed for forward 1")
 	})
 	if err := echoRoundTrip(s.hostAddr(3000), "still working"); err != nil {
-		t.Fatalf("healthy mapping broken: %v", err)
+		t.Fatalf("healthy forward broken: %v", err)
 	}
 	if !tunnel.running() {
 		t.Fatal("tunnel exited after a target failure")
