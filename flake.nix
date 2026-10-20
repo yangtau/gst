@@ -19,14 +19,15 @@
         in
         {
           default = self.packages.${system}.gst;
-          gst = pkgs.buildGo126Module {
+          gst = (pkgs.buildGo126Module {
             pname = "gst";
             version = "unstable";
             src = pkgs.lib.cleanSource ./.;
             vendorHash = "sha256-jAL/X2MEAliPJjhu66GrxeJs+ztrx5dp+mHOErsrxnA=";
             subPackages = [ "cmd/gst" ];
 
-            nativeBuildInputs = [ pkgs.installShellFiles ];
+            nativeBuildInputs = [ pkgs.installShellFiles ]
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.darwin.cctools ];
             nativeCheckInputs = [ pkgs.openssh ];
             checkPhase = ''
               runHook preCheck
@@ -43,13 +44,20 @@
                 --fish <($out/bin/gst completion fish)
             '';
 
+            postFixup = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+              otool -l "$out/bin/gst" | grep -A 2 LC_UUID | grep 'uuid '
+            '';
+
             meta = {
               description = "Keep SSH port forwards running as user services";
               homepage = "https://github.com/yangtau/ssh-tunnel";
               mainProgram = "gst";
               platforms = systems;
             };
-          };
+          }).overrideAttrs (old: pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+            # macOS network privacy needs LC_UUID, which Go derives from its build ID.
+            ldflags = builtins.filter (flag: flag != "-buildid=") old.ldflags;
+          });
         });
 
       checks = forAllSystems (system: {

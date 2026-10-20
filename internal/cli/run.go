@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -44,17 +46,19 @@ func (a *app) runCommand() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			var notBefore time.Time
 			opts, err := a.options(ctx, t)
 			if err != nil {
 				err = errors.New("ssh config resolution failed")
 			} else {
+				if runtime.GOOS == "darwin" && logPath != "" {
+					// TN3179 / FB16131937: staying alive gives macOS time to show
+					// local network authorization; 30s is best effort, not a guarantee.
+					notBefore = time.Now().Add(30 * time.Second)
+				}
 				err = tunnel.Run(ctx, opts)
 			}
-			if err != nil && ctx.Err() == nil {
-				log.Print(err)
-				return &exitError{exitFailure}
-			}
-			return nil
+			return finishRun(ctx, err, notBefore)
 		}),
 	}
 	cmd.Flags().StringVar(&logPath, "log-file", "", "write the log to this file, rotating it at 1 MiB")

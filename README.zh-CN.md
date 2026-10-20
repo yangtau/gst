@@ -144,6 +144,7 @@ gst set myhost --cleanup-listeners=false
 
 - 每个启动的 tunnel 是一个用户级后台服务：Linux 上是 systemd 用户服务 `gst-<name>.service`，macOS 上是 launchd 代理 `local.gst.<name>`。服务由 gst 创建和删除，不需要手动管理。
 - tunnel 退出后 5 秒自动重启，没有次数限制。
+- macOS 上，后台进程失败时会立即记录错误，但可能保持存活直到连接尝试开始后满 30 秒，为“本地网络”权限提示留出显示时间。这只是尽力而为，并不保证提示一定出现；停止 tunnel 会立即中断等待。`running` 只表示进程仍在运行，不代表 tunnel 已就绪。
 - `gst list` 中的状态：`running` 正在运行；`down` 失败后正在等待重启，用 `gst logs` 和 `gst check` 排查；`stopped` 已停止。
 - 日志：Linux 上在 journald。macOS 上在 `~/Library/Logs/gst/<name>.log`，超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 tunnel 的日志最多约 2 MiB；`gst remove` 会删除它们。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
 - Linux 上，要让 tunnel 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，tunnel 在登录后启动、注销后停止。
@@ -158,6 +159,7 @@ gst set myhost --cleanup-listeners=false
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
 | 主机密钥不匹配 | 确认服务器密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
 | `-R` 端口被占用（`listener start failed`） | 通常是上一次连接在服务器上残留的会话，见下文 |
+| macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后运行 `gst restart <name>`。终端获得授权不一定代表后台服务也获得授权 |
 
 **服务器端口被残留会话占用。** 网络中断后，旧的 SSH 会话可能还占着服务器上的 `-R` 端口。建议在服务器的 sshd 配置中设置 `ClientAliveInterval 15` 和 `ClientAliveCountMax 3`，让 sshd 及时回收失联的会话。
 

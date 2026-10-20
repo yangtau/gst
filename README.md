@@ -144,6 +144,7 @@ Limitations:
 
 - Each started tunnel is a user service: a systemd user service `gst-<name>.service` on Linux, a launchd agent `local.gst.<name>` on macOS. gst creates and deletes them; you never manage them yourself.
 - A tunnel that exits restarts after 5 seconds, without a limit.
+- On macOS, a failed background process logs the error immediately but may stay alive until 30 seconds after its connection attempt began, to give the Local Network permission alert time to appear. This is best effort, not a guarantee; stopping the tunnel interrupts the wait. `running` means the process is alive, not that the tunnel is ready.
 - Status in `gst list`: `running`; `down` means it failed and is waiting to restart, so check `gst logs` and `gst check`; `stopped`.
 - Logs go to journald on Linux. On macOS they go to `~/Library/Logs/gst/<name>.log`; at 1 MiB gst moves it to `<name>.log.1`, replacing the older one, so a tunnel keeps at most about 2 MiB of logs. `gst remove` deletes them. For privacy, the log records no server addresses, users, key paths, or forward addresses. Forwards appear by number (such as `forward 2`), matching `gst forward list`.
 - On Linux, to keep tunnels running after you log out and start them at boot, run `loginctl enable-linger "$USER"`; gst tells you when lingering is off. On macOS, tunnels start at login and stop at logout.
@@ -158,6 +159,7 @@ Start with `gst check <name>`. It checks each step and suggests a fix for the on
 | `no host key for ...` | Connect once with `ssh <host>` to record the host key |
 | Host key mismatch | Once you have confirmed the server's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
 | A `-R` port is in use (`listener start failed`) | Usually a stale session from an earlier connection still holds it on the server; see below |
+| macOS blocks access to a local network server | Allow gst in the Local Network alert or in System Settings → Privacy & Security → Local Network, then run `gst restart <name>`. Authorization for your terminal does not necessarily authorize the background service |
 
 **Stale sessions holding server ports.** After a network failure, the old SSH session may keep a `-R` port on the server. Set `ClientAliveInterval 15` and `ClientAliveCountMax 3` in the server's sshd configuration so that sshd closes dead sessions quickly.
 
