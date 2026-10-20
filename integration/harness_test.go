@@ -8,6 +8,7 @@ package integration
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -36,39 +38,29 @@ import (
 )
 
 // forwardPorts are the container ports tests may use as remote listen ports.
-// Each is published on a random loopback port of the host.
+// Docker and Podman publish these on random loopback ports; Apple's
+// container exposes them at each container's IP address.
 var forwardPorts = []int{2222, 3000}
 
 var (
-	containerRuntime string // podman or docker
+	containerRuntime string // podman, docker, or Apple's container
 	sshdImage        string
 	tunnelBinary     string
+	testDir          string
 )
 
 func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
-	os.Setenv("PODMAN_IGNORE_CGROUPSV1_WARNING", "1")
-	dir, err := os.MkdirTemp("", "ssh-tunnel-integration-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	defer os.RemoveAll(dir)
-
-	if err := setup(dir); err != nil {
-		fmt.Fprintln(os.Stderr, "integration setup:", err)
-		return 1
-	}
-	return m.Run()
-}
-
-func setup(dir string) error {
+func setup(ctx context.Context, dir string) error {
 	containerRuntime = os.Getenv("CONTAINER_RUNTIME")
 	if containerRuntime == "" {
-		for _, candidate := range []string{"podman", "docker"} {
+		candidates := []string{"podman", "docker"}
+		if goruntime.GOOS == "darwin" {
+			candidates = append([]string{"container"}, candidates...)
+		}
+		for _, candidate := range candidates {
 			if _, err := exec.LookPath(candidate); err == nil {
 				containerRuntime = candidate
 				break
@@ -76,44 +68,44 @@ func setup(dir string) error {
 		}
 	}
 	if containerRuntime == "" {
-		return errors.New("no container runtime found; install podman or docker, or set CONTAINER_RUNTIME")
+		return errors.New("no container runtime found; install podman, docker, or container, or set CONTAINER_RUNTIME")
 	}
 
+	if err := requireImage(); err != nil {
+		return err
+	}
 	tunnelBinary = filepath.Join(dir, "gst")
-	if out, err := exec.Command("go", "build", "-o", tunnelBinary, "../cmd/gst").CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", tunnelBinary, "../cmd/gst")
+	cmd.Env = append(os.Environ(), "TMPDIR="+dir, "GOTMPDIR="+dir, "GOCACHE="+filepath.Join(dir, "go-cache"), "GOMODCACHE="+filepath.Join(dir, "go-mod"), "GOFLAGS=-mod=readonly -modcacherw", "GOTOOLCHAIN=local")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("build tunnel binary: %w\n%s", err, out)
 	}
-	return ensureImage()
+	return nil
 }
 
-// ensureImage builds the sshd image unless one built from the same inputs
-// already exists, so repeated runs skip the build.
-func ensureImage() error {
+// The image is a prerequisite: building it here would alter shared builder
+// state and image caches outside the test directory.
+func requireImage() error {
 	baseImage := os.Getenv("IT_BASE_IMAGE")
 	tag, err := contentHash(baseImage, "sshd/Containerfile", "sshd/sshd_config")
 	if err != nil {
 		return err
 	}
 	sshdImage = "localhost/ssh-tunnel-sshd:" + tag
-	if _, err := runtime(nil, "image", "inspect", sshdImage); err == nil {
+	if _, err := runtime("image", "inspect", sshdImage); err == nil {
 		return nil
 	}
-
-	args := []string{"build"}
-	args = append(args, strings.Fields(os.Getenv("IT_BUILD_FLAGS"))...)
+	args := []string{containerRuntime, "build"}
 	if baseImage != "" {
 		args = append(args, "--build-arg", "BASE_IMAGE="+baseImage)
 	}
 	if mirror := os.Getenv("IT_APT_MIRROR"); mirror != "" {
 		args = append(args, "--build-arg", "APT_MIRROR="+mirror)
 	}
-	args = append(args, "-t", sshdImage, "sshd")
-	cmd := exec.Command(containerRuntime, args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build sshd image: %w", err)
-	}
-	return nil
+	args = append(args, "-f", "sshd/Containerfile", "-t", sshdImage, "sshd")
+	return fmt.Errorf("sshd image is unavailable; prepare it separately from integration/: %s", strings.Join(args, " "))
 }
 
 func contentHash(extra string, files ...string) (string, error) {
@@ -130,9 +122,10 @@ func contentHash(extra string, files ...string) (string, error) {
 }
 
 // runtime runs the container CLI and returns its standard output.
-func runtime(stdin io.Reader, args ...string) (string, error) {
-	cmd := exec.Command(containerRuntime, args...)
-	cmd.Stdin = stdin
+func runtime(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, containerRuntime, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -156,23 +149,41 @@ func startSSHServer(t *testing.T) *sshServer {
 	t.Helper()
 	// SYS_PTRACE lets root inspect the sockets of non-dumpable sshd session
 	// processes. It does not affect the unprivileged login user.
-	args := []string{"run", "-d", "--rm", "--cap-add", "SYS_PTRACE", "-p", "127.0.0.1::22"}
+	args := []string{"run", "-d", "--cap-add", "SYS_PTRACE", "-p", "127.0.0.1::22"}
 	for _, port := range forwardPorts {
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", port))
 	}
-	args = append(args, sshdImage)
+	if filepath.Base(containerRuntime) == "container" {
+		// Each container has its own VM and an IP reachable from macOS.
+		args = []string{"run", "-d", "--memory", "256M", "--cpus", "1"}
+	}
+	marker, err := os.CreateTemp(filepath.Join(testDir, "containers"), "gst-it-"+filepath.Base(testDir)+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker.Close()
+	s := &sshServer{t: t, container: filepath.Base(marker.Name())}
+	t.Cleanup(func() {
+		if err := removeContainer(s.container); err != nil {
+			t.Error(err)
+		}
+	})
+	args = append(args, "--name", s.container, sshdImage)
 	// The runtime picks a free host port and binds it later, so another
 	// process can take it in between. Retrying picks a new port.
-	out, err := runtime(nil, args...)
+	_, err = runtime(args...)
 	for attempt := 1; err != nil && strings.Contains(strings.ToLower(err.Error()), "address already in use") && attempt < 5; attempt++ {
-		out, err = runtime(nil, args...)
+		if err := removeContainer(s.container); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker.Name(), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err = runtime(args...)
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &sshServer{t: t, container: strings.TrimSpace(out)}
-	t.Cleanup(func() { runtime(nil, "kill", s.container) })
-
 	s.addr = s.hostAddr(22)
 	s.waitForBanner()
 	s.installIdentity()
@@ -180,10 +191,30 @@ func startSSHServer(t *testing.T) *sshServer {
 	return s
 }
 
-// hostAddr returns the host address published for a container port.
+// hostAddr returns a container port's address reachable from the host.
 func (s *sshServer) hostAddr(containerPort int) string {
 	s.t.Helper()
-	out, err := runtime(nil, "port", s.container, fmt.Sprintf("%d/tcp", containerPort))
+	if filepath.Base(containerRuntime) == "container" {
+		out, err := runtime("inspect", s.container)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		var containers []struct {
+			Networks []struct{ Address string }
+		}
+		if err := json.Unmarshal([]byte(out), &containers); err != nil {
+			s.t.Fatal(err)
+		}
+		if len(containers) != 1 || len(containers[0].Networks) == 0 {
+			s.t.Fatal("container has no network address")
+		}
+		ip, _, err := net.ParseCIDR(containers[0].Networks[0].Address)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		return net.JoinHostPort(ip.String(), fmt.Sprint(containerPort))
+	}
+	out, err := runtime("port", s.container, fmt.Sprintf("%d/tcp", containerPort))
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -211,8 +242,8 @@ func (s *sshServer) installIdentity() {
 	s.t.Helper()
 	var signer ssh.Signer
 	s.identity, signer = newIdentity(s.t)
-	const install = `f=/home/tunnel/.ssh/authorized_keys; cat > $f && chown tunnel:tunnel $f && chmod 600 $f`
-	if _, err := runtime(bytes.NewReader(ssh.MarshalAuthorizedKey(signer.PublicKey())), "exec", "-i", s.container, "sh", "-c", install); err != nil {
+	const install = `f=/home/tunnel/.ssh/authorized_keys; printf '%s' "$1" > "$f" && chown tunnel:tunnel "$f" && chmod 600 "$f"`
+	if _, err := s.exec("root", "sh", "-c", install, "sh", string(ssh.MarshalAuthorizedKey(signer.PublicKey()))); err != nil {
 		s.t.Fatal(err)
 	}
 }
@@ -247,13 +278,13 @@ func (s *sshServer) config(cleanup bool, forwards ...config.Forward) config.Tunn
 }
 
 func (s *sshServer) exec(user string, args ...string) (string, error) {
-	return runtime(nil, append([]string{"exec", "-u", user, s.container}, args...)...)
+	return runtime(append([]string{"exec", "-u", user, s.container}, args...)...)
 }
 
 // startListener occupies a container port with a plain TCP listener owned by user.
 func (s *sshServer) startListener(user string, port int) {
 	s.t.Helper()
-	if _, err := runtime(nil, "exec", "-d", "-u", user, s.container, "nc", "-lk", fmt.Sprint(port)); err != nil {
+	if _, err := s.exec(user, "sh", "-c", `nc -lk "$1" </dev/null >/dev/null 2>&1 &`, "sh", fmt.Sprint(port)); err != nil {
 		s.t.Fatal(err)
 	}
 	eventually(s.t, 5*time.Second, "listener did not start", func() bool {
@@ -291,7 +322,7 @@ func (s *sshServer) signalSessions(sig string) {
 // kill stops the whole container abruptly.
 func (s *sshServer) kill() {
 	s.t.Helper()
-	if _, err := runtime(nil, "kill", s.container); err != nil {
+	if _, err := runtime("kill", s.container); err != nil {
 		s.t.Fatal(err)
 	}
 }
