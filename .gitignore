@@ -1,0 +1,5 @@
+/bin/
+/reverse-ssh-tunnel
+/integration/local.mk
+/tunnel.json
+/.envrc

@@ -1,0 +1,10 @@
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+AllowTcpForwarding yes
+GatewayPorts clientspecified
+# Reap sessions whose client stopped answering, as a production server should.
+ClientAliveInterval 1
+ClientAliveCountMax 2
+LogLevel VERBOSE

@@ -1,0 +1,26 @@
+# Disposable OpenSSH server for the integration tests in this directory.
+ARG BASE_IMAGE=docker.io/library/debian:bookworm-slim
+FROM ${BASE_IMAGE}
+
+# Optional Debian mirror base URL, e.g. http://mirrors.example.com
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|http://deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server lsof procps netcat-openbsd \
+ && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+ && mkdir -p /run/sshd
+
+# "tunnel" is the login user; "other" owns listeners that cleanup must spare.
+# usermod -p '*' unlocks the accounts for public-key login without a password.
+RUN for user in tunnel other; do \
+      useradd --create-home --shell /bin/bash "$user" && usermod -p '*' "$user"; \
+    done \
+ && install -d -m 700 -o tunnel -g tunnel /home/tunnel/.ssh
+
+COPY sshd_config /etc/ssh/sshd_config.d/tunnel.conf
+
+EXPOSE 22
+# A fresh host key per container; ed25519 only, because RSA generation is slow.
+CMD ["sh", "-c", "ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key && exec /usr/sbin/sshd -D -e"]
