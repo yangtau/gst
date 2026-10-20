@@ -76,7 +76,7 @@ func TestCheckPassesAgainstServer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	writeFile(t, path, data)
 
-	cmd := exec.Command(tunnelBinary, "--config", path, "tunnel", "check", "it", "--json")
+	cmd := exec.Command(tunnelBinary, "--config", path, "check", "it", "--json")
 	cmd.Env = append(os.Environ(), sshconfig.ConfigFileEnv+"=/dev/null")
 	out, err := cmd.Output()
 	var result struct{ OK bool }

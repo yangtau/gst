@@ -49,17 +49,20 @@ func checkIdentities(opts Options) Step {
 		case id.signer != nil:
 			usable = append(usable, id.path)
 		case id.problem != "missing" || len(opts.IdentityFiles) == 1:
-			skipped = append(skipped, id.path+" is "+id.problem)
+			skipped = append(skipped, id.path+" ("+id.problem+")")
 		}
 	}
 	step.OK = len(usable) > 0
-	if step.OK {
+	switch {
+	case step.OK:
 		step.Detail = "using " + strings.Join(usable, ", ")
-	} else if len(skipped) == 0 {
+		if len(skipped) > 0 {
+			step.Detail += "; skipped " + strings.Join(skipped, ", ")
+		}
+	case len(skipped) > 0:
+		step.Detail = "no usable key among " + strings.Join(skipped, ", ")
+	default:
 		step.Detail = "none of the identity files exist: " + strings.Join(opts.IdentityFiles, ", ")
-	}
-	if len(skipped) > 0 {
-		step.Detail = strings.TrimPrefix(step.Detail+"; skipped "+strings.Join(skipped, ", "), "; ")
 	}
 	if !step.OK {
 		step.Hint = "gst needs a private key without a passphrase. Create one with " +

@@ -20,7 +20,7 @@ func (a *app) runCommand() *cobra.Command {
 		Short:  "Run a tunnel in the foreground until it fails or is interrupted",
 		Long:   "Run a tunnel in the foreground until it fails or receives SIGINT or SIGTERM. The background service uses this command; do not run it while the tunnel is started.",
 		Hidden: true,
-		Args:   cobra.ExactArgs(1),
+		Args:   a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()
 			if err != nil {

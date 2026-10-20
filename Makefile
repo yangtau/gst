@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-# Optional overrides for the integration tests; see README.
+# Optional overrides for the integration tests; see integration/README.md.
 -include integration/local.mk
 export CONTAINER_RUNTIME IT_BASE_IMAGE IT_APT_MIRROR IT_BUILD_FLAGS
 

@@ -21,16 +21,18 @@ type settingsFlags struct {
 }
 
 func (s *settingsFlags) register(fs *pflag.FlagSet, clearable bool) {
-	suffix := ""
+	var emptyClears, zeroClears, offSuffix string
 	if clearable {
-		suffix = "; an empty value or 0 clears it"
+		emptyClears = "; '' goes back to the default"
+		zeroClears = "; 0 goes back to the default"
+		offSuffix = "; turn off with --cleanup-listeners=false"
 	}
-	fs.StringVar(&s.identity, "identity", "", "private key file without a passphrase (default: IdentityFile from ssh config)"+suffix)
-	fs.StringVar(&s.knownHosts, "known-hosts", "", "known_hosts file (default: UserKnownHostsFile and GlobalKnownHostsFile from ssh config)"+suffix)
-	fs.DurationVar(&s.connectTimeout, "connect-timeout", 0, "timeout for connecting and logging in, in whole seconds (default: ConnectTimeout from ssh config, else 15s)"+suffix)
-	fs.DurationVar(&s.keepaliveInterval, "keepalive-interval", 0, "time between keepalive probes, in whole seconds (default: ServerAliveInterval from ssh config, else 15s)"+suffix)
-	fs.Int64Var(&s.keepaliveCount, "keepalive-count", 0, "give up after a probe stays unanswered for this many intervals (default: ServerAliveCountMax from ssh config, else 3)"+suffix)
-	fs.BoolVar(&s.cleanup, "cleanup-listeners", false, "before listening, kill the login user's processes that listen on the server ports of -R forwards; only for ports dedicated to this tunnel")
+	fs.StringVar(&s.identity, "identity", "", "private key file without a passphrase (default: IdentityFile from ssh config)"+emptyClears)
+	fs.StringVar(&s.knownHosts, "known-hosts", "", "known_hosts file (default: UserKnownHostsFile and GlobalKnownHostsFile from ssh config)"+emptyClears)
+	fs.DurationVar(&s.connectTimeout, "connect-timeout", 0, "timeout for connecting and logging in, in whole seconds (default: ConnectTimeout from ssh config, else 15s)"+zeroClears)
+	fs.DurationVar(&s.keepaliveInterval, "keepalive-interval", 0, "time between keepalive probes, in whole seconds (default: ServerAliveInterval from ssh config, else 15s)"+zeroClears)
+	fs.Int64Var(&s.keepaliveCount, "keepalive-count", 0, "give up after a probe stays unanswered for this many intervals (default: ServerAliveCountMax from ssh config, else 3)"+zeroClears)
+	fs.BoolVar(&s.cleanup, "cleanup-listeners", false, "before listening, kill the login user's processes that listen on the server ports of -R forwards; only for ports dedicated to this tunnel"+offSuffix)
 }
 
 // apply sets the flags given on the command line and reports whether any were.
@@ -79,7 +81,7 @@ func (s *settingsFlags) apply(cmd *cobra.Command, t *config.Tunnel) (bool, error
 	if flags.Changed("keepalive-count") {
 		changed = true
 		if s.keepaliveCount < 0 || s.keepaliveCount > config.MaxKeepaliveCount {
-			return false, usage("--keepalive-count must be between 1 and %d", config.MaxKeepaliveCount)
+			return false, usage("--keepalive-count must be between 1 and %d, or 0 for the default", config.MaxKeepaliveCount)
 		}
 		t.KeepaliveCountMax = s.keepaliveCount
 	}

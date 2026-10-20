@@ -59,9 +59,9 @@ func loadIdentities(paths []string) []identity {
 			id.signer, err = ssh.ParsePrivateKey(key)
 			switch {
 			case errors.As(err, &missing):
-				id.problem = "protected by a passphrase"
+				id.problem = "passphrase-protected"
 			case err != nil:
-				id.problem = "not a supported private key"
+				id.problem = "unsupported key"
 			}
 		}
 		ids = append(ids, id)

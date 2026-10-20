@@ -124,7 +124,8 @@ func (l *launchd) Status(name string) (Status, error) {
 func (l *launchd) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
 	path := l.logPath(name)
 	if !follow && !fileExists(path) {
-		return nil
+		_, err := fmt.Fprintf(w, "No log for tunnel %s yet.\n", name)
+		return err
 	}
 	args := []string{"-n", strconv.Itoa(lines)}
 	if follow {

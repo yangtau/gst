@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
@@ -67,17 +69,28 @@ func (a *app) execute(ctx context.Context, args []string) int {
 		return exit.code
 	}
 	fmt.Fprintf(a.stderr, "error: %v\n", err)
+	// Anything but a failure is an argument or flag error, from cobra or usage().
+	var failed *failure
+	isUsage := !errors.As(err, &failed)
+	if isUsage {
+		fmt.Fprintf(a.stderr, "usage: %s\n", useLine(cmd))
+	}
 	var hinted *hintError
 	if errors.As(err, &hinted) {
 		fmt.Fprintf(a.stderr, "hint: %s\n", hinted.hint)
 	}
-	var failed *failure
-	if errors.As(err, &failed) {
+	if !isUsage {
 		return exitFailure
 	}
-	// Anything else is an argument or flag error, from cobra or usage().
-	fmt.Fprintf(a.stderr, "Run '%s --help' for usage.\n", cmd.CommandPath())
+	fmt.Fprintf(a.stderr, "Run '%s --help' for more information.\n", cmd.CommandPath())
 	return exitUsage
+}
+
+func useLine(cmd *cobra.Command) string {
+	if cmd.HasAvailableSubCommands() {
+		return cmd.CommandPath() + " <command>"
+	}
+	return cmd.UseLine()
 }
 
 // usageError marks invalid arguments; the command exits with status 2.
@@ -139,16 +152,20 @@ func (a *app) update(fn func(*config.File) error) error {
 	return config.Update(path, fn)
 }
 
-func notFound(name string) error {
-	return withHint(fmt.Errorf("no tunnel named %s", name), "list tunnels with `gst tunnel list`")
-}
-
 func lookup(f *config.File, name string) (*config.Tunnel, error) {
 	t := f.Tunnels[name]
 	if t == nil {
-		return nil, notFound(name)
+		return nil, namesHint(f, fmt.Errorf("no tunnel named %s", name))
 	}
 	return t, nil
+}
+
+// namesHint adds f's tunnel names to err.
+func namesHint(f *config.File, err error) error {
+	if len(f.Tunnels) == 0 {
+		return withHint(err, "there are no tunnels yet; add one with `gst add <name>`")
+	}
+	return withHint(err, "tunnels: "+strings.Join(sortedNames(f), ", "))
 }
 
 func sortedNames(f *config.File) []string {
@@ -278,10 +295,10 @@ func (a *app) applyChange(name string, noRestart bool) error {
 	case a.status(name) == service.Stopped:
 		fmt.Fprintf(a.stdout, "Tunnel %s is stopped; the change applies when you start it.\n", name)
 	case noRestart:
-		fmt.Fprintf(a.stdout, "Restart the tunnel to apply the change: gst tunnel restart %s\n", name)
+		fmt.Fprintf(a.stdout, "Restart the tunnel to apply the change: gst restart %s\n", name)
 	default:
 		if err := a.startService(name); err != nil {
-			return withHint(fmt.Errorf("restart tunnel %s: %w", name, err), "retry with `gst tunnel restart "+name+"`")
+			return withHint(fmt.Errorf("restart tunnel %s: %w", name, err), "retry with `gst restart "+name+"`")
 		}
 		fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)
 	}

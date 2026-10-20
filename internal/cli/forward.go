@@ -9,11 +9,9 @@ import (
 )
 
 func (a *app) forwardCommand() *cobra.Command {
-	return group("forward", "Add, remove, and list a tunnel's forwards",
-		a.forwardAddCommand(),
-		a.forwardRemoveCommand(),
-		a.forwardListCommand(),
-	)
+	cmd := asGroup(&cobra.Command{Use: "forward", Short: "Add, remove, and list a tunnel's forwards"})
+	cmd.AddCommand(a.forwardAddCommand(), a.forwardRemoveCommand(), a.forwardListCommand())
+	return cmd
 }
 
 func (a *app) forwardAddCommand() *cobra.Command {
@@ -39,7 +37,7 @@ restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward add myhost -R 2222:localhost:22
   gst forward add myhost -L 15432:127.0.0.1:5432 -L 16379:127.0.0.1:6379
   gst forward add myhost -R '*:8080:localhost:3000'`,
-		Args:              cobra.ExactArgs(1),
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -103,7 +101,7 @@ restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward remove myhost -R 2222              # the -R forward listening on 127.0.0.1:2222
   gst forward remove myhost -R 0.0.0.0:2222
   gst forward remove myhost -L 127.0.0.1:15432:127.0.0.1:5432`,
-		Args:              cobra.ExactArgs(1),
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -171,7 +169,7 @@ func (a *app) forwardListCommand() *cobra.Command {
 		Long: `List a tunnel's forwards as specs that gst forward add and remove accept.
 The number of a forward is how the tunnel's log refers to it.`,
 		Example:           "  gst forward list myhost",
-		Args:              cobra.ExactArgs(1),
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()

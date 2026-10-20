@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"syscall"
 
@@ -15,28 +16,25 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
-func (a *app) tunnelCommand() *cobra.Command {
-	return group("tunnel", "Add, start, stop, inspect, and remove tunnels",
-		a.tunnelAddCommand(),
-		a.tunnelSetCommand(),
-		a.lifecycleCommand("start", "Start tunnels in the background",
-			"Start stopped tunnels as background services. Starting a running tunnel does nothing.",
-			"  gst tunnel start myhost\n  gst tunnel start --all", a.startTunnel),
-		a.lifecycleCommand("stop", "Stop tunnels and remove their background services",
-			"Stop tunnels and remove their background services, so they no longer start at login. The tunnels stay configured; start them again with gst tunnel start.",
-			"  gst tunnel stop myhost\n  gst tunnel stop --all", a.stopTunnel),
-		a.lifecycleCommand("restart", "Restart running tunnels",
-			"Restart started tunnels, for example after upgrading gst or changing ~/.ssh/config.",
-			"  gst tunnel restart myhost\n  gst tunnel restart --all", a.restartTunnel),
-		a.tunnelRemoveCommand(),
-		a.tunnelListCommand(),
-		a.tunnelShowCommand(),
-		a.tunnelLogsCommand(),
-		a.tunnelCheckCommand(),
-	)
+func (a *app) startCommand() *cobra.Command {
+	return a.lifecycleCommand("start", "Start tunnels in the background",
+		"Start stopped tunnels in the background. Starting a running tunnel does\nnothing.",
+		"  gst start myhost\n  gst start --all", a.startTunnel)
 }
 
-func (a *app) tunnelAddCommand() *cobra.Command {
+func (a *app) stopCommand() *cobra.Command {
+	return a.lifecycleCommand("stop", "Stop tunnels but keep them configured",
+		"Stop tunnels, so they no longer run in the background or start at login.\nThe tunnels stay configured; start them again with gst start.",
+		"  gst stop myhost\n  gst stop --all", a.stopTunnel)
+}
+
+func (a *app) restartCommand() *cobra.Command {
+	return a.lifecycleCommand("restart", "Restart running tunnels",
+		"Restart started tunnels, for example after upgrading gst or changing\n~/.ssh/config.",
+		"  gst restart myhost\n  gst restart --all", a.restartTunnel)
+}
+
+func (a *app) addCommand() *cobra.Command {
 	var settings settingsFlags
 	var forwards forwardFlags
 	cmd := &cobra.Command{
@@ -59,14 +57,14 @@ keys. Forwards are optional and can be added later with gst forward add.
 As in ssh, a forward without bind_address listens on loopback only;
 use "*" or an empty bind_address for all interfaces.`,
 		Example: `  # Use the "myhost" entry of ~/.ssh/config; reach this machine's SSH from the server's port 2222
-  gst tunnel add myhost -R 2222:localhost:22
+  gst add myhost -R 2222:localhost:22
 
   # Reach a database next to the server on local port 15432
-  gst tunnel add db admin@db.example.com -L 15432:127.0.0.1:5432
+  gst add db admin@db.example.com -L 15432:127.0.0.1:5432
 
   # Expose a local web app on all interfaces of the server
-  gst tunnel add web ssh://deploy@203.0.113.7:2200 -R '*:8080:localhost:3000'`,
-		Args: cobra.RangeArgs(1, 2),
+  gst add web ssh://deploy@203.0.113.7:2200 -R '*:8080:localhost:3000'`,
+		Args: a.args(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if err := config.ValidateName(name); err != nil {
@@ -100,7 +98,7 @@ use "*" or an empty bind_address for all interfaces.`,
 			err = a.update(func(f *config.File) error {
 				if f.Tunnels[name] != nil {
 					return withHint(fmt.Errorf("tunnel %s already exists", name),
-						fmt.Sprintf("change it with `gst tunnel set %s` or `gst forward add %s`, or remove it with `gst tunnel remove %s`", name, name, name))
+						fmt.Sprintf("change it with `gst set %s` or `gst forward add %s`, or remove it with `gst remove %s`", name, name, name))
 				}
 				f.Tunnels[name] = t
 				return nil
@@ -109,7 +107,7 @@ use "*" or an empty bind_address for all interfaces.`,
 				return err
 			}
 			if err := a.startService(name); err != nil {
-				return withHint(fmt.Errorf("tunnel %s was added but did not start: %w", name, err), "retry with `gst tunnel start "+name+"`")
+				return withHint(fmt.Errorf("tunnel %s was added but did not start: %w", name, err), "retry with `gst start "+name+"`")
 			}
 			fmt.Fprintf(a.stdout, "Added tunnel %s and started it in the background.\n", name)
 			for _, fwd := range t.Forwards {
@@ -123,7 +121,7 @@ use "*" or an empty bind_address for all interfaces.`,
 	return cmd
 }
 
-func (a *app) tunnelSetCommand() *cobra.Command {
+func (a *app) setCommand() *cobra.Command {
 	var settings settingsFlags
 	var destination string
 	var noRestart bool
@@ -134,18 +132,20 @@ func (a *app) tunnelSetCommand() *cobra.Command {
 configuration. Only the given flags change. A running tunnel restarts to
 apply the change unless --no-restart is given. Use gst forward to change
 forwards.`,
-		Example: `  gst tunnel set myhost --identity ~/.ssh/gst_ed25519
-  gst tunnel set myhost --identity ''           # use IdentityFile from ssh config again
-  gst tunnel set myhost --destination user@myhost.example.com --keepalive-interval 30s`,
-		Args:              cobra.ExactArgs(1),
+		Example: `  gst set myhost --identity ~/.ssh/gst_ed25519
+  gst set myhost --identity ''           # use IdentityFile from ssh config again
+  gst set myhost --destination user@myhost.example.com --keepalive-interval 30s`,
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			unchanged := false
 			err := a.update(func(f *config.File) error {
 				t, err := lookup(f, name)
 				if err != nil {
 					return err
 				}
+				before := *t
 				changed, err := settings.apply(cmd, t)
 				if err != nil {
 					return err
@@ -159,10 +159,18 @@ forwards.`,
 				if !changed {
 					return usage("nothing to change; give at least one setting flag")
 				}
+				if reflect.DeepEqual(before, *t) {
+					unchanged = true
+					return nil
+				}
 				return a.preflight(cmd.Context(), t)
 			})
 			if err != nil {
 				return err
+			}
+			if unchanged {
+				fmt.Fprintf(a.stdout, "Tunnel %s already has these settings; nothing changed.\n", name)
+				return nil
 			}
 			fmt.Fprintf(a.stdout, "Updated tunnel %s.\n", name)
 			return a.applyChange(name, noRestart)
@@ -185,8 +193,11 @@ func (a *app) lifecycleCommand(use, short, long, example string, action func(cmd
 		Example:           example,
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			if all == (len(args) > 0) {
-				return usage("give tunnel names or --all")
+			if all && len(args) > 0 {
+				return usage("give tunnel names or --all, not both")
+			}
+			if !all && len(args) == 0 {
+				return a.tunnelsHint(usage("missing argument <name> or --all"))
 			}
 			f, err := a.load()
 			if err != nil {
@@ -257,7 +268,7 @@ func (a *app) restartTunnel(cmd *cobra.Command, name string, t *config.Tunnel, a
 		if all {
 			return nil
 		}
-		return withHint(fmt.Errorf("tunnel %s is stopped", name), "start it with `gst tunnel start "+name+"`")
+		return withHint(fmt.Errorf("tunnel %s is stopped", name), "start it with `gst start "+name+"`")
 	}
 	if err := a.preflight(cmd.Context(), t); err != nil {
 		return fmt.Errorf("restart %s: %w", name, err)
@@ -269,13 +280,14 @@ func (a *app) restartTunnel(cmd *cobra.Command, name string, t *config.Tunnel, a
 	return nil
 }
 
-func (a *app) tunnelRemoveCommand() *cobra.Command {
+func (a *app) removeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "remove <name>...",
 		Aliases:           []string{"rm"},
 		Short:             "Stop tunnels and delete them",
-		Example:           "  gst tunnel remove myhost",
-		Args:              cobra.MinimumNArgs(1),
+		Long:              "Stop tunnels and delete them, including their forwards and settings.",
+		Example:           "  gst remove myhost\n  gst remove myhost db",
+		Args:              a.args(1, -1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()
@@ -309,15 +321,15 @@ func (a *app) tunnelRemoveCommand() *cobra.Command {
 	}
 }
 
-func (a *app) tunnelListCommand() *cobra.Command {
+func (a *app) listCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List tunnels and their status",
-		Long: `List tunnels and their status: running, down (the service is retrying
-after a failure; see gst tunnel logs), or stopped.`,
-		Args: cobra.NoArgs,
+		Long: `List tunnels and their status: running, down (failed and retrying;
+see gst logs and gst check), or stopped.`,
+		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()
 			if err != nil {
@@ -331,7 +343,7 @@ after a failure; see gst tunnel logs), or stopped.`,
 				return writeJSON(a.stdout, views)
 			}
 			if len(views) == 0 {
-				fmt.Fprintln(a.stdout, "No tunnels. Add one with: gst tunnel add <name> [destination]")
+				fmt.Fprintln(a.stdout, "No tunnels. Add one with: gst add <name> [destination]")
 				return nil
 			}
 			w := table(a.stdout)
@@ -350,14 +362,14 @@ after a failure; see gst tunnel logs), or stopped.`,
 	return cmd
 }
 
-func (a *app) tunnelShowCommand() *cobra.Command {
+func (a *app) showCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show <name>",
-		Short: "Show a tunnel, including what ssh resolves its destination to",
-		Example: `  gst tunnel show myhost
-  gst tunnel show myhost --json`,
-		Args:              cobra.ExactArgs(1),
+		Short: "Show a tunnel's settings and resolved destination",
+		Example: `  gst show myhost
+  gst show myhost --json`,
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -385,18 +397,18 @@ func (a *app) tunnelShowCommand() *cobra.Command {
 	return cmd
 }
 
-func (a *app) tunnelLogsCommand() *cobra.Command {
+func (a *app) logsCommand() *cobra.Command {
 	var follow bool
 	var lines int
 	cmd := &cobra.Command{
 		Use:   "logs <name>",
 		Short: "Print a tunnel's log",
 		Long: `Print the last lines of a tunnel's log. The log records connection
-failures and reconnects but, for privacy, no addresses; run gst tunnel
-check for details.`,
-		Example: `  gst tunnel logs myhost
-  gst tunnel logs myhost -f`,
-		Args:              cobra.ExactArgs(1),
+failures and reconnects but, for privacy, no addresses; run gst check
+for details.`,
+		Example: `  gst logs myhost
+  gst logs myhost -f`,
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -424,7 +436,7 @@ check for details.`,
 	return cmd
 }
 
-func (a *app) tunnelCheckCommand() *cobra.Command {
+func (a *app) checkCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "check <name>",
@@ -433,8 +445,8 @@ func (a *app) tunnelCheckCommand() *cobra.Command {
 with ssh, an identity is usable, known_hosts records the server, the
 server is reachable, and the login succeeds. Each failure comes with a
 hint. Exit status is 1 if a step fails.`,
-		Example:           "  gst tunnel check myhost",
-		Args:              cobra.ExactArgs(1),
+		Example:           "  gst check myhost",
+		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()

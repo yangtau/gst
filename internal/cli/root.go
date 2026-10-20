@@ -3,65 +3,82 @@ package cli
 import (
 	"errors"
 	"runtime/debug"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 func (a *app) rootCommand() *cobra.Command {
-	root := &cobra.Command{
+	// Help lists commands in the order they are added, grouped by task.
+	cobra.EnableCommandSorting = false
+	root := asGroup(&cobra.Command{
 		Use:   "gst",
 		Short: "Keep SSH port forwards running in the background",
 		Long: `gst keeps SSH port forwards running in the background.
 
-A tunnel is a named SSH connection, resolved from your ssh configuration,
+A tunnel is a named SSH connection to a host from your ssh configuration,
 with forwards in either direction:
 
-  -R  listen on the server and connect from this machine, like ssh -R
-  -L  listen on this machine and connect from the server, like ssh -L
+  -R  listen on the server, connect from this machine (like ssh -R)
+  -L  listen on this machine, connect from the server (like ssh -L)
 
-Every started tunnel runs as a background service (a systemd user unit on
-Linux, a launchd agent on macOS) that starts at login and reconnects after
-failures. gst stores tunnels in ~/.config/gst/config.json; use gst commands
-instead of editing it.
+A started tunnel runs in the background, starts at login, and reconnects
+after failures.
 
-Commands that change tunnels print what they did. Errors go to stderr,
-often with a hint. Exit status is 0 on success, 1 when the work failed,
-and 2 for invalid arguments. Commands that report state accept --json.`,
-		Example: `  gst tunnel add myhost -R 2222:localhost:22       # start a tunnel to the ssh config host "myhost"
-  gst forward add myhost -L 15432:127.0.0.1:5432   # add a forward; the tunnel restarts
-  gst tunnel list                                  # show tunnels and their status
-  gst tunnel check myhost                          # diagnose connection problems
-  gst tunnel stop myhost                           # stop the tunnel and its service`,
+Errors go to stderr, usually with a hint. Exit status is 0 on success,
+1 when the work failed, and 2 for invalid arguments. Commands that
+report state accept --json.`,
+		Example: `  gst add myhost -R 2222:localhost:22             # tunnel to the ssh config host "myhost"
+  gst forward add myhost -L 15432:127.0.0.1:5432  # add a forward; the tunnel restarts
+  gst list                                        # tunnels and their status
+  gst check myhost                                # diagnose connection problems`,
 		Version:       version(),
 		SilenceErrors: true,
 		SilenceUsage:  true,
-	}
+	})
 	root.PersistentFlags().StringVar(&a.configFlag, "config", "", "configuration file (default: $GST_CONFIG, else ~/.config/gst/config.json)")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
-	root.AddCommand(a.tunnelCommand(), a.forwardCommand(), a.runCommand())
+	root.SetUsageTemplate(strings.NewReplacer(
+		// Groups run only to reject unknown subcommands; show one usage line.
+		"{{if .Runnable}}\n  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}\n  {{.CommandPath}} [command]{{end}}",
+		"{{if .HasAvailableSubCommands}}\n  {{.CommandPath}} <command>{{else}}\n  {{.UseLine}}{{end}}",
+		"{{.CommandPath}} [command] --help", "{{.CommandPath}} <command> --help",
+	).Replace(root.UsageTemplate()))
+
+	root.AddGroup(
+		&cobra.Group{ID: "configure", Title: "Configure tunnels:"},
+		&cobra.Group{ID: "run", Title: "Run tunnels:"},
+		&cobra.Group{ID: "inspect", Title: "Inspect tunnels:"},
+	)
+	addGroup := func(id string, cmds ...*cobra.Command) {
+		for _, cmd := range cmds {
+			cmd.GroupID = id
+			root.AddCommand(cmd)
+		}
+	}
+	addGroup("configure", a.addCommand(), a.setCommand(), a.forwardCommand(), a.removeCommand())
+	addGroup("run", a.startCommand(), a.stopCommand(), a.restartCommand())
+	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand())
+	root.AddCommand(a.runCommand())
 	return root
 }
 
-// group returns a command that only holds subcommands. Unlike cobra's
-// default, an unknown subcommand is an error rather than a help page.
-func group(use, short string, subcommands ...*cobra.Command) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:                        use,
-		Short:                      short,
-		Args:                       cobra.ArbitraryArgs,
-		DisableFlagsInUseLine:      true,
-		SuggestionsMinimumDistance: 2,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-			if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
-				return usage("unknown command %q for %q; did you mean %q?", args[0], cmd.CommandPath(), suggestions[0])
-			}
-			return usage("unknown command %q for %q", args[0], cmd.CommandPath())
-		},
+// asGroup makes cmd, which only holds subcommands, print its help when run
+// alone. Unlike cobra's default, an unknown subcommand is an error.
+func asGroup(cmd *cobra.Command) *cobra.Command {
+	cmd.Args = cobra.ArbitraryArgs
+	cmd.DisableFlagsInUseLine = true
+	cmd.SuggestionsMinimumDistance = 2
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+			return usage("unknown command %q for %q; did you mean %s?", args[0], cmd.CommandPath(), quoteAll(suggestions, " or "))
+		}
+		return usage("unknown command %q for %q", args[0], cmd.CommandPath())
 	}
-	cmd.AddCommand(subcommands...)
 	return cmd
 }
 
@@ -80,6 +97,52 @@ func run(fn func(cmd *cobra.Command, args []string) error) func(*cobra.Command, 
 		}
 		return &failure{err}
 	}
+}
+
+// args accepts minN to maxN positional arguments, or at least minN when
+// maxN is negative, and names the missing or unexpected argument.
+func (a *app) args(minN, maxN int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < minN {
+			err := usage("missing argument %s", strings.TrimSuffix(placeholders(cmd)[len(args)], "..."))
+			if cmd.ValidArgsFunction != nil {
+				return a.tunnelsHint(err)
+			}
+			return err
+		}
+		if maxN >= 0 && len(args) > maxN {
+			return usage("unexpected argument %q", args[maxN])
+		}
+		return nil
+	}
+}
+
+// placeholders returns the <argument> names in cmd's Use line.
+func placeholders(cmd *cobra.Command) []string {
+	var names []string
+	for _, field := range strings.Fields(cmd.Use) {
+		if strings.HasPrefix(field, "<") {
+			names = append(names, field)
+		}
+	}
+	return names
+}
+
+// tunnelsHint adds the existing tunnel names to err.
+func (a *app) tunnelsHint(err error) error {
+	f, loadErr := a.load()
+	if loadErr != nil {
+		return err
+	}
+	return namesHint(f, err)
+}
+
+func quoteAll(values []string, sep string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = strconv.Quote(v)
+	}
+	return strings.Join(quoted, sep)
 }
 
 // completeTunnels completes tunnel names.

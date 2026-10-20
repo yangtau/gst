@@ -13,7 +13,7 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
-// tunnelView is a tunnel as gst tunnel list and show print it. Its JSON
+// tunnelView is a tunnel as gst list and show print it. Its JSON
 // form is part of the command line interface.
 type tunnelView struct {
 	Name                     string         `json:"name"`
