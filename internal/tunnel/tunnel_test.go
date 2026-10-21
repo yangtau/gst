@@ -157,6 +157,83 @@ func TestLocalForwarding(t *testing.T) {
 	}
 }
 
+func TestUnixSocketForwarding(t *testing.T) {
+	logs := captureLog(t)
+	s := startServer(t, serverOptions{})
+	dir := shortTempDir(t)
+	localSocket := filepath.Join(dir, "local.sock")
+	localTCP := freeAddr(t)
+	stale := filepath.Join(dir, "stale.sock")
+	ln, err := net.Listen("unix", stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+
+	s.opts.Forwards = []config.Forward{
+		{Direction: config.Local, Listen: localSocket, Target: startEchoTarget(t)},
+		{Direction: config.Local, Listen: localTCP, Target: startUnixEchoTarget(t)},
+		{Direction: config.Local, Listen: stale, Target: startUnixEchoTarget(t)},
+		{Direction: config.Remote, Listen: "/srv/remote.sock", Target: startUnixEchoTarget(t)},
+	}
+	cancel, result := runAsync(t, s.opts)
+	await(t, logs.ready)
+	remote := await(t, s.forwards)
+
+	for _, addr := range []string{localSocket, localTCP, stale, remote.Addr().String()} {
+		message := strings.Repeat("payload/", 20000)
+		if reply, err := roundTrip(addr, message); err != nil || reply != "reply:"+message {
+			t.Errorf("relay through %s failed: %v", addr, err)
+		}
+	}
+	if info, err := os.Stat(localSocket); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("local socket mode %v: %v", info.Mode(), err)
+	}
+
+	cancel()
+	if err := await(t, result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(localSocket); !os.IsNotExist(err) {
+		t.Fatal("local socket survived shutdown")
+	}
+	if strings.Contains(logs.String(), dir) {
+		t.Fatal("runtime log leaked a socket path")
+	}
+}
+
+func TestLocalSocketInUse(t *testing.T) {
+	dir := shortTempDir(t)
+	live := filepath.Join(dir, "live.sock")
+	ln, err := net.Listen("unix", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	regular := filepath.Join(dir, "file")
+	writeFile(t, regular, "keep")
+
+	for _, path := range []string{live, regular} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			s := startServer(t, serverOptions{})
+			s.opts.Forwards = []config.Forward{{Direction: config.Local, Listen: path, Target: "127.0.0.1:1"}}
+			_, result := runAsync(t, s.opts)
+			if err := await(t, result); err == nil || err.Error() != "listener start failed for forward 1" {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatal("existing file removed")
+			}
+		})
+	}
+	if c, err := net.Dial("unix", live); err != nil {
+		t.Fatal("live socket broken")
+	} else {
+		c.Close()
+	}
+}
+
 func TestListenerFailureClosesEarlierListeners(t *testing.T) {
 	busy, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -348,11 +425,12 @@ func TestCleanup(t *testing.T) {
 			s.opts.Forwards = append(s.opts.Forwards,
 				config.Forward{Direction: config.Remote, Listen: "127.0.0.1:3000", Target: "localhost:1"},
 				config.Forward{Direction: config.Local, Listen: freeAddr(t), Target: "localhost:1"},
+				config.Forward{Direction: config.Remote, Listen: "/tmp/it's here.sock", Target: "localhost:1"},
 			)
 			cancel, result := runAsync(t, s.opts)
 
 			call := await(t, s.cleanups)
-			if call.command != "bash -s -- 2222 3000" {
+			if call.command != `bash -s -- 2222 3000 '/tmp/it'\''s here.sock'` {
 				t.Fatalf("unexpected command %q", call.command)
 			}
 			if !strings.Contains(call.script, "login_uid=$(id -u)") || strings.Contains(call.script, s.opts.User) {

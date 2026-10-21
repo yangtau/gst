@@ -326,6 +326,17 @@ func TestForwards(t *testing.T) {
 		t.Fatalf("unexpected output %q", out)
 	}
 
+	if out := e.mustGst("forward", "add", "myhost", "-L", "/tmp/db.sock:/run/pg.sock", "-R", "/run/agent.sock:/tmp/agent.sock"); !strings.Contains(out, "Added -L /tmp/db.sock:/run/pg.sock") || !strings.Contains(out, "Added -R /run/agent.sock:/tmp/agent.sock") {
+		t.Fatalf("unexpected output %q", out)
+	}
+	if stderr := e.expectCode(exitUsage, "forward", "add", "myhost", "-R", "run/agent.sock:localhost:22"); !strings.Contains(stderr, "must be absolute") {
+		t.Fatalf("relative server socket accepted: %q", stderr)
+	}
+	if stderr := e.expectCode(exitFailure, "forward", "add", "myhost", "-L", "/tmp/db.sock:h:1"); !strings.Contains(stderr, "gst forward remove myhost -L /tmp/db.sock") {
+		t.Fatalf("socket conflict hint missing: %q", stderr)
+	}
+	e.mustGst("forward", "remove", "myhost", "-L", "/tmp/db.sock", "-R", "/run/agent.sock:/tmp/agent.sock")
+
 	e.mustGst("stop", "myhost")
 	e.services.calls = nil
 	out = e.mustGst("forward", "rm", "myhost", "-L", "15432")

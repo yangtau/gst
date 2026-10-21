@@ -9,6 +9,7 @@
   - `-R [bind_address:]port:host:hostport`：在服务器上监听，由本机连接 `host:hostport`。
   - `-L [bind_address:]port:host:hostport`：在本机监听，由服务器连接 `host:hostport`。
   - `-D [bind_address:]port`：在本机监听一个 SOCKS5 代理，由服务器连接客户端请求的地址。
+  - `-R` 和 `-L` 的任意一端都可以用 Unix socket 路径代替端口或 `host:hostport`。
 
 ## 安装
 
@@ -82,7 +83,7 @@ gst remove myhost  # 停止并删除
 | `gst add <name> [destination] [-R spec]... [-L spec]... [-D port]...` | 添加 tunnel 并在后台启动 |
 | `gst set <name> [flags]` | 修改目标地址或连接设置 |
 | `gst forward add <tunnel> (-R spec \| -L spec \| -D [bind:]port)...` | 添加 forward |
-| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port)...` | 删除 forward |
+| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port\|socket)...` | 删除 forward |
 | `gst forward list <tunnel>` | 列出 forward |
 | `gst remove <name>...` | 停止并删除 tunnel |
 | `gst start\|stop\|restart <name>... \| --all` | 启动、停止、重启 |
@@ -99,6 +100,12 @@ gst remove myhost  # 停止并删除
 # 目标地址不在 ssh 配置里时，直接写出来
 gst add db admin@db.example.com -L 15432:127.0.0.1:5432
 gst add web ssh://deploy@203.0.113.7:2200 -R 8080:localhost:3000
+
+# Unix socket：在本机 socket 上访问服务器的 PostgreSQL socket，
+# 在服务器的 socket 上访问本机的 ssh-agent
+gst forward add myhost -L ~/.gst/db.sock:/run/postgresql/.s.PGSQL.5432
+gst forward add myhost -R /home/user/agent.sock:"$SSH_AUTH_SOCK" --no-restart
+gst set myhost --cleanup-listeners
 
 # 在本机 1080 端口开一个 SOCKS5 代理，连接从服务器发出
 gst forward add myhost -D 1080
@@ -125,6 +132,14 @@ gst set myhost --cleanup-listeners=false
 - `host` 由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己，`-R` 中的 `localhost` 指本机。
 - 服务器上的实际监听范围还受 sshd 的 `GatewayPorts` 控制。监听所有网卡时，记得用防火墙限制访问来源。
 - sshd 的 `AllowTcpForwarding` 需要允许所用的方向：两个方向都用时设为 `yes`，只用 `-R` 时可以是 `remote`，只用 `-L` 和 `-D` 时可以是 `local`。
+
+## Unix socket
+
+- 与 ssh 一样，含 `/` 的字段是 Unix socket 路径：`-L /tmp/db.sock:127.0.0.1:5432`、`-L 15432:/run/postgresql/.s.PGSQL.5432`、`-R /home/user/agent.sock:/tmp/agent.sock`。路径中不能有 `:`。
+- 本机路径可以是相对路径或以 `~` 开头，gst 会保存为绝对路径；服务器上的路径必须是绝对路径。
+- gst 在本机创建的 socket 只有你自己能访问（权限 `0600`）。开始监听前，gst 会替换没有进程在接受连接的 socket 文件（例如崩溃后留下的）；不会替换其他文件或正在使用的 socket。
+- 服务器 sshd 的 `AllowStreamLocalForwarding` 需要允许所用的方向，默认允许。
+- **sshd 会把服务器上的 `-R` socket 文件留下**，即使 tunnel 正常停止也是如此，而且不会在已存在的文件上监听。如果不做以下任一项，`-R` socket forward 从第一次重启或重连起就会报 `listener start failed`：在服务器的 sshd 配置中设置 `StreamLocalBindUnlink yes`，或开启 `--cleanup-listeners`（见[排查问题](#排查问题)）。
 
 ## SOCKS 代理（`-D`）
 
@@ -171,11 +186,12 @@ gst set myhost --cleanup-listeners=false
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
 | 主机密钥不匹配 | 确认服务器密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
 | `-R` 端口被占用（`listener start failed`） | 通常是上一次连接在服务器上残留的会话，见下文 |
+| `-R` socket 在重启后报 `listener start failed` | 上一次会话的 socket 文件还留在服务器上；在 sshd 中设置 `StreamLocalBindUnlink yes`，或开启 `--cleanup-listeners` |
 | macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后运行 `gst restart <name>`。终端获得授权不一定代表后台服务也获得授权 |
 
 **服务器端口被残留会话占用。** 网络中断后，旧的 SSH 会话可能还占着服务器上的 `-R` 端口。建议在服务器的 sshd 配置中设置 `ClientAliveInterval 15` 和 `ClientAliveCountMax 3`，让 sshd 及时回收失联的会话。
 
-也可以开启 `--cleanup-listeners`：每次连接后、开始监听前，gst 会在服务器上终止属于登录用户、占用这些 `-R` 端口的进程。被终止的**不限于 SSH 进程**，所以只能用于专属于这个 tunnel 的端口。Linux 上残留的 sshd 会话进程无法用这种方式清理。服务器需要在 `PATH` 中提供 `bash`、`lsof`、`ps`、`id`；Linux 上还需要可读的 `/proc/net/tcp`，其他系统需要 `netstat`。
+也可以开启 `--cleanup-listeners`：每次连接后、开始监听前，gst 会在服务器上终止属于登录用户、占用这些 `-R` 端口和 socket 的进程，并删除属于登录用户、没有进程监听的 socket 文件。被终止的**不限于 SSH 进程**，所以只能用于专属于这个 tunnel 的端口和 socket。Linux 上残留的 sshd 会话进程无法用这种方式清理。服务器需要在 `PATH` 中提供 `bash`、`lsof`、`ps`、`id`；Linux 上还需要可读的 `/proc/net/tcp` 和 `/proc/net/unix`，其他系统需要 `netstat`。
 
 ## 在脚本和 agent 中使用
 

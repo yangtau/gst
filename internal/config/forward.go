@@ -4,19 +4,22 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
-// Forward relays connections accepted on Listen to Target. A Remote
+// Forward relays connections accepted on Listen to Target, each of which
+// is an IP and port or an absolute Unix socket path. A Remote
 // forward listens on the server and dials Target from this machine, like
 // "ssh -R"; a Local forward does the reverse, like "ssh -L". A Dynamic
 // forward listens on this machine as a SOCKS5 proxy and has the server
 // dial the address each client requests, like "ssh -D"; it has no Target.
 type Forward struct {
 	Direction string `json:"direction"` // Remote, Local, or Dynamic
-	Listen    string `json:"listen"`    // IP:port bound on the listening side
-	Target    string `json:"target"`    // host:port dialed from the other side
+	Listen    string `json:"listen"`    // IP:port or socket path bound on the listening side
+	Target    string `json:"target"`    // host:port or socket path dialed from the other side
 }
 
 // Forward directions.
@@ -27,7 +30,7 @@ const (
 )
 
 // ListenAddr returns the parsed Listen address; it is valid once the
-// forward has passed validation.
+// forward has passed validation and does not listen on a socket.
 func (f Forward) ListenAddr() netip.AddrPort {
 	addr, _ := parseListenAddress(f.Listen)
 	return addr
@@ -57,7 +60,13 @@ func (f Forward) Spec() string {
 // same side, treating ::ffff:a.b.c.d and a.b.c.d as equal. Local and
 // Dynamic forwards both listen on this machine.
 func (f Forward) SameListener(g Forward) bool {
-	return (f.Direction == Remote) == (g.Direction == Remote) && listenerKey(f.ListenAddr()) == listenerKey(g.ListenAddr())
+	if (f.Direction == Remote) != (g.Direction == Remote) {
+		return false
+	}
+	if IsSocket(f.Listen) || IsSocket(g.Listen) {
+		return f.Listen == g.Listen
+	}
+	return listenerKey(f.ListenAddr()) == listenerKey(g.ListenAddr())
 }
 
 func listenerKey(addr netip.AddrPort) netip.AddrPort {
@@ -65,7 +74,7 @@ func listenerKey(addr netip.AddrPort) netip.AddrPort {
 }
 
 const (
-	specSyntax        = "[bind_address:]port:host:hostport"
+	specSyntax        = "[bind_address:]port:host:hostport, where a field with \"/\" is a Unix socket path"
 	dynamicSpecSyntax = "[bind_address:]port"
 )
 
@@ -73,51 +82,118 @@ const (
 // "[bind_address:]port:host:hostport", or "[bind_address:]port" for
 // Dynamic. As in ssh, an omitted bind address means loopback, while an
 // empty one or "*" means all interfaces. IPv6 addresses use brackets.
+// Either "[bind_address:]port" or "host:hostport" can be a Unix socket
+// path instead, which as in ssh is any field containing "/". Paths on this
+// machine may be relative or start with "~" and are made absolute; paths
+// on the server must be absolute.
 func ParseForward(direction, spec string) (Forward, error) {
 	fields := splitSpec(spec)
 	if direction == Dynamic {
-		if len(fields) > 2 {
+		if len(fields) > 2 || isPath(fields[0]) {
 			return Forward{}, fmt.Errorf("invalid forward %q: want %s", spec, dynamicSpecSyntax)
 		}
 		return ParseListener(direction, spec)
 	}
-	if len(fields) == 3 {
-		fields = append([]string{"localhost"}, fields...)
+	targetFields := 2
+	if isPath(fields[len(fields)-1]) {
+		targetFields = 1
 	}
-	if len(fields) != 4 {
+	listenFields := len(fields) - targetFields
+	if listenFields < 1 || listenFields > 2 {
 		return Forward{}, fmt.Errorf("invalid forward %q: want %s", spec, specSyntax)
 	}
-	listen, err := parseListener(fields[0], fields[1])
+	listen, err := parseListenFields(direction, fields[:listenFields])
 	if err != nil {
 		return Forward{}, fmt.Errorf("invalid forward %q: %w", spec, err)
 	}
-	host := strings.TrimSuffix(strings.TrimPrefix(fields[2], "["), "]")
-	target := net.JoinHostPort(host, fields[3])
-	if !isDialAddress(target) {
-		return Forward{}, fmt.Errorf("invalid forward %q: invalid target %s", spec, target)
+	target, err := parseTargetFields(direction, fields[listenFields:])
+	if err != nil {
+		return Forward{}, fmt.Errorf("invalid forward %q: %w", spec, err)
 	}
-	return Forward{Direction: direction, Listen: listen.String(), Target: target}, nil
+	return Forward{Direction: direction, Listen: listen, Target: target}, nil
 }
 
-// ParseListener parses the listener of a forward, "[bind_address:]port",
-// with the same bind address rules as ParseForward. A full specification
-// is accepted too; its target is then returned in the Forward.
+// ParseListener parses the listener of a forward, "[bind_address:]port"
+// or a socket path, with the same rules as ParseForward. A full
+// specification is accepted too; its target is then returned in the Forward.
 func ParseListener(direction, spec string) (Forward, error) {
 	fields := splitSpec(spec)
-	switch len(fields) {
-	case 1, 2:
-		bind := "localhost"
-		if len(fields) == 2 {
-			bind = fields[0]
-		}
-		listen, err := parseListener(bind, fields[len(fields)-1])
-		if err != nil {
-			return Forward{}, fmt.Errorf("invalid listener %q: %w", spec, err)
-		}
-		return Forward{Direction: direction, Listen: listen.String()}, nil
-	default:
+	if len(fields) > 2 || len(fields) == 2 && (isPath(fields[0]) || isPath(fields[1])) {
 		return ParseForward(direction, spec)
 	}
+	listen, err := parseListenFields(direction, fields)
+	if err != nil {
+		return Forward{}, fmt.Errorf("invalid listener %q: %w", spec, err)
+	}
+	return Forward{Direction: direction, Listen: listen}, nil
+}
+
+// IsSocket reports whether a forward's listen or target address is a Unix
+// socket path rather than an IP or host and port.
+func IsSocket(address string) bool {
+	return strings.HasPrefix(address, "/")
+}
+
+func isPath(field string) bool {
+	return strings.Contains(field, "/")
+}
+
+// parseListenFields parses "[bind_address:]port" given as one or two fields,
+// or a socket path as one field.
+func parseListenFields(direction string, fields []string) (string, error) {
+	if len(fields) == 1 && isPath(fields[0]) {
+		return socketPath(fields[0], direction == Remote)
+	}
+	bind := "localhost"
+	if len(fields) == 2 {
+		bind = fields[0]
+	}
+	listen, err := parseListener(bind, fields[len(fields)-1])
+	if err != nil {
+		return "", err
+	}
+	return listen.String(), nil
+}
+
+// parseTargetFields parses "host:hostport" given as two fields, or a socket
+// path as one field.
+func parseTargetFields(direction string, fields []string) (string, error) {
+	if len(fields) == 1 {
+		return socketPath(fields[0], direction != Remote)
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(fields[0], "["), "]")
+	target := net.JoinHostPort(host, fields[1])
+	if !isDialAddress(target) {
+		return "", fmt.Errorf("invalid target %s", target)
+	}
+	return target, nil
+}
+
+// socketPath returns the absolute form of a socket path on the server or
+// on this machine.
+func socketPath(field string, onServer bool) (string, error) {
+	var p string
+	if onServer {
+		if !path.IsAbs(field) {
+			return "", fmt.Errorf("socket path %q on the server must be absolute", field)
+		}
+		p = path.Clean(field)
+	} else {
+		var err error
+		if p, err = AbsPath(field); err != nil {
+			return "", err
+		}
+	}
+	if !isSocketPath(p) {
+		return "", fmt.Errorf("invalid socket path %q", field)
+	}
+	return p, nil
+}
+
+// isSocketPath reports whether p is a clean absolute path without control
+// characters, which remote cleanup passes to a shell.
+func isSocketPath(p string) bool {
+	return IsSocket(p) && path.Clean(p) == p && !strings.ContainsFunc(p, unicode.IsControl)
 }
 
 // splitSpec splits spec at colons outside brackets.
@@ -166,14 +242,14 @@ func validateForwards(forwards []Forward) error {
 		if fwd.Direction != Remote && fwd.Direction != Local && fwd.Direction != Dynamic {
 			return fmt.Errorf("invalid direction for forward %d", n)
 		}
-		if _, ok := parseListenAddress(fwd.Listen); !ok {
+		if _, ok := parseListenAddress(fwd.Listen); !ok && (!isSocketPath(fwd.Listen) || fwd.Direction == Dynamic) {
 			return fmt.Errorf("invalid listen address for forward %d", n)
 		}
 		if fwd.Direction == Dynamic {
 			if fwd.Target != "" {
 				return fmt.Errorf("dynamic forward %d must not have a target", n)
 			}
-		} else if !isDialAddress(fwd.Target) {
+		} else if !isDialAddress(fwd.Target) && !isSocketPath(fwd.Target) {
 			return fmt.Errorf("invalid target for forward %d", n)
 		}
 		for _, earlier := range forwards[:i] {

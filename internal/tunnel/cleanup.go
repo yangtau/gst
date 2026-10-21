@@ -17,16 +17,22 @@ import (
 var cleanupScript string
 
 // cleanupListeners kills processes owned by the login user that listen on
-// the ports of remote forwards on the server, so that stale tunnels free
-// their ports. Remote output is discarded because it may reveal server details.
+// the ports and socket paths of remote forwards on the server, and removes
+// the login user's socket files that nothing listens on, so that stale
+// tunnels free their listeners. Remote output is discarded because it may
+// reveal server details.
 func cleanupListeners(client *ssh.Client, forwards []config.Forward, timeout time.Duration) error {
 	args := []string{"bash", "-s", "--"}
 	for _, fwd := range forwards {
-		if fwd.Direction == config.Remote {
+		switch {
+		case fwd.Direction != config.Remote:
+		case config.IsSocket(fwd.Listen):
+			args = append(args, shellQuote(fwd.Listen))
+		default:
 			args = append(args, strconv.Itoa(int(fwd.ListenAddr().Port())))
 		}
 	}
-	// The script expects at least one port.
+	// The script expects at least one listener.
 	if len(args) == 3 {
 		return nil
 	}
@@ -49,4 +55,9 @@ func cleanupListeners(client *ssh.Client, forwards []config.Forward, timeout tim
 		return errors.New("remote listener cleanup failed")
 	}
 	return nil
+}
+
+// shellQuote quotes s for the login shell that runs the cleanup command.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

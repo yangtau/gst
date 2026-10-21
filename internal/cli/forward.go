@@ -32,6 +32,12 @@ as in ssh:
       Only TCP CONNECT without authentication is supported. Domain names
       that clients send are resolved by the server.
 
+For -R and -L, either [bind_address:]port or host:hostport can be a Unix
+socket path instead, which is any field containing "/". Paths on this
+machine may be relative or start with "~" and are saved as absolute paths;
+paths on the server must be absolute. Sockets that gst creates on this
+machine are accessible to their owner only.
+
 Without bind_address a forward listens on loopback only; "*" or an empty
 bind_address means all interfaces. For -R the server's sshd GatewayPorts
 setting can restrict this further.
@@ -41,7 +47,9 @@ restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward add myhost -R 2222:localhost:22
   gst forward add myhost -L 15432:127.0.0.1:5432 -L 16379:127.0.0.1:6379
   gst forward add myhost -R '*:8080:localhost:3000'
-  gst forward add myhost -D 1080`,
+  gst forward add myhost -D 1080
+  gst forward add myhost -L ~/.gst/db.sock:/run/postgresql/.s.PGSQL.5432
+  gst forward add myhost -R /home/user/agent.sock:$SSH_AUTH_SOCK`,
 		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -96,17 +104,18 @@ func (a *app) forwardRemoveCommand() *cobra.Command {
 	var forwards forwardFlags
 	var noRestart bool
 	cmd := &cobra.Command{
-		Use:     "remove <tunnel> (-R | -L | -D [bind_address:]port)...",
+		Use:     "remove <tunnel> (-R | -L | -D [bind_address:]port | socket)...",
 		Aliases: []string{"rm"},
 		Short:   "Remove forwards from a tunnel",
 		Long: `Remove forwards from a tunnel, identified by direction and listener:
-[bind_address:]port with the same bind_address rules as gst forward add.
+[bind_address:]port or a socket path, with the same rules as gst forward add.
 A full spec as printed by gst forward list works too. A running tunnel
 restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward remove myhost -R 2222              # the -R forward listening on 127.0.0.1:2222
   gst forward remove myhost -R 0.0.0.0:2222
   gst forward remove myhost -L 127.0.0.1:15432:127.0.0.1:5432
-  gst forward remove myhost -D 1080`,
+  gst forward remove myhost -D 1080
+  gst forward remove myhost -L ~/.gst/db.sock`,
 		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {

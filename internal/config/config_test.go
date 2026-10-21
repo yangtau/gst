@@ -107,6 +107,11 @@ func TestParseInvalid(t *testing.T) {
 		"huge count":          replace(`"destination"`, `"keepalive_count_max":1001,"destination"`),
 		"bad direction":       replace(`"remote"`, `"both"`),
 		"dynamic with target": replace(`"remote"`, `"dynamic"`),
+		"relative socket":     replace(`0.0.0.0:2222`, `run/a.sock`),
+		"unclean socket":      replace(`127.0.0.1:22`, `/run//a.sock`),
+		"socket with newline": replace(`127.0.0.1:22`, `/run/a\nb.sock`),
+		"dynamic socket":      replace(`}]`, `},{"direction":"dynamic","listen":"/run/a.sock","target":""}]`),
+		"duplicate socket":    replace(`}]`, `},{"direction":"remote","listen":"/run/a.sock","target":"h:1"},{"direction":"remote","listen":"/run/a.sock","target":"/b"}]`),
 		"dynamic and local":   replace(`}]`, `},{"direction":"local","listen":"0.0.0.0:1080","target":"h:1"},{"direction":"dynamic","listen":"0.0.0.0:1080","target":""}]`),
 		"hostname listener":   replace(`0.0.0.0:2222`, `localhost:2222`),
 		"bad target":          replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
@@ -146,6 +151,46 @@ func TestParseForward(t *testing.T) {
 			t.Errorf("Spec %q does not round-trip: %+v, %v", got.Spec(), again, err)
 		}
 	}
+	home, wd := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(wd)
+	for spec, want := range map[string]Forward{
+		"/tmp/l.sock:db.example.com:5432": {Local, "/tmp/l.sock", "db.example.com:5432"},
+		"15432:/run/pg/.s.PGSQL.5432":     {Local, "127.0.0.1:15432", "/run/pg/.s.PGSQL.5432"},
+		"*:15432:/run/pg.sock":            {Local, "0.0.0.0:15432", "/run/pg.sock"},
+		"~/l.sock:/run/r.sock":            {Local, home + "/l.sock", "/run/r.sock"},
+		"./l.sock:/run/r.sock":            {Local, wd + "/l.sock", "/run/r.sock"},
+	} {
+		got, err := ParseForward(Local, spec)
+		if err != nil || got != want {
+			t.Errorf("ParseForward(Local, %q) = %+v, %v; want %+v", spec, got, err, want)
+		}
+	}
+	for spec, want := range map[string]Forward{
+		"/run/r.sock:localhost:22": {Remote, "/run/r.sock", "localhost:22"},
+		"2222:~/agent.sock":        {Remote, "127.0.0.1:2222", home + "/agent.sock"},
+		"/run//r.sock:/tmp/l.sock": {Remote, "/run/r.sock", "/tmp/l.sock"},
+	} {
+		got, err := ParseForward(Remote, spec)
+		if err != nil || got != want {
+			t.Errorf("ParseForward(Remote, %q) = %+v, %v; want %+v", spec, got, err, want)
+		}
+		if again, err := ParseForward(Remote, strings.TrimPrefix(got.Spec(), "-R ")); err != nil || again != got {
+			t.Errorf("Spec %q does not round-trip: %+v, %v", got.Spec(), again, err)
+		}
+	}
+	for _, spec := range []string{"run/r.sock:localhost:22", "~/r.sock:/tmp/l.sock", "/a.sock", "/a.sock:22", "1:2:/a.sock", "/a.sock:h:22:/b.sock"} {
+		if f, err := ParseForward(Remote, spec); err == nil {
+			t.Errorf("ParseForward(Remote, %q) accepted: %+v", spec, f)
+		}
+	}
+	if f, err := ParseForward(Local, "/tmp/l.sock:2222:h:22"); err == nil {
+		t.Errorf("socket with bind address accepted: %+v", f)
+	}
+	if f, err := ParseForward(Dynamic, "/tmp/d.sock"); err == nil {
+		t.Errorf("dynamic socket accepted: %+v", f)
+	}
+
 	for spec, want := range map[string]Forward{
 		"1080":         {Dynamic, "127.0.0.1:1080", ""},
 		"*:1080":       {Dynamic, "0.0.0.0:1080", ""},
@@ -175,6 +220,8 @@ func TestParseListener(t *testing.T) {
 		"*:2222":                    {Local, "0.0.0.0:2222", ""},
 		"[::]:2222":                 {Local, "[::]:2222", ""},
 		"0.0.0.0:2222:127.0.0.1:22": {Local, "0.0.0.0:2222", "127.0.0.1:22"},
+		"/tmp/l.sock":               {Local, "/tmp/l.sock", ""},
+		"/tmp/l.sock:/run/r.sock":   {Local, "/tmp/l.sock", "/run/r.sock"},
 	}
 	for spec, want := range tests {
 		if got, err := ParseListener(Local, spec); err != nil || got != want {
@@ -191,6 +238,14 @@ func TestParseListener(t *testing.T) {
 	}
 	if !mapped.SameListener(Forward{Direction: Dynamic, Listen: "127.0.0.1:2222"}) {
 		t.Error("local and dynamic forwards listen on the same side")
+	}
+	socket := Forward{Direction: Local, Listen: "/tmp/l.sock"}
+	if !socket.SameListener(Forward{Direction: Local, Listen: "/tmp/l.sock", Target: "h:1"}) ||
+		socket.SameListener(Forward{Direction: Remote, Listen: "/tmp/l.sock"}) || socket.SameListener(Forward{Direction: Local, Listen: "0.0.0.0:0"}) {
+		t.Error("SameListener must compare socket paths on the same side")
+	}
+	if _, err := ParseListener(Remote, "run/r.sock"); err == nil {
+		t.Error("relative server socket listener accepted")
 	}
 }
 

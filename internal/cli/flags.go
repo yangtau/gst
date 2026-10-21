@@ -32,7 +32,7 @@ func (s *settingsFlags) register(fs *pflag.FlagSet, clearable bool) {
 	fs.DurationVar(&s.connectTimeout, "connect-timeout", 0, "timeout for connecting and logging in, in whole seconds (default: ConnectTimeout from ssh config, else 15s)"+zeroClears)
 	fs.DurationVar(&s.keepaliveInterval, "keepalive-interval", 0, "time between keepalive probes, in whole seconds (default: ServerAliveInterval from ssh config, else 15s)"+zeroClears)
 	fs.Int64Var(&s.keepaliveCount, "keepalive-count", 0, "give up after a probe stays unanswered for this many intervals (default: ServerAliveCountMax from ssh config, else 3)"+zeroClears)
-	fs.BoolVar(&s.cleanup, "cleanup-listeners", false, "before listening, kill the login user's processes that listen on the server ports of -R forwards; only for ports dedicated to this tunnel"+offSuffix)
+	fs.BoolVar(&s.cleanup, "cleanup-listeners", false, "before listening, kill the login user's processes that listen on the server ports and sockets of -R forwards, and remove the login user's socket files there that nothing listens on; only for listeners dedicated to this tunnel"+offSuffix)
 }
 
 // apply sets the flags given on the command line and reports whether any were.
@@ -104,7 +104,7 @@ type forwardSpec struct {
 func (f *forwardFlags) register(fs *pflag.FlagSet, listenerOnly bool) {
 	remote, local := "[bind_address:]port:host:hostport", "[bind_address:]port:host:hostport"
 	if listenerOnly {
-		remote, local = "[bind_address:]port", "[bind_address:]port"
+		remote, local = "[bind_address:]port | socket", "[bind_address:]port | socket"
 	}
 	fs.VarP(&specValue{f, config.Remote}, "remote", "R", remote+"  listen on the server, connect from this machine (like ssh -R); repeatable")
 	fs.VarP(&specValue{f, config.Local}, "local", "L", local+"  listen on this machine, connect from the server (like ssh -L); repeatable")

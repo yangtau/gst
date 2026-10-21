@@ -9,6 +9,7 @@ English | [简体中文](README.zh-CN.md)
   - `-R [bind_address:]port:host:hostport`: listen on the server; this machine connects to `host:hostport`.
   - `-L [bind_address:]port:host:hostport`: listen on this machine; the server connects to `host:hostport`.
   - `-D [bind_address:]port`: listen on this machine as a SOCKS5 proxy; the server connects to each address that clients request.
+  - In `-R` and `-L`, either side can be a Unix socket path instead of a port or `host:hostport`.
 
 ## Install
 
@@ -82,7 +83,7 @@ Every command explains itself with `--help`. `gst completion bash|zsh|fish` gene
 | `gst add <name> [destination] [-R spec]... [-L spec]... [-D port]...` | Add a tunnel and start it in the background |
 | `gst set <name> [flags]` | Change the destination or connection settings |
 | `gst forward add <tunnel> (-R spec \| -L spec \| -D [bind:]port)...` | Add forwards |
-| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port)...` | Remove forwards |
+| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port\|socket)...` | Remove forwards |
 | `gst forward list <tunnel>` | List forwards |
 | `gst remove <name>...` | Stop and delete tunnels |
 | `gst start\|stop\|restart <name>... \| --all` | Start, stop, or restart tunnels |
@@ -99,6 +100,12 @@ When you change the forwards or settings of a running tunnel, gst restarts it; `
 # Give the destination directly when it is not in your ssh config
 gst add db admin@db.example.com -L 15432:127.0.0.1:5432
 gst add web ssh://deploy@203.0.113.7:2200 -R 8080:localhost:3000
+
+# Unix sockets: reach the server's PostgreSQL socket at a local socket,
+# and the local ssh-agent at a socket on the server
+gst forward add myhost -L ~/.gst/db.sock:/run/postgresql/.s.PGSQL.5432
+gst forward add myhost -R /home/user/agent.sock:"$SSH_AUTH_SOCK" --no-restart
+gst set myhost --cleanup-listeners
 
 # A SOCKS5 proxy on local port 1080 whose connections leave from the server
 gst forward add myhost -D 1080
@@ -125,6 +132,14 @@ gst set myhost --cleanup-listeners=false
 - `host` is resolved by the side that connects to it: in `-L`, `127.0.0.1` is the server itself; in `-R`, `localhost` is this machine.
 - The server's sshd `GatewayPorts` setting can further limit where `-R` forwards listen. When listening on all interfaces, restrict access with a firewall.
 - The server's sshd `AllowTcpForwarding` must allow the directions you use: `yes` for both, or `remote` for `-R` only, or `local` for `-L` and `-D` only.
+
+## Unix sockets
+
+- As in ssh, a field containing `/` is a Unix socket path: `-L /tmp/db.sock:127.0.0.1:5432`, `-L 15432:/run/postgresql/.s.PGSQL.5432`, `-R /home/user/agent.sock:/tmp/agent.sock`. A path cannot contain `:`.
+- Paths on this machine may be relative or start with `~`; gst saves them as absolute paths. Paths on the server must be absolute.
+- Sockets that gst creates on this machine are accessible to you only (mode `0600`). Before listening, gst replaces a socket file that nothing accepts on, as left behind by a crash; it never replaces other files or sockets in use.
+- The server's sshd `AllowStreamLocalForwarding` must allow the directions you use; it does by default.
+- **sshd leaves `-R` socket files on the server behind**, even when the tunnel stops cleanly, and refuses to listen on an existing file. Without one of the following, an `-R` socket forward fails with `listener start failed` from its first restart or reconnect on: set `StreamLocalBindUnlink yes` in the server's sshd configuration, or turn on `--cleanup-listeners` (see [Troubleshooting](#troubleshooting)).
 
 ## SOCKS proxy (`-D`)
 
@@ -171,11 +186,12 @@ Start with `gst check <name>`. It checks each step and suggests a fix for the on
 | `no host key for ...` | Connect once with `ssh <host>` to record the host key |
 | Host key mismatch | Once you have confirmed the server's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
 | A `-R` port is in use (`listener start failed`) | Usually a stale session from an earlier connection still holds it on the server; see below |
+| A `-R` socket fails with `listener start failed` after a restart | The socket file from the previous session is still on the server; set `StreamLocalBindUnlink yes` in sshd or turn on `--cleanup-listeners` |
 | macOS blocks access to a local network server | Allow gst in the Local Network alert or in System Settings → Privacy & Security → Local Network, then run `gst restart <name>`. Authorization for your terminal does not necessarily authorize the background service |
 
 **Stale sessions holding server ports.** After a network failure, the old SSH session may keep a `-R` port on the server. Set `ClientAliveInterval 15` and `ClientAliveCountMax 3` in the server's sshd configuration so that sshd closes dead sessions quickly.
 
-You can also turn on `--cleanup-listeners`: after each connect and before listening, gst kills the login user's processes on the server that listen on the `-R` ports. These are **not only SSH processes**, so use it only for ports dedicated to the tunnel. On Linux it cannot clean up leftover sshd session processes. The server needs `bash`, `lsof`, `ps`, and `id` in `PATH`, plus a readable `/proc/net/tcp` on Linux or `netstat` elsewhere.
+You can also turn on `--cleanup-listeners`: after each connect and before listening, gst kills the login user's processes on the server that listen on the `-R` ports and sockets, and removes the login user's socket files there that nothing listens on. These are **not only SSH processes**, so use it only for ports and sockets dedicated to the tunnel. On Linux it cannot clean up leftover sshd session processes. The server needs `bash`, `lsof`, `ps`, and `id` in `PATH`, plus readable `/proc/net/tcp` and `/proc/net/unix` on Linux or `netstat` elsewhere.
 
 ## Scripts and agents
 

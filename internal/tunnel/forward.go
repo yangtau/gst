@@ -29,7 +29,7 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, t.opts.ConnectTimeout)
-	outgoing, err := r.dial(dialCtx, "tcp", target)
+	outgoing, err := r.dial(dialCtx, r.network, target)
 	cancel()
 	if r.socks {
 		socksReply(incoming, socksReplyCode(err))

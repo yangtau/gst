@@ -146,6 +146,8 @@ func (s *testServer) serveChannels(ctx context.Context, channels <-chan ssh.NewC
 			s.wg.Go(func() { s.serveSession(ctx, channel, requests) })
 		case "direct-tcpip":
 			s.wg.Go(func() { s.serveDirect(ctx, ch) })
+		case "direct-streamlocal@openssh.com":
+			s.wg.Go(func() { s.serveDirectStreamLocal(ctx, ch) })
 		default:
 			ch.Reject(ssh.UnknownChannelType, "unsupported")
 		}
@@ -164,7 +166,25 @@ func (s *testServer) serveDirect(ctx context.Context, ch ssh.NewChannel) {
 		ch.Reject(ssh.Prohibited, "malformed")
 		return
 	}
-	outgoing, err := net.Dial("tcp", net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port))))
+	s.relayDirect(ctx, ch, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port))))
+}
+
+// serveDirectStreamLocal dials the socket target of a local forward.
+func (s *testServer) serveDirectStreamLocal(ctx context.Context, ch ssh.NewChannel) {
+	var target struct {
+		SocketPath string
+		Reserved0  string
+		Reserved1  uint32
+	}
+	if ssh.Unmarshal(ch.ExtraData(), &target) != nil {
+		ch.Reject(ssh.Prohibited, "malformed")
+		return
+	}
+	s.relayDirect(ctx, ch, "unix", target.SocketPath)
+}
+
+func (s *testServer) relayDirect(ctx context.Context, ch ssh.NewChannel, network, address string) {
+	outgoing, err := net.Dial(network, address)
 	if err != nil {
 		// Deliberately sensitive message that must never reach local logs.
 		ch.Reject(ssh.ConnectionFailed, "SECRET "+err.Error())
@@ -217,6 +237,10 @@ func (s *testServer) serveRequests(ctx context.Context, conn *ssh.ServerConn, re
 			default:
 				s.startForward(ctx, conn, req)
 			}
+		case "streamlocal-forward@openssh.com":
+			s.startStreamLocalForward(ctx, conn, req)
+		case "cancel-tcpip-forward", "cancel-streamlocal-forward@openssh.com":
+			req.Reply(true, nil)
 		case "keepalive@openssh.com":
 			s.probes <- struct{}{}
 			if !s.options.hangKeepalive {
@@ -267,6 +291,53 @@ func (s *testServer) startForward(ctx context.Context, conn *ssh.ServerConn, req
 					OriginPort uint32
 				}{requested.Host, requested.Port, origin.IP.String(), uint32(origin.Port)}
 				channel, requests, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(payload))
+				if err != nil {
+					return
+				}
+				defer channel.Close()
+				s.wg.Go(func() { ssh.DiscardRequests(requests) })
+				relay(channel, incoming)
+			})
+		}
+	})
+}
+
+// startStreamLocalForward serves a streamlocal-forward request on a socket
+// in a temporary directory, reporting the requested path in forwarded
+// channels like startForward.
+func (s *testServer) startStreamLocalForward(ctx context.Context, conn *ssh.ServerConn, req *ssh.Request) {
+	var requested struct{ SocketPath string }
+	if ssh.Unmarshal(req.Payload, &requested) != nil {
+		req.Reply(false, nil)
+		return
+	}
+	dir, err := os.MkdirTemp("/tmp", "gst-test-")
+	if err != nil {
+		req.Reply(false, nil)
+		return
+	}
+	ln, err := net.Listen("unix", filepath.Join(dir, "remote.sock"))
+	if err != nil {
+		req.Reply(false, nil)
+		return
+	}
+	closeOnDone(ctx, ln)
+	req.Reply(true, nil)
+	s.forwards <- ln
+
+	s.wg.Go(func() {
+		defer os.RemoveAll(dir)
+		defer ln.Close()
+		for {
+			incoming, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.wg.Go(func() {
+				defer incoming.Close()
+				defer closeOnDone(ctx, incoming)()
+				payload := struct{ SocketPath, Reserved0 string }{requested.SocketPath, ""}
+				channel, requests, err := conn.OpenChannel("forwarded-streamlocal@openssh.com", ssh.Marshal(payload))
 				if err != nil {
 					return
 				}
@@ -387,6 +458,35 @@ func startEchoTarget(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	serveEcho(t, ln)
+	return ln.Addr().String()
+}
+
+// startUnixEchoTarget is startEchoTarget on a socket path.
+func startUnixEchoTarget(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("unix", filepath.Join(shortTempDir(t), "echo.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveEcho(t, ln)
+	return ln.Addr().String()
+}
+
+// shortTempDir returns a temporary directory whose paths fit in a socket
+// address, which t.TempDir does not guarantee on macOS.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "gst-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func serveEcho(t *testing.T, ln net.Listener) {
+	t.Helper()
 	t.Cleanup(func() { ln.Close() })
 	go func() {
 		for {
@@ -399,17 +499,21 @@ func startEchoTarget(t *testing.T) string {
 				c.SetDeadline(time.Now().Add(3 * time.Second))
 				if data, err := io.ReadAll(c); err == nil {
 					c.Write(append([]byte("reply:"), data...))
-					c.(*net.TCPConn).CloseWrite()
+					c.(interface{ CloseWrite() error }).CloseWrite()
 				}
 			}()
 		}
 	}()
-	return ln.Addr().String()
 }
 
-// roundTrip sends request to addr, half-closes, and returns the reply.
+// roundTrip sends request to addr, a TCP address or socket path,
+// half-closes, and returns the reply.
 func roundTrip(addr, request string) (string, error) {
-	c, err := net.DialTimeout("tcp", addr, time.Second)
+	network := "tcp"
+	if config.IsSocket(addr) {
+		network = "unix"
+	}
+	c, err := net.DialTimeout(network, addr, time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -418,7 +522,7 @@ func roundTrip(addr, request string) (string, error) {
 	if _, err := io.WriteString(c, request); err != nil {
 		return "", err
 	}
-	if err := c.(*net.TCPConn).CloseWrite(); err != nil {
+	if err := c.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
 		return "", err
 	}
 	reply, err := io.ReadAll(c)

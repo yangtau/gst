@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -111,13 +114,24 @@ func (t *tunnel) serve(ctx context.Context) error {
 // listen opens the listener for one forward and starts accepting on it.
 func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	addr := net.TCPAddrFromAddrPort(fwd.ListenAddr())
-	r := route{id: id, target: fwd.Target, socks: fwd.Direction == config.Dynamic}
+	r := route{id: id, network: "tcp", target: fwd.Target, socks: fwd.Direction == config.Dynamic}
+	if config.IsSocket(fwd.Target) {
+		r.network = "unix"
+	}
 	var err error
-	if fwd.Direction == config.Remote {
+	switch {
+	case fwd.Direction == config.Remote && config.IsSocket(fwd.Listen):
+		r.listener, err = t.client.ListenUnix(fwd.Listen)
+	case fwd.Direction == config.Remote:
 		r.listener, err = t.client.ListenTCP(addr)
+	case config.IsSocket(fwd.Listen):
+		r.listener, err = listenUnix(fwd.Listen)
+	default:
+		r.listener, err = net.ListenTCP("tcp", addr)
+	}
+	if fwd.Direction == config.Remote {
 		r.dial = new(net.Dialer).DialContext
 	} else {
-		r.listener, err = net.ListenTCP("tcp", addr)
 		r.dial = t.client.DialContext
 	}
 	if err != nil {
@@ -128,11 +142,31 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	return nil
 }
 
+// listenUnix listens on a socket path on this machine. A socket file that
+// nothing accepts on is left over from an earlier run and is replaced. The
+// socket is created accessible to its owner only, like ssh's default
+// StreamLocalBindMask.
+func listenUnix(path string) (net.Listener, error) {
+	if info, err := os.Lstat(path); err == nil && info.Mode().Type() == fs.ModeSocket {
+		if c, err := net.Dial("unix", path); err == nil {
+			c.Close()
+			return nil, errors.New("socket in use")
+		}
+		os.Remove(path)
+	}
+	// The umask applies to the whole process, but nothing else creates
+	// files while the tunnel starts its listeners, and a stricter mask
+	// is harmless if something did.
+	defer syscall.Umask(syscall.Umask(0o177))
+	return net.Listen("unix", path)
+}
+
 // route is one active forward: a listener and the target it feeds.
 type route struct {
 	id       int // 1-based position in the tunnel's forwards, logged instead of addresses
 	listener net.Listener
 	dial     func(ctx context.Context, network, address string) (net.Conn, error)
+	network  string // of target: "tcp" or "unix"
 	target   string
 	socks    bool // the target is requested by each client over SOCKS5
 }
