@@ -17,7 +17,7 @@ gst keeps SSH port forwards running as per-tunnel user services (systemd on Linu
 - `internal/cli`: cobra commands, output, and the error/hint contract.
 - `internal/config`: config file (locked, atomic writes) and forward spec parsing.
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
-- `internal/tunnel`: SSH connection, keepalive, both forward directions, remote cleanup (`cleanup.sh`), and `Diagnose` behind `gst check`.
+- `internal/tunnel`: SSH connection, keepalive, remote, local, and dynamic (SOCKS5) forwards, remote cleanup (`cleanup.sh`), and `Diagnose` behind `gst check`.
 - `internal/service`: systemd and launchd managers.
 - `integration`: tests against a real OpenSSH sshd in a container.
 

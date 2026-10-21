@@ -18,7 +18,7 @@ func (a *app) forwardAddCommand() *cobra.Command {
 	var forwards forwardFlags
 	var noRestart bool
 	cmd := &cobra.Command{
-		Use:   "add <tunnel> (-R spec | -L spec)...",
+		Use:   "add <tunnel> (-R spec | -L spec | -D [bind_address:]port)...",
 		Short: "Add forwards to a tunnel",
 		Long: `Add forwards to a tunnel. A spec is [bind_address:]port:host:hostport,
 as in ssh:
@@ -27,6 +27,10 @@ as in ssh:
       from this machine
   -L  listen on bind_address:port on this machine; connect to host:hostport
       from the server
+  -D  listen on bind_address:port on this machine as a SOCKS5 proxy;
+      connect from the server to each address that clients request.
+      Only TCP CONNECT without authentication is supported. Domain names
+      that clients send are resolved by the server.
 
 Without bind_address a forward listens on loopback only; "*" or an empty
 bind_address means all interfaces. For -R the server's sshd GatewayPorts
@@ -36,7 +40,8 @@ Adding a forward that already exists does nothing. A running tunnel
 restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward add myhost -R 2222:localhost:22
   gst forward add myhost -L 15432:127.0.0.1:5432 -L 16379:127.0.0.1:6379
-  gst forward add myhost -R '*:8080:localhost:3000'`,
+  gst forward add myhost -R '*:8080:localhost:3000'
+  gst forward add myhost -D 1080`,
 		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -46,7 +51,7 @@ restarts to apply the change unless --no-restart is given.`,
 				return err
 			}
 			if len(fwds) == 0 {
-				return usage("give at least one -R or -L forward")
+				return usage("give at least one -R, -L, or -D forward")
 			}
 			var messages []string
 			added := false
@@ -91,7 +96,7 @@ func (a *app) forwardRemoveCommand() *cobra.Command {
 	var forwards forwardFlags
 	var noRestart bool
 	cmd := &cobra.Command{
-		Use:     "remove <tunnel> (-R [bind_address:]port | -L [bind_address:]port)...",
+		Use:     "remove <tunnel> (-R | -L | -D [bind_address:]port)...",
 		Aliases: []string{"rm"},
 		Short:   "Remove forwards from a tunnel",
 		Long: `Remove forwards from a tunnel, identified by direction and listener:
@@ -100,7 +105,8 @@ A full spec as printed by gst forward list works too. A running tunnel
 restarts to apply the change unless --no-restart is given.`,
 		Example: `  gst forward remove myhost -R 2222              # the -R forward listening on 127.0.0.1:2222
   gst forward remove myhost -R 0.0.0.0:2222
-  gst forward remove myhost -L 127.0.0.1:15432:127.0.0.1:5432`,
+  gst forward remove myhost -L 127.0.0.1:15432:127.0.0.1:5432
+  gst forward remove myhost -D 1080`,
 		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -110,7 +116,7 @@ restarts to apply the change unless --no-restart is given.`,
 				return err
 			}
 			if len(targets) == 0 {
-				return usage("give at least one -R or -L listener")
+				return usage("give at least one -R, -L, or -D listener")
 			}
 			var removed []config.Forward
 			err = a.update(func(f *config.File) error {
@@ -121,7 +127,7 @@ restarts to apply the change unless --no-restart is given.`,
 				removed = nil
 				for _, target := range targets {
 					i := indexOfListener(t.Forwards, target)
-					if i < 0 || (target.Target != "" && t.Forwards[i].Target != target.Target) {
+					if i < 0 || t.Forwards[i].Direction != target.Direction || (target.Target != "" && t.Forwards[i].Target != target.Target) {
 						return withHint(fmt.Errorf("tunnel %s has no forward %s %s", name, target.Flag(), describeListener(target)),
 							"list its forwards with `gst forward list "+name+"`")
 					}
@@ -185,7 +191,7 @@ The number of a forward is how the tunnel's log refers to it.`,
 				return writeJSON(a.stdout, views)
 			}
 			if len(views) == 0 {
-				fmt.Fprintf(a.stdout, "Tunnel %s has no forwards. Add one with: gst forward add %s -R spec | -L spec\n", args[0], args[0])
+				fmt.Fprintf(a.stdout, "Tunnel %s has no forwards. Add one with: gst forward add %s -R spec | -L spec | -D port\n", args[0], args[0])
 				return nil
 			}
 			for _, v := range views {

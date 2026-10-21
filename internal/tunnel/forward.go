@@ -6,16 +6,34 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
-// forward relays one connection accepted on r's listener to r.target.
+// forward relays one connection accepted on r's listener to r.target, or
+// to the target the client requests over SOCKS5.
 func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	defer incoming.Close()
 	defer closeOnDone(ctx, incoming)()
 
+	target := r.target
+	if r.socks {
+		incoming.SetDeadline(time.Now().Add(t.opts.ConnectTimeout))
+		var err error
+		if target, err = socksRequest(incoming); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("SOCKS request failed for forward %d", r.id)
+			}
+			return
+		}
+		incoming.SetDeadline(time.Time{})
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, t.opts.ConnectTimeout)
-	outgoing, err := r.dial(dialCtx, "tcp", r.target)
+	outgoing, err := r.dial(dialCtx, "tcp", target)
 	cancel()
+	if r.socks {
+		socksReply(incoming, socksReplyCode(err))
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("target connection failed for forward %d", r.id)

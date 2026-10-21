@@ -106,6 +106,8 @@ func TestParseInvalid(t *testing.T) {
 		"huge interval":       replace(`"destination"`, `"keepalive_interval_seconds":9223372036,"destination"`),
 		"huge count":          replace(`"destination"`, `"keepalive_count_max":1001,"destination"`),
 		"bad direction":       replace(`"remote"`, `"both"`),
+		"dynamic with target": replace(`"remote"`, `"dynamic"`),
+		"dynamic and local":   replace(`}]`, `},{"direction":"local","listen":"0.0.0.0:1080","target":"h:1"},{"direction":"dynamic","listen":"0.0.0.0:1080","target":""}]`),
 		"hostname listener":   replace(`0.0.0.0:2222`, `localhost:2222`),
 		"bad target":          replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
 		"duplicate listener":  replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:02222","target":"h:1"}]`),
@@ -144,6 +146,22 @@ func TestParseForward(t *testing.T) {
 			t.Errorf("Spec %q does not round-trip: %+v, %v", got.Spec(), again, err)
 		}
 	}
+	for spec, want := range map[string]Forward{
+		"1080":         {Dynamic, "127.0.0.1:1080", ""},
+		"*:1080":       {Dynamic, "0.0.0.0:1080", ""},
+		"[::1]:1080":   {Dynamic, "[::1]:1080", ""},
+		"0.0.0.0:1080": {Dynamic, "0.0.0.0:1080", ""},
+	} {
+		got, err := ParseForward(Dynamic, spec)
+		if err != nil || got != want || got.Spec() != "-D "+want.Listen {
+			t.Errorf("ParseForward(Dynamic, %q) = %+v, %v; want %+v", spec, got, err, want)
+		}
+	}
+	for _, spec := range []string{"1080:localhost:22", "1080:h", "host:1080", "0"} {
+		if f, err := ParseForward(Dynamic, spec); err == nil {
+			t.Errorf("ParseForward(Dynamic, %q) accepted: %+v", spec, f)
+		}
+	}
 	for _, spec := range []string{"2222", "2222:host", "a:1:b:2:c", "host:2222:h:22", "0:h:22", "65536:h:22", "2222:h:ssh", "2222:bad host:22", "2222::22", "[fe80::1%en0]:2222:h:22"} {
 		if f, err := ParseForward(Local, spec); err == nil {
 			t.Errorf("ParseForward(%q) accepted: %+v", spec, f)
@@ -170,6 +188,9 @@ func TestParseListener(t *testing.T) {
 	mapped := Forward{Direction: Local, Listen: "[::ffff:127.0.0.1]:2222"}
 	if !mapped.SameListener(tests["2222"]) || mapped.SameListener(Forward{Direction: Remote, Listen: "127.0.0.1:2222"}) {
 		t.Error("SameListener must unmap addresses and compare directions")
+	}
+	if !mapped.SameListener(Forward{Direction: Dynamic, Listen: "127.0.0.1:2222"}) {
+		t.Error("local and dynamic forwards listen on the same side")
 	}
 }
 

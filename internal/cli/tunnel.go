@@ -63,7 +63,10 @@ use "*" or an empty bind_address for all interfaces.`,
   gst add db admin@db.example.com -L 15432:127.0.0.1:5432
 
   # Expose a local web app on all interfaces of the server
-  gst add web ssh://deploy@203.0.113.7:2200 -R '*:8080:localhost:3000'`,
+  gst add web ssh://deploy@203.0.113.7:2200 -R '*:8080:localhost:3000'
+
+  # Run a SOCKS5 proxy on local port 1080 whose connections leave from the server
+  gst add proxy myhost -D 1080`,
 		Args: a.args(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]

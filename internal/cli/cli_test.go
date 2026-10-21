@@ -305,9 +305,25 @@ func TestForwards(t *testing.T) {
 	e.expectCode(exitUsage, "forward", "add", "myhost")
 	e.expectCode(exitFailure, "forward", "add", "nope", "-R", "1:h:1")
 
+	if out := e.mustGst("forward", "add", "myhost", "-D", "1080"); !strings.Contains(out, "Added -D 127.0.0.1:1080 to tunnel myhost.") {
+		t.Fatalf("unexpected output %q", out)
+	}
+	if out := e.mustGst("forward", "add", "myhost", "-D", "127.0.0.1:1080"); !strings.Contains(out, "already has") {
+		t.Fatalf("adding an existing dynamic forward must be a no-op: %q", out)
+	}
+	if stderr := e.expectCode(exitFailure, "forward", "add", "myhost", "-L", "1080:h:1"); !strings.Contains(stderr, "gst forward remove myhost -D 127.0.0.1:1080") {
+		t.Fatalf("local and dynamic forwards on one port must conflict: %q", stderr)
+	}
+	e.expectCode(exitUsage, "forward", "add", "myhost", "-D", "1080:h:1")
+
 	var views []forwardView
-	if err := json.Unmarshal([]byte(e.mustGst("forward", "list", "myhost", "--json")), &views); err != nil || len(views) != 2 || views[1].Spec != "-L 127.0.0.1:15432:127.0.0.1:5432" || views[1].Number != 2 {
+	if err := json.Unmarshal([]byte(e.mustGst("forward", "list", "myhost", "--json")), &views); err != nil || len(views) != 3 || views[1].Spec != "-L 127.0.0.1:15432:127.0.0.1:5432" || views[1].Number != 2 ||
+		views[2] != (forwardView{3, "dynamic", "127.0.0.1:1080", "", "-D 127.0.0.1:1080"}) {
 		t.Fatalf("unexpected forward list %+v: %v", views, err)
+	}
+	e.expectCode(exitFailure, "forward", "remove", "myhost", "-L", "1080")
+	if out := e.mustGst("forward", "remove", "myhost", "-D", "1080"); !strings.Contains(out, "Removed -D 127.0.0.1:1080 from tunnel myhost.") {
+		t.Fatalf("unexpected output %q", out)
 	}
 
 	e.mustGst("stop", "myhost")

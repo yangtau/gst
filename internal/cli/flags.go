@@ -92,7 +92,7 @@ func (s *settingsFlags) apply(cmd *cobra.Command, t *config.Tunnel) (bool, error
 	return changed, nil
 }
 
-// forwardFlags collects -R and -L values in command-line order.
+// forwardFlags collects -R, -L, and -D values in command-line order.
 type forwardFlags struct {
 	specs []forwardSpec
 }
@@ -108,6 +108,7 @@ func (f *forwardFlags) register(fs *pflag.FlagSet, listenerOnly bool) {
 	}
 	fs.VarP(&specValue{f, config.Remote}, "remote", "R", remote+"  listen on the server, connect from this machine (like ssh -R); repeatable")
 	fs.VarP(&specValue{f, config.Local}, "local", "L", local+"  listen on this machine, connect from the server (like ssh -L); repeatable")
+	fs.VarP(&specValue{f, config.Dynamic}, "dynamic", "D", "[bind_address:]port  listen on this machine as a SOCKS5 proxy, connect from the server to each requested address (like ssh -D); repeatable")
 }
 
 // parse returns the forwards; listenerOnly accepts "[bind_address:]port".
@@ -146,7 +147,7 @@ func addForward(name string, t *config.Tunnel, fwd config.Forward) (bool, error)
 		if !existing.SameListener(fwd) {
 			continue
 		}
-		if existing.Target == fwd.Target {
+		if existing.Direction == fwd.Direction && existing.Target == fwd.Target {
 			return false, nil
 		}
 		return false, withHint(fmt.Errorf("tunnel %s already has %s on that listener", name, existing.Spec()),

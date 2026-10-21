@@ -2,12 +2,13 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）让 SSH 端口转发在后台持续运行：登录后自动启动，断线后自动重连。它按你的 `~/.ssh/config` 连接服务器，转发的写法与 `ssh -R` / `ssh -L` 相同。支持 Linux 和 macOS。
+`gst`（go ssh tunnel）让 SSH 端口转发在后台持续运行：登录后自动启动，断线后自动重连。它按你的 `~/.ssh/config` 连接服务器，转发的写法与 `ssh -R` / `ssh -L` / `ssh -D` 相同。支持 Linux 和 macOS。
 
 - **tunnel**：一个有名字的 SSH 连接，例如 `myhost`。
 - **forward**：tunnel 上的一条端口转发。
   - `-R [bind_address:]port:host:hostport`：在服务器上监听，由本机连接 `host:hostport`。
   - `-L [bind_address:]port:host:hostport`：在本机监听，由服务器连接 `host:hostport`。
+  - `-D [bind_address:]port`：在本机监听一个 SOCKS5 代理，由服务器连接客户端请求的地址。
 
 ## 安装
 
@@ -78,10 +79,10 @@ gst remove myhost  # 停止并删除
 
 | 命令 | 作用 |
 | --- | --- |
-| `gst add <name> [destination] [-R spec]... [-L spec]...` | 添加 tunnel 并在后台启动 |
+| `gst add <name> [destination] [-R spec]... [-L spec]... [-D port]...` | 添加 tunnel 并在后台启动 |
 | `gst set <name> [flags]` | 修改目标地址或连接设置 |
-| `gst forward add <tunnel> (-R spec \| -L spec)...` | 添加 forward |
-| `gst forward remove <tunnel> (-R [bind:]port \| -L [bind:]port)...` | 删除 forward |
+| `gst forward add <tunnel> (-R spec \| -L spec \| -D [bind:]port)...` | 添加 forward |
+| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port)...` | 删除 forward |
 | `gst forward list <tunnel>` | 列出 forward |
 | `gst remove <name>...` | 停止并删除 tunnel |
 | `gst start\|stop\|restart <name>... \| --all` | 启动、停止、重启 |
@@ -98,6 +99,10 @@ gst remove myhost  # 停止并删除
 # 目标地址不在 ssh 配置里时，直接写出来
 gst add db admin@db.example.com -L 15432:127.0.0.1:5432
 gst add web ssh://deploy@203.0.113.7:2200 -R 8080:localhost:3000
+
+# 在本机 1080 端口开一个 SOCKS5 代理，连接从服务器发出
+gst forward add myhost -D 1080
+curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com
 
 # 在服务器的所有网卡上监听
 gst forward add web -R '*:8080:localhost:3000'
@@ -119,7 +124,14 @@ gst set myhost --cleanup-listeners=false
 - 省略 `bind_address` 时只监听 loopback（`127.0.0.1`）；`*` 或空的 `bind_address`（如 `:8080:localhost:3000`）监听所有网卡；IPv6 地址加方括号。
 - `host` 由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己，`-R` 中的 `localhost` 指本机。
 - 服务器上的实际监听范围还受 sshd 的 `GatewayPorts` 控制。监听所有网卡时，记得用防火墙限制访问来源。
-- sshd 的 `AllowTcpForwarding` 需要允许所用的方向：两个方向都用时设为 `yes`，只用 `-R` 时可以是 `remote`，只用 `-L` 时可以是 `local`。
+- sshd 的 `AllowTcpForwarding` 需要允许所用的方向：两个方向都用时设为 `yes`，只用 `-R` 时可以是 `remote`，只用 `-L` 和 `-D` 时可以是 `local`。
+
+## SOCKS 代理（`-D`）
+
+- 与 `ssh -D` 一样，gst 支持无认证的 SOCKS5 `CONNECT`。不支持 UDP（`UDP ASSOCIATE`）、`BIND` 和 SOCKS4，所以 DNS 查询、QUIC 等 UDP 流量无法通过它。
+- 域名在哪里解析取决于客户端。发送域名的客户端（如使用 `socks5h://` 的 curl）由服务器解析，只在服务器网络中才能解析的域名也能访问；自行解析的客户端（如使用 `socks5://` 的 curl）只发送 IP 地址。
+- 能访问监听地址的人都能使用这个代理。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
+- 不支持代理的程序，可以用 tun2socks 等工具把 TUN 设备上的 TCP 流量导入这个代理；gst 不创建 TUN 设备，也不配置路由。这些程序的 DNS 查询仍在本机解析，除非另外配置 DNS。
 
 ## ssh 配置
 
@@ -170,7 +182,7 @@ gst set myhost --cleanup-listeners=false
 - 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。
 - 退出码：`0` 成功，`1` 执行失败（包括 `check` 未通过），`2` 参数无效。
 - `list`、`show`、`check`、`forward list` 支持 `--json`。
-- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但目标不同则报错。
+- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但 forward 不同则报错。`-L` 和 `-D` 都在本机监听，所以不能共用同一个地址。
 
 ## 配置文件
 

@@ -5,6 +5,7 @@ package integration
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -79,6 +80,38 @@ func TestForwardsBothDirections(t *testing.T) {
 	if conn, err := net.DialTimeout("tcp", local, time.Second); err == nil {
 		conn.Close()
 		t.Fatal("local listener survived shutdown")
+	}
+}
+
+// The dynamic forward requests "localhost" by name, so its sshd banner
+// proves that the server resolved and dialed the target.
+func TestDynamicForward(t *testing.T) {
+	t.Parallel()
+	s := startSSHServer(t)
+	proxy := unusedAddr(t)
+	tunnel := startTunnel(t, s.config(false, config.Forward{Direction: config.Dynamic, Listen: proxy}))
+	tunnel.waitReady(t)
+
+	conn, err := net.DialTimeout("tcp", proxy, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	request := append([]byte{5, 1, 0, 5, 1, 0, 3, 9}, "localhost\x00\x16"...)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(conn)
+	reply := make([]byte, 12)
+	if _, err := io.ReadFull(r, reply); err != nil || reply[1] != 0 || reply[3] != 0 {
+		t.Fatalf("SOCKS reply %v: %v", reply, err)
+	}
+	if banner, err := r.ReadString('\n'); !strings.HasPrefix(banner, "SSH-2.0-") {
+		t.Fatalf("no sshd banner through the dynamic forward: %v", err)
+	}
+	if logs := tunnel.logs(); strings.Contains(logs, proxy) || strings.Contains(logs, "localhost") {
+		t.Fatalf("log reveals forward addresses:\n%s", logs)
 	}
 }
 
