@@ -155,7 +155,7 @@ func startSSHServer(t *testing.T) *sshServer {
 	}
 	if filepath.Base(containerRuntime) == "container" {
 		// Each container has its own VM and an IP reachable from macOS.
-		args = []string{"run", "-d", "--memory", "256M", "--cpus", "1"}
+		args = []string{"run", "-d", "--cap-add", "SYS_PTRACE", "--memory", "256M", "--cpus", "1"}
 	}
 	marker, err := os.CreateTemp(filepath.Join(testDir, "containers"), "gst-it-"+filepath.Base(testDir)+"-")
 	if err != nil {
@@ -200,15 +200,19 @@ func (s *sshServer) hostAddr(containerPort int) string {
 			s.t.Fatal(err)
 		}
 		var containers []struct {
-			Networks []struct{ Address string }
+			Status struct {
+				Networks []struct {
+					IPv4Address string `json:"ipv4Address"`
+				}
+			}
 		}
 		if err := json.Unmarshal([]byte(out), &containers); err != nil {
 			s.t.Fatal(err)
 		}
-		if len(containers) != 1 || len(containers[0].Networks) == 0 {
+		if len(containers) != 1 || len(containers[0].Status.Networks) == 0 {
 			s.t.Fatal("container has no network address")
 		}
-		ip, _, err := net.ParseCIDR(containers[0].Networks[0].Address)
+		ip, _, err := net.ParseCIDR(containers[0].Status.Networks[0].IPv4Address)
 		if err != nil {
 			s.t.Fatal(err)
 		}
