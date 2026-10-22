@@ -33,6 +33,8 @@ nix profile add .         # install from the local checkout
 
 The Nix package includes completion scripts for Bash, Zsh, and Fish.
 
+Run `gst version` to print the installed version, for example `gst version 0.1.0`.
+
 Background tunnels remember the path of gst. After upgrading or moving gst, run `gst restart --all`.
 
 ## Before you start
@@ -74,7 +76,7 @@ gst start myhost   # start again
 gst remove myhost  # stop and delete
 ```
 
-Every command explains itself with `--help`. `gst completion bash|zsh|fish` generates shell completion scripts.
+Every command explains itself with `--help`. In a terminal, help uses bold headings and cyan command and option names. Piped or redirected help is plain text; set `NO_COLOR=1` or `TERM=dumb` to disable styling in a terminal too. `gst completion bash|zsh|fish` generates shell completion scripts.
 
 ## Commands
 
@@ -91,6 +93,7 @@ Every command explains itself with `--help`. `gst completion bash|zsh|fish` gene
 | `gst show <name>` | Show a tunnel's settings and what ssh resolves it to |
 | `gst logs <name> [-f] [-n N]` | Print the log |
 | `gst check <name>` | Diagnose: ssh config, identity, known_hosts, network, login |
+| `gst version` | Show the installed version |
 
 When you change the forwards or settings of a running tunnel, gst restarts it; `--no-restart` skips that. A change that changes nothing does nothing.
 

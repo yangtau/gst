@@ -33,6 +33,8 @@ nix profile add .         # 从本地项目安装
 
 Nix 包附带 Bash、Zsh 和 Fish 的补全脚本。
 
+运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.1.0`。
+
 后台运行的 tunnel 会记住 gst 的路径。升级或移动 gst 后，执行 `gst restart --all`。
 
 ## 使用前准备
@@ -74,7 +76,7 @@ gst start myhost   # 重新启动
 gst remove myhost  # 停止并删除
 ```
 
-每个命令都可以用 `--help` 查看说明和示例。`gst completion bash|zsh|fish` 生成 shell 补全脚本。
+每个命令都可以用 `--help` 查看说明和示例。在终端中，帮助的标题加粗，命令名和选项名显示为青色。管道或重定向输出保持纯文本；设置 `NO_COLOR=1` 或 `TERM=dumb` 也可以关闭终端中的配色。`gst completion bash|zsh|fish` 生成 shell 补全脚本。
 
 ## 命令
 
@@ -91,6 +93,7 @@ gst remove myhost  # 停止并删除
 | `gst show <name>` | 查看 tunnel 的设置和 ssh 解析结果 |
 | `gst logs <name> [-f] [-n N]` | 查看日志 |
 | `gst check <name>` | 诊断：ssh 配置、私钥、known_hosts、网络、登录 |
+| `gst version` | 查看已安装的版本 |
 
 修改运行中 tunnel 的 forward 或设置后，gst 会自动重启它；加 `--no-restart` 可以跳过。设置没有变化时什么也不做。
 

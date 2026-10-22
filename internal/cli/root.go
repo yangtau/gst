@@ -2,12 +2,14 @@ package cli
 
 import (
 	"errors"
-	"runtime/debug"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+const version = "0.1.0"
 
 func (a *app) rootCommand() *cobra.Command {
 	// Help lists commands in the order they are added, grouped by task.
@@ -33,7 +35,6 @@ report state accept --json.`,
   gst forward add myhost -L 15432:127.0.0.1:5432  # add a forward; the tunnel restarts
   gst list                                        # tunnels and their status
   gst check myhost                                # diagnose connection problems`,
-		Version:       version(),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})
@@ -60,7 +61,16 @@ report state accept --json.`,
 	addGroup("configure", a.addCommand(), a.setCommand(), a.forwardCommand(), a.removeCommand())
 	addGroup("run", a.startCommand(), a.stopCommand(), a.restartCommand())
 	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand())
-	root.AddCommand(a.runCommand())
+	root.AddCommand(&cobra.Command{
+		Use:     "version",
+		Short:   "Show the gst version",
+		GroupID: "inspect",
+		Args:    a.args(0, 0),
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(a.stdout, "gst version", version)
+		},
+	}, a.runCommand())
+	setHelpColors(root)
 	return root
 }
 
@@ -152,20 +162,4 @@ func (a *app) completeTunnels(_ *cobra.Command, _ []string, _ string) ([]string,
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	return sortedNames(f), cobra.ShellCompDirectiveNoFileComp
-}
-
-func version() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	if v := info.Main.Version; v != "" && v != "(devel)" {
-		return v
-	}
-	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" && len(s.Value) >= 12 {
-			return "devel-" + s.Value[:12]
-		}
-	}
-	return "devel"
 }

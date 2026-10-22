@@ -123,13 +123,21 @@ func contentHash(extra string, files ...string) (string, error) {
 
 // runtime runs the container CLI and returns its standard output.
 func runtime(args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := 30 * time.Second
+	if args[0] == "run" {
+		// Apple's container may download its init image on a cold start.
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, containerRuntime, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("timed out after %s: %w", timeout, ctx.Err())
+		}
 		return string(out), fmt.Errorf("%s %s: %w: %s", containerRuntime, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
