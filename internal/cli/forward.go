@@ -24,16 +24,19 @@ func (a *app) forwardAddCommand() *cobra.Command {
 as in ssh:
 
   -R  listen on bind_address:port on the server; connect to host:hostport
-      from this machine
+      from this machine. Omit the target for a SOCKS5 proxy; this machine
+      connects to requested addresses and resolves names sent by clients
   -L  listen on bind_address:port on this machine; connect to host:hostport
       from the server
   -D  listen on bind_address:port on this machine as a SOCKS5 proxy;
       connect from the server to each address that clients request.
-      Only TCP CONNECT without authentication is supported. Domain names
-      that clients send are resolved by the server.
+      Domain names that clients send are resolved by the server.
 
-For -R and -L, either [bind_address:]port or host:hostport can be a Unix
-socket path instead, which is any field containing "/". Paths on this
+Both SOCKS5 modes support only TCP CONNECT without authentication and
+require a TCP listener. Anyone who can reach the listener can use the proxy.
+
+For fixed-target -R and -L, either [bind_address:]port or host:hostport can
+be a Unix socket path instead, which is any field containing "/". Paths on this
 machine may be relative or start with "~" and are saved as absolute paths;
 paths on the server must be absolute. Sockets that gst creates on this
 machine are accessible to their owner only.
@@ -48,6 +51,7 @@ restarts to apply the change unless --no-restart is given.`,
   gst forward add myhost -L 15432:127.0.0.1:5432 -L 16379:127.0.0.1:6379
   gst forward add myhost -R '*:8080:localhost:3000'
   gst forward add myhost -D 1080
+  gst forward add myhost -R 1080
   gst forward add myhost -L ~/.gst/db.sock:/run/postgresql/.s.PGSQL.5432
   gst forward add myhost -R /home/user/agent.sock:$SSH_AUTH_SOCK`,
 		Args:              a.args(1, 1),

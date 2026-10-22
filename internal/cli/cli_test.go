@@ -250,7 +250,7 @@ func TestAddRejects(t *testing.T) {
 		{"add"},
 		{"add", "MyHost"},
 		{"add", "myhost", "-oProxyCommand=x"},
-		{"add", "myhost", "-R", "2222"},
+		{"add", "myhost", "-R", "0"},
 		{"add", "myhost", "-R", "2222:a:1", "-R", "2222:b:1"},
 		{"add", "myhost", "--connect-timeout", "1500ms"},
 		{"add", "myhost", "--no-such-flag"},
@@ -346,6 +346,42 @@ func TestForwards(t *testing.T) {
 	e.expectCode(exitFailure, "forward", "remove", "myhost", "-L", "15432")
 	e.expectCode(exitFailure, "forward", "remove", "myhost", "-R", "0.0.0.0:2222:otherhost:22")
 	e.mustGst("forward", "remove", "myhost", "-R", "*:2222")
+	if fwds := e.tunnel("myhost").Forwards; len(fwds) != 0 {
+		t.Fatalf("forwards left: %+v", fwds)
+	}
+}
+
+func TestReverseDynamicForwards(t *testing.T) {
+	e := newEnv(t)
+	if out := e.mustGst("add", "myhost", "-R", "1080", "-D", "1080"); !strings.Contains(out, "-R 127.0.0.1:1080\n") {
+		t.Fatalf("unexpected output %q", out)
+	}
+	want := config.Forward{Direction: config.Remote, Listen: "127.0.0.1:1080"}
+	if got := e.tunnel("myhost").Forwards[0]; got != want {
+		t.Fatalf("reverse SOCKS forward = %+v; want %+v", got, want)
+	}
+	e.services.calls = nil
+	if out := e.mustGst("forward", "add", "myhost", "-R", "127.0.0.1:1080"); !strings.Contains(out, "already has") || len(e.services.calls) != 0 {
+		t.Fatalf("duplicate must be a no-op: %q %v", out, e.services.calls)
+	}
+	if stderr := e.expectCode(exitFailure, "forward", "add", "myhost", "-R", "1080:localhost:22"); !strings.Contains(stderr, "gst forward remove myhost -R 127.0.0.1:1080") {
+		t.Fatalf("missing listener conflict hint: %q", stderr)
+	}
+	var views []forwardView
+	if err := json.Unmarshal([]byte(e.mustGst("forward", "list", "myhost", "--json")), &views); err != nil || len(views) != 2 ||
+		views[0] != (forwardView{1, "remote", "127.0.0.1:1080", "", "-R 127.0.0.1:1080"}) {
+		t.Fatalf("unexpected forward list %+v: %v", views, err)
+	}
+	if out := e.mustGst("forward", "remove", "myhost", "-R", "1080"); !strings.Contains(out, "Removed -R 127.0.0.1:1080 from tunnel myhost.") {
+		t.Fatalf("unexpected output %q", out)
+	}
+	e.mustGst("forward", "add", "myhost", "-R", "1080:localhost:22")
+	e.expectCode(exitFailure, "forward", "add", "myhost", "-R", "1080")
+	e.mustGst("forward", "remove", "myhost", "-R", "1080")
+	if out := e.mustGst("forward", "add", "myhost", "-R", "1080"); !strings.Contains(out, "Added -R 127.0.0.1:1080 to tunnel myhost.") {
+		t.Fatalf("unexpected output %q", out)
+	}
+	e.mustGst("forward", "remove", "myhost", "-R", "127.0.0.1:1080", "-D", "1080")
 	if fwds := e.tunnel("myhost").Forwards; len(fwds) != 0 {
 		t.Fatalf("forwards left: %+v", fwds)
 	}

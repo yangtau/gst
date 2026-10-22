@@ -28,6 +28,7 @@ import (
 // serverOptions selects how the test SSH server misbehaves.
 type serverOptions struct {
 	rejectForward int  // reject the n-th tcpip-forward request (1-based)
+	rejectDirect  bool // reject direct-tcpip channels to verify client-side dialing
 	hangForward   bool // never answer tcpip-forward requests
 	hangKeepalive bool // never answer keepalive requests
 	cleanupStatus uint32
@@ -156,6 +157,10 @@ func (s *testServer) serveChannels(ctx context.Context, channels <-chan ssh.NewC
 
 // serveDirect dials the target of a local forward from the server side.
 func (s *testServer) serveDirect(ctx context.Context, ch ssh.NewChannel) {
+	if s.options.rejectDirect {
+		ch.Reject(ssh.Prohibited, "SECRET direct forwarding disabled")
+		return
+	}
 	var target struct {
 		Host       string
 		Port       uint32

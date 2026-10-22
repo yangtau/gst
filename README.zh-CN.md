@@ -6,10 +6,10 @@
 
 - **tunnel**：一个有名字的 SSH 连接，例如 `myhost`。
 - **forward**：tunnel 上的一条端口转发。
-  - `-R [bind_address:]port:host:hostport`：在服务器上监听，由本机连接 `host:hostport`。
+  - `-R [bind_address:]port[:host:hostport]`：在服务器上监听，由本机连接 `host:hostport`。省略目标即为反向 SOCKS5 代理，由本机连接客户端请求的地址。
   - `-L [bind_address:]port:host:hostport`：在本机监听，由服务器连接 `host:hostport`。
   - `-D [bind_address:]port`：在本机监听一个 SOCKS5 代理，由服务器连接客户端请求的地址。
-  - `-R` 和 `-L` 的任意一端都可以用 Unix socket 路径代替端口或 `host:hostport`。
+  - 固定目标的 `-R` 和 `-L` 的任意一端都可以用 Unix socket 路径代替端口或 `host:hostport`。SOCKS 代理只支持 TCP 监听，不支持 Unix socket。
 
 ## 安装
 
@@ -114,6 +114,11 @@ gst set myhost --cleanup-listeners
 gst forward add myhost -D 1080
 curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com
 
+# 在服务器的 1080 端口开一个反向 SOCKS5 代理，连接从本机发出
+gst forward add myhost -R 1080
+# 在服务器上执行 curl，通过代理访问；域名由本机解析
+ssh myhost 'curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com'
+
 # 在服务器的所有网卡上监听
 gst forward add web -R '*:8080:localhost:3000'
 
@@ -132,7 +137,8 @@ gst set myhost --cleanup-listeners=false
 ## forward 的写法
 
 - 省略 `bind_address` 时只监听 loopback（`127.0.0.1`）；`*` 或空的 `bind_address`（如 `:8080:localhost:3000`）监听所有网卡；IPv6 地址加方括号。
-- `host` 由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己，`-R` 中的 `localhost` 指本机。
+- `-R [bind_address:]port[:host:hostport]` 的目标可选：省略时为反向 SOCKS5，提供时保持原有的固定目标转发行为。`-L` 必须有目标，`-D` 不接受目标。
+- 固定目标的 `host` 由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己，`-R` 中的 `localhost` 指本机。
 - 服务器上的实际监听范围还受 sshd 的 `GatewayPorts` 控制。监听所有网卡时，记得用防火墙限制访问来源。
 - sshd 的 `AllowTcpForwarding` 需要允许所用的方向：两个方向都用时设为 `yes`，只用 `-R` 时可以是 `remote`，只用 `-L` 和 `-D` 时可以是 `local`。
 
@@ -144,12 +150,13 @@ gst set myhost --cleanup-listeners=false
 - 服务器 sshd 的 `AllowStreamLocalForwarding` 需要允许所用的方向，默认允许。
 - **sshd 会把服务器上的 `-R` socket 文件留下**，即使 tunnel 正常停止也是如此，而且不会在已存在的文件上监听。如果不做以下任一项，`-R` socket forward 从第一次重启或重连起就会报 `listener start failed`：在服务器的 sshd 配置中设置 `StreamLocalBindUnlink yes`，或开启 `--cleanup-listeners`（见[排查问题](#排查问题)）。
 
-## SOCKS 代理（`-D`）
+## SOCKS 代理（`-D` 和不带目标的 `-R`）
 
-- 与 `ssh -D` 一样，gst 支持无认证的 SOCKS5 `CONNECT`。不支持 UDP（`UDP ASSOCIATE`）、`BIND` 和 SOCKS4，所以 DNS 查询、QUIC 等 UDP 流量无法通过它。
-- 域名在哪里解析取决于客户端。发送域名的客户端（如使用 `socks5h://` 的 curl）由服务器解析，只在服务器网络中才能解析的域名也能访问；自行解析的客户端（如使用 `socks5://` 的 curl）只发送 IP 地址。
-- 能访问监听地址的人都能使用这个代理。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
-- 不支持代理的程序，可以用 tun2socks 等工具把 TUN 设备上的 TCP 流量导入这个代理；gst 不创建 TUN 设备，也不配置路由。这些程序的 DNS 查询仍在本机解析，除非另外配置 DNS。
+- `-D` 在本机监听，由 SSH 服务器发起连接；不带目标的 `-R` 在 SSH 服务器上监听，由运行 gst 的本机发起连接。两者都只支持 TCP 监听，不支持动态 Unix socket。
+- 两者都与 `ssh -D` 一样，支持无认证的 SOCKS5 `CONNECT`。不支持 UDP（`UDP ASSOCIATE`）、`BIND` 和 SOCKS4，所以 UDP DNS 查询、QUIC 等 UDP 流量无法通过代理。
+- 域名在哪里解析取决于客户端。使用 `socks5h://` 时，curl 发送域名：`-D` 由 SSH 服务器解析，不带目标的 `-R` 由运行 gst 的本机解析，因此只在相应一侧网络中才能解析的域名也能访问。使用 `socks5://` 时，curl 在自身运行的机器上解析域名，只发送 IP 地址。
+- 能访问监听地址的人都能使用代理，访问发起连接一侧可达的网络——反向 SOCKS 会开放对本机所在网络的访问。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
+- 不支持代理的程序，可以用 tun2socks 等工具把 TUN 设备上的 TCP 流量导入代理；gst 不创建 TUN 设备，也不配置路由。这些程序的 DNS 查询仍在程序运行的机器上解析，除非另外配置 DNS。
 
 ## ssh 配置
 
@@ -201,8 +208,8 @@ gst set myhost --cleanup-listeners=false
 - 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。
 - 退出码：`0` 成功，`1` 执行失败（包括 `check` 未通过），`2` 参数无效。
 - `list`、`show`、`check`、`forward list` 支持 `--json`。
-- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但 forward 不同则报错。`-L` 和 `-D` 都在本机监听，所以不能共用同一个地址。
+- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但 forward 不同则报错。`-L` 和 `-D` 都在本机监听，所以不能共用同一个地址。固定目标和动态（SOCKS）`-R` 都在服务器上监听，同样不能共用监听地址。
 
 ## 配置文件
 
-tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，后台服务会沿用同一个路径。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。
+tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，后台服务会沿用同一个路径。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。反向 SOCKS 不需要改变配置文件结构：它保存为目标为空的 `remote` forward。

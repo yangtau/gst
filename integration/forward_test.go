@@ -4,9 +4,11 @@ package integration
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"syscall"
@@ -92,27 +94,64 @@ func TestDynamicForward(t *testing.T) {
 	tunnel := startTunnel(t, s.config(false, config.Forward{Direction: config.Dynamic, Listen: proxy}))
 	tunnel.waitReady(t)
 
-	conn, err := net.DialTimeout("tcp", proxy, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	request := append([]byte{5, 1, 0, 5, 1, 0, 3, 9}, "localhost\x00\x16"...)
-	if _, err := conn.Write(request); err != nil {
-		t.Fatal(err)
-	}
-	r := bufio.NewReader(conn)
-	reply := make([]byte, 12)
-	if _, err := io.ReadFull(r, reply); err != nil || reply[1] != 0 || reply[3] != 0 {
-		t.Fatalf("SOCKS reply %v: %v", reply, err)
-	}
-	if banner, err := r.ReadString('\n'); !strings.HasPrefix(banner, "SSH-2.0-") {
+	conn := dialSOCKSLocalhost(t, proxy, 22)
+	if banner, err := bufio.NewReader(conn).ReadString('\n'); !strings.HasPrefix(banner, "SSH-2.0-") {
 		t.Fatalf("no sshd banner through the dynamic forward: %v", err)
 	}
 	if logs := tunnel.logs(); strings.Contains(logs, proxy) || strings.Contains(logs, "localhost") {
 		t.Fatalf("log reveals forward addresses:\n%s", logs)
 	}
+}
+
+// The target only listens on the host's loopback, so a reply proves that
+// gst, not sshd in the container, resolved and dialed localhost.
+func TestReverseDynamicForward(t *testing.T) {
+	t.Parallel()
+	s := startSSHServer(t)
+	target := startEchoTarget(t)
+	tunnel := startTunnel(t, s.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222"}))
+	tunnel.waitReady(t)
+
+	conn := dialSOCKSLocalhost(t, s.hostAddr(2222), netip.MustParseAddrPort(target).Port())
+	if _, err := io.WriteString(conn, "reverse SOCKS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := io.ReadAll(conn); err != nil || string(got) != "reply:reverse SOCKS" {
+		t.Fatalf("reply %q: %v", got, err)
+	}
+	if logs := tunnel.logs(); strings.Contains(logs, target) || strings.Contains(logs, "localhost") {
+		t.Fatalf("log reveals forward addresses:\n%s", logs)
+	}
+	tunnel.signal(t, syscall.SIGTERM)
+	if code, _ := tunnel.waitExit(t, 5*time.Second); code != 0 {
+		t.Fatalf("exit code %d, want 0", code)
+	}
+	eventually(t, 5*time.Second, "reverse SOCKS listener survived shutdown", func() bool {
+		return len(s.listenerOwners(2222)) == 0
+	})
+}
+
+func dialSOCKSLocalhost(t *testing.T, proxy string, port uint16) *net.TCPConn {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxy, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	request := append([]byte{5, 1, 0, 5, 1, 0, 3, 9}, "localhost"...)
+	request = binary.BigEndian.AppendUint16(request, port)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 12)
+	if _, err := io.ReadFull(conn, reply); err != nil || reply[1] != 0 || reply[3] != 0 {
+		t.Fatalf("SOCKS reply %v: %v", reply, err)
+	}
+	return conn.(*net.TCPConn)
 }
 
 func TestRefusedTargetClosesOnlyThatConnection(t *testing.T) {

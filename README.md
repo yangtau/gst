@@ -6,10 +6,10 @@ English | [简体中文](README.zh-CN.md)
 
 - **tunnel**: a named SSH connection, such as `myhost`.
 - **forward**: one port forward on a tunnel.
-  - `-R [bind_address:]port:host:hostport`: listen on the server; this machine connects to `host:hostport`.
+  - `-R [bind_address:]port[:host:hostport]`: listen on the server; this machine connects to `host:hostport`. Omit the target to run a reverse SOCKS5 proxy: this machine connects to each address that clients request.
   - `-L [bind_address:]port:host:hostport`: listen on this machine; the server connects to `host:hostport`.
   - `-D [bind_address:]port`: listen on this machine as a SOCKS5 proxy; the server connects to each address that clients request.
-  - In `-R` and `-L`, either side can be a Unix socket path instead of a port or `host:hostport`.
+  - In fixed-target `-R` and `-L`, either side can be a Unix socket path instead of a port or `host:hostport`. SOCKS proxies use TCP listeners only, not Unix sockets.
 
 ## Install
 
@@ -114,6 +114,11 @@ gst set myhost --cleanup-listeners
 gst forward add myhost -D 1080
 curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com
 
+# A reverse SOCKS5 proxy on the server's port 1080; connections leave from this machine
+gst forward add myhost -R 1080
+# Run curl on the server through the proxy; this machine resolves the domain
+ssh myhost 'curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com'
+
 # Listen on all of the server's interfaces
 gst forward add web -R '*:8080:localhost:3000'
 
@@ -132,7 +137,8 @@ gst set myhost --cleanup-listeners=false
 ## Forward syntax
 
 - Without `bind_address`, a forward listens on loopback (`127.0.0.1`) only; `*` or an empty `bind_address` (as in `:8080:localhost:3000`) listens on all interfaces. Put IPv6 addresses in brackets.
-- `host` is resolved by the side that connects to it: in `-L`, `127.0.0.1` is the server itself; in `-R`, `localhost` is this machine.
+- For `-R [bind_address:]port[:host:hostport]`, the target is optional: omit it for reverse SOCKS5, or include it for the existing fixed-target behavior. `-L` always needs a target; `-D` never takes one.
+- A fixed target's `host` is resolved by the side that connects to it: in `-L`, `127.0.0.1` is the server itself; in `-R`, `localhost` is this machine.
 - The server's sshd `GatewayPorts` setting can further limit where `-R` forwards listen. When listening on all interfaces, restrict access with a firewall.
 - The server's sshd `AllowTcpForwarding` must allow the directions you use: `yes` for both, or `remote` for `-R` only, or `local` for `-L` and `-D` only.
 
@@ -144,12 +150,13 @@ gst set myhost --cleanup-listeners=false
 - The server's sshd `AllowStreamLocalForwarding` must allow the directions you use; it does by default.
 - **sshd leaves `-R` socket files on the server behind**, even when the tunnel stops cleanly, and refuses to listen on an existing file. Without one of the following, an `-R` socket forward fails with `listener start failed` from its first restart or reconnect on: set `StreamLocalBindUnlink yes` in the server's sshd configuration, or turn on `--cleanup-listeners` (see [Troubleshooting](#troubleshooting)).
 
-## SOCKS proxy (`-D`)
+## SOCKS proxies (`-D` and targetless `-R`)
 
-- gst supports SOCKS5 `CONNECT` without authentication, like `ssh -D`. UDP (`UDP ASSOCIATE`), `BIND`, and SOCKS4 are not supported, so DNS queries, QUIC, and other UDP traffic cannot go through it.
-- Where names are resolved depends on the client. A client that sends the domain name, such as curl with `socks5h://`, has the server resolve it, so names that only resolve on the server's network work. A client that resolves names itself, such as curl with `socks5://`, sends only the IP address.
-- Anyone who can reach the listen address can use the proxy. Keep the default loopback address unless you restrict access with a firewall.
-- For programs without proxy support, a tool such as tun2socks can route their TCP traffic from a TUN device into the proxy; gst does not create TUN devices or routes. Their DNS queries are resolved on this machine unless you set up DNS separately.
+- `-D` listens on this machine and connects from the SSH server; targetless `-R` listens on the SSH server and connects from the local gst machine. Both require TCP listeners; dynamic Unix sockets are not supported.
+- Both support SOCKS5 `CONNECT` without authentication, like `ssh -D`. UDP (`UDP ASSOCIATE`), `BIND`, and SOCKS4 are not supported, so UDP DNS queries, QUIC, and other UDP traffic cannot go through them.
+- Where names are resolved depends on the client. With `socks5h://`, curl sends the domain name: the SSH server resolves it for `-D`, and the local gst machine resolves it for targetless `-R`. Names available only on that side's network work. With `socks5://`, curl resolves names where curl runs and sends only the IP address.
+- Anyone who can reach the listen address can use the proxy and access networks reachable from the connecting side—including your local network with reverse SOCKS. Keep the default loopback address unless you restrict access with a firewall.
+- For programs without proxy support, a tool such as tun2socks can route their TCP traffic from a TUN device into the proxy; gst does not create TUN devices or routes. Their DNS queries are resolved where those programs run unless you set up DNS separately.
 
 ## ssh configuration
 
@@ -201,8 +208,8 @@ You can also turn on `--cleanup-listeners`: after each connect and before listen
 - Results go to stdout. Errors go to stderr, start with `error:`, and usually come with a `hint:` line naming the next command to run.
 - Exit status: `0` success, `1` the work failed (including a failed `check`), `2` invalid arguments.
 - `list`, `show`, `check`, and `forward list` accept `--json`.
-- No command prompts for input. Adding a forward that already exists changes nothing; a different forward on the same listen address is an error. `-L` and `-D` forwards both listen on this machine, so they cannot share an address.
+- No command prompts for input. Adding a forward that already exists changes nothing; a different forward on the same listen address is an error. `-L` and `-D` forwards both listen on this machine, so they cannot share an address. Fixed-target and dynamic (SOCKS) `-R` forwards both listen on the server and cannot share a listen address either.
 
 ## Configuration file
 
-Tunnels are stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). `--config` or the `GST_CONFIG` environment variable selects another file, and background tunnels keep using it. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe.
+Tunnels are stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). `--config` or the `GST_CONFIG` environment variable selects another file, and background tunnels keep using it. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe. Reverse SOCKS needs no configuration schema change: it is stored as a `remote` forward with an empty target.

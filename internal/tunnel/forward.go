@@ -16,22 +16,24 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	defer closeOnDone(ctx, incoming)()
 
 	target := r.target
-	if r.socks {
-		incoming.SetDeadline(time.Now().Add(t.opts.ConnectTimeout))
+	if r.target == "" {
+		// SSH forwarded connections do not support deadlines.
+		timer := time.AfterFunc(t.opts.ConnectTimeout, func() { incoming.Close() })
 		var err error
-		if target, err = socksRequest(incoming); err != nil {
+		target, err = socksRequest(incoming)
+		timer.Stop()
+		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("SOCKS request failed for forward %d", r.id)
 			}
 			return
 		}
-		incoming.SetDeadline(time.Time{})
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, t.opts.ConnectTimeout)
 	outgoing, err := r.dial(dialCtx, r.network, target)
 	cancel()
-	if r.socks {
+	if r.target == "" {
 		socksReply(incoming, socksReplyCode(err))
 	}
 	if err != nil {

@@ -16,10 +16,13 @@ import (
 // "ssh -R"; a Local forward does the reverse, like "ssh -L". A Dynamic
 // forward listens on this machine as a SOCKS5 proxy and has the server
 // dial the address each client requests, like "ssh -D"; it has no Target.
+// A Remote forward with no Target is the reverse SOCKS5 proxy: it listens
+// on the server and dials each requested address from this machine.
+// Both SOCKS5 modes require a TCP listener.
 type Forward struct {
 	Direction string `json:"direction"` // Remote, Local, or Dynamic
 	Listen    string `json:"listen"`    // IP:port or socket path bound on the listening side
-	Target    string `json:"target"`    // host:port or socket path dialed from the other side
+	Target    string `json:"target"`    // host:port or socket path; empty for SOCKS5
 }
 
 // Forward directions.
@@ -50,7 +53,7 @@ func (f Forward) Flag() string {
 // Spec formats f the way ssh takes it, such as "-R 0.0.0.0:2222:127.0.0.1:22"
 // or "-D 127.0.0.1:1080".
 func (f Forward) Spec() string {
-	if f.Direction == Dynamic {
+	if f.Target == "" {
 		return f.Flag() + " " + f.Listen
 	}
 	return f.Flag() + " " + f.Listen + ":" + f.Target
@@ -80,7 +83,7 @@ const (
 
 // ParseForward parses an ssh forward specification for direction:
 // "[bind_address:]port:host:hostport", or "[bind_address:]port" for
-// Dynamic. As in ssh, an omitted bind address means loopback, while an
+// Dynamic or Remote SOCKS5. An omitted bind address means loopback, while an
 // empty one or "*" means all interfaces. IPv6 addresses use brackets.
 // Either "[bind_address:]port" or "host:hostport" can be a Unix socket
 // path instead, which as in ssh is any field containing "/". Paths on this
@@ -92,6 +95,9 @@ func ParseForward(direction, spec string) (Forward, error) {
 		if len(fields) > 2 || isPath(fields[0]) {
 			return Forward{}, fmt.Errorf("invalid forward %q: want %s", spec, dynamicSpecSyntax)
 		}
+		return ParseListener(direction, spec)
+	}
+	if direction == Remote && len(fields) <= 2 && !isPath(fields[0]) && !isPath(fields[len(fields)-1]) {
 		return ParseListener(direction, spec)
 	}
 	targetFields := 2
@@ -248,6 +254,10 @@ func validateForwards(forwards []Forward) error {
 		if fwd.Direction == Dynamic {
 			if fwd.Target != "" {
 				return fmt.Errorf("dynamic forward %d must not have a target", n)
+			}
+		} else if fwd.Direction == Remote && fwd.Target == "" {
+			if IsSocket(fwd.Listen) {
+				return fmt.Errorf("reverse dynamic forward %d requires a TCP listener", n)
 			}
 		} else if !isDialAddress(fwd.Target) && !isSocketPath(fwd.Target) {
 			return fmt.Errorf("invalid target for forward %d", n)

@@ -1,7 +1,8 @@
 // Package tunnel runs an SSH tunnel. Remote forwards ask the SSH server to
 // listen and relay accepted connections to targets dialed from this machine;
 // local forwards listen on this machine and relay to targets dialed by the
-// server; dynamic forwards do the same for targets requested over SOCKS5.
+// server. Dynamic forwards and remote forwards without a target accept SOCKS5
+// requests, with targets dialed by the server and this machine, respectively.
 package tunnel
 
 import (
@@ -114,7 +115,7 @@ func (t *tunnel) serve(ctx context.Context) error {
 // listen opens the listener for one forward and starts accepting on it.
 func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	addr := net.TCPAddrFromAddrPort(fwd.ListenAddr())
-	r := route{id: id, network: "tcp", target: fwd.Target, socks: fwd.Direction == config.Dynamic}
+	r := route{id: id, network: "tcp", target: fwd.Target}
 	if config.IsSocket(fwd.Target) {
 		r.network = "unix"
 	}
@@ -167,8 +168,7 @@ type route struct {
 	listener net.Listener
 	dial     func(ctx context.Context, network, address string) (net.Conn, error)
 	network  string // of target: "tcp" or "unix"
-	target   string
-	socks    bool // the target is requested by each client over SOCKS5
+	target   string // empty when each client requests the target over SOCKS5
 }
 
 func (t *tunnel) accept(ctx context.Context, r route) {

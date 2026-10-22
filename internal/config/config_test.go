@@ -92,31 +92,34 @@ func TestParseInvalid(t *testing.T) {
 	doc := func(name, tunnel string) string { return `{"tunnels":{"` + name + `":` + tunnel + `}}` }
 	replace := func(old, new string) string { return doc("myhost", strings.Replace(tunnel, old, new, 1)) }
 	tests := map[string]string{
-		"unknown field":       replace(`"destination"`, `"extra":1,"destination"`),
-		"trailing data":       doc("myhost", tunnel) + `{}`,
-		"null tunnel":         doc("myhost", "null"),
-		"uppercase name":      doc("MyHost", tunnel),
-		"long name":           doc(strings.Repeat("a", 33), tunnel),
-		"name with dot":       doc("a.b", tunnel),
-		"empty destination":   replace(`"myhost"`, `""`),
-		"option destination":  replace(`"myhost"`, `"-oProxyCommand=x"`),
-		"space destination":   replace(`"myhost"`, `"a b"`),
-		"relative identity":   replace(`"destination"`, `"identity_file":"key","destination"`),
-		"negative timeout":    replace(`"destination"`, `"connect_timeout_seconds":-1,"destination"`),
-		"huge interval":       replace(`"destination"`, `"keepalive_interval_seconds":9223372036,"destination"`),
-		"huge count":          replace(`"destination"`, `"keepalive_count_max":1001,"destination"`),
-		"bad direction":       replace(`"remote"`, `"both"`),
-		"dynamic with target": replace(`"remote"`, `"dynamic"`),
-		"relative socket":     replace(`0.0.0.0:2222`, `run/a.sock`),
-		"unclean socket":      replace(`127.0.0.1:22`, `/run//a.sock`),
-		"socket with newline": replace(`127.0.0.1:22`, `/run/a\nb.sock`),
-		"dynamic socket":      replace(`}]`, `},{"direction":"dynamic","listen":"/run/a.sock","target":""}]`),
-		"duplicate socket":    replace(`}]`, `},{"direction":"remote","listen":"/run/a.sock","target":"h:1"},{"direction":"remote","listen":"/run/a.sock","target":"/b"}]`),
-		"dynamic and local":   replace(`}]`, `},{"direction":"local","listen":"0.0.0.0:1080","target":"h:1"},{"direction":"dynamic","listen":"0.0.0.0:1080","target":""}]`),
-		"hostname listener":   replace(`0.0.0.0:2222`, `localhost:2222`),
-		"bad target":          replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
-		"duplicate listener":  replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:02222","target":"h:1"}]`),
-		"duplicate mapped v4": replace(`}]`, `},{"direction":"remote","listen":"[::ffff:0.0.0.0]:2222","target":"h:1"}]`),
+		"unknown field":            replace(`"destination"`, `"extra":1,"destination"`),
+		"trailing data":            doc("myhost", tunnel) + `{}`,
+		"null tunnel":              doc("myhost", "null"),
+		"uppercase name":           doc("MyHost", tunnel),
+		"long name":                doc(strings.Repeat("a", 33), tunnel),
+		"name with dot":            doc("a.b", tunnel),
+		"empty destination":        replace(`"myhost"`, `""`),
+		"option destination":       replace(`"myhost"`, `"-oProxyCommand=x"`),
+		"space destination":        replace(`"myhost"`, `"a b"`),
+		"relative identity":        replace(`"destination"`, `"identity_file":"key","destination"`),
+		"negative timeout":         replace(`"destination"`, `"connect_timeout_seconds":-1,"destination"`),
+		"huge interval":            replace(`"destination"`, `"keepalive_interval_seconds":9223372036,"destination"`),
+		"huge count":               replace(`"destination"`, `"keepalive_count_max":1001,"destination"`),
+		"bad direction":            replace(`"remote"`, `"both"`),
+		"dynamic with target":      replace(`"remote"`, `"dynamic"`),
+		"relative socket":          replace(`0.0.0.0:2222`, `run/a.sock`),
+		"unclean socket":           replace(`127.0.0.1:22`, `/run//a.sock`),
+		"socket with newline":      replace(`127.0.0.1:22`, `/run/a\nb.sock`),
+		"reverse dynamic socket":   replace(`}]`, `},{"direction":"remote","listen":"/run/a.sock","target":""}]`),
+		"local without target":     replace(`}]`, `},{"direction":"local","listen":"127.0.0.1:1080","target":""}]`),
+		"fixed and dynamic remote": replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:2222","target":""}]`),
+		"dynamic socket":           replace(`}]`, `},{"direction":"dynamic","listen":"/run/a.sock","target":""}]`),
+		"duplicate socket":         replace(`}]`, `},{"direction":"remote","listen":"/run/a.sock","target":"h:1"},{"direction":"remote","listen":"/run/a.sock","target":"/b"}]`),
+		"dynamic and local":        replace(`}]`, `},{"direction":"local","listen":"0.0.0.0:1080","target":"h:1"},{"direction":"dynamic","listen":"0.0.0.0:1080","target":""}]`),
+		"hostname listener":        replace(`0.0.0.0:2222`, `localhost:2222`),
+		"bad target":               replace(`127.0.0.1:22`, `127.0.0.1:ssh`),
+		"duplicate listener":       replace(`}]`, `},{"direction":"remote","listen":"0.0.0.0:02222","target":"h:1"}]`),
+		"duplicate mapped v4":      replace(`}]`, `},{"direction":"remote","listen":"[::ffff:0.0.0.0]:2222","target":"h:1"}]`),
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -132,6 +135,12 @@ func TestParseInvalid(t *testing.T) {
 
 func TestParseForward(t *testing.T) {
 	tests := map[string]Forward{
+		"1080":                        {Remote, "127.0.0.1:1080", ""},
+		"localhost:1080":              {Remote, "127.0.0.1:1080", ""},
+		"*:1080":                      {Remote, "0.0.0.0:1080", ""},
+		":1080":                       {Remote, "0.0.0.0:1080", ""},
+		"0.0.0.0:1080":                {Remote, "0.0.0.0:1080", ""},
+		"[::1]:1080":                  {Remote, "[::1]:1080", ""},
 		"2222:localhost:22":           {Remote, "127.0.0.1:2222", "localhost:22"},
 		"localhost:2222:host:22":      {Remote, "127.0.0.1:2222", "host:22"},
 		"*:8080:localhost:3000":       {Remote, "0.0.0.0:8080", "localhost:3000"},
@@ -179,7 +188,7 @@ func TestParseForward(t *testing.T) {
 			t.Errorf("Spec %q does not round-trip: %+v, %v", got.Spec(), again, err)
 		}
 	}
-	for _, spec := range []string{"run/r.sock:localhost:22", "~/r.sock:/tmp/l.sock", "/a.sock", "/a.sock:22", "1:2:/a.sock", "/a.sock:h:22:/b.sock"} {
+	for _, spec := range []string{"", "0", "65536", "host:1080", "1080:h", "[::1]:0", "run/r.sock:localhost:22", "~/r.sock:/tmp/l.sock", "/a.sock", "/a.sock:22", "1:2:/a.sock", "/a.sock:h:22:/b.sock"} {
 		if f, err := ParseForward(Remote, spec); err == nil {
 			t.Errorf("ParseForward(Remote, %q) accepted: %+v", spec, f)
 		}

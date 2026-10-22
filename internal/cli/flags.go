@@ -102,11 +102,14 @@ type forwardSpec struct {
 }
 
 func (f *forwardFlags) register(fs *pflag.FlagSet, listenerOnly bool) {
-	remote, local := "[bind_address:]port:host:hostport", "[bind_address:]port:host:hostport"
+	remote, local := "[bind_address:]port[:host:hostport]", "[bind_address:]port:host:hostport"
+	remoteHelp := "listen on the server, connect from this machine"
 	if listenerOnly {
 		remote, local = "[bind_address:]port | socket", "[bind_address:]port | socket"
+	} else {
+		remoteHelp += "; omit target for SOCKS5"
 	}
-	fs.VarP(&specValue{f, config.Remote}, "remote", "R", remote+"  listen on the server, connect from this machine (like ssh -R); repeatable")
+	fs.VarP(&specValue{f, config.Remote}, "remote", "R", remote+"  "+remoteHelp+" (like ssh -R); repeatable")
 	fs.VarP(&specValue{f, config.Local}, "local", "L", local+"  listen on this machine, connect from the server (like ssh -L); repeatable")
 	fs.VarP(&specValue{f, config.Dynamic}, "dynamic", "D", "[bind_address:]port  listen on this machine as a SOCKS5 proxy, connect from the server to each requested address (like ssh -D); repeatable")
 }

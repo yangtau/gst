@@ -8,12 +8,13 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"syscall"
 
 	"golang.org/x/crypto/ssh"
 )
 
 // The server side of SOCKS5 (RFC 1928), limited to CONNECT without
-// authentication, which is what "ssh -D" offers over direct-tcpip channels.
+// authentication, used for both dynamic and reverse dynamic forwards.
 
 const (
 	socksVersion   = 5
@@ -40,7 +41,7 @@ var errSOCKSRequest = errors.New("invalid SOCKS request")
 
 // socksRequest reads the client greeting and CONNECT request from c and
 // returns the requested host:port. Domain names are returned unresolved so
-// that the server resolves them. Unsupported requests get an error reply.
+// that the dialing side resolves them. Unsupported requests get an error reply.
 func socksRequest(c net.Conn) (string, error) {
 	var greeting [2]byte // VER NMETHODS
 	if _, err := io.ReadFull(c, greeting[:]); err != nil || greeting[0] != socksVersion {
@@ -97,8 +98,8 @@ func socksRequest(c net.Conn) (string, error) {
 	return net.JoinHostPort(name, strconv.Itoa(int(binary.BigEndian.Uint16(port[:])))), nil
 }
 
-// socksReply answers a request. The bound address is left zero, as
-// direct-tcpip channels do not report one.
+// socksReply answers a request. The bound address is left zero for both
+// directions, as direct-tcpip channels do not report one.
 func socksReply(c net.Conn, code byte) error {
 	_, err := c.Write([]byte{socksVersion, code, 0, socksIPv4, 0, 0, 0, 0, 0, 0})
 	return err
@@ -112,6 +113,8 @@ func socksReplyCode(err error) byte {
 		return socksSucceeded
 	case errors.As(err, &openErr) && openErr.Reason == ssh.Prohibited:
 		return socksNotAllowed
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return socksConnectionRefused
 	case errors.As(err, &openErr) && openErr.Reason == ssh.ConnectionFailed:
 		return socksConnectionRefused
 	}
