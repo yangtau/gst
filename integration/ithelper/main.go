@@ -8,6 +8,7 @@
 //	                                            send payloads concurrently, connection i to ADDR[i % len], and verify the replies
 //	gst-it socks PROXY HOST PORT [PAYLOAD]      connect through a SOCKS5 proxy; print the reply to PAYLOAD, or the first line
 //	gst-it line NETWORK ADDR                    print the first line that ADDR sends
+//	gst-it get URL [TOKEN]                      print the HTTP status and body of URL, with TOKEN as a bearer token
 //
 // It exits with status 1 and a message on stderr when something fails.
 package main
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -41,6 +43,8 @@ func main() {
 		err = socks(args)
 	case "line":
 		err = line(args)
+	case "get":
+		err = get(args)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -187,5 +191,29 @@ func printLine(r io.Reader) error {
 		return err
 	}
 	fmt.Println(strings.TrimSuffix(text, "\n"))
+	return nil
+}
+
+func get(args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return errors.New("usage: get URL [TOKEN]")
+	}
+	req, err := http.NewRequest("GET", args[0], nil)
+	if err != nil {
+		return err
+	}
+	if len(args) == 2 {
+		req.Header.Set("Authorization", "Bearer "+args[1])
+	}
+	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d\n%s", res.StatusCode, body)
 	return nil
 }

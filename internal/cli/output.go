@@ -63,6 +63,10 @@ func forwardViews(forwards []config.Forward) []forwardView {
 
 func (a *app) view(ctx context.Context, name string, t *config.Tunnel) tunnelView {
 	status, lastErr := a.status(ctx, name, t)
+	return newTunnelView(name, t, status, lastErr)
+}
+
+func newTunnelView(name string, t *config.Tunnel, status, lastErr string) tunnelView {
 	return tunnelView{
 		Name:                     name,
 		Status:                   status,

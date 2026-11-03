@@ -295,7 +295,7 @@ func (s *testServer) startForward(ctx context.Context, conn *ssh.ServerConn, req
 					Origin     string
 					OriginPort uint32
 				}{requested.Host, requested.Port, origin.IP.String(), uint32(origin.Port)}
-				channel, requests, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(payload))
+				channel, requests, err := openChannel(ctx, conn, "forwarded-tcpip", ssh.Marshal(payload))
 				if err != nil {
 					return
 				}
@@ -342,7 +342,7 @@ func (s *testServer) startStreamLocalForward(ctx context.Context, conn *ssh.Serv
 				defer incoming.Close()
 				defer closeOnDone(ctx, incoming)()
 				payload := struct{ SocketPath, Reserved0 string }{requested.SocketPath, ""}
-				channel, requests, err := conn.OpenChannel("forwarded-streamlocal@openssh.com", ssh.Marshal(payload))
+				channel, requests, err := openChannel(ctx, conn, "forwarded-streamlocal@openssh.com", ssh.Marshal(payload))
 				if err != nil {
 					return
 				}
@@ -555,4 +555,32 @@ func runAsync(t *testing.T, opts Options) (context.CancelFunc, <-chan error) {
 	result := make(chan error, 1)
 	go func() { result <- Run(ctx, opts) }()
 	return cancel, result
+}
+
+// openChannel opens a channel on conn, giving up when ctx is done. An open
+// that races with the connection's end can wait forever for a reply in
+// x/crypto/ssh, which would block the server's cleanup; such an open is
+// left behind.
+func openChannel(ctx context.Context, conn ssh.Conn, kind string, extra []byte) (ssh.Channel, <-chan *ssh.Request, error) {
+	type opened struct {
+		channel  ssh.Channel
+		requests <-chan *ssh.Request
+		err      error
+	}
+	result := make(chan opened, 1)
+	go func() {
+		channel, requests, err := conn.OpenChannel(kind, extra)
+		result <- opened{channel, requests, err}
+	}()
+	select {
+	case r := <-result:
+		return r.channel, r.requests, r.err
+	case <-ctx.Done():
+		go func() {
+			if r := <-result; r.err == nil {
+				r.channel.Close()
+			}
+		}()
+		return nil, nil, ctx.Err()
+	}
 }

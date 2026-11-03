@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>gst</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="logo">gst</span><span id="node" class="node"></span></div>
+  <div class="meta"><span id="daemon" class="pill"></span><span id="updated" class="muted"></span></div>
+</header>
+<main>
+  <p id="alert" class="alert" hidden></p>
+
+  <section id="mesh-section" hidden>
+    <h2>Mesh</h2>
+    <p class="muted small">As this machine knows it. Arrows point from the machine that runs a tunnel to its server.</p>
+    <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh map"></svg></div>
+    <div class="legend small muted">
+      <span><i class="ln linked"></i>peer link up</span>
+      <span><i class="ln running"></i>tunnel running</span>
+      <span><i class="ln down"></i>tunnel not running</span>
+      <span><i class="dot dim"></i>unreachable</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tunnels</h2>
+    <div class="table-wrap"><table id="tunnels">
+      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Forwards</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p id="tunnels-empty" class="muted" hidden>No tunnels. Add one with <code>gst add &lt;name&gt; [destination]</code>.</p>
+  </section>
+
+  <section id="peers-section" hidden>
+    <h2>Peer links</h2>
+    <div class="table-wrap"><table id="peers">
+      <thead><tr><th>Direction</th><th>Tunnel</th><th>State</th><th>Peer</th><th>Since</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p id="peers-empty" class="muted" hidden>No peer links. Link over a tunnel with <code>gst set &lt;tunnel&gt; --mesh</code>.</p>
+  </section>
+
+  <section id="nodes-section" hidden>
+    <h2>Machines</h2>
+    <div class="table-wrap"><table id="nodes">
+      <thead><tr><th>Name</th><th>Kind</th><th>ID</th><th>Reachable</th><th>Software</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="mesh-off" hidden>
+    <h2>Mesh</h2>
+    <p class="muted">The mesh is not enabled on this machine. Enable it with <code>gst mesh enable</code>.</p>
+  </section>
+</main>
+</body>
+</html>

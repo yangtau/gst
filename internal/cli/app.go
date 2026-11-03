@@ -42,6 +42,7 @@ func Execute(args []string) int {
 		newBackend: func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
 		resolve:    sshconfig.Resolve,
 		executable: os.Executable,
+		openURL:    openBrowser,
 	}
 	return a.execute(context.Background(), args)
 }
@@ -52,6 +53,7 @@ type app struct {
 	newBackend     func() (backend, error)
 	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
 	executable     func() (string, error)
+	openURL        func(url string) error // nil opens nothing
 
 	configFlag string
 	back       backend
@@ -200,11 +202,8 @@ const (
 )
 
 // status returns the status of tunnel name, configured as t, and its last
-// error. A started tunnel that the daemon does not run is down.
+// error, with the daemon's states fetched once per command.
 func (a *app) status(ctx context.Context, name string, t *config.Tunnel) (string, string) {
-	if t.Stopped {
-		return statusStopped, ""
-	}
 	if a.states == nil {
 		a.states = map[string]wire.TunnelState{}
 		if b, err := a.backend(); err == nil {
@@ -213,7 +212,17 @@ func (a *app) status(ctx context.Context, name string, t *config.Tunnel) (string
 			}
 		}
 	}
-	s, ok := a.states[name]
+	return statusOf(name, t, a.states)
+}
+
+// statusOf returns the status of tunnel name, configured as t, and its last
+// error, given the states the daemon reported. A started tunnel that the
+// daemon does not run is down.
+func statusOf(name string, t *config.Tunnel, states map[string]wire.TunnelState) (string, string) {
+	if t.Stopped {
+		return statusStopped, ""
+	}
+	s, ok := states[name]
 	if !ok {
 		return statusDown, ""
 	}

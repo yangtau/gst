@@ -93,6 +93,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | `gst show <name>` | Show a tunnel's settings and what ssh resolves it to |
 | `gst logs <name> [-f] [-n N]` | Print the log |
 | `gst check <name>` | Diagnose: ssh config, identity, known_hosts, network, login |
+| `gst ui [--port N] [--no-open]` | Show tunnels, peer links, and a map of the mesh in a browser |
 | `gst mesh enable [--name name]` / `gst mesh disable` | Join or leave the mesh of linked machines |
 | `gst mesh peers` | List peer links |
 | `gst mesh nodes` | Show every machine in the mesh and the tunnels between them |
@@ -236,6 +237,20 @@ ssh -o ProxyCommand='gst connect %n 22' devcn
 - These tunnels have only `-L` and `-D` forwards and no SSH settings. They run as long as they are started, whether or not the mesh currently has a route; each connection takes the shortest route at that moment and fails on its own when there is none. `gst check` shows the route.
 - A route goes on past a machine only over a peer link that is up. Its last step can be any running tunnel with `--mesh`, also to a server without gst.
 - Every gst in the mesh can connect anywhere its machine and its tunnels reach, on behalf of the others; join only machines you trust with that.
+
+### Web page
+
+`gst ui` shows this machine's tunnels, its peer links, and a map of the mesh in a browser page that updates itself every few seconds. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; change things with the commands above.
+
+```bash
+gst ui
+# On a server without a browser: pick a port and forward it
+gst ui --port 8370 --no-open
+ssh -L 8370:localhost:8370 myhost   # then open the printed address on this machine
+```
+
+- The address ends with a random secret after `#`, which the page needs; anyone with the full address can view the page while `gst ui` runs. Each run makes a new secret.
+- The map places machines by their distance from this one. Blue arrows are tunnels with a peer link up, grey ones running tunnels, and dashed red ones tunnels that are not running; arrows point from the machine that runs the tunnel to its server. Machines this one cannot reach are faded.
 
 ## Troubleshooting
 

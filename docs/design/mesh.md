@@ -1,6 +1,6 @@
 # gst mesh 设计
 
-状态：第 1–4 步（单进程 daemon、peer link、拓扑扩散、中转转发）已实现；第 5 步为设计。
+状态：第 1–4 步（单进程 daemon、peer link、拓扑扩散、中转转发）和第 5 步的只读部分已实现；在 Web UI 中配置本节点尚未实现。
 
 ## 目标
 
@@ -19,7 +19,7 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
 4. **中转转发**：`gst add <name> <node> --via mesh -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
-5. **Web UI**：daemon 提供 HTTP API，`gst ui` 打开本地页面；先只读，再支持配置本节点。
+5. **Web UI**：`gst ui` 提供本地页面；先只读（已实现），再支持配置本节点。
 
 ## 已确定的决策
 
@@ -171,3 +171,14 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 - 失败时返回带原因的错误，沿路径原样传回发起方；错误属于交互式输出，可以包含地址。后台 tunnel 日志只记 “target connection failed for forward N”。
 - `--via mesh` 的 tunnel 保存为 `"via": "mesh"`，`destination` 是 mesh 中的机器（名字、id 或 id 前缀）。daemon 不建立 SSH 连接，只在本机监听 `-L`/`-D`，每个连接调用 `mesh.Dial` 按当时的拓扑选路；因此路径变化或暂时不可达不影响 tunnel 本身的状态。
 - **信任**：与 peer link 相同，mesh 中的节点彼此完全信任：任何节点都可以让其他节点代为连接其所在机器和其 tunnel 能到达的地址。
+
+## Web UI（第 5 步）
+
+- HTTP 服务不在 daemon 里，而在前台的 `gst ui` 进程里：daemon 只有 `0600` 的 control socket 这一个入口，信任边界保持不变；`gst ui` 作为普通 CLI 客户端读取配置并调用 daemon，退出后不留下任何监听。
+- `gst ui` 只监听 `127.0.0.1`（`--port`，默认任意空闲端口），启动时生成 128 位随机 token，打印 `http://127.0.0.1:<port>/#<token>` 并打开浏览器（`--no-open` 跳过）。
+- 页面（`internal/cli/ui`，go:embed）是静态的 HTML、CSS、JS，不需要 token。页面从地址的 fragment 取出 token，以 `Authorization: Bearer` 请求 `GET /api/state`；fragment 不随请求发送，也不进入 Referer。
+  - 其他网站的页面无法带上这个 header（需要 CORS 预检，`gst ui` 从不批准），因此不能读取状态；`Host` 不是 localhost 或回环地址时一律返回 403，防止 DNS rebinding。
+  - 响应带 `Content-Security-Policy: default-src 'self'`、`nosniff`、`no-referrer`、`no-store`。页面用 DOM 文本节点渲染所有字段，因为名字和 destination 来自其他节点。
+- `/api/state` 每次请求都重新读取配置并调用 daemon：`tunnels`（与 `gst list --json` 相同的视图）、`daemon`（daemon 是否应答）、`node`、`peers`（`mesh.peers`）、`topology`（`mesh.nodes`）。它只供页面使用，字段可以改变；脚本应使用各命令的 `--json`。
+- 页面每 3 秒轮询一次，标签页隐藏时暂停。拓扑图按与本节点的 BFS 距离（沿边的任一方向）分列，无法连通的节点放在最后一列。
+- 下一步：在页面中配置本节点（启动、停止、重启 tunnel 等）。需要写操作时，接口只接受带 token 的 `POST`，并复用 CLI 的配置更新和 daemon 调用。

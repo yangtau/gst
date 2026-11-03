@@ -216,6 +216,31 @@ func TestMeshTopology(t *testing.T) {
 		t.Fatalf("unexpected gst mesh nodes:\n%s", out)
 	}
 
+	// gst ui serves the same view, to holders of the token it prints.
+	mini.mustSh(`setsid gst ui --no-open --port 8370 </dev/null >~/ui.out 2>&1 &`)
+	var url string
+	eventually(t, 10*time.Second, "gst ui printed no address", func() bool {
+		out, _ := mini.sh(`cat ~/ui.out`)
+		_, rest, ok := strings.Cut(out, "gst ui: ")
+		url, _, _ = strings.Cut(rest, "\n")
+		return ok && strings.Contains(url, "#")
+	})
+	base, token, _ := strings.Cut(url, "#")
+	if out, err := mini.helper("get", base+"api/state"); err != nil || !strings.HasPrefix(out, "401\n") {
+		t.Fatalf("state without the token: %q, %v", out, err)
+	}
+	out, err := mini.helper("get", base+"api/state", token)
+	status, body, _ := strings.Cut(out, "\n")
+	var state struct {
+		Topology wire.Topology `json:"topology"`
+	}
+	if err != nil || status != "200" || json.Unmarshal([]byte(body), &state) != nil {
+		t.Fatalf("state: %q, %v", out, err)
+	}
+	if got := summary(state.Topology); !slices.Contains(got, "node devcn ssh reachable") || !slices.Contains(got, "edge m3 mini mini running linked") {
+		t.Fatalf("gst ui shows:\n%s", strings.Join(got, "\n"))
+	}
+
 	devcn.mustGst("mesh", "enable", "--name", "devcn")
 	mini.waitNodes(
 		"node mini gst reachable",

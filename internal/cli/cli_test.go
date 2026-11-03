@@ -183,10 +183,18 @@ func write(t *testing.T, path, content string) {
 func (e *testEnv) gst(args ...string) (int, string, string) {
 	e.t.Helper()
 	var stdout, stderr bytes.Buffer
-	a := &app{
+	a := e.app(&stdout, &stderr)
+	code := a.execute(context.Background(), append([]string{"--config", e.config}, args...))
+	return code, stdout.String(), stderr.String()
+}
+
+// app returns the command line app as e.gst runs it, without --config.
+func (e *testEnv) app(stdout, stderr io.Writer) *app {
+	return &app{
+		configFlag: e.config,
 		stdin:      strings.NewReader(e.stdin),
-		stdout:     &stdout,
-		stderr:     &stderr,
+		stdout:     stdout,
+		stderr:     stderr,
 		newBackend: func() (backend, error) { return e.back, nil },
 		resolve: func(_ context.Context, destination string) (sshconfig.Host, error) {
 			if h, ok := e.hosts[destination]; ok {
@@ -196,8 +204,6 @@ func (e *testEnv) gst(args ...string) (int, string, string) {
 		},
 		executable: func() (string, error) { return e.exe, nil },
 	}
-	code := a.execute(context.Background(), append([]string{"--config", e.config}, args...))
-	return code, stdout.String(), stderr.String()
 }
 
 func (e *testEnv) mustGst(args ...string) string {

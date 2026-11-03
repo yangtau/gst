@@ -2,6 +2,8 @@
 
 gst keeps SSH port forwards running in one background daemon per user, installed as a user service (systemd on Linux, launchd on macOS). `README.md` (English) and `README.zh-CN.md` (Simplified Chinese) are the user guide; keep them about using gst, keep the two in sync, and update both whenever CLI behavior changes. Development notes belong here.
 
+架构合理、设计合理、使用简单是我的最高优先级，为此当前已经有的任何功能、设计都可以更改、兼容性也无需保持。
+
 ## Commands
 
 - `make build`, `make test`, `make test-integration` (see `Makefile`).
@@ -14,7 +16,7 @@ gst keeps SSH port forwards running in one background daemon per user, installed
 ## Layout
 
 - `cmd/gst`: entry point.
-- `internal/cli`: cobra commands, output, and the error/hint contract.
+- `internal/cli`: cobra commands, output, and the error/hint contract; `gst ui` and its embedded page (`internal/cli/ui`).
 - `internal/config`: config file (locked, atomic writes) and forward spec parsing.
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/tunnel`: SSH connection, keepalive, remote, local, and dynamic (SOCKS5) forwards over TCP or Unix sockets, remote cleanup (`cleanup.sh`), and `Diagnose` behind `gst check`.
