@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -288,6 +289,90 @@ func (b *daemonBackend) Nodes(ctx context.Context) (wire.Topology, error) {
 	}
 	defer c.Close()
 	return c.Nodes(ctx)
+}
+
+func (a *app) connectCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "connect <machine> <port | host:port | socket>",
+		Short: "Connect standard input and output to a machine of the mesh",
+		Long: `Connect standard input and output to a port of a machine in the mesh,
+through whichever gst links lead there, for example as an ssh
+ProxyCommand. <machine> is a name or id from gst mesh nodes. A bare port
+means localhost on that machine, a host:port is resolved there, and an
+absolute path is a Unix socket there. The machine needs no gst when a
+gst node has a tunnel with --mesh to it.`,
+		Example: `  gst connect devcn 5432
+  ssh -o ProxyCommand='gst connect %n 22' devcn`,
+		Args: a.args(2, 2),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			target, err := parseTarget(args[1])
+			if err != nil {
+				return err
+			}
+			f, err := a.load()
+			if err != nil {
+				return err
+			}
+			if f.Mesh == nil {
+				return withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
+			}
+			b, err := a.backend()
+			if err != nil {
+				return err
+			}
+			conn, err := b.Connect(cmd.Context(), args[0], target)
+			if err != nil {
+				return withHint(err, "see the machines and links with `gst mesh nodes`")
+			}
+			defer conn.Close()
+			go func() {
+				if a.stdin != nil {
+					io.Copy(conn, a.stdin)
+				}
+				if c, ok := conn.(interface{ CloseWrite() error }); ok {
+					c.CloseWrite()
+				}
+			}()
+			_, err = io.Copy(a.stdout, conn)
+			return err
+		}),
+	}
+}
+
+// parseTarget reads a port, host:port, or socket path of gst connect.
+func parseTarget(s string) (wire.Target, error) {
+	if strings.HasPrefix(s, "/") {
+		return wire.Target{Network: "unix", Address: s}, nil
+	}
+	host, port := "localhost", s
+	if strings.Contains(s, ":") {
+		var err error
+		if host, port, err = net.SplitHostPort(s); err != nil || host == "" {
+			return wire.Target{}, usage("invalid target %q: use a port, host:port, or an absolute socket path", s)
+		}
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return wire.Target{}, usage("invalid port in %q", s)
+	}
+	return wire.Target{Network: "tcp", Address: net.JoinHostPort(host, port)}, nil
+}
+
+// Connect asks the daemon to connect through the mesh.
+func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	c, err := b.connectOnce(dialCtx)
+	if err != nil {
+		return nil, fmt.Errorf("the gst daemon does not answer: %w", err)
+	}
+	ctx, cancel = context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	conn, err := c.Connect(ctx, node, target)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }

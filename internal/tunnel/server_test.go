@@ -203,7 +203,7 @@ func (s *testServer) relayDirect(ctx context.Context, ch ssh.NewChannel, network
 	}
 	defer channel.Close()
 	s.wg.Go(func() { ssh.DiscardRequests(requests) })
-	relay(channel, outgoing)
+	Relay(channel, outgoing)
 }
 
 func (s *testServer) serveSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
@@ -301,7 +301,7 @@ func (s *testServer) startForward(ctx context.Context, conn *ssh.ServerConn, req
 				}
 				defer channel.Close()
 				s.wg.Go(func() { ssh.DiscardRequests(requests) })
-				relay(channel, incoming)
+				Relay(channel, incoming)
 			})
 		}
 	})
@@ -348,7 +348,7 @@ func (s *testServer) startStreamLocalForward(ctx context.Context, conn *ssh.Serv
 				}
 				defer channel.Close()
 				s.wg.Go(func() { ssh.DiscardRequests(requests) })
-				relay(channel, incoming)
+				Relay(channel, incoming)
 			})
 		}
 	})

@@ -201,9 +201,44 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 		d.mesh.Accept(ctx, conn)
 		return
 	}
-	wire.Serve(conn, func(method string, params json.RawMessage) (any, *wire.Error) {
-		return d.handle(ctx, method, params)
-	})
+	for {
+		var req wire.Request
+		if err := wire.ReadFrame(conn, &req); err != nil {
+			return
+		}
+		if req.Method == wire.MethodConnect {
+			d.connect(ctx, conn, req.Params)
+			return
+		}
+		result, callErr := d.handle(ctx, req.Method, req.Params)
+		if err := wire.Reply(conn, result, callErr); err != nil {
+			return
+		}
+	}
+}
+
+// connect answers mesh.connect and then carries the bytes of the
+// connection until either side ends.
+func (d *Daemon) connect(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	var p wire.ConnectParams
+	if err := wire.DecodeParams(params, &p); err != nil {
+		wire.Reply(conn, nil, err)
+		return
+	}
+	target, err := d.mesh.Dial(ctx, p.Node, p.Target.Network, p.Target.Address)
+	if err != nil {
+		var callErr *wire.Error
+		if !errors.As(err, &callErr) {
+			callErr = wire.Errorf(wire.CodeFailed, "%v", err)
+		}
+		wire.Reply(conn, nil, callErr)
+		return
+	}
+	defer target.Close()
+	if wire.Reply(conn, nil, nil) != nil {
+		return
+	}
+	tunnel.Relay(conn, target)
 }
 
 func (d *Daemon) handle(ctx context.Context, method string, params json.RawMessage) (any, *wire.Error) {

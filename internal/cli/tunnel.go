@@ -14,7 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func (a *app) startCommand() *cobra.Command {
@@ -55,6 +57,12 @@ Before saving, gst checks that an identity without a passphrase exists
 and that known_hosts records the server; it never accepts unknown host
 keys. Forwards are optional and can be added later with gst forward add.
 
+With --via mesh, <destination> is a machine of gst mesh nodes instead of
+an ssh destination, and the tunnel needs no SSH settings: the daemon
+listens on this machine and connects each forward's connections through
+the mesh, from that machine, so targets such as localhost are that
+machine's. It needs gst mesh enable and supports -L and -D only.
+
 As in ssh, a forward without bind_address listens on loopback only;
 use "*" or an empty bind_address for all interfaces.`,
 		Example: `  # Use the "myhost" entry of ~/.ssh/config; reach this machine's SSH from the server's port 2222
@@ -70,7 +78,10 @@ use "*" or an empty bind_address for all interfaces.`,
   gst add proxy myhost -D 1080
 
   # Run a SOCKS5 proxy on server port 1080 whose connections leave from this machine
-  gst add reverse-proxy myhost -R 1080`,
+  gst add reverse-proxy myhost -R 1080
+
+  # Reach port 5432 of the mesh machine devcn, through whichever gst links lead there
+  gst add devcn-db devcn --via mesh -L 15432:localhost:5432`,
 		Args: a.args(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -106,6 +117,9 @@ use "*" or an empty bind_address for all interfaces.`,
 				if f.Tunnels[name] != nil {
 					return withHint(fmt.Errorf("tunnel %s already exists", name),
 						fmt.Sprintf("change it with `gst set %s` or `gst forward add %s`, or remove it with `gst remove %s`", name, name, name))
+				}
+				if t.Via == config.ViaMesh && f.Mesh == nil {
+					return withHint(errors.New("a tunnel through the mesh needs the mesh"), "enable it with `gst mesh enable`")
 				}
 				f.Tunnels[name] = t
 				return nil
@@ -440,10 +454,12 @@ func (a *app) showCommand() *cobra.Command {
 				return err
 			}
 			v := a.view(cmd.Context(), name, t)
-			if opts, err := a.options(cmd.Context(), t); err != nil {
-				v.ResolveError = err.Error()
-			} else {
-				v.Resolved = resolvedView(opts)
+			if t.Via == "" {
+				if opts, err := a.options(cmd.Context(), t); err != nil {
+					v.ResolveError = err.Error()
+				} else {
+					v.Resolved = resolvedView(opts)
+				}
 			}
 			if asJSON {
 				return writeJSON(a.stdout, v)
@@ -494,6 +510,70 @@ for details.`,
 	return cmd
 }
 
+func (a *app) checkSSH(ctx context.Context, t *config.Tunnel) []tunnel.Step {
+	step := tunnel.Step{Name: "ssh config", OK: true}
+	opts, err := a.options(ctx, t)
+	if err != nil {
+		step.OK = false
+		step.Detail = err.Error()
+		step.Hint = "check the destination and your ssh configuration with `ssh -G " + t.Destination + "`"
+		return []tunnel.Step{step}
+	}
+	step.Detail = fmt.Sprintf("%s resolves to %s@%s", t.Destination, opts.User, opts.Server)
+	return append([]tunnel.Step{step}, tunnel.Diagnose(ctx, opts, true)...)
+}
+
+// checkRoute checks that the mesh leads to a tunnel's machine.
+func (a *app) checkRoute(ctx context.Context, f *config.File, t *config.Tunnel) []tunnel.Step {
+	step := tunnel.Step{Name: "mesh"}
+	if f.Mesh == nil {
+		step.Detail = "the mesh is not enabled on this machine"
+		step.Hint = "enable it with `gst mesh enable`"
+		return []tunnel.Step{step}
+	}
+	b, err := a.backend()
+	if err == nil {
+		var topo wire.Topology
+		if topo, err = b.Nodes(ctx); err == nil {
+			step.OK = true
+			step.Detail = fmt.Sprintf("this machine is %s", f.Mesh.Name)
+			route := tunnel.Step{Name: "route"}
+			path, err := routeTo(topo, t.Destination)
+			if err != nil {
+				route.Detail = err.Error()
+				route.Hint = "see the machines and links with `gst mesh nodes`"
+			} else {
+				route.OK = true
+				route.Detail = path
+			}
+			return []tunnel.Step{step, route}
+		}
+	}
+	step.Detail = fmt.Sprintf("the gst daemon does not answer: %v", err)
+	step.Hint = "start it with `gst mesh enable`"
+	return []tunnel.Step{step}
+}
+
+// routeTo describes the route to a machine as names joined by arrows.
+func routeTo(topo wire.Topology, ref string) (string, error) {
+	node, err := mesh.FindNode(topo, ref)
+	if err != nil {
+		return "", err
+	}
+	path, err := mesh.Route(topo, node.ID)
+	if err != nil {
+		return "", err
+	}
+	names := map[string]string{}
+	for _, n := range topo.Nodes {
+		names[n.ID] = n.Name
+	}
+	for i, id := range path {
+		path[i] = names[id]
+	}
+	return strings.Join(path, " → "), nil
+}
+
 func (a *app) checkCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -501,8 +581,9 @@ func (a *app) checkCommand() *cobra.Command {
 		Short: "Diagnose a tunnel's connection",
 		Long: `Check step by step that a tunnel can connect: its destination resolves
 with ssh, an identity is usable, known_hosts records the server, the
-server is reachable, and the login succeeds. Each failure comes with a
-hint. Exit status is 1 if a step fails.`,
+server is reachable, and the login succeeds. For a tunnel through the
+mesh, check that the mesh has a route to its machine. Each failure comes
+with a hint. Exit status is 1 if a step fails.`,
 		Example:           "  gst check myhost",
 		Args:              a.args(1, 1),
 		ValidArgsFunction: a.completeTunnels,
@@ -515,15 +596,11 @@ hint. Exit status is 1 if a step fails.`,
 			if err != nil {
 				return err
 			}
-			steps := []tunnel.Step{{Name: "ssh config", OK: true}}
-			opts, err := a.options(cmd.Context(), t)
-			if err != nil {
-				steps[0].OK = false
-				steps[0].Detail = err.Error()
-				steps[0].Hint = "check the destination and your ssh configuration with `ssh -G " + t.Destination + "`"
+			var steps []tunnel.Step
+			if t.Via == config.ViaMesh {
+				steps = a.checkRoute(cmd.Context(), f, t)
 			} else {
-				steps[0].Detail = fmt.Sprintf("%s resolves to %s@%s", t.Destination, opts.User, opts.Server)
-				steps = append(steps, tunnel.Diagnose(cmd.Context(), opts, true)...)
+				steps = a.checkSSH(cmd.Context(), t)
 			}
 			ok := steps[len(steps)-1].OK
 			if asJSON {

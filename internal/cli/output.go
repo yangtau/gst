@@ -28,6 +28,7 @@ type tunnelView struct {
 	CleanupListeners         bool          `json:"cleanup_listeners"`
 	Mesh                     bool          `json:"mesh"`
 	RemoteGst                string        `json:"remote_gst,omitempty"`
+	Via                      string        `json:"via,omitempty"`
 	Forwards                 []forwardView `json:"forwards"`
 	Resolved                 *resolved     `json:"resolved,omitempty"`
 	ResolveError             string        `json:"resolve_error,omitempty"`
@@ -75,6 +76,7 @@ func (a *app) view(ctx context.Context, name string, t *config.Tunnel) tunnelVie
 		CleanupListeners:         t.CleanupListeners,
 		Mesh:                     t.Mesh,
 		RemoteGst:                t.RemoteGst,
+		Via:                      t.Via,
 		Forwards:                 forwardViews(t.Forwards),
 	}
 }
@@ -101,7 +103,9 @@ func (v tunnelView) write(out io.Writer) error {
 		row("Status", v.Status)
 	}
 	row("Destination", v.Destination)
-	if r := v.Resolved; r != nil {
+	if v.Via == config.ViaMesh {
+		row("Server", "none; connects through the gst mesh from "+v.Destination)
+	} else if r := v.Resolved; r != nil {
 		row("Server", r.User+"@"+r.Server)
 		row("Identities", strings.Join(r.IdentityFiles, ", "))
 		row("Known hosts", strings.Join(r.KnownHostsFiles, ", "))
@@ -110,19 +114,21 @@ func (v tunnelView) write(out io.Writer) error {
 	} else {
 		row("Server", "unresolved: "+v.ResolveError)
 	}
-	cleanup := "off"
-	if v.CleanupListeners {
-		cleanup = "on"
-	}
-	row("Cleanup listeners", cleanup)
-	mesh := "off"
-	if v.Mesh {
-		mesh = "on"
-		if v.RemoteGst != "" {
-			mesh += ", remote gst " + v.RemoteGst
+	if v.Via == "" {
+		cleanup := "off"
+		if v.CleanupListeners {
+			cleanup = "on"
 		}
+		row("Cleanup listeners", cleanup)
+		mesh := "off"
+		if v.Mesh {
+			mesh = "on"
+			if v.RemoteGst != "" {
+				mesh += ", remote gst " + v.RemoteGst
+			}
+		}
+		row("Mesh", mesh)
 	}
-	row("Mesh", mesh)
 	if len(v.Forwards) == 0 {
 		row("Forwards", "none")
 	} else {

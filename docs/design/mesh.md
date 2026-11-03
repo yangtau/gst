@@ -1,6 +1,6 @@
 # gst mesh 设计
 
-状态：第 1 步（单进程 daemon + 控制协议）、第 2 步（peer link）和第 3 步（拓扑扩散）已实现；第 4 步起为设计。
+状态：第 1–4 步（单进程 daemon、peer link、拓扑扩散、中转转发）已实现；第 5 步为设计。
 
 ## 目标
 
@@ -18,7 +18,7 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 1. **单进程 daemon**：每台机器只有一个 gst 后台服务，持有全部 tunnel，暴露一个 unix control socket；CLI 通过 [gst 协议](#gst-协议) 与它通信。（已实现）
 2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
-4. **中转转发**：`gst forward add <node> --via mesh -L ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。
+4. **中转转发**：`gst add <name> <node> --via mesh -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
 5. **Web UI**：daemon 提供 HTTP API，`gst ui` 打开本地页面；先只读，再支持配置本节点。
 
 ## 已确定的决策
@@ -129,6 +129,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 `control` 还有：
 
 - `mesh.peers`（已实现）：返回本节点信息和全部 peer link（方向、所经 tunnel、状态、对端、失败原因）。
+- `mesh.connect`（已实现）：参数 `{"node": 名字/id/id 前缀, "target": {"network", "address"}}`；成功响应后，该 control 连接变为到目标的原始字节流。`gst connect` 使用它。
 - `mesh.nodes`（已实现）：返回 `Topology`，即本节点由全部有效记录算出的全局视图：机器（gst 节点与 SSH 服务器）、是否可达，以及它们之间的 tunnel。
 
 `peer`：
@@ -137,7 +138,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | --- | --- | --- |
 | `node.info` | 无 | 节点 id、名字、software、features、host key 指纹（已实现） |
 | `topology.sync` | `{"known": {节点 id: seq}}`：调用方已有记录的 seq | `{"records": [...]}`：被调方比调用方新的记录；之后该流持续推送 `{"records": [...]}` 帧，每次变化一帧（已实现） |
-| `relay.open` | `{"path": [节点...], "target": {"network": "tcp", "address": "127.0.0.1:5432"}}` | 成功后该流变为到目标的原始字节流；路径上每一跳把剩余路径转发给下一跳 |
+| `relay.open` | `{"path": [节点...], "target": {"network": "tcp", "address": "127.0.0.1:5432"}}` | 成功后该流变为到目标的原始字节流；路径上每一跳把剩余路径转发给下一跳（已实现） |
 
 ### link-state 记录（已实现）
 
@@ -159,3 +160,14 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 - 可达性由查看方计算：从本节点出发，经运行中的 tunnel 到达的机器可达；要越过某台机器继续前进，需要该段 tunnel 的 peer link 处于 up（反方向也只能走 up 的 peer link），因为中转需要两端都有 gst。
 - 每个节点最多保留 1024 条记录，每条记录最多 1024 条边。
 - 路由由发起方计算（源路由），沿途节点只按 `relay.open` 的 `path` 转发，不运行路由协议。
+
+## 中转转发（第 4 步）
+
+- **路径**由发起方根据自己的 `Topology` 计算（`mesh.Route`），取最短路径：从本节点出发，只能经由 up 的 peer link（任一方向）越过一台机器；最后一段还可以是运行中但没有 peer link 的 `--mesh` tunnel，例如到没有 gst 的服务器。路径最多 16 个节点。
+- `relay.open` 的 `path` 以被调方开头。每个节点检查 `path[0]` 是自己，然后：
+  - 只剩自己：直接连接 `target`（地址相对本机）；
+  - 与下一个节点有 up 的 peer link：在该会话上开新流，把 `path[1:]` 交给它；
+  - 下一个节点是路径终点，且本节点有到它的运行中 tunnel：经该 tunnel 的 SSH 连接打开 `direct-tcpip` / `direct-streamlocal`，地址由那台服务器解析。
+- 失败时返回带原因的错误，沿路径原样传回发起方；错误属于交互式输出，可以包含地址。后台 tunnel 日志只记 “target connection failed for forward N”。
+- `--via mesh` 的 tunnel 保存为 `"via": "mesh"`，`destination` 是 mesh 中的机器（名字、id 或 id 前缀）。daemon 不建立 SSH 连接，只在本机监听 `-L`/`-D`，每个连接调用 `mesh.Dial` 按当时的拓扑选路；因此路径变化或暂时不可达不影响 tunnel 本身的状态。
+- **信任**：与 peer link 相同，mesh 中的节点彼此完全信任：任何节点都可以让其他节点代为连接其所在机器和其 tunnel 能到达的地址。

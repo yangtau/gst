@@ -644,3 +644,57 @@ func TestDiagnose(t *testing.T) {
 		})
 	}
 }
+
+// With Dial, a tunnel has no SSH connection: its local and dynamic
+// forwards connect through Dial.
+func TestDialWithoutSSH(t *testing.T) {
+	logs := captureLog(t)
+	echo := startEchoTarget(t)
+	var mu sync.Mutex
+	var dialed []string
+	listen := []string{freeAddr(t), freeAddr(t)}
+	opts := Options{
+		ConnectTimeout: time.Second,
+		Forwards: []config.Forward{
+			{Direction: config.Local, Listen: listen[0], Target: "db.internal:5432"},
+			{Direction: config.Dynamic, Listen: listen[1]},
+		},
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			mu.Lock()
+			dialed = append(dialed, network+" "+address)
+			mu.Unlock()
+			return new(net.Dialer).DialContext(ctx, "tcp", echo)
+		},
+	}
+	cancel, result := runAsync(t, opts)
+	await(t, logs.ready)
+
+	if reply, err := roundTrip(listen[0], "local"); err != nil || reply != "reply:local" {
+		t.Fatalf("local forward: %q, %v", reply, err)
+	}
+	c, code := socksDial(t, listen[1], []byte{3, 4, 'w', 'e', 'b', '1', 0, 80})
+	if code != 0 {
+		t.Fatalf("SOCKS reply %d", code)
+	}
+	c.Write([]byte("dynamic"))
+	c.(*net.TCPConn).CloseWrite()
+	if reply, _ := io.ReadAll(c); string(reply) != "reply:dynamic" {
+		t.Fatalf("dynamic forward: %q", reply)
+	}
+	mu.Lock()
+	if strings.Join(dialed, ",") != "tcp db.internal:5432,tcp web1:80" {
+		t.Fatalf("dialed %q", dialed)
+	}
+	mu.Unlock()
+
+	cancel()
+	if err := await(t, result); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote forwards need the SSH connection.
+	opts.Forwards = []config.Forward{{Direction: config.Remote, Listen: freeAddr(t), Target: echo}}
+	if err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "forward 1") {
+		t.Fatalf("remote forward without SSH: %v", err)
+	}
+}

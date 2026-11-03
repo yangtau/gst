@@ -66,6 +66,21 @@ func (c *Client) Restart(ctx context.Context, names []string) (wire.Status, erro
 	return c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names})
 }
 
+// Connect asks the daemon to connect to target on a machine of the mesh.
+// On success the connection carries the bytes of that connection and
+// belongs to the caller; the client must not be used any more.
+func (c *Client) Connect(ctx context.Context, node string, target wire.Target) (net.Conn, error) {
+	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
+	err := wire.Call(c.conn, wire.MethodConnect, wire.ConnectParams{Node: node, Target: target}, nil)
+	if !stop() {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c.conn, nil
+}
+
 // Nodes returns the mesh as the daemon knows it.
 func (c *Client) Nodes(ctx context.Context) (wire.Topology, error) {
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })

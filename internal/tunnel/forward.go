@@ -44,13 +44,13 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	defer outgoing.Close()
 	defer closeOnDone(ctx, outgoing)()
 
-	relay(incoming, outgoing)
+	Relay(incoming, outgoing)
 }
 
-// relay copies data in both directions until both sides are done. A clean
+// Relay copies data in both directions until both sides are done. A clean
 // EOF is passed on as a half-close so the other direction keeps flowing;
 // any error tears down both connections.
-func relay(a, b io.ReadWriteCloser) {
+func Relay(a, b io.ReadWriteCloser) {
 	abort := func() {
 		a.Close()
 		b.Close()

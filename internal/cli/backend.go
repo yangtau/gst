@@ -40,6 +40,9 @@ type backend interface {
 	Peers(ctx context.Context) (wire.Peers, error)
 	// Nodes returns the mesh as the daemon knows it.
 	Nodes(ctx context.Context) (wire.Topology, error)
+	// Connect connects to target on a machine of the mesh through the
+	// daemon.
+	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
 	// HasLegacy and RemoveLegacy find and remove gst 0.1's per-tunnel
 	// services.
 	HasLegacy(name string) bool

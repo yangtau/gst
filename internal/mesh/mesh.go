@@ -160,6 +160,9 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser) {
 // may quote the server; gst mesh peers shows them.
 func (n *Node) Link(ctx context.Context, tunnel string, client *ssh.Client, remoteGst string, tunnelLog *log.Logger) {
 	l := n.add(wire.LinkOut, tunnel)
+	l.mu.Lock()
+	l.client = client
+	l.mu.Unlock()
 	defer n.remove(l)
 	lastErr := ""
 	for {
@@ -318,8 +321,12 @@ func (n *Node) serve(ctx context.Context, session *yamux.Session) {
 			if err := wire.ReadFrame(stream, &req); err != nil {
 				return
 			}
-			if req.Method == wire.MethodTopologySync {
+			switch req.Method {
+			case wire.MethodTopologySync:
 				n.serveSync(stream, session, req.Params)
+				return
+			case wire.MethodRelayOpen:
+				n.serveRelay(ctx, stream, req.Params)
 				return
 			}
 			result, callErr := n.handle(req.Method, req.Params)
@@ -365,6 +372,7 @@ type link struct {
 	info     wire.PeerLink
 	lastPeer string // the id of the last peer, kept while the link is down
 	session  *yamux.Session
+	client   *ssh.Client // the tunnel's connection, for outgoing links
 }
 
 func (l *link) set(state string, peer wire.NodeInfo, errText string) {

@@ -36,6 +36,7 @@ const (
 // Execute runs gst with args and returns the process exit code.
 func Execute(args []string) int {
 	a := &app{
+		stdin:      os.Stdin,
 		stdout:     os.Stdout,
 		stderr:     os.Stderr,
 		newBackend: func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
@@ -46,6 +47,7 @@ func Execute(args []string) int {
 }
 
 type app struct {
+	stdin          io.Reader // nil reads nothing
 	stdout, stderr io.Writer
 	newBackend     func() (backend, error)
 	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
@@ -258,8 +260,16 @@ func firstPositive[T time.Duration | int64](values ...T) T {
 }
 
 // preflight checks offline that t can start: its destination resolves, an
-// identity is usable, and known_hosts records the server.
+// identity is usable, and known_hosts records the server. A tunnel through
+// the mesh only needs valid settings.
 func (a *app) preflight(ctx context.Context, t *config.Tunnel) error {
+	if t.Via == config.ViaMesh {
+		// No SSH connection to check; the mesh routes each connection.
+		if err := t.Validate(); err != nil {
+			return &usageError{err}
+		}
+		return nil
+	}
 	opts, err := a.options(ctx, t)
 	if err != nil {
 		return withHint(err, "check the destination and your ssh configuration with `ssh -G "+t.Destination+"`")

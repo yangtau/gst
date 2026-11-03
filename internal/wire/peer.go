@@ -10,7 +10,28 @@ const (
 	// The stream then carries further Records frames, one per change,
 	// until either side closes it.
 	MethodTopologySync = "topology.sync"
+	// MethodRelayOpen ("relay.open") takes RelayParams. On success the
+	// stream carries the bytes of a connection to the target.
+	MethodRelayOpen = "relay.open"
 )
+
+// RelayParams are the params of relay.open. Path lists the nodes that
+// the connection passes, starting with the callee and ending with the
+// node that the target address is relative to. Each node passes the rest
+// of the path to the next one; the last gst node on the path connects to
+// the target itself or, when the last node is an SSH server, over its
+// tunnel to that server.
+type RelayParams struct {
+	Path   []string `json:"path"`
+	Target Target   `json:"target"`
+}
+
+// Target is an address to connect to: network "tcp" with host:port, or
+// "unix" with a socket path.
+type Target struct {
+	Network string `json:"network"`
+	Address string `json:"address"`
+}
 
 // FeatureYamux in a peer Hello says that the connection continues as a
 // yamux session, with one call per stream.
@@ -67,6 +88,18 @@ type Peers struct {
 	Enabled bool       `json:"enabled"`
 	Node    NodeInfo   `json:"node"`
 	Links   []PeerLink `json:"links"`
+}
+
+// MethodConnect is the control method that connects through the mesh;
+// it takes ConnectParams and, on success, the control connection carries
+// the bytes of the connection.
+const MethodConnect = "mesh.connect"
+
+// ConnectParams name the machine, by node name, id, or id prefix, and the
+// target address on it.
+type ConnectParams struct {
+	Node   string `json:"node"`
+	Target Target `json:"target"`
 }
 
 // MethodNodes is the control method that reports the mesh as this node

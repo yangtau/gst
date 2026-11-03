@@ -36,7 +36,24 @@ type fakeBackend struct {
 	legacy    map[string]bool             // gst 0.1 services
 	topology  wire.Topology
 	calls     []string
+	sent      bytes.Buffer // what gst connect sent
 }
+
+// fakeConn keeps what gst connect sends and, like an echo server, answers
+// once gst connect has sent everything.
+type fakeConn struct {
+	reply io.Reader
+	sent  *bytes.Buffer
+	done  chan struct{}
+}
+
+func (c *fakeConn) Read(p []byte) (int, error) {
+	<-c.done
+	return c.reply.Read(p)
+}
+func (c *fakeConn) Write(p []byte) (int, error) { return c.sent.Write(p) }
+func (c *fakeConn) CloseWrite() error           { close(c.done); return nil }
+func (c *fakeConn) Close() error                { return nil }
 
 func (f *fakeBackend) Sync(_ context.Context, command []string, needed bool) error {
 	f.calls = append(f.calls, "sync")
@@ -95,6 +112,14 @@ func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {
 	return f.topology, nil
 }
 
+func (f *fakeBackend) Connect(_ context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
+	f.calls = append(f.calls, "connect "+node+" "+target.Network+" "+target.Address)
+	if node == "nowhere" {
+		return nil, errors.New("no machine \"nowhere\" in the mesh")
+	}
+	return &fakeConn{reply: strings.NewReader("hello from " + node), sent: &f.sent, done: make(chan struct{})}, nil
+}
+
 func (f *fakeBackend) HasLegacy(name string) bool { return f.legacy[name] }
 
 func (f *fakeBackend) RemoveLegacy(name string) error {
@@ -110,6 +135,7 @@ type testEnv struct {
 	hosts    map[string]sshconfig.Host // ssh -G results by destination
 	identity string
 	exe      string
+	stdin    string // standard input of the next commands
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -158,6 +184,7 @@ func (e *testEnv) gst(args ...string) (int, string, string) {
 	e.t.Helper()
 	var stdout, stderr bytes.Buffer
 	a := &app{
+		stdin:      strings.NewReader(e.stdin),
 		stdout:     &stdout,
 		stderr:     &stderr,
 		newBackend: func() (backend, error) { return e.back, nil },
@@ -696,5 +723,64 @@ func TestMesh(t *testing.T) {
 func TestDefaultNodeName(t *testing.T) {
 	if err := config.ValidateNodeName(defaultNodeName()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMeshConnectAndTunnels(t *testing.T) {
+	e := newEnv(t)
+	if stderr := e.expectCode(exitFailure, "add", "db-mesh", "devcn", "--via", "mesh", "-L", "15432:localhost:5432"); !strings.Contains(stderr, "gst mesh enable") {
+		t.Fatalf("via mesh without the mesh: %q", stderr)
+	}
+	e.mustGst("mesh", "enable", "--name", "mini")
+
+	// gst connect pipes standard input and output.
+	e.stdin = "ping"
+	if out := e.mustGst("connect", "devcn", "5432"); out != "hello from devcn" || e.back.sent.String() != "ping" {
+		t.Fatalf("connect printed %q and sent %q", out, e.back.sent.String())
+	}
+	e.mustGst("connect", "devcn", "db.internal:5432")
+	e.mustGst("connect", "devcn", "/run/app.sock")
+	for _, want := range []string{"connect devcn tcp localhost:5432", "connect devcn tcp db.internal:5432", "connect devcn unix /run/app.sock"} {
+		if !slices.Contains(e.back.calls, want) {
+			t.Errorf("missing call %q in %q", want, e.back.calls)
+		}
+	}
+	e.expectCode(exitUsage, "connect", "devcn", "70000")
+	e.expectCode(exitUsage, "connect", "devcn", "relative/sock")
+	if stderr := e.expectCode(exitFailure, "connect", "nowhere", "22"); !strings.Contains(stderr, "gst mesh nodes") {
+		t.Fatalf("connect to a missing machine: %q", stderr)
+	}
+
+	// A tunnel through the mesh has no SSH settings and only -L and -D.
+	e.mustGst("add", "db-mesh", "devcn", "--via", "mesh", "-L", "15432:localhost:5432", "-D", "1080")
+	if tn := e.tunnel("db-mesh"); tn.Via != config.ViaMesh || tn.Destination != "devcn" || len(tn.Forwards) != 2 {
+		t.Fatalf("tunnel %+v", tn)
+	}
+	if !e.back.running["db-mesh"] {
+		t.Fatal("the tunnel through the mesh did not start")
+	}
+	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "mesh", "-R", "2222:localhost:22")
+	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "mesh", "--mesh")
+	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "ssh")
+	e.expectCode(exitUsage, "forward", "add", "db-mesh", "-R", "2222:localhost:22")
+	if out := e.mustGst("show", "db-mesh"); !strings.Contains(out, "connects through the gst mesh from devcn") || strings.Contains(out, "Cleanup") {
+		t.Fatalf("show: %s", out)
+	}
+
+	e.back.topology = wire.Topology{Enabled: true, Self: "aaaa1111", Nodes: []wire.TopoNode{
+		{ID: "aaaa1111", Name: "mini", Gst: true, Reachable: true},
+		{ID: "bbbb2222", Name: "m3", Gst: true, Reachable: true},
+		{ID: "ssh:SHA256:devcn", Name: "devcn", Reachable: true},
+		{ID: "cccc3333", Name: "far", Gst: true},
+	}, Edges: []wire.TopoEdge{
+		{From: "bbbb2222", To: "aaaa1111", Tunnel: "mini", State: "running", Linked: true},
+		{From: "bbbb2222", To: "ssh:SHA256:devcn", Tunnel: "devcn", State: "running"},
+	}}
+	if out := e.mustGst("check", "db-mesh"); !strings.Contains(out, "mini → m3 → devcn") {
+		t.Fatalf("check: %s", out)
+	}
+	e.mustGst("set", "db-mesh", "--destination", "far")
+	if code, out, _ := e.gst("check", "db-mesh"); code != exitFailure || !strings.Contains(out, "no route to far") {
+		t.Fatalf("check exited %d: %s", code, out)
 	}
 }

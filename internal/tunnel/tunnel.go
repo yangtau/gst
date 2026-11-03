@@ -40,12 +40,25 @@ type Options struct {
 	// forwards, until ctx is done; it may open its own channels on client.
 	// hostKey is the server's verified host key.
 	Attach func(ctx context.Context, client *ssh.Client, hostKey ssh.PublicKey)
+	// Dial, when set, replaces the SSH connection: the tunnel has only
+	// local and dynamic forwards, and Dial opens their connections to
+	// targets. Server, User, and the SSH settings are unused.
+	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Run connects to the server and serves the forwards until ctx is
 // cancelled (returning nil) or the tunnel fails (returning the first error).
 // Errors omit addresses and paths so that they are safe to log.
 func Run(ctx context.Context, opts Options) error {
+	if opts.Logger == nil {
+		opts.Logger = log.Default()
+	}
+	if opts.Dial != nil {
+		ctx, cancel := context.WithCancel(ctx)
+		t := &tunnel{opts: opts, failure: make(chan error, 1), listenersClosed: make(chan struct{})}
+		defer t.shutdown(cancel)
+		return t.serve(ctx)
+	}
 	clientConfig, err := newClientConfig(opts)
 	if err != nil {
 		return err
@@ -68,9 +81,6 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	if opts.Logger == nil {
-		opts.Logger = log.Default()
-	}
 	t := &tunnel{
 		opts:            opts,
 		client:          client,
@@ -85,7 +95,7 @@ func Run(ctx context.Context, opts Options) error {
 // tunnel holds the state of one SSH connection and its listeners.
 type tunnel struct {
 	opts      Options
-	client    *ssh.Client
+	client    *ssh.Client // nil with Options.Dial
 	hostKey   ssh.PublicKey
 	listeners []net.Listener
 	workers   sync.WaitGroup
@@ -95,21 +105,10 @@ type tunnel struct {
 }
 
 func (t *tunnel) serve(ctx context.Context) error {
-	t.workers.Go(func() {
-		if err := keepalive(ctx, t.client, t.opts.KeepaliveInterval, t.opts.KeepaliveTimeout); err != nil {
-			// Report before closing, so the failure is not attributed to
-			// the connection loss that the close causes. Closing also
-			// unblocks requests stalled behind the probe, such as ListenTCP.
-			t.fail(err)
-			t.client.Close()
-		}
-	})
-	t.workers.Go(func() {
-		t.client.Wait()
-		t.fail(errors.New("SSH connection closed"))
-	})
-
-	if t.opts.CleanupListeners {
+	if t.client != nil {
+		t.watch(ctx)
+	}
+	if t.opts.CleanupListeners && t.client != nil {
 		if err := cleanupListeners(t.client, t.opts.Forwards, t.opts.ConnectTimeout); err != nil {
 			return err
 		}
@@ -123,7 +122,7 @@ func (t *tunnel) serve(ctx context.Context) error {
 	if t.opts.OnReady != nil {
 		t.opts.OnReady()
 	}
-	if t.opts.Attach != nil {
+	if t.opts.Attach != nil && t.client != nil {
 		t.workers.Go(func() { t.opts.Attach(ctx, t.client, t.hostKey) })
 	}
 
@@ -138,6 +137,23 @@ func (t *tunnel) serve(ctx context.Context) error {
 	}
 }
 
+// watch reports the loss of the SSH connection as a failure.
+func (t *tunnel) watch(ctx context.Context) {
+	t.workers.Go(func() {
+		if err := keepalive(ctx, t.client, t.opts.KeepaliveInterval, t.opts.KeepaliveTimeout); err != nil {
+			// Report before closing, so the failure is not attributed to
+			// the connection loss that the close causes. Closing also
+			// unblocks requests stalled behind the probe, such as ListenTCP.
+			t.fail(err)
+			t.client.Close()
+		}
+	})
+	t.workers.Go(func() {
+		t.client.Wait()
+		t.fail(errors.New("SSH connection closed"))
+	})
+}
+
 // listen opens the listener for one forward and starts accepting on it.
 func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	addr := net.TCPAddrFromAddrPort(fwd.ListenAddr())
@@ -147,6 +163,8 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	}
 	var err error
 	switch {
+	case fwd.Direction == config.Remote && t.client == nil:
+		return fmt.Errorf("forward %d listens on the server, which this tunnel does not connect to", id)
 	case fwd.Direction == config.Remote && config.IsSocket(fwd.Listen):
 		r.listener, err = t.client.ListenUnix(fwd.Listen)
 	case fwd.Direction == config.Remote:
@@ -156,9 +174,12 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	default:
 		r.listener, err = net.ListenTCP("tcp", addr)
 	}
-	if fwd.Direction == config.Remote {
+	switch {
+	case fwd.Direction == config.Remote:
 		r.dial = new(net.Dialer).DialContext
-	} else {
+	case t.client == nil:
+		r.dial = t.opts.Dial
+	default:
 		r.dial = t.client.DialContext
 	}
 	if err != nil {
@@ -230,7 +251,9 @@ func (t *tunnel) shutdown(cancel context.CancelFunc) {
 	cancel()
 	// Close the transport before the listeners: an SSH listener's Close
 	// waits for the server's reply, which would never come otherwise.
-	t.client.Close()
+	if t.client != nil {
+		t.client.Close()
+	}
 	for _, listener := range t.listeners {
 		listener.Close()
 	}

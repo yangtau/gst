@@ -68,7 +68,7 @@ report state accept --json.`,
 	addGroup("configure", a.addCommand(), a.setCommand(), a.forwardCommand(), a.removeCommand())
 	addGroup("run", a.startCommand(), a.stopCommand(), a.restartCommand())
 	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand())
-	addGroup("mesh", a.meshCommand())
+	addGroup("mesh", a.meshCommand(), a.connectCommand())
 	root.AddCommand(&cobra.Command{
 		Use:     "version",
 		Short:   "Show the gst version",

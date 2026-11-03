@@ -61,7 +61,15 @@ type Tunnel struct {
 	// RemoteGst is the server's gst command for the peer link; "gst" in
 	// the login shell's PATH when empty.
 	RemoteGst string `json:"remote_gst,omitempty"`
+	// Via is ViaMesh for a tunnel through the gst mesh: Destination names
+	// a machine of the mesh instead of an SSH server, and the forwards
+	// connect through the mesh from that machine. Such a tunnel has only
+	// local and dynamic forwards and no SSH settings.
+	Via string `json:"via,omitempty"`
 }
+
+// ViaMesh is Tunnel.Via for a tunnel through the gst mesh.
+const ViaMesh = "mesh"
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
 // when XDG_CONFIG_HOME is unset, on every platform.
@@ -254,11 +262,33 @@ func (t *Tunnel) Validate() error {
 	if strings.ContainsFunc(t.RemoteGst, func(r rune) bool { return unicode.IsControl(r) }) {
 		return errors.New("invalid remote gst command")
 	}
+	if err := t.validateVia(); err != nil {
+		return err
+	}
 	if !isUnsetOrSeconds(t.ConnectTimeoutSeconds) || !isUnsetOrSeconds(t.KeepaliveIntervalSeconds) ||
 		t.KeepaliveCountMax < 0 || t.KeepaliveCountMax > MaxKeepaliveCount {
 		return errors.New("invalid timeout or keepalive settings")
 	}
 	return validateForwards(t.Forwards)
+}
+
+func (t *Tunnel) validateVia() error {
+	switch t.Via {
+	case "":
+		return nil
+	case ViaMesh:
+	default:
+		return fmt.Errorf("unsupported via %q", t.Via)
+	}
+	if t.Mesh || t.RemoteGst != "" || t.CleanupListeners {
+		return errors.New("a tunnel through the mesh cannot have the SSH settings --mesh, --remote-gst, or --cleanup-listeners")
+	}
+	for i, f := range t.Forwards {
+		if f.Direction == Remote {
+			return fmt.Errorf("forward %d: a tunnel through the mesh cannot have -R forwards", i+1)
+		}
+	}
+	return nil
 }
 
 // MaxKeepaliveCount bounds keepalive_count_max so that the keepalive

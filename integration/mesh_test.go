@@ -247,3 +247,72 @@ func TestMeshTopology(t *testing.T) {
 		}
 	}
 }
+
+// mini reaches devcn through m3: first as an SSH server without gst, over
+// m3's tunnel, and then, once devcn joins the mesh, through devcn's gst.
+// mini needs no credentials for devcn, except to log in to it with ssh.
+func TestMeshRelay(t *testing.T) {
+	t.Parallel()
+	m3, mini, devcn := startNode(t), startNode(t), startNode(t)
+	toMini, toDevcn := trust(t, m3, mini), trust(t, m3, devcn)
+	m3.mustGst("mesh", "enable", "--name", "m3")
+	mini.mustGst("mesh", "enable", "--name", "mini")
+	m3.mustGst(append([]string{"add", "mini"}, append(toMini.flags(), "--mesh")...)...)
+	m3.mustGst(append([]string{"add", "devcn"}, append(toDevcn.flags(), "--mesh")...)...)
+	devcn.serve(7100, "hello from devcn")
+	mini.waitNodes(
+		"node mini gst reachable",
+		"node m3 gst reachable",
+		"node devcn ssh reachable",
+		"edge m3 mini mini running linked",
+		"edge m3 devcn devcn running",
+	)
+
+	mini.mustGst("add", "devcn-app", "devcn", "--via", "mesh", "-L", "17100:localhost:7100", "-D", "11080")
+	mini.waitStatus("devcn-app", "running")
+	mini.eventuallyFetches(17100, "hello from devcn")
+	if out := mini.mustGst("check", "devcn-app"); !strings.Contains(out, "mini → m3 → devcn") {
+		t.Fatalf("unexpected check:\n%s", out)
+	}
+	if out, err := mini.helper("socks", "127.0.0.1:11080", "localhost", "7100"); err != nil || strings.TrimSpace(out) != "hello from devcn" {
+		t.Fatalf("SOCKS through the mesh: %q, %v", out, err)
+	}
+	if out := mini.mustSh(`gst connect devcn 7100 </dev/null`); out != "hello from devcn" {
+		t.Fatalf("gst connect: %q", out)
+	}
+
+	// As an ssh ProxyCommand, with mini's own login to devcn.
+	login := trust(t, mini, devcn)
+	out := mini.mustSh(`ssh -i "$1" -o UserKnownHostsFile="$2" -o BatchMode=yes -o ProxyCommand='gst connect devcn 22' "tunnel@$3" echo logged in`,
+		login.identity, login.knownHosts, devcn.ip)
+	if strings.TrimSpace(out) != "logged in" {
+		t.Fatalf("ssh through the mesh: %q", out)
+	}
+
+	devcn.mustGst("mesh", "enable", "--name", "devcn")
+	mini.waitNodes(
+		"node mini gst reachable",
+		"node m3 gst reachable",
+		"node devcn gst reachable",
+		"edge m3 mini mini running linked",
+		"edge m3 devcn devcn running linked",
+	)
+	mini.eventuallyFetches(17100, "hello from devcn")
+
+	// An unreachable machine fails each connection, not the tunnel.
+	m3.mustGst("stop", "devcn")
+	eventually(t, 20*time.Second, "route to devcn survived", func() bool {
+		code, _, _ := mini.gst("check", "devcn-app")
+		return code == 1
+	})
+	if got, _ := mini.fetch(17100); got != "" {
+		t.Fatalf("fetched %q without a route", got)
+	}
+	if status := mini.tunnels()["devcn-app"].Status; status != "running" {
+		t.Fatalf("the tunnel is %s without a route", status)
+	}
+	log := mini.mustSh(`cat ~/.local/state/gst/logs/devcn-app.log`)
+	if !strings.Contains(log, "target connection failed for forward 1") || strings.Contains(log, devcn.ip) {
+		t.Fatalf("unexpected tunnel log:\n%s", log)
+	}
+}
