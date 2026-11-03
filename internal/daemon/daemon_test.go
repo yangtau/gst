@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -252,5 +253,60 @@ func TestDaemonReplacesStaleSocket(t *testing.T) {
 	c := e.start()
 	if _, err := c.Status(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// With the mesh on, the daemon announces its tunnels with mesh on and
+// connects through the mesh on behalf of gst connect.
+func TestDaemonMesh(t *testing.T) {
+	e := newEnv(t)
+	f := config.File{Version: config.Version, Mesh: &config.Mesh{ID: strings.Repeat("ab", 16), Name: "mini"}, Tunnels: map[string]*config.Tunnel{
+		"srv":   {Destination: "srv", Mesh: true, Forwards: []config.Forward{}},
+		"plain": {Destination: "plain", Forwards: []config.Forward{}},
+	}}
+	data, _ := json.Marshal(f)
+	if err := os.WriteFile(e.cfg.ConfigPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := e.start()
+	waitFor(t, c, "srv not running", func(s map[string]wire.TunnelState) bool { return s["srv"].State == wire.StateRunning })
+	topo, err := c.Nodes(context.Background())
+	if err != nil || topo.Self != f.Mesh.ID || len(topo.Edges) != 1 || topo.Edges[0].Tunnel != "srv" || topo.Edges[0].State != wire.StateRunning {
+		t.Fatalf("topology %+v, %v", topo, err)
+	}
+
+	// gst connect to this machine itself reaches its own port.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		if conn, err := l.Accept(); err == nil {
+			conn.Write([]byte("hello"))
+			conn.Close()
+		}
+	}()
+	conn, err := e.dial().Connect(context.Background(), "mini", wire.Target{Network: "tcp", Address: l.Addr().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(conn)
+	if string(got) != "hello" {
+		t.Fatalf("connected and read %q", got)
+	}
+	var werr *wire.Error
+	if _, err := e.dial().Connect(context.Background(), "nowhere", wire.Target{Network: "tcp", Address: "localhost:22"}); !errors.As(err, &werr) || werr.Code != wire.CodeNotFound {
+		t.Fatalf("connect to a missing machine gave %v", err)
+	}
+
+	// Peers may link now; a peer without yamux is still refused.
+	raw, err := net.Dial("unix", e.cfg.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := wire.Dial(raw, wire.Hello{Role: wire.RolePeer}); !errors.As(err, &werr) || !strings.Contains(werr.Message, "yamux") {
+		t.Fatalf("peer without yamux gave %v", err)
 	}
 }
