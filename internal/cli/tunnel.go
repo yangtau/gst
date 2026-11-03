@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"reflect"
@@ -205,7 +206,7 @@ forwards.`,
 
 // lifecycleCommand builds start, stop, and restart, which act on the named
 // tunnels or, with --all, on every tunnel the action applies to.
-func (a *app) lifecycleCommand(use, short, long, example string, action func(ctx context.Context, f *config.File, names []string, all bool) error) *cobra.Command {
+func (a *app) lifecycleCommand(use, short, long, example string, action func(ctx context.Context, out io.Writer, f *config.File, names []string, all bool) error) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:               use + " <name>... | --all",
@@ -233,7 +234,7 @@ func (a *app) lifecycleCommand(use, short, long, example string, action func(ctx
 					return err
 				}
 			}
-			return action(cmd.Context(), f, slices.Compact(slices.Sorted(slices.Values(names))), all)
+			return action(cmd.Context(), a.stdout, f, slices.Compact(slices.Sorted(slices.Values(names))), all)
 		}),
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "act on every tunnel")
@@ -263,14 +264,14 @@ func (a *app) setStopped(names []string, stopped bool) error {
 	})
 }
 
-func (a *app) startTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+func (a *app) startTunnels(ctx context.Context, out io.Writer, f *config.File, names []string, all bool) error {
 	var errs []error
 	var started []string
 	for _, name := range names {
 		t := f.Tunnels[name]
 		if !t.Stopped {
 			if !all {
-				fmt.Fprintf(a.stdout, "Tunnel %s is already started.\n", name)
+				fmt.Fprintf(out, "Tunnel %s is already started.\n", name)
 			}
 			continue
 		}
@@ -288,17 +289,17 @@ func (a *app) startTunnels(ctx context.Context, f *config.File, names []string, 
 		return joinErrors(append(errs, fmt.Errorf("start: %w", err)))
 	}
 	for _, name := range started {
-		fmt.Fprintf(a.stdout, "Started tunnel %s.\n", name)
+		fmt.Fprintf(out, "Started tunnel %s.\n", name)
 	}
 	return joinErrors(errs)
 }
 
-func (a *app) stopTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+func (a *app) stopTunnels(ctx context.Context, out io.Writer, f *config.File, names []string, all bool) error {
 	var stopped []string
 	for _, name := range names {
 		if f.Tunnels[name].Stopped {
 			if !all {
-				fmt.Fprintf(a.stdout, "Tunnel %s is already stopped.\n", name)
+				fmt.Fprintf(out, "Tunnel %s is already stopped.\n", name)
 			}
 			continue
 		}
@@ -311,12 +312,12 @@ func (a *app) stopTunnels(ctx context.Context, f *config.File, names []string, a
 		return fmt.Errorf("stop: %w", err)
 	}
 	for _, name := range stopped {
-		fmt.Fprintf(a.stdout, "Stopped tunnel %s.\n", name)
+		fmt.Fprintf(out, "Stopped tunnel %s.\n", name)
 	}
 	return nil
 }
 
-func (a *app) restartTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+func (a *app) restartTunnels(ctx context.Context, out io.Writer, f *config.File, names []string, all bool) error {
 	var errs []error
 	var restart []string
 	for _, name := range names {
@@ -339,7 +340,7 @@ func (a *app) restartTunnels(ctx context.Context, f *config.File, names []string
 		}
 	}
 	for _, name := range restart {
-		fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)
+		fmt.Fprintf(out, "Restarted tunnel %s.\n", name)
 	}
 	return joinErrors(errs)
 }

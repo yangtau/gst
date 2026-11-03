@@ -149,20 +149,28 @@ func (b *daemonBackend) Restart(ctx context.Context, names []string) error {
 	return err
 }
 
-// connectOnce connects to a daemon that is already running.
-func (b *daemonBackend) connectOnce(ctx context.Context) (*daemon.Client, error) {
-	return daemon.Dial(ctx, b.paths.Socket, software, "")
+// queryTimeout bounds a question to a running daemon.
+const queryTimeout = 5 * time.Second
+
+// query runs fn on a connection to a daemon that is already running,
+// within queryTimeout.
+func (b *daemonBackend) query(ctx context.Context, fn func(ctx context.Context, c *daemon.Client) error) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return fn(ctx, c)
 }
 
 func (b *daemonBackend) States(ctx context.Context) (map[string]wire.TunnelState, bool) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	c, err := b.connectOnce(ctx)
-	if err != nil {
-		return nil, false
-	}
-	defer c.Close()
-	status, err := c.Status(ctx)
+	var status wire.Status
+	err := b.query(ctx, func(ctx context.Context, c *daemon.Client) (err error) {
+		status, err = c.Status(ctx)
+		return err
+	})
 	if err != nil {
 		return nil, false
 	}
@@ -171,6 +179,40 @@ func (b *daemonBackend) States(ctx context.Context) (map[string]wire.TunnelState
 		states[s.Name] = s
 	}
 	return states, true
+}
+
+func (b *daemonBackend) Peers(ctx context.Context) (peers wire.Peers, err error) {
+	err = b.query(ctx, func(ctx context.Context, c *daemon.Client) error {
+		peers, err = c.Peers(ctx)
+		return err
+	})
+	return peers, err
+}
+
+func (b *daemonBackend) Nodes(ctx context.Context) (topo wire.Topology, err error) {
+	err = b.query(ctx, func(ctx context.Context, c *daemon.Client) error {
+		topo, err = c.Nodes(ctx)
+		return err
+	})
+	return topo, err
+}
+
+// Connect connects through the mesh. The connection is set up within
+// connectTimeout, which leaves the mesh its own relay timeout.
+func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
+	const connectTimeout = 40 * time.Second
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	if err != nil {
+		return nil, fmt.Errorf("the gst daemon does not answer: %w", err)
+	}
+	conn, err := c.Connect(ctx, node, target)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (b *daemonBackend) logPath(name string) string {

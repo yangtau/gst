@@ -40,69 +40,56 @@ func Dial(ctx context.Context, socket, software, build string) (*Client, error) 
 // Close closes the connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
-func (c *Client) call(ctx context.Context, method string, params any) (wire.Status, error) {
+// call calls method and decodes its result into result, which may be nil.
+// When ctx is done first, it closes the connection and returns ctx's
+// error.
+func (c *Client) call(ctx context.Context, method string, params, result any) error {
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
-	defer stop()
-	var status wire.Status
-	err := wire.Call(c.conn, method, params, &status)
-	if ctx.Err() != nil {
-		return status, ctx.Err()
+	err := wire.Call(c.conn, method, params, result)
+	if !stop() {
+		return ctx.Err()
 	}
-	return status, err
+	return err
 }
 
 // Status returns the daemon's status.
-func (c *Client) Status(ctx context.Context) (wire.Status, error) {
-	return c.call(ctx, wire.MethodStatus, nil)
+func (c *Client) Status(ctx context.Context) (s wire.Status, err error) {
+	err = c.call(ctx, wire.MethodStatus, nil, &s)
+	return
 }
 
 // Reload makes the daemon sync its tunnels with the configuration file.
-func (c *Client) Reload(ctx context.Context) (wire.Status, error) {
-	return c.call(ctx, wire.MethodReload, nil)
+func (c *Client) Reload(ctx context.Context) (s wire.Status, err error) {
+	err = c.call(ctx, wire.MethodReload, nil, &s)
+	return
 }
 
 // Restart restarts the named tunnels.
-func (c *Client) Restart(ctx context.Context, names []string) (wire.Status, error) {
-	return c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names})
+func (c *Client) Restart(ctx context.Context, names []string) (s wire.Status, err error) {
+	err = c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names}, &s)
+	return
+}
+
+// Nodes returns the mesh as the daemon knows it.
+func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
+	err = c.call(ctx, wire.MethodNodes, nil, &t)
+	return
+}
+
+// Peers returns the daemon's peer links.
+func (c *Client) Peers(ctx context.Context) (p wire.Peers, err error) {
+	err = c.call(ctx, wire.MethodPeers, nil, &p)
+	return
 }
 
 // Connect asks the daemon to connect to target on a machine of the mesh.
 // On success the connection carries the bytes of that connection and
 // belongs to the caller; the client must not be used any more.
 func (c *Client) Connect(ctx context.Context, node string, target wire.Target) (net.Conn, error) {
-	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
-	err := wire.Call(c.conn, wire.MethodConnect, wire.ConnectParams{Node: node, Target: target}, nil)
-	if !stop() {
-		return nil, ctx.Err()
-	}
-	if err != nil {
+	if err := c.call(ctx, wire.MethodConnect, wire.ConnectParams{Node: node, Target: target}, nil); err != nil {
 		return nil, err
 	}
 	return c.conn, nil
-}
-
-// Nodes returns the mesh as the daemon knows it.
-func (c *Client) Nodes(ctx context.Context) (wire.Topology, error) {
-	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
-	defer stop()
-	var t wire.Topology
-	err := wire.Call(c.conn, wire.MethodNodes, nil, &t)
-	if ctx.Err() != nil {
-		return t, ctx.Err()
-	}
-	return t, err
-}
-
-// Peers returns the daemon's peer links.
-func (c *Client) Peers(ctx context.Context) (wire.Peers, error) {
-	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
-	defer stop()
-	var peers wire.Peers
-	err := wire.Call(c.conn, wire.MethodPeers, nil, &peers)
-	if ctx.Err() != nil {
-		return peers, ctx.Err()
-	}
-	return peers, err
 }
 
 // Build identifies the executable at path by the SHA-256 of its content,

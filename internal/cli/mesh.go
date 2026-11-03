@@ -2,7 +2,6 @@ package cli
 
 import (
 	"cmp"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +77,19 @@ this machine's host name; --name changes it.`,
 	return cmd
 }
 
+// meshBackend returns the backend for a command that needs the mesh, or
+// an error when the mesh is not enabled.
+func (a *app) meshBackend() (backend, error) {
+	f, err := a.load()
+	if err != nil {
+		return nil, err
+	}
+	if f.Mesh == nil {
+		return nil, withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
+	}
+	return a.backend()
+}
+
 // defaultNodeName derives a valid node name from the host name.
 func defaultNodeName() string {
 	host, _ := os.Hostname()
@@ -142,14 +154,7 @@ from other machines' tunnels. A link is connecting, up, or down (failed
 and retrying, with the reason).`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			f, err := a.load()
-			if err != nil {
-				return err
-			}
-			if f.Mesh == nil {
-				return withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
-			}
-			b, err := a.backend()
+			b, err := a.meshBackend()
 			if err != nil {
 				return err
 			}
@@ -202,14 +207,7 @@ when this machine can get to it through running tunnels, going on past a
 machine only over a peer link.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			f, err := a.load()
-			if err != nil {
-				return err
-			}
-			if f.Mesh == nil {
-				return withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
-			}
-			b, err := a.backend()
+			b, err := a.meshBackend()
 			if err != nil {
 				return err
 			}
@@ -279,18 +277,6 @@ func writeTopology(out io.Writer, topo wire.Topology) error {
 	return w.Flush()
 }
 
-// Nodes asks the daemon for the mesh.
-func (b *daemonBackend) Nodes(ctx context.Context) (wire.Topology, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	c, err := b.connectOnce(ctx)
-	if err != nil {
-		return wire.Topology{}, err
-	}
-	defer c.Close()
-	return c.Nodes(ctx)
-}
-
 func (a *app) connectCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "connect <machine> <port | host:port | socket>",
@@ -309,14 +295,7 @@ gst node has a tunnel with --mesh to it.`,
 			if err != nil {
 				return err
 			}
-			f, err := a.load()
-			if err != nil {
-				return err
-			}
-			if f.Mesh == nil {
-				return withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
-			}
-			b, err := a.backend()
+			b, err := a.meshBackend()
 			if err != nil {
 				return err
 			}
@@ -357,24 +336,6 @@ func parseTarget(s string) (wire.Target, error) {
 	return wire.Target{Network: "tcp", Address: net.JoinHostPort(host, port)}, nil
 }
 
-// Connect asks the daemon to connect through the mesh.
-func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	c, err := b.connectOnce(dialCtx)
-	if err != nil {
-		return nil, fmt.Errorf("the gst daemon does not answer: %w", err)
-	}
-	ctx, cancel = context.WithTimeout(ctx, 40*time.Second)
-	defer cancel()
-	conn, err := c.Connect(ctx, node, target)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	return conn, nil
-}
-
 func shortID(id string) string { return id[:min(8, len(id))] }
 
 // peerBridgeCommand connects its standard input and output to the gst
@@ -412,16 +373,4 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 			return nil
 		}),
 	}
-}
-
-// peers asks the daemon for its peer links.
-func (b *daemonBackend) Peers(ctx context.Context) (wire.Peers, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	c, err := b.connectOnce(ctx)
-	if err != nil {
-		return wire.Peers{}, err
-	}
-	defer c.Close()
-	return c.Peers(ctx)
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -226,25 +227,23 @@ type uiResult struct {
 // uiAction starts, stops, or restarts one tunnel as gst start, stop, and
 // restart do, and returns what they would print.
 func (a *app) uiAction(ctx context.Context, name, action string) (uiResult, int) {
-	var out strings.Builder
-	c := *a // a copy that prints to out and fetches its own states
-	c.stdout, c.states = &out, nil
-	var run func(ctx context.Context, f *config.File, names []string, all bool) error
+	var run func(ctx context.Context, out io.Writer, f *config.File, names []string, all bool) error
 	switch action {
 	case "start":
-		run = c.startTunnels
+		run = a.startTunnels
 	case "stop":
-		run = c.stopTunnels
+		run = a.stopTunnels
 	case "restart":
-		run = c.restartTunnels
+		run = a.restartTunnels
 	default:
 		return uiResult{Error: fmt.Sprintf("unknown action %q", action)}, http.StatusNotFound
 	}
-	f, err := c.load()
+	var out strings.Builder
+	f, err := a.load()
 	if err == nil {
 		_, err = lookup(f, name)
 		if err == nil {
-			err = run(ctx, f, []string{name}, false)
+			err = run(ctx, &out, f, []string{name}, false)
 		}
 	}
 	result := uiResult{Message: strings.TrimSpace(out.String())}
