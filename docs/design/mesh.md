@@ -1,6 +1,6 @@
 # gst mesh 设计
 
-状态：第 1 步（单进程 daemon + 控制协议）已实现；第 2 步起为设计。
+状态：第 1 步（单进程 daemon + 控制协议）和第 2 步（peer link）已实现；第 3 步起为设计。
 
 ## 目标
 
@@ -16,7 +16,7 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 ## 分步
 
 1. **单进程 daemon**：每台机器只有一个 gst 后台服务，持有全部 tunnel，暴露一个 unix control socket；CLI 通过 [gst 协议](#gst-协议) 与它通信。（已实现）
-2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst peers` 列出直连节点。
+2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst nodes` 输出全局视图（文本与 `--json`）。
 4. **中转转发**：`gst forward add <node> --via mesh -L ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。
 5. **Web UI**：daemon 提供 HTTP API，`gst ui` 打开本地页面；先只读，再支持配置本节点。
@@ -29,9 +29,9 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 
 ## 节点身份
 
-节点以 SSH host key 指纹标识，而不是名字：同一台机器在不同节点的 ssh config 里可能有不同别名，host key 却是全局唯一的。
+运行 gst 的节点以随机 id 标识，而不是名字：`gst mesh enable` 生成 128 位随机 id，保存在配置文件的 `mesh` 中；名字（`--name`，默认取主机名）只用于显示，可以重复。没有用 host key 指纹做 id，是因为 macOS 等机器未必有 sshd host key。
 
-- 运行 gst 的节点读取本机 `/etc/ssh/ssh_host_*_key.pub`，在 `node.info` 中报告全部指纹。于是“作为 gst 节点的 mini”与“m3 看到的 mini sshd”合并为同一节点。
+- 第 3 步：节点在 `node.info` 中附带本机 `/etc/ssh/ssh_host_*_key.pub` 的指纹，tunnel 的边记录服务器的 host key 指纹，于是“作为 gst 节点的 mini”与“m3 看到的 mini sshd”合并为同一节点。
 - 没有运行 gst 的 SSH 服务器（如 devcn）是叶子节点，只经由连向它的边出现；它不需要安装 gst 即可被中转。
 - 显示名取自边上的 ssh 别名；冲突时由用户在本地设置别名。
 
@@ -100,7 +100,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 ```
 
 - `control` 连接本身就是一个流，可以顺序发多次请求。
-- `peer` 连接在握手后切换为多路复用（计划使用 yamux），每个子流以一个请求开始。
+- `peer` 连接的 Hello 带 feature `yamux`，握手后切换为 yamux 会话，双方都可以开子流，每个子流以一个请求开始。连接建立后双方各调用一次 `node.info` 认识对方；连向自己的 link 由发起方报错并关闭。
 - **流式方法**在成功响应之后接管该流，内容由方法定义：`relay.open` 之后是原始字节，事件订阅类方法之后是连续的帧。
 - 未知方法返回 `unsupported_method`，调用方据此降级。
 
@@ -125,11 +125,13 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
 | `tunnel.restart` | `{"names": [...]}` | 重启后的 `Status` |
 
-`peer`（计划）：
+`control` 还有 `mesh.peers`（已实现）：返回本节点信息和全部 peer link（方向、所经 tunnel、状态、对端、失败原因）。
+
+`peer`：
 
 | 方法 | 参数 | 结果 / 后续 |
 | --- | --- | --- |
-| `node.info` | 无 | 节点 id、名字、host key 指纹、software、features |
+| `node.info` | 无 | 节点 id、名字、software、features（已实现；第 3 步加 host key 指纹） |
 | `topology.sync` | 发送方已知的 link-state 记录 | 对方较新的记录；之后以事件帧持续推送更新 |
 | `relay.open` | `{"path": [节点...], "target": {"network": "tcp", "address": "127.0.0.1:5432"}}` | 成功后该流变为到目标的原始字节流；路径上每一跳把剩余路径转发给下一跳 |
 

@@ -198,11 +198,17 @@ type pair struct {
 
 func startPair(t *testing.T) *pair {
 	t.Helper()
-	p := &pair{client: startNode(t), server: startNode(t)}
+	return trust(t, startNode(t), startNode(t))
+}
+
+// trust lets client's gst user log in to server.
+func trust(t *testing.T, client, server *node) *pair {
+	t.Helper()
+	p := &pair{client: client, server: server}
 	private, signer := newIdentity(t)
 	p.identity = nodeHome + "/.ssh/id_" + p.server.container
 	p.knownHosts = nodeHome + "/.ssh/known_hosts"
-	p.client.mustSh(`mkdir -p -m 700 ~/.ssh`)
+	p.client.mustSh(`mkdir -p -m 700 ~/.ssh && touch ~/.ssh/known_hosts`)
 	p.client.writeFile(p.identity, private)
 	p.client.mustSh(`printf '%s\n' "$1" >>"$2"`, knownhosts.Line([]string{p.server.addr(22)}, p.server.hostKey), p.knownHosts)
 	p.server.mustSh(`umask 077 && mkdir -p ~/.ssh && printf '%s' "$1" >>~/.ssh/authorized_keys`, string(ssh.MarshalAuthorizedKey(signer.PublicKey())))

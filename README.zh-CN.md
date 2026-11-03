@@ -93,6 +93,8 @@ gst remove myhost  # 停止并删除
 | `gst show <name>` | 查看 tunnel 的设置和 ssh 解析结果 |
 | `gst logs <name> [-f] [-n N]` | 查看日志 |
 | `gst check <name>` | 诊断：ssh 配置、私钥、known_hosts、网络、登录 |
+| `gst mesh enable [--name name]` / `gst mesh disable` | 加入或退出由多台机器组成的 mesh |
+| `gst mesh peers` | 列出 peer link |
 | `gst version` | 查看已安装的版本 |
 
 修改运行中 tunnel 的 forward 或设置后，gst 会自动重启它；加 `--no-restart` 可以跳过。设置没有变化时什么也不做。
@@ -188,6 +190,25 @@ gst set myhost --cleanup-listeners=false
 - 从 gst 0.1 升级：0.1 中每个 tunnel 是单独的服务（`gst-<name>.service`、`local.gst.<name>`）。升级后第一个读取配置的 gst 命令会把有服务的 tunnel 交给 daemon 运行并删除这些服务，其余 tunnel 标记为已停止。
 - Linux 上，要让 tunnel 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，tunnel 在登录后启动、注销后停止。
 
+## 连接多台机器（mesh）
+
+多台机器上的 gst 可以互相连接。设置了 `--mesh` 的 tunnel 会通过它的 SSH 连接，把本机的 gst 和服务器上的 gst 连起来，双方都能在 `gst mesh peers` 中看到对方。后续版本会在此基础上显示所有相连机器组成的全局视图，并经由它们中转连接。
+
+```bash
+# 在每台参与的机器上执行（名字默认取主机名）
+gst mesh enable --name laptop
+
+# 在有 tunnel 的机器上
+gst set myhost --mesh
+gst mesh peers
+```
+
+- 两台机器都需要执行 `gst mesh enable`，服务器上需要 gst 0.2 或更高版本。gst 通过 SSH 在登录 shell 中执行 `gst peer-bridge`；如果该 shell 的 `PATH` 里找不到 gst，用 `--remote-gst` 指定路径，例如 `gst set myhost --remote-gst ~/.nix-profile/bin/gst`。
+- 开启 mesh 后，即使没有启动任何 tunnel，daemon 也会保持运行，以便接受连接。
+- link 的状态为 `connecting`、`up` 或 `down`。`gst mesh peers` 会显示 link 断开的原因；断开后每 10 秒重试一次。link 失败不影响 tunnel 的 forward。
+- peer 之间相互信任：link 以你的用户身份登录服务器，服务器的 daemon 只通过自己的 socket 接受它。
+- `gst mesh disable` 会关闭所有 link。重新开启后会生成新的节点 id。
+
 ## 排查问题
 
 先运行 `gst check <name>`，它会逐项检查并对失败项给出建议。`add`、`set`、`start`、`restart` 也会先检查私钥和 known_hosts，不通过时不保存、不启动。
@@ -209,7 +230,7 @@ gst set myhost --cleanup-listeners=false
 
 - 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。
 - 退出码：`0` 成功，`1` 执行失败（包括 `check` 未通过），`2` 参数无效。
-- `list`、`show`、`check`、`forward list` 支持 `--json`。
+- `list`、`show`、`check`、`forward list`、`mesh peers` 支持 `--json`。
 - 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但 forward 不同则报错。`-L` 和 `-D` 都在本机监听，所以不能共用同一个地址。固定目标和动态（SOCKS）`-R` 都在服务器上监听，同样不能共用监听地址。
 
 ## 配置文件

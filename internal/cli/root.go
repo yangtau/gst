@@ -57,6 +57,7 @@ report state accept --json.`,
 		&cobra.Group{ID: "configure", Title: "Configure tunnels:"},
 		&cobra.Group{ID: "run", Title: "Run tunnels:"},
 		&cobra.Group{ID: "inspect", Title: "Inspect tunnels:"},
+		&cobra.Group{ID: "mesh", Title: "Link machines:"},
 	)
 	addGroup := func(id string, cmds ...*cobra.Command) {
 		for _, cmd := range cmds {
@@ -67,6 +68,7 @@ report state accept --json.`,
 	addGroup("configure", a.addCommand(), a.setCommand(), a.forwardCommand(), a.removeCommand())
 	addGroup("run", a.startCommand(), a.stopCommand(), a.restartCommand())
 	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand())
+	addGroup("mesh", a.meshCommand())
 	root.AddCommand(&cobra.Command{
 		Use:     "version",
 		Short:   "Show the gst version",
@@ -75,7 +77,7 @@ report state accept --json.`,
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},
-	}, a.runCommand(), a.daemonRunCommand())
+	}, a.runCommand(), a.daemonRunCommand(), a.peerBridgeCommand())
 	setHelpColors(root)
 	return root
 }

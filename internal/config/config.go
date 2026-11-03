@@ -4,6 +4,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +30,15 @@ const Version = 2
 // files written before versions were recorded.
 type File struct {
 	Version int                `json:"version,omitempty"`
+	Mesh    *Mesh              `json:"mesh,omitempty"`
 	Tunnels map[string]*Tunnel `json:"tunnels"`
+}
+
+// Mesh is present when this machine takes part in the gst mesh: its daemon
+// accepts peer links and keeps running without started tunnels.
+type Mesh struct {
+	ID   string `json:"id"`   // random and stable
+	Name string `json:"name"` // shown to peers
 }
 
 // Tunnel is one SSH connection and the forwards it serves. Destination is
@@ -46,6 +56,11 @@ type Tunnel struct {
 	Forwards                 []Forward `json:"forwards"`
 	// Stopped tunnels stay configured, but the daemon does not run them.
 	Stopped bool `json:"stopped,omitempty"`
+	// Mesh links this machine's gst with the server's over the tunnel.
+	Mesh bool `json:"mesh,omitempty"`
+	// RemoteGst is the server's gst command for the peer link; "gst" in
+	// the login shell's PATH when empty.
+	RemoteGst string `json:"remote_gst,omitempty"`
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
@@ -104,6 +119,9 @@ func parse(data []byte) (*File, error) {
 func (f *File) validate() error {
 	if f.Version < 0 || f.Version > Version {
 		return fmt.Errorf("unsupported config version %d; upgrade gst", f.Version)
+	}
+	if m := f.Mesh; m != nil && (!meshIDPattern.MatchString(m.ID) || ValidateNodeName(m.Name) != nil) {
+		return errors.New("invalid mesh id or name")
 	}
 	for name, t := range f.Tunnels {
 		if err := ValidateName(name); err != nil {
@@ -183,6 +201,22 @@ func writeFileAtomic(path string, data []byte) error {
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
+var meshIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// ValidateNodeName checks a mesh node name, which follows the rules of
+// tunnel names.
+func ValidateNodeName(name string) error {
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("invalid node name %q: use 1-32 lowercase letters, digits, or '-', starting with a letter or digit", name)
+	}
+	return nil
+}
+
+// NewMeshID returns a random mesh node id.
+func NewMeshID() string {
+	return hex.EncodeToString(randomBytes(16))
+}
+
 // ValidateName checks a tunnel name. Names become part of service names and
 // log file names, so they are restricted to a portable character set.
 func ValidateName(name string) error {
@@ -213,6 +247,9 @@ func (t *Tunnel) Validate() error {
 		if path != "" && (!filepath.IsAbs(path) || strings.ContainsRune(path, 0)) {
 			return errors.New("identity and known_hosts paths must be absolute")
 		}
+	}
+	if strings.ContainsFunc(t.RemoteGst, func(r rune) bool { return unicode.IsControl(r) }) {
+		return errors.New("invalid remote gst command")
 	}
 	if !isUnsetOrSeconds(t.ConnectTimeoutSeconds) || !isUnsetOrSeconds(t.KeepaliveIntervalSeconds) ||
 		t.KeepaliveCountMax < 0 || t.KeepaliveCountMax > MaxKeepaliveCount {
@@ -250,4 +287,10 @@ func AbsPath(path string) (string, error) {
 		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
 	}
 	return filepath.Abs(path)
+}
+
+func randomBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
 }

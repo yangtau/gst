@@ -134,11 +134,15 @@ func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 
 // Accept performs the accepting side's handshake on rw. check may refuse
 // the connection by returning an Error, which is sent to the other side
-// and returned.
-func Accept(rw io.ReadWriter, mine Hello, check func(Hello) *Error) (Hello, error) {
+// and returned. reply, when given, picks the Hello to answer with, as the
+// answer may depend on the role.
+func Accept(rw io.ReadWriter, mine Hello, check func(Hello) *Error, reply ...func(Hello) Hello) (Hello, error) {
 	var theirs Hello
 	if err := ReadFrame(rw, &theirs); err != nil {
 		return Hello{}, err
+	}
+	if len(reply) > 0 {
+		mine = reply[0](theirs)
 	}
 	mine.Protocol = Protocol
 	if theirs.Protocol < 1 {

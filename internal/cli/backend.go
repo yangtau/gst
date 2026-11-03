@@ -21,12 +21,12 @@ import (
 // backend runs tunnels in the background. The real one controls the gst
 // daemon; tests use a fake.
 type backend interface {
-	// Sync makes the background match the started tunnels of the
-	// configuration file. With started tunnels, it installs the daemon's
-	// service to run command, restarts a daemon that runs another gst, and
-	// tells the daemon to reload the configuration; without, it removes
-	// the service.
-	Sync(ctx context.Context, command []string, anyStarted bool) error
+	// Sync makes the background match the configuration file. When the
+	// daemon is needed, for started tunnels or the mesh, it installs the
+	// daemon's service to run command, restarts a daemon that runs another
+	// gst, and tells the daemon to reload the configuration; otherwise it
+	// removes the service.
+	Sync(ctx context.Context, command []string, needed bool) error
 	// Restart restarts started tunnels in a daemon that Sync brought up.
 	Restart(ctx context.Context, names []string) error
 	// States returns the states of the tunnels that the daemon runs, and
@@ -36,6 +36,8 @@ type backend interface {
 	// follow is set, new lines until ctx is done.
 	Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error
 	RemoveLogs(name string) error
+	// Peers returns the daemon's peer links.
+	Peers(ctx context.Context) (wire.Peers, error)
 	// HasLegacy and RemoveLegacy find and remove gst 0.1's per-tunnel
 	// services.
 	HasLegacy(name string) bool
@@ -77,8 +79,8 @@ func daemonLogHint() string {
 	return "see the daemon log with `journalctl --user -u gst`"
 }
 
-func (b *daemonBackend) Sync(ctx context.Context, command []string, anyStarted bool) error {
-	if !anyStarted {
+func (b *daemonBackend) Sync(ctx context.Context, command []string, needed bool) error {
+	if !needed {
 		return b.manager.Uninstall()
 	}
 	build, err := b.build()
@@ -142,10 +144,15 @@ func (b *daemonBackend) Restart(ctx context.Context, names []string) error {
 	return err
 }
 
+// connectOnce connects to a daemon that is already running.
+func (b *daemonBackend) connectOnce(ctx context.Context) (*daemon.Client, error) {
+	return daemon.Dial(ctx, b.paths.Socket, software, "")
+}
+
 func (b *daemonBackend) States(ctx context.Context) (map[string]wire.TunnelState, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	c, err := b.connectOnce(ctx)
 	if err != nil {
 		return nil, false
 	}

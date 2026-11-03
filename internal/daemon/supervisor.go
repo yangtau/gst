@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
@@ -105,6 +107,11 @@ func (s *supervisor) connect() error {
 	}
 	opts.Logger = s.log
 	opts.OnReady = func() { s.set(wire.StateRunning, "") }
+	if s.spec.Mesh {
+		opts.Attach = func(ctx context.Context, client *ssh.Client) {
+			s.d.mesh.Link(ctx, s.name, client, s.spec.RemoteGst, s.log)
+		}
+	}
 	return s.d.cfg.Run(s.ctx, opts)
 }
 

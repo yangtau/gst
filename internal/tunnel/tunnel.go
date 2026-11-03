@@ -36,6 +36,9 @@ type Options struct {
 	Forwards          []config.Forward
 	Logger            *log.Logger // receives the tunnel's log; nil means the standard logger
 	OnReady           func()      // called once every forward listens; may be nil
+	// Attach, when set, runs once the tunnel is ready, alongside the
+	// forwards, until ctx is done; it may open its own channels on client.
+	Attach func(ctx context.Context, client *ssh.Client)
 }
 
 // Run connects to the server and serves the forwards until ctx is
@@ -107,6 +110,9 @@ func (t *tunnel) serve(ctx context.Context) error {
 	t.opts.Logger.Print("tunnel ready")
 	if t.opts.OnReady != nil {
 		t.opts.OnReady()
+	}
+	if t.opts.Attach != nil {
+		t.workers.Go(func() { t.opts.Attach(ctx, t.client) })
 	}
 
 	select {

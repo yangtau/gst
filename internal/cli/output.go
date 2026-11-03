@@ -26,6 +26,8 @@ type tunnelView struct {
 	KeepaliveIntervalSeconds int64         `json:"keepalive_interval_seconds,omitempty"`
 	KeepaliveCountMax        int64         `json:"keepalive_count_max,omitempty"`
 	CleanupListeners         bool          `json:"cleanup_listeners"`
+	Mesh                     bool          `json:"mesh"`
+	RemoteGst                string        `json:"remote_gst,omitempty"`
 	Forwards                 []forwardView `json:"forwards"`
 	Resolved                 *resolved     `json:"resolved,omitempty"`
 	ResolveError             string        `json:"resolve_error,omitempty"`
@@ -71,6 +73,8 @@ func (a *app) view(ctx context.Context, name string, t *config.Tunnel) tunnelVie
 		KeepaliveIntervalSeconds: t.KeepaliveIntervalSeconds,
 		KeepaliveCountMax:        t.KeepaliveCountMax,
 		CleanupListeners:         t.CleanupListeners,
+		Mesh:                     t.Mesh,
+		RemoteGst:                t.RemoteGst,
 		Forwards:                 forwardViews(t.Forwards),
 	}
 }
@@ -111,6 +115,14 @@ func (v tunnelView) write(out io.Writer) error {
 		cleanup = "on"
 	}
 	row("Cleanup listeners", cleanup)
+	mesh := "off"
+	if v.Mesh {
+		mesh = "on"
+		if v.RemoteGst != "" {
+			mesh += ", remote gst " + v.RemoteGst
+		}
+	}
+	row("Mesh", mesh)
 	if len(v.Forwards) == 0 {
 		row("Forwards", "none")
 	} else {

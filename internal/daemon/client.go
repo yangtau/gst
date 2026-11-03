@@ -66,6 +66,18 @@ func (c *Client) Restart(ctx context.Context, names []string) (wire.Status, erro
 	return c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names})
 }
 
+// Peers returns the daemon's peer links.
+func (c *Client) Peers(ctx context.Context) (wire.Peers, error) {
+	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
+	defer stop()
+	var peers wire.Peers
+	err := wire.Call(c.conn, wire.MethodPeers, nil, &peers)
+	if ctx.Err() != nil {
+		return peers, ctx.Err()
+	}
+	return peers, err
+}
+
 // Build identifies the executable at path by the SHA-256 of its content,
 // so that a gst command can tell whether the daemon runs the same gst.
 func Build(path string) (string, error) {

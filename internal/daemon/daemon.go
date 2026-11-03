@@ -20,6 +20,7 @@ import (
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
+	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -40,11 +41,15 @@ type Config struct {
 	RetryDelay time.Duration
 	// Log receives the daemon's own log; the standard logger when nil.
 	Log *log.Logger
+	// MeshRetry is the wait before a failed peer link retries; 10 s when zero.
+	MeshRetry time.Duration
 }
 
 // Daemon runs tunnels and answers control connections.
 type Daemon struct {
 	cfg Config
+
+	mesh *mesh.Node
 
 	ops     sync.Mutex // serializes reloads and restarts
 	mu      sync.Mutex // guards tunnels
@@ -62,7 +67,11 @@ func New(cfg Config) *Daemon {
 	if cfg.Log == nil {
 		cfg.Log = log.Default()
 	}
-	return &Daemon{cfg: cfg, tunnels: map[string]*supervisor{}}
+	m := mesh.New(cfg.Software, cfg.Log)
+	if cfg.MeshRetry > 0 {
+		m.SetRetry(cfg.MeshRetry)
+	}
+	return &Daemon{cfg: cfg, mesh: m, tunnels: map[string]*supervisor{}}
 }
 
 // Serve takes the control socket, starts the configured tunnels, and
@@ -136,14 +145,31 @@ func (d *Daemon) hello() wire.Hello {
 	return wire.Hello{Software: d.cfg.Software, Role: wire.RoleControl, Build: d.cfg.Build}
 }
 
+// serveConn serves a gst command (role control) or, through gst
+// peer-bridge, a peer daemon (role peer).
 func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
-	_, err := wire.Accept(conn, d.hello(), func(h wire.Hello) *wire.Error {
-		if h.Role != wire.RoleControl {
-			return wire.Errorf(wire.CodeUnsupportedRole, "role %q is not supported", h.Role)
+	var role string
+	hello := d.hello()
+	_, err := wire.Accept(conn, hello, func(h wire.Hello) *wire.Error {
+		role = h.Role
+		switch h.Role {
+		case wire.RoleControl:
+			return nil
+		case wire.RolePeer:
+			return d.mesh.CheckHello(h)
 		}
-		return nil
+		return wire.Errorf(wire.CodeUnsupportedRole, "role %q is not supported", h.Role)
+	}, func(h wire.Hello) wire.Hello {
+		if h.Role == wire.RolePeer {
+			return d.mesh.Hello()
+		}
+		return hello
 	})
 	if err != nil {
+		return
+	}
+	if role == wire.RolePeer {
+		d.mesh.Accept(ctx, conn)
 		return
 	}
 	wire.Serve(conn, func(method string, params json.RawMessage) (any, *wire.Error) {
@@ -155,6 +181,8 @@ func (d *Daemon) handle(ctx context.Context, method string, params json.RawMessa
 	switch method {
 	case wire.MethodStatus:
 		return d.Status(), nil
+	case wire.MethodPeers:
+		return d.mesh.Peers(), nil
 	case wire.MethodReload:
 		if err := d.Reload(ctx); err != nil {
 			return nil, wire.Errorf(wire.CodeFailed, "%v", err)
@@ -208,6 +236,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	d.mesh.Configure(f.Mesh)
 	var stop []*supervisor
 	d.mu.Lock()
 	for name, s := range d.tunnels {

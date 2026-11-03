@@ -300,12 +300,12 @@ func (a *app) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	anyStarted := false
+	needed := f.Mesh != nil
 	for _, t := range f.Tunnels {
-		anyStarted = anyStarted || !t.Stopped
+		needed = needed || !t.Stopped
 	}
 	var command []string
-	if anyStarted {
+	if needed {
 		if command, err = a.daemonCommand(); err != nil {
 			return err
 		}
@@ -314,7 +314,7 @@ func (a *app) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return b.Sync(ctx, command, anyStarted)
+	return b.Sync(ctx, command, needed)
 }
 
 // restart restarts started tunnels with their current configuration.

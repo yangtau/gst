@@ -37,10 +37,10 @@ type fakeBackend struct {
 	calls     []string
 }
 
-func (f *fakeBackend) Sync(_ context.Context, command []string, anyStarted bool) error {
+func (f *fakeBackend) Sync(_ context.Context, command []string, needed bool) error {
 	f.calls = append(f.calls, "sync")
-	f.installed, f.command, f.running = anyStarted, command, map[string]bool{}
-	if !anyStarted {
+	f.installed, f.command, f.running = needed, command, map[string]bool{}
+	if !needed {
 		return nil
 	}
 	cfg, err := config.Load(f.config)
@@ -82,6 +82,11 @@ func (f *fakeBackend) RemoveLogs(name string) error {
 func (f *fakeBackend) Logs(_ context.Context, name string, lines int, follow bool, w io.Writer) error {
 	f.calls = append(f.calls, "logs "+name)
 	return nil
+}
+
+func (f *fakeBackend) Peers(context.Context) (wire.Peers, error) {
+	f.calls = append(f.calls, "peers")
+	return wire.Peers{Enabled: true, Links: []wire.PeerLink{}}, nil
 }
 
 func (f *fakeBackend) HasLegacy(name string) bool { return f.legacy[name] }
@@ -606,5 +611,59 @@ func TestMigratesLegacyServices(t *testing.T) {
 	e.mustGst("version")
 	if len(e.back.calls) != 0 {
 		t.Fatalf("migrated again: %v", e.back.calls)
+	}
+}
+
+func TestMesh(t *testing.T) {
+	e := newEnv(t)
+	if stderr := e.expectCode(exitFailure, "mesh", "peers"); !strings.Contains(stderr, "gst mesh enable") {
+		t.Fatalf("peers without the mesh: %q", stderr)
+	}
+	e.expectCode(exitUsage, "mesh", "enable", "--name", "Bad Name")
+
+	out := e.mustGst("mesh", "enable", "--name", "laptop")
+	f, _ := config.Load(e.config)
+	if f.Mesh == nil || f.Mesh.Name != "laptop" || len(f.Mesh.ID) != 32 || !strings.Contains(out, "this machine is laptop ("+f.Mesh.ID[:8]+")") {
+		t.Fatalf("mesh %+v, output %q", f.Mesh, out)
+	}
+	// The mesh keeps the daemon running without started tunnels.
+	if !e.back.installed {
+		t.Fatal("the daemon is not installed for the mesh")
+	}
+	id := f.Mesh.ID
+	e.mustGst("mesh", "enable", "--name", "desk")
+	if f, _ := config.Load(e.config); f.Mesh.ID != id || f.Mesh.Name != "desk" {
+		t.Fatalf("renaming changed the id: %+v", f.Mesh)
+	}
+	e.mustGst("mesh", "peers", "--json")
+
+	e.mustGst("add", "myhost", "--mesh", "--remote-gst", "/opt/gst/bin/gst")
+	if tn := e.tunnel("myhost"); !tn.Mesh || tn.RemoteGst != "/opt/gst/bin/gst" {
+		t.Fatalf("mesh settings not saved: %+v", tn)
+	}
+	if out := e.mustGst("show", "myhost"); !strings.Contains(out, "on, remote gst /opt/gst/bin/gst") {
+		t.Fatalf("show lacks mesh settings: %q", out)
+	}
+	e.mustGst("set", "myhost", "--mesh=false", "--remote-gst", "")
+	if tn := e.tunnel("myhost"); tn.Mesh || tn.RemoteGst != "" {
+		t.Fatalf("mesh settings not cleared: %+v", tn)
+	}
+
+	e.mustGst("stop", "myhost")
+	if !e.back.installed {
+		t.Fatal("stopping the last tunnel removed the daemon of the mesh")
+	}
+	e.mustGst("mesh", "disable")
+	if f, _ := config.Load(e.config); f.Mesh != nil || e.back.installed {
+		t.Fatalf("disable left mesh %+v, daemon installed %v", f.Mesh, e.back.installed)
+	}
+	if out := e.mustGst("mesh", "disable"); !strings.Contains(out, "already disabled") {
+		t.Fatalf("unexpected output %q", out)
+	}
+}
+
+func TestDefaultNodeName(t *testing.T) {
+	if err := config.ValidateNodeName(defaultNodeName()); err != nil {
+		t.Fatal(err)
 	}
 }

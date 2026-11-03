@@ -65,7 +65,7 @@ func (a *app) migrate(cmd *cobra.Command) error {
 func needsConfig(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
 		switch c.Name() {
-		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd, "version", "run", "daemon":
+		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd, "version", "run", "daemon", "peer-bridge":
 			return false
 		}
 	}
