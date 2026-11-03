@@ -38,7 +38,8 @@ type Options struct {
 	OnReady           func()      // called once every forward listens; may be nil
 	// Attach, when set, runs once the tunnel is ready, alongside the
 	// forwards, until ctx is done; it may open its own channels on client.
-	Attach func(ctx context.Context, client *ssh.Client)
+	// hostKey is the server's verified host key.
+	Attach func(ctx context.Context, client *ssh.Client, hostKey ssh.PublicKey)
 }
 
 // Run connects to the server and serves the forwards until ctx is
@@ -53,6 +54,15 @@ func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	var hostKey ssh.PublicKey
+	verify := clientConfig.HostKeyCallback
+	clientConfig.HostKeyCallback = func(host string, remote net.Addr, key ssh.PublicKey) error {
+		if err := verify(host, remote, key); err != nil {
+			return err
+		}
+		hostKey = key
+		return nil
+	}
 	client, err := dial(ctx, opts.Server, clientConfig, opts.ConnectTimeout)
 	if err != nil {
 		return err
@@ -64,6 +74,7 @@ func Run(ctx context.Context, opts Options) error {
 	t := &tunnel{
 		opts:            opts,
 		client:          client,
+		hostKey:         hostKey,
 		failure:         make(chan error, 1),
 		listenersClosed: make(chan struct{}),
 	}
@@ -75,6 +86,7 @@ func Run(ctx context.Context, opts Options) error {
 type tunnel struct {
 	opts      Options
 	client    *ssh.Client
+	hostKey   ssh.PublicKey
 	listeners []net.Listener
 	workers   sync.WaitGroup
 
@@ -112,7 +124,7 @@ func (t *tunnel) serve(ctx context.Context) error {
 		t.opts.OnReady()
 	}
 	if t.opts.Attach != nil {
-		t.workers.Go(func() { t.opts.Attach(ctx, t.client) })
+		t.workers.Go(func() { t.opts.Attach(ctx, t.client, t.hostKey) })
 	}
 
 	select {

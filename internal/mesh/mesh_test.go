@@ -26,6 +26,10 @@ func newNode(name string) *Node {
 // handshake that the server's daemon performs on its control socket, and
 // returns the outgoing link's result once it ends.
 func connect(ctx context.Context, client, server *Node) (*link, chan error) {
+	return connectOver(ctx, client, server, "srv")
+}
+
+func connectOver(ctx context.Context, client, server *Node, tunnel string) (*link, chan error) {
 	a, b := net.Pipe()
 	go func() {
 		_, err := wire.Accept(b, wire.Hello{Role: wire.RoleControl}, server.CheckHello, func(wire.Hello) wire.Hello { return server.Hello() })
@@ -35,7 +39,7 @@ func connect(ctx context.Context, client, server *Node) (*link, chan error) {
 		}
 		server.Accept(ctx, b)
 	}()
-	l := client.add(wire.LinkOut, "srv")
+	l := client.add(wire.LinkOut, tunnel)
 	done := make(chan error, 1)
 	go func() {
 		done <- client.linkOver(ctx, l, a, nil)
@@ -111,7 +115,7 @@ func TestLinkRefusals(t *testing.T) {
 
 func TestUnknownPeerMethods(t *testing.T) {
 	n := newNode("m3")
-	if _, err := n.handle("topology.sync", nil); err == nil || err.Code != wire.CodeUnsupportedMethod {
+	if _, err := n.handle("relay.open", nil); err == nil || err.Code != wire.CodeUnsupportedMethod {
 		t.Fatalf("got %v", err)
 	}
 }

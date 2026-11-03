@@ -43,6 +43,9 @@ type Config struct {
 	Log *log.Logger
 	// MeshRetry is the wait before a failed peer link retries; 10 s when zero.
 	MeshRetry time.Duration
+	// HostKeyFiles is the glob of this machine's sshd host public keys,
+	// which identify it in the mesh; /etc/ssh/ssh_host_*_key.pub when empty.
+	HostKeyFiles string
 }
 
 // Daemon runs tunnels and answers control connections.
@@ -71,7 +74,30 @@ func New(cfg Config) *Daemon {
 	if cfg.MeshRetry > 0 {
 		m.SetRetry(cfg.MeshRetry)
 	}
-	return &Daemon{cfg: cfg, mesh: m, tunnels: map[string]*supervisor{}}
+	if cfg.HostKeyFiles != "" {
+		m.SetHostKeyFiles(cfg.HostKeyFiles)
+	}
+	d := &Daemon{cfg: cfg, mesh: m, tunnels: map[string]*supervisor{}}
+	m.SetEdges(d.meshEdges)
+	return d
+}
+
+// meshEdges describes the tunnels with mesh on.
+func (d *Daemon) meshEdges() []wire.Edge {
+	d.mu.Lock()
+	var list []*supervisor
+	for _, s := range d.tunnels {
+		if s.spec.Mesh {
+			list = append(list, s)
+		}
+	}
+	d.mu.Unlock()
+	edges := make([]wire.Edge, 0, len(list))
+	for _, s := range list {
+		st := s.state()
+		edges = append(edges, wire.Edge{Tunnel: s.name, Destination: s.spec.Destination, State: st.State, HostKey: s.hostKeyFingerprint()})
+	}
+	return edges
 }
 
 // Serve takes the control socket, starts the configured tunnels, and
@@ -84,6 +110,9 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	}
 	defer unlock()
 	defer d.stopAll()
+	meshCtx, stopMesh := context.WithCancel(ctx)
+	defer stopMesh()
+	go d.mesh.Run(meshCtx)
 
 	if err := d.Reload(ctx); err != nil {
 		// Keep serving: a later reload, after the configuration is
@@ -183,6 +212,8 @@ func (d *Daemon) handle(ctx context.Context, method string, params json.RawMessa
 		return d.Status(), nil
 	case wire.MethodPeers:
 		return d.mesh.Peers(), nil
+	case wire.MethodNodes:
+		return d.mesh.Topology(), nil
 	case wire.MethodReload:
 		if err := d.Reload(ctx); err != nil {
 			return nil, wire.Errorf(wire.CodeFailed, "%v", err)
@@ -307,6 +338,7 @@ func (d *Daemon) start(name string, t *config.Tunnel) error {
 	d.tunnels[name] = s
 	d.mu.Unlock()
 	go s.run()
+	d.mesh.Update()
 	d.cfg.Log.Printf("tunnel %s started", name)
 	return nil
 }

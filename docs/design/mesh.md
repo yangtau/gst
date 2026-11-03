@@ -1,6 +1,6 @@
 # gst mesh 设计
 
-状态：第 1 步（单进程 daemon + 控制协议）和第 2 步（peer link）已实现；第 3 步起为设计。
+状态：第 1 步（单进程 daemon + 控制协议）、第 2 步（peer link）和第 3 步（拓扑扩散）已实现；第 4 步起为设计。
 
 ## 目标
 
@@ -17,7 +17,7 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 
 1. **单进程 daemon**：每台机器只有一个 gst 后台服务，持有全部 tunnel，暴露一个 unix control socket；CLI 通过 [gst 协议](#gst-协议) 与它通信。（已实现）
 2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
-3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst nodes` 输出全局视图（文本与 `--json`）。
+3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
 4. **中转转发**：`gst forward add <node> --via mesh -L ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。
 5. **Web UI**：daemon 提供 HTTP API，`gst ui` 打开本地页面；先只读，再支持配置本节点。
 
@@ -31,9 +31,10 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 
 运行 gst 的节点以随机 id 标识，而不是名字：`gst mesh enable` 生成 128 位随机 id，保存在配置文件的 `mesh` 中；名字（`--name`，默认取主机名）只用于显示，可以重复。没有用 host key 指纹做 id，是因为 macOS 等机器未必有 sshd host key。
 
-- 第 3 步：节点在 `node.info` 中附带本机 `/etc/ssh/ssh_host_*_key.pub` 的指纹，tunnel 的边记录服务器的 host key 指纹，于是“作为 gst 节点的 mini”与“m3 看到的 mini sshd”合并为同一节点。
+- 节点在 `node.info` 和自己的记录中附带本机 `/etc/ssh/ssh_host_*_key.pub` 的 SHA-256 指纹；tunnel 的边记录连接时验证过的服务器 host key 指纹。于是“作为 gst 节点的 mini”与“m3 看到的 mini sshd”合并为同一节点。
+- 边指向的机器按以下顺序确定：peer link 报告的节点 id；host key 指纹属于某个 gst 节点时为该节点；否则为没有 gst 的 SSH 服务器，id 为 `ssh:<指纹>`；从未连上过（还没有指纹）时为 `tunnel:<节点 id>/<tunnel 名>`。
 - 没有运行 gst 的 SSH 服务器（如 devcn）是叶子节点，只经由连向它的边出现；它不需要安装 gst 即可被中转。
-- 显示名取自边上的 ssh 别名；冲突时由用户在本地设置别名。
+- 叶子节点的显示名取自连向它的 tunnel 名（而不是 destination，后者可能是 `user@地址`）。gst 节点重名时，`gst mesh nodes` 在名字后附上 id 前缀。
 
 ## 单进程 daemon（第 1 步）
 
@@ -125,30 +126,36 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
 | `tunnel.restart` | `{"names": [...]}` | 重启后的 `Status` |
 
-`control` 还有 `mesh.peers`（已实现）：返回本节点信息和全部 peer link（方向、所经 tunnel、状态、对端、失败原因）。
+`control` 还有：
+
+- `mesh.peers`（已实现）：返回本节点信息和全部 peer link（方向、所经 tunnel、状态、对端、失败原因）。
+- `mesh.nodes`（已实现）：返回 `Topology`，即本节点由全部有效记录算出的全局视图：机器（gst 节点与 SSH 服务器）、是否可达，以及它们之间的 tunnel。
 
 `peer`：
 
 | 方法 | 参数 | 结果 / 后续 |
 | --- | --- | --- |
-| `node.info` | 无 | 节点 id、名字、software、features（已实现；第 3 步加 host key 指纹） |
-| `topology.sync` | 发送方已知的 link-state 记录 | 对方较新的记录；之后以事件帧持续推送更新 |
+| `node.info` | 无 | 节点 id、名字、software、features、host key 指纹（已实现） |
+| `topology.sync` | `{"known": {节点 id: seq}}`：调用方已有记录的 seq | `{"records": [...]}`：被调方比调用方新的记录；之后该流持续推送 `{"records": [...]}` 帧，每次变化一帧（已实现） |
 | `relay.open` | `{"path": [节点...], "target": {"network": "tcp", "address": "127.0.0.1:5432"}}` | 成功后该流变为到目标的原始字节流；路径上每一跳把剩余路径转发给下一跳 |
 
-### link-state 记录（计划）
+### link-state 记录（已实现）
 
 ```json
 {
-  "node": "SHA256:…",
-  "seq": 42,
+  "node": {"id": "…32 位十六进制…", "name": "m3", "software": "gst 0.2.0", "host_keys": ["SHA256:…"]},
+  "seq": 1793700000000000000,
   "expires": "2026-11-03T12:00:00Z",
-  "name": "m3",
   "edges": [
-    {"to": "SHA256:…", "alias": "devcn", "state": "running", "relay": true}
+    {"tunnel": "devcn", "destination": "devcn", "state": "running", "host_key": "SHA256:…", "peer": "…", "linked": true}
   ]
 }
 ```
 
-- 每个节点只发布自己的记录，`seq` 单调递增；收到更大 `seq` 的记录就替换并转发给其他 peer（洪泛）。
-- 记录在 `expires` 后失效，节点定期刷新，因此掉线节点会自然从视图中消失。
+- 每个节点只发布自己的记录，边只包括打开了 `--mesh` 的 tunnel。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`，因此 daemon 重启后仍然递增；若从 peer 收到自己旧进程发布的更大 `seq`，节点立即以更大的 `seq` 重新发布。
+- tunnel 状态、host key 或 peer link 变化时重新发布；收到更大 `seq` 的记录就替换，并通过各条 `topology.sync` 流推送给其他 peer（洪泛）。
+- 每条 peer link 建立后，双方各向对方调用一次 `topology.sync`，所以每个方向都有一条推送流。
+- 记录有效期 30 分钟，节点每 10 分钟刷新一次，因此掉线节点会在 30 分钟内从视图中消失。过期记录不再转发。
+- 可达性由查看方计算：从本节点出发，经运行中的 tunnel 到达的机器可达；要越过某台机器继续前进，需要该段 tunnel 的 peer link 处于 up（反方向也只能走 up 的 peer link），因为中转需要两端都有 gst。
+- 每个节点最多保留 1024 条记录，每条记录最多 1024 条边。
 - 路由由发起方计算（源路由），沿途节点只按 `relay.open` 的 `path` 转发，不运行路由协议。

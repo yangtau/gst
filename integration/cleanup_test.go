@@ -32,13 +32,25 @@ func TestCleanupKillsStaleListenerOfLoginUser(t *testing.T) {
 // A tunnel whose client stopped answering keeps its remote port until sshd
 // reaps the session. Cleanup cannot kill that session on Linux, because sshd
 // sessions are not dumpable, so it must fail clearly instead of hanging; the
-// server's ClientAliveInterval (1 s × 2 in the test image) frees the port.
+// server's ClientAliveInterval (1 s × 8 in this test) frees the port.
 func TestStaleSessionIsReapedByServerNotCleanup(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	s := p.server
 	p.client.startEcho(echoPort)
 	forward := config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: echoTarget}
+
+	// The second tunnel must run its cleanup before sshd reaps the stale
+	// session, which takes two seconds with the image's settings; under
+	// the load of the parallel tests that is too short. sshd re-executes
+	// itself, as process 1 of the container, with the new setting on SIGHUP.
+	if _, err := s.exec("root", "sh", "-c", `sed -i 's/^ClientAliveCountMax .*/ClientAliveCountMax 8/' /etc/ssh/sshd_config.d/tunnel.conf && kill -HUP 1 && sleep 1`); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "sshd did not come back", func() bool {
+		_, err := s.exec("root", "nc", "-z", "127.0.0.1", "22")
+		return err == nil
+	})
 
 	stale := p.client.startTunnel(p.config(false, forward))
 	stale.waitReady(t)
@@ -52,7 +64,7 @@ func TestStaleSessionIsReapedByServerNotCleanup(t *testing.T) {
 		t.Fatal("missing cleanup failure log")
 	}
 
-	eventually(t, 10*time.Second, "sshd did not reap the stale session", func() bool {
+	eventually(t, 20*time.Second, "sshd did not reap the stale session", func() bool {
 		return len(s.listenerOwners(2222)) == 0
 	})
 	current := p.client.startTunnel(p.config(true, forward))

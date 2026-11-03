@@ -66,6 +66,18 @@ func (c *Client) Restart(ctx context.Context, names []string) (wire.Status, erro
 	return c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names})
 }
 
+// Nodes returns the mesh as the daemon knows it.
+func (c *Client) Nodes(ctx context.Context) (wire.Topology, error) {
+	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
+	defer stop()
+	var t wire.Topology
+	err := wire.Call(c.conn, wire.MethodNodes, nil, &t)
+	if ctx.Err() != nil {
+		return t, ctx.Err()
+	}
+	return t, err
+}
+
 // Peers returns the daemon's peer links.
 func (c *Client) Peers(ctx context.Context) (wire.Peers, error) {
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })

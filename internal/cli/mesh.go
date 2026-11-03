@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,12 +25,14 @@ func (a *app) meshCommand() *cobra.Command {
 		Short: "Link gst on several machines",
 		Long: `Link gst on several machines. A tunnel with --mesh links this machine's
 gst with the gst on its server, over the tunnel's SSH connection, so that
-each sees the other in gst mesh peers. Both machines need gst mesh enable;
+each sees the other in gst mesh peers. Linked machines pass on what they
+know, so gst mesh nodes on any of them shows every machine in the mesh.
+Both machines need gst mesh enable;
 the server needs gst 0.2 or later in the PATH of its login shell, or
 --remote-gst. With the mesh enabled, the gst daemon keeps running even
 without started tunnels.`,
 	})
-	cmd.AddCommand(a.meshEnableCommand(), a.meshDisableCommand(), a.meshPeersCommand())
+	cmd.AddCommand(a.meshEnableCommand(), a.meshDisableCommand(), a.meshPeersCommand(), a.meshNodesCommand())
 	return cmd
 }
 
@@ -182,6 +186,108 @@ and retrying, with the reason).`,
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
+}
+
+func (a *app) meshNodesCommand() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "nodes",
+		Short: "Show every machine in the mesh",
+		Long: `Show every machine in the mesh as this machine knows it, with the tunnels
+between them. Each gst node announces its tunnels with --mesh to its
+peers, which pass the announcement on, so the view includes machines
+several links away and SSH servers without gst. A machine is reachable
+when this machine can get to it through running tunnels, going on past a
+machine only over a peer link.`,
+		Args: a.args(0, 0),
+		RunE: run(func(cmd *cobra.Command, _ []string) error {
+			f, err := a.load()
+			if err != nil {
+				return err
+			}
+			if f.Mesh == nil {
+				return withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
+			}
+			b, err := a.backend()
+			if err != nil {
+				return err
+			}
+			topo, err := b.Nodes(cmd.Context())
+			if err != nil {
+				return withHint(fmt.Errorf("the gst daemon does not answer: %w", err), "start it with `gst mesh enable`")
+			}
+			if asJSON {
+				return writeJSON(a.stdout, topo)
+			}
+			return writeTopology(a.stdout, topo)
+		}),
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+// writeTopology prints the machines and then the tunnels between them.
+// gst nodes that share a name are told apart by their ids.
+func writeTopology(out io.Writer, topo wire.Topology) error {
+	count := map[string]int{}
+	for _, n := range topo.Nodes {
+		count[n.Name]++
+	}
+	names := map[string]string{}
+	w := table(out)
+	fmt.Fprintln(w, "NODE\tID\tSOFTWARE\tREACHABLE")
+	for _, n := range topo.Nodes {
+		name, id, software := n.Name, "-", "-"
+		if n.Gst {
+			id, software = shortID(n.ID), n.Software
+			if count[n.Name] > 1 {
+				name += " (" + id + ")"
+			}
+		}
+		names[n.ID] = name
+		reach := "no"
+		switch {
+		case n.ID == topo.Self:
+			reach = "this machine"
+		case n.Reachable:
+			reach = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, id, software, reach)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if len(topo.Edges) == 0 {
+		fmt.Fprintln(out, "\nNo tunnels in the mesh. Add one with: gst set <tunnel> --mesh")
+		return nil
+	}
+	edges := slices.Clone(topo.Edges)
+	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
+		return cmp.Or(cmp.Compare(names[a.From], names[b.From]), cmp.Compare(a.Tunnel, b.Tunnel))
+	})
+	fmt.Fprintln(out)
+	w = table(out)
+	fmt.Fprintln(w, "FROM\tTO\tTUNNEL\tSTATE")
+	for _, e := range edges {
+		state := e.State
+		if e.Linked {
+			state += ", peer link up"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", names[e.From], names[e.To], e.Tunnel, state)
+	}
+	return w.Flush()
+}
+
+// Nodes asks the daemon for the mesh.
+func (b *daemonBackend) Nodes(ctx context.Context) (wire.Topology, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	c, err := b.connectOnce(ctx)
+	if err != nil {
+		return wire.Topology{}, err
+	}
+	defer c.Close()
+	return c.Nodes(ctx)
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }

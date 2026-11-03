@@ -27,28 +27,64 @@ import (
 
 // Node is this machine's place in the mesh: its identity and its links.
 type Node struct {
-	software string
-	log      *log.Logger // the daemon's log
-	retry    time.Duration
+	software     string
+	log          *log.Logger // the daemon's log
+	retry        time.Duration
+	ttl          time.Duration // lifetime of this node's record
+	hostKeyFiles string        // glob of the sshd host public keys
+	edges        func() []wire.Edge
+	update       chan struct{} // asks Run to publish
 
-	mu    sync.Mutex
-	info  wire.NodeInfo // ID is empty while the mesh is disabled
-	links map[*link]struct{}
+	mu        sync.Mutex
+	info      wire.NodeInfo // ID is empty while the mesh is disabled
+	links     map[*link]struct{}
+	records   map[string]wire.Record // by node id, this node's included
+	changed   chan struct{}          // closed and replaced when records change
+	seqFloor  uint64                 // the highest Seq seen on this node's own record
+	republish bool                   // publish even if the record did not change
 }
 
 // New returns a node, disabled until Configure enables it.
 func New(software string, daemonLog *log.Logger) *Node {
-	return &Node{software: software, log: daemonLog, retry: 10 * time.Second, links: map[*link]struct{}{}}
+	return &Node{
+		software:     software,
+		log:          daemonLog,
+		retry:        10 * time.Second,
+		ttl:          30 * time.Minute,
+		hostKeyFiles: "/etc/ssh/ssh_host_*_key.pub",
+		update:       make(chan struct{}, 1),
+		links:        map[*link]struct{}{},
+		records:      map[string]wire.Record{},
+		changed:      make(chan struct{}),
+	}
 }
 
 // SetRetry sets the wait before an outgoing link that failed retries.
 func (n *Node) SetRetry(d time.Duration) { n.retry = d }
 
+// SetHostKeyFiles sets the glob of this machine's sshd host public keys,
+// whose fingerprints identify it as a tunnel's server.
+func (n *Node) SetHostKeyFiles(glob string) { n.hostKeyFiles = glob }
+
+// SetEdges sets the source of this node's tunnels with mesh on; the
+// node fills in their peer links. Call Update when its result changes.
+func (n *Node) SetEdges(edges func() []wire.Edge) { n.edges = edges }
+
 // Configure applies the mesh settings; nil disables the mesh and closes
 // every link.
 func (n *Node) Configure(m *config.Mesh) {
+	defer n.Update()
+	var hostKeys []string
+	if m != nil {
+		hostKeys = readHostKeys(n.hostKeyFiles)
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if m == nil || m.ID != n.info.ID {
+		clear(n.records)
+		n.seqFloor = 0
+		n.notify()
+	}
 	if m == nil {
 		n.info = wire.NodeInfo{}
 		for l := range n.links {
@@ -56,7 +92,7 @@ func (n *Node) Configure(m *config.Mesh) {
 		}
 		return
 	}
-	n.info = wire.NodeInfo{ID: m.ID, Name: m.Name, Software: n.software}
+	n.info = wire.NodeInfo{ID: m.ID, Name: m.Name, Software: n.software, HostKeys: hostKeys}
 }
 
 func (n *Node) self() wire.NodeInfo {
@@ -146,6 +182,7 @@ func (n *Node) Link(ctx context.Context, tunnel string, client *ssh.Client, remo
 			lastErr = err.Error()
 		}
 		l.set(wire.LinkDown, wire.NodeInfo{}, err.Error())
+		n.Update()
 		select {
 		case <-ctx.Done():
 			return
@@ -218,7 +255,7 @@ func (n *Node) linkOver(ctx context.Context, l *link, conn io.ReadWriteCloser, o
 func (n *Node) run(ctx context.Context, l *link, session *yamux.Session, onUp func()) error {
 	defer session.Close()
 	l.setSession(session)
-	go n.serve(session)
+	go n.serve(ctx, session)
 
 	peer, err := n.nodeInfo(ctx, session)
 	if err != nil {
@@ -234,9 +271,11 @@ func (n *Node) run(ctx context.Context, l *link, session *yamux.Session, onUp fu
 		return nil
 	}
 	l.set(wire.LinkUp, peer, "")
+	n.Update()
 	if onUp != nil {
 		onUp()
 	}
+	go n.sync(ctx, session)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -264,8 +303,9 @@ func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeI
 	return info, nil
 }
 
-// serve answers the calls that the peer opens streams for.
-func (n *Node) serve(session *yamux.Session) {
+// serve answers the calls that the peer opens streams for, one per
+// stream.
+func (n *Node) serve(ctx context.Context, session *yamux.Session) {
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -273,7 +313,17 @@ func (n *Node) serve(session *yamux.Session) {
 		}
 		go func() {
 			defer stream.Close()
-			wire.Serve(stream, n.handle)
+			defer context.AfterFunc(ctx, func() { stream.Close() })()
+			var req wire.Request
+			if err := wire.ReadFrame(stream, &req); err != nil {
+				return
+			}
+			if req.Method == wire.MethodTopologySync {
+				n.serveSync(stream, session, req.Params)
+				return
+			}
+			result, callErr := n.handle(req.Method, req.Params)
+			wire.Reply(stream, result, callErr)
 		}()
 	}
 }
@@ -311,9 +361,10 @@ func yamuxConfig() *yamux.Config {
 
 // link is one peer link and its state.
 type link struct {
-	mu      sync.Mutex
-	info    wire.PeerLink
-	session *yamux.Session
+	mu       sync.Mutex
+	info     wire.PeerLink
+	lastPeer string // the id of the last peer, kept while the link is down
+	session  *yamux.Session
 }
 
 func (l *link) set(state string, peer wire.NodeInfo, errText string) {
@@ -323,6 +374,9 @@ func (l *link) set(state string, peer wire.NodeInfo, errText string) {
 		l.info.State, l.info.Since = state, time.Now()
 	}
 	l.info.Peer, l.info.Error = peer, errText
+	if peer.ID != "" {
+		l.lastPeer = peer.ID
+	}
 }
 
 func (l *link) setSession(s *yamux.Session) {
@@ -337,6 +391,12 @@ func (l *link) closeSession() {
 	if l.session != nil {
 		l.session.Close()
 	}
+}
+
+func (l *link) peerID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lastPeer
 }
 
 func (l *link) state() wire.PeerLink {

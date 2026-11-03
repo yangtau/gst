@@ -80,8 +80,9 @@ func newEnv(t *testing.T) *env {
 			}
 			return tunnel.Options{Server: t.Destination}, nil
 		},
-		Run:        fake.run,
-		RetryDelay: 10 * time.Millisecond,
+		Run:          fake.run,
+		RetryDelay:   10 * time.Millisecond,
+		HostKeyFiles: filepath.Join(dir, "ssh_host_*_key.pub"),
 	}
 	return e
 }

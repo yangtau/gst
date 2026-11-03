@@ -95,6 +95,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | `gst check <name>` | Diagnose: ssh config, identity, known_hosts, network, login |
 | `gst mesh enable [--name name]` / `gst mesh disable` | Join or leave the mesh of linked machines |
 | `gst mesh peers` | List peer links |
+| `gst mesh nodes` | Show every machine in the mesh and the tunnels between them |
 | `gst version` | Show the installed version |
 
 When you change the forwards or settings of a running tunnel, gst restarts it; `--no-restart` skips that. A change that changes nothing does nothing.
@@ -192,7 +193,7 @@ Limitations:
 
 ## Linking machines (mesh)
 
-gst on several machines can link with each other. A tunnel with `--mesh` links this machine's gst with the gst on its server over the tunnel's SSH connection, so each sees the other in `gst mesh peers`. This is the base for later versions, which will show the whole network of linked machines and relay connections through them.
+gst on several machines can link with each other. A tunnel with `--mesh` links this machine's gst with the gst on its server over the tunnel's SSH connection, so each sees the other in `gst mesh peers`. Linked machines pass on what they know, so `gst mesh nodes` on any of them shows the whole network: when laptop has mesh tunnels to `mini` and `devcn`, `gst mesh nodes` on mini lists laptop and devcn too. Later versions will relay connections through the mesh.
 
 ```bash
 # On every machine that takes part (the name defaults to the host name)
@@ -201,11 +202,15 @@ gst mesh enable --name laptop
 # On the machine with the tunnel
 gst set myhost --mesh
 gst mesh peers
+
+# On any machine in the mesh
+gst mesh nodes
 ```
 
 - Both machines need `gst mesh enable`, and the server needs gst 0.2 or later. gst starts it over SSH with `gst peer-bridge` in the login shell; when gst is not in that shell's `PATH`, give its path with `--remote-gst`, such as `gst set myhost --remote-gst ~/.nix-profile/bin/gst`.
 - With the mesh enabled, the daemon keeps running even when no tunnel is started, so that it can accept links.
 - A link is `connecting`, `up`, or `down`. `gst mesh peers` shows why a link is down; it retries every 10 seconds. A failed link does not affect the tunnel's forwards.
+- `gst mesh nodes` lists gst nodes by name and SSH servers without gst by the name of the tunnel to them. A server whose gst joins the mesh later shows up as that gst node. A machine is reachable when this machine can get to it through running tunnels, going on past a machine only over a peer link that is up. Machines that drop out disappear within 30 minutes.
 - Peers are trusted: a link logs in as your user on the server, and the server's daemon accepts it only through its own socket.
 - `gst mesh disable` closes every link. Enabling again creates a new node id.
 
@@ -230,7 +235,7 @@ You can also turn on `--cleanup-listeners`: after each connect and before listen
 
 - Results go to stdout. Errors go to stderr, start with `error:`, and usually come with a `hint:` line naming the next command to run.
 - Exit status: `0` success, `1` the work failed (including a failed `check`), `2` invalid arguments.
-- `list`, `show`, `check`, `forward list`, and `mesh peers` accept `--json`.
+- `list`, `show`, `check`, `forward list`, `mesh peers`, and `mesh nodes` accept `--json`.
 - No command prompts for input. Adding a forward that already exists changes nothing; a different forward on the same listen address is an error. `-L` and `-D` forwards both listen on this machine, so they cannot share an address. Fixed-target and dynamic (SOCKS) `-R` forwards both listen on the server and cannot share a listen address either.
 
 ## Configuration file

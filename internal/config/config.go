@@ -203,6 +203,9 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 var meshIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// ValidMeshID reports whether id is a mesh node id.
+func ValidMeshID(id string) bool { return meshIDPattern.MatchString(id) }
+
 // ValidateNodeName checks a mesh node name, which follows the rules of
 // tunnel names.
 func ValidateNodeName(name string) error {

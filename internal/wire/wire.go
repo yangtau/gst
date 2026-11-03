@@ -208,19 +208,25 @@ func Serve(rw io.ReadWriter, handle Handler) error {
 			return err
 		}
 		result, callErr := handle(req.Method, req.Params)
-		resp := Response{Error: callErr}
-		if callErr == nil && result != nil {
-			raw, err := json.Marshal(result)
-			if err != nil {
-				resp.Error = Errorf(CodeFailed, "result encoding failed")
-			} else {
-				resp.Result = raw
-			}
-		}
-		if err := WriteFrame(rw, resp); err != nil {
+		if err := Reply(rw, result, callErr); err != nil {
 			return err
 		}
 	}
+}
+
+// Reply writes the response to a request: result, or callErr when it is
+// not nil.
+func Reply(w io.Writer, result any, callErr *Error) error {
+	resp := Response{Error: callErr}
+	if callErr == nil && result != nil {
+		raw, err := json.Marshal(result)
+		if err != nil {
+			resp.Error = Errorf(CodeFailed, "result encoding failed")
+		} else {
+			resp.Result = raw
+		}
+	}
+	return WriteFrame(w, resp)
 }
 
 // DecodeParams decodes a request's params into v; missing params leave v

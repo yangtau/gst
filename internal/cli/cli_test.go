@@ -34,6 +34,7 @@ type fakeBackend struct {
 	running   map[string]bool             // tunnels the daemon runs
 	states    map[string]wire.TunnelState // overrides the running state
 	legacy    map[string]bool             // gst 0.1 services
+	topology  wire.Topology
 	calls     []string
 }
 
@@ -87,6 +88,11 @@ func (f *fakeBackend) Logs(_ context.Context, name string, lines int, follow boo
 func (f *fakeBackend) Peers(context.Context) (wire.Peers, error) {
 	f.calls = append(f.calls, "peers")
 	return wire.Peers{Enabled: true, Links: []wire.PeerLink{}}, nil
+}
+
+func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {
+	f.calls = append(f.calls, "nodes")
+	return f.topology, nil
 }
 
 func (f *fakeBackend) HasLegacy(name string) bool { return f.legacy[name] }
@@ -636,6 +642,31 @@ func TestMesh(t *testing.T) {
 		t.Fatalf("renaming changed the id: %+v", f.Mesh)
 	}
 	e.mustGst("mesh", "peers", "--json")
+
+	e.back.topology = wire.Topology{Enabled: true, Self: "aaaa1111aaaa1111", Nodes: []wire.TopoNode{
+		{ID: "aaaa1111aaaa1111", Name: "mini", Gst: true, Software: "gst 0.2.0", Reachable: true},
+		{ID: "bbbb2222bbbb2222", Name: "m3", Gst: true, Software: "gst 0.2.0", Reachable: true},
+		{ID: "cccc3333cccc3333", Name: "web", Gst: true, Software: "gst 0.2.0"},
+		{ID: "ssh:SHA256:abc", Name: "web", Reachable: true},
+	}, Edges: []wire.TopoEdge{
+		{From: "bbbb2222bbbb2222", To: "aaaa1111aaaa1111", Tunnel: "mini", State: "running", Linked: true},
+		{From: "bbbb2222bbbb2222", To: "ssh:SHA256:abc", Tunnel: "web", State: "running"},
+	}}
+	out = e.mustGst("mesh", "nodes")
+	for _, want := range []string{
+		"mini            aaaa1111  gst 0.2.0  this machine",
+		"web (cccc3333)  cccc3333  gst 0.2.0  no",
+		"web             -         -          yes",
+		"m3    mini  mini    running, peer link up",
+		"m3    web   web     running",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mesh nodes lacks %q:\n%s", want, out)
+		}
+	}
+	if out := e.mustGst("mesh", "nodes", "--json"); !strings.Contains(out, `"self": "aaaa1111aaaa1111"`) {
+		t.Fatalf("mesh nodes --json: %s", out)
+	}
 
 	e.mustGst("add", "myhost", "--mesh", "--remote-gst", "/opt/gst/bin/gst")
 	if tn := e.tunnel("myhost"); !tn.Mesh || tn.RemoteGst != "/opt/gst/bin/gst" {

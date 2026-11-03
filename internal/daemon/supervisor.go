@@ -32,6 +32,7 @@ type supervisor struct {
 	since      time.Time
 	lastErr    string
 	reconnects int
+	hostKey    string // the server's host key fingerprint, once connected
 }
 
 func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.File) *supervisor {
@@ -63,6 +64,15 @@ func (s *supervisor) set(state, lastErr string) {
 	if lastErr != "" {
 		s.lastErr = lastErr
 	}
+	if s.spec.Mesh {
+		s.d.mesh.Update()
+	}
+}
+
+func (s *supervisor) hostKeyFingerprint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hostKey
 }
 
 func (s *supervisor) state() wire.TunnelState {
@@ -108,7 +118,11 @@ func (s *supervisor) connect() error {
 	opts.Logger = s.log
 	opts.OnReady = func() { s.set(wire.StateRunning, "") }
 	if s.spec.Mesh {
-		opts.Attach = func(ctx context.Context, client *ssh.Client) {
+		opts.Attach = func(ctx context.Context, client *ssh.Client, hostKey ssh.PublicKey) {
+			s.mu.Lock()
+			s.hostKey = ssh.FingerprintSHA256(hostKey)
+			s.mu.Unlock()
+			s.d.mesh.Update()
 			s.d.mesh.Link(ctx, s.name, client, s.spec.RemoteGst, s.log)
 		}
 	}
@@ -120,6 +134,7 @@ func (s *supervisor) stop() {
 	s.cancel()
 	<-s.stopped
 	s.log.Print("tunnel stopped")
+	s.d.mesh.Update()
 	s.d.cfg.Log.Printf("tunnel %s stopped", s.name)
 	if s.logOut != nil {
 		s.logOut.Close()

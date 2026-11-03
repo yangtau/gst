@@ -19,7 +19,7 @@ gst keeps SSH port forwards running in one background daemon per user, installed
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/tunnel`: SSH connection, keepalive, remote, local, and dynamic (SOCKS5) forwards over TCP or Unix sockets, remote cleanup (`cleanup.sh`), and `Diagnose` behind `gst check`.
 - `internal/daemon`: the daemon, which supervises every started tunnel and serves the control socket, and its client.
-- `internal/mesh`: peer links between daemons over a tunnel's SSH connection (`gst peer-bridge` plus yamux) and the node's view of its peers.
+- `internal/mesh`: peer links between daemons over a tunnel's SSH connection (`gst peer-bridge` plus yamux), and the link-state records they flood (`topology.sync`) into each node's view of the whole mesh.
 - `internal/wire`: the gst protocol (frames, handshake, calls) used by the control socket and, later, peer links.
 - `internal/logfile`: rotating log files.
 - `internal/service`: installs the daemon as a systemd or launchd service and removes gst 0.1's per-tunnel services.

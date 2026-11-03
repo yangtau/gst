@@ -38,6 +38,8 @@ type backend interface {
 	RemoveLogs(name string) error
 	// Peers returns the daemon's peer links.
 	Peers(ctx context.Context) (wire.Peers, error)
+	// Nodes returns the mesh as the daemon knows it.
+	Nodes(ctx context.Context) (wire.Topology, error)
 	// HasLegacy and RemoveLegacy find and remove gst 0.1's per-tunnel
 	// services.
 	HasLegacy(name string) bool
