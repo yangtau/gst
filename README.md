@@ -33,9 +33,9 @@ nix profile add .         # install from the local checkout
 
 The Nix package includes completion scripts for Bash, Zsh, and Fish.
 
-Run `gst version` to print the installed version, for example `gst version 0.1.0`.
+Run `gst version` to print the installed version, for example `gst version 0.2.0`.
 
-Background tunnels remember the path of gst. After upgrading or moving gst, run `gst restart --all`.
+The background daemon remembers the path of gst. After upgrading or moving gst, run `gst restart --all` to restart the daemon with the new gst; any command that starts, stops, restarts, or changes tunnels does so too.
 
 ## Before you start
 
@@ -179,11 +179,13 @@ Limitations:
 
 ## Running in the background
 
-- Each started tunnel is a user service: a systemd user service `gst-<name>.service` on Linux, a launchd agent `local.gst.<name>` on macOS. gst creates and deletes them; you never manage them yourself.
-- A tunnel that exits restarts after 5 seconds, without a limit.
-- On macOS, a failed background process logs the error immediately but may stay alive until 30 seconds after its connection attempt began, to give the Local Network permission alert time to appear. This is best effort, not a guarantee; stopping the tunnel interrupts the wait. `running` means the process is alive, not that the tunnel is ready.
-- Status in `gst list`: `running`; `down` means it failed and is waiting to restart, so check `gst logs` and `gst check`; `stopped`.
-- Logs go to journald on Linux. On macOS they go to `~/Library/Logs/gst/<name>.log`; at 1 MiB gst moves it to `<name>.log.1`, replacing the older one, so a tunnel keeps at most about 2 MiB of logs. `gst remove` deletes them. For privacy, the log records no server addresses, users, key paths, or forward addresses. Forwards appear by number (such as `forward 2`), matching `gst forward list`.
+- One background process, the gst daemon, runs every started tunnel. It is a user service: a systemd user service `gst.service` on Linux, a launchd agent `local.gst` on macOS. gst installs it when you start the first tunnel and removes it when no tunnel is started; you never manage it yourself.
+- gst commands talk to the daemon over a socket that only you can access: `~/.local/state/gst/gst.sock` on Linux (under `$XDG_STATE_HOME` when set), `~/Library/Application Support/gst/gst.sock` on macOS.
+- A tunnel that fails reconnects after 5 seconds, without a limit. If the daemon itself exits, its service restarts it after 5 seconds.
+- Status in `gst list`: `running` means connected with every forward listening; `connecting`; `down` means it failed and is waiting to reconnect, so check `gst logs` and `gst check`; `stopped`. `gst show` and `gst list --json` include the last error of a tunnel that is not running.
+- Each tunnel has its own log: `~/.local/state/gst/logs/<name>.log` on Linux, `~/Library/Logs/gst/<name>.log` on macOS. At 1 MiB gst moves it to `<name>.log.1`, replacing the older one, so a tunnel keeps at most about 2 MiB of logs. `gst remove` deletes them. For privacy, the log records no server addresses, users, key paths, or forward addresses. Forwards appear by number (such as `forward 2`), matching `gst forward list`.
+- The daemon's own log goes to journald on Linux (`journalctl --user -u gst`) and to `~/Library/Logs/gst-daemon.log` on macOS.
+- Upgrading from gst 0.1, where each tunnel was a service of its own (`gst-<name>.service`, `local.gst.<name>`): the first gst command that reads the configuration moves the tunnels whose service exists to the daemon, removes those services, and marks the other tunnels stopped.
 - On Linux, to keep tunnels running after you log out and start them at boot, run `loginctl enable-linger "$USER"`; gst tells you when lingering is off. On macOS, tunnels start at login and stop at logout.
 
 ## Troubleshooting
@@ -212,4 +214,4 @@ You can also turn on `--cleanup-listeners`: after each connect and before listen
 
 ## Configuration file
 
-Tunnels are stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). `--config` or the `GST_CONFIG` environment variable selects another file, and background tunnels keep using it. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe. Reverse SOCKS needs no configuration schema change: it is stored as a `remote` forward with an empty target.
+Tunnels are stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). `--config` or the `GST_CONFIG` environment variable selects another file, and the daemon keeps using it. There is one daemon per user, so starting or changing tunnels in another file switches the daemon to that file. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe. Reverse SOCKS needs no configuration schema change: it is stored as a `remote` forward with an empty target.

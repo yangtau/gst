@@ -2,15 +2,10 @@ package service
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"text/template"
@@ -19,137 +14,112 @@ import (
 
 type launchd struct {
 	agentsDir string // ~/Library/LaunchAgents
-	logDir    string // ~/Library/Logs/gst
+	logPath   string // the daemon's own log
 	domain    string // gui/<uid>
 	run       runner
-	stream    streamer
 	poll      time.Duration // interval for waiting until an agent is unloaded
 }
 
 func newLaunchd(home string, uid int) *launchd {
 	return &launchd{
 		agentsDir: filepath.Join(home, "Library", "LaunchAgents"),
-		logDir:    filepath.Join(home, "Library", "Logs", "gst"),
+		logPath:   filepath.Join(home, "Library", "Logs", "gst-daemon.log"),
 		domain:    "gui/" + strconv.Itoa(uid),
 		run:       execRun,
-		stream:    execStream,
 		poll:      250 * time.Millisecond,
 	}
 }
 
-func label(name string) string { return "local.gst." + name }
+const daemonLabel = "local.gst"
 
-func (l *launchd) target(name string) string { return l.domain + "/" + label(name) }
+// legacyLabel is gst 0.1's agent for one tunnel.
+func legacyLabel(name string) string { return "local.gst." + name }
 
-func (l *launchd) plistPath(name string) string {
-	return filepath.Join(l.agentsDir, label(name)+".plist")
+func (l *launchd) target(label string) string { return l.domain + "/" + label }
+
+func (l *launchd) plistPath(label string) string {
+	return filepath.Join(l.agentsDir, label+".plist")
 }
 
-func (l *launchd) logPath(name string) string { return filepath.Join(l.logDir, name+".log") }
-
-func (l *launchd) Start(name string, command []string) error {
-	for _, dir := range []string{l.agentsDir, l.logDir} {
+func (l *launchd) Install(command []string, restart bool) error {
+	for _, dir := range []string{l.agentsDir, filepath.Dir(l.logPath)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	command = append(slices.Clip(command), "--log-file", l.logPath(name))
-	plist, err := launchdPlist(label(name), command, l.logPath(name))
+	command = append(slices.Clip(command), "--log-file", l.logPath)
+	plist, err := launchdPlist(daemonLabel, command, l.logPath)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(l.plistPath(name), plist, 0o644); err != nil {
+	changed, err := writeIfChanged(l.plistPath(daemonLabel), plist)
+	if err != nil {
 		return err
+	}
+	if !changed && l.loaded(daemonLabel) {
+		if restart {
+			_, err := l.run("launchctl", "kickstart", "-k", l.target(daemonLabel))
+			return err
+		}
+		return nil
 	}
 	// An agent disabled earlier, for example with launchctl disable,
 	// refuses to load.
-	if _, err := l.run("launchctl", "enable", l.target(name)); err != nil {
+	if _, err := l.run("launchctl", "enable", l.target(daemonLabel)); err != nil {
 		return err
 	}
 	// Reloading is the only way to apply a changed plist.
-	if err := l.unload(name); err != nil {
+	if err := l.unload(daemonLabel); err != nil {
 		return err
 	}
-	_, err = l.run("launchctl", "bootstrap", l.domain, l.plistPath(name))
+	_, err = l.run("launchctl", "bootstrap", l.domain, l.plistPath(daemonLabel))
 	return err
 }
 
-func (l *launchd) Stop(name string) error {
-	if !fileExists(l.plistPath(name)) {
+func (l *launchd) Uninstall() error { return l.remove(daemonLabel) }
+
+func (l *launchd) HasLegacy(name string) bool { return fileExists(l.plistPath(legacyLabel(name))) }
+
+func (l *launchd) RemoveLegacy(name string) error { return l.remove(legacyLabel(name)) }
+
+func (l *launchd) remove(label string) error {
+	if !fileExists(l.plistPath(label)) {
 		return nil
 	}
-	if err := l.unload(name); err != nil {
+	if err := l.unload(label); err != nil {
 		return err
 	}
-	return os.Remove(l.plistPath(name))
+	return os.Remove(l.plistPath(label))
 }
 
-func (l *launchd) loaded(name string) bool {
-	_, err := l.run("launchctl", "print", l.target(name))
+func (l *launchd) loaded(label string) bool {
+	_, err := l.run("launchctl", "print", l.target(label))
 	return err == nil
 }
 
 // unload boots the agent out and waits until it is gone, because loading
 // it again before then fails.
-func (l *launchd) unload(name string) error {
-	if !l.loaded(name) {
+func (l *launchd) unload(label string) error {
+	if !l.loaded(label) {
 		return nil
 	}
-	if _, err := l.run("launchctl", "bootout", l.target(name)); err != nil {
+	if _, err := l.run("launchctl", "bootout", l.target(label)); err != nil {
 		return err
 	}
-	// ExitTimeOut gives the tunnel 15 s to exit after SIGTERM.
+	// ExitTimeOut gives the process 15 s to exit after SIGTERM.
 	deadline := time.Now().Add(20 * time.Second)
-	for l.loaded(name) {
+	for l.loaded(label) {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("launchd agent %s is still loaded", label(name))
+			return fmt.Errorf("launchd agent %s is still loaded", label)
 		}
 		time.Sleep(l.poll)
 	}
 	return nil
 }
 
-func (l *launchd) RemoveLogs(name string) error {
-	for _, path := range []string{l.logPath(name), l.logPath(name) + ".1"} {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
-}
-
-var launchdState = regexp.MustCompile(`(?m)^\tstate = (\S+)$`)
-
-func (l *launchd) Status(name string) (Status, error) {
-	if !fileExists(l.plistPath(name)) {
-		return Stopped, nil
-	}
-	out, err := l.run("launchctl", "print", l.target(name))
-	if err != nil {
-		return Down, nil
-	}
-	if m := launchdState.FindStringSubmatch(out); m != nil && m[1] == "running" {
-		return Running, nil
-	}
-	return Down, nil
-}
-
-func (l *launchd) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
-	path := l.logPath(name)
-	if !follow && !fileExists(path) {
-		_, err := fmt.Fprintf(w, "No log for tunnel %s yet.\n", name)
-		return err
-	}
-	args := []string{"-n", strconv.Itoa(lines)}
-	if follow {
-		args = append(args, "-F")
-	}
-	return l.stream(ctx, w, "tail", append(args, path)...)
-}
-
 // The agent starts at login, restarts at least 5 s apart after every exit,
-// and gets 15 s to exit after SIGTERM. gst run writes and rotates the log
-// itself; launchd sends output there only until gst opens it.
+// and gets 15 s to exit after SIGTERM. The daemon writes and rotates its
+// log itself; launchd sends output there only until the daemon opens it.
 var plistTemplate = template.Must(template.New("plist").Funcs(template.FuncMap{"xml": xmlEscape}).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

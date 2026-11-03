@@ -6,9 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,12 +14,11 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
 )
 
 func TestRejectsUnknownHostKey(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
+	p := startPair(t)
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -31,27 +27,21 @@ func TestRejectsUnknownHostKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := s.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: unusedAddr(t)})
-	cfg.KnownHostsFile = filepath.Join(t.TempDir(), "known_hosts")
-	writeFile(t, cfg.KnownHostsFile, []byte(knownhosts.Line([]string{s.addr}, key)+"\n"))
+	cfg := p.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: refusedTarget})
+	cfg.KnownHostsFile = nodeHome + "/.ssh/wrong_known_hosts"
+	p.client.writeFile(cfg.KnownHostsFile, []byte(knownhosts.Line([]string{p.server.addr(22)}, key)+"\n"))
 
-	tunnel := startTunnel(t, cfg)
+	tunnel := p.client.startTunnel(cfg)
 	assertStartupFailure(t, tunnel, "SSH handshake failed")
 }
 
 func TestFailsWhenServerUnreachable(t *testing.T) {
 	t.Parallel()
-	identity, _ := newIdentity(t)
-	cfg := config.Tunnel{
-		Destination:              "ssh://tunnel@" + unusedAddr(t),
-		IdentityFile:             identity,
-		KnownHostsFile:           "/dev/null",
-		ConnectTimeoutSeconds:    2,
-		KeepaliveIntervalSeconds: 1,
-		KeepaliveCountMax:        1,
-		Forwards:                 []config.Forward{{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: "127.0.0.1:1"}},
-	}
-	tunnel := startTunnel(t, cfg)
+	p := startPair(t)
+	cfg := p.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: refusedTarget})
+	cfg.Destination = "ssh://tunnel@127.0.0.1:1"
+	cfg.ConnectTimeoutSeconds = 2
+	tunnel := p.client.startTunnel(cfg)
 	assertStartupFailure(t, tunnel, "TCP connection failed")
 }
 
@@ -67,20 +57,18 @@ func assertStartupFailure(t *testing.T, tunnel *tunnelProcess, reason string) {
 
 func TestCheckPassesAgainstServer(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
-	tunnel := s.config(false)
+	p := startPair(t)
+	tunnel := p.config(false)
 	data, err := json.Marshal(config.File{Tunnels: map[string]*config.Tunnel{"it": &tunnel}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "config.json")
-	writeFile(t, path, data)
+	path := nodeHome + "/check.json"
+	p.client.writeFile(path, data)
 
-	cmd := exec.Command(tunnelBinary, "--config", path, "check", "it", "--json")
-	cmd.Env = append(os.Environ(), sshconfig.ConfigFileEnv+"=/dev/null")
-	out, err := cmd.Output()
+	code, out, stderr := p.client.gst("--config", path, "check", "it", "--json")
 	var result struct{ OK bool }
-	if err != nil || json.Unmarshal(out, &result) != nil || !result.OK {
-		t.Fatalf("check failed: %v\n%s", err, out)
+	if code != 0 || json.Unmarshal([]byte(out), &result) != nil || !result.OK {
+		t.Fatalf("check exited %d: %s%s", code, out, stderr)
 	}
 }

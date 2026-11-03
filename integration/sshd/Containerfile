@@ -1,4 +1,6 @@
-# Disposable OpenSSH server for the integration tests in this directory.
+# Disposable OpenSSH server for the integration tests in this directory. It
+# doubles as a gst node: tests copy a Linux gst binary in and run gst as the
+# "tunnel" user, with a systemctl shim in place of systemd.
 ARG BASE_IMAGE=docker.io/library/debian:bookworm-slim
 FROM ${BASE_IMAGE}
 
@@ -20,6 +22,8 @@ RUN for user in tunnel other; do \
  && install -d -m 700 -o tunnel -g tunnel /home/tunnel/.ssh
 
 COPY sshd_config /etc/ssh/sshd_config.d/tunnel.conf
+COPY systemctl /usr/local/bin/systemctl
+RUN chmod 755 /usr/local/bin/systemctl
 
 EXPOSE 22
 # A fresh host key per container; ed25519 only, because RSA generation is slow.

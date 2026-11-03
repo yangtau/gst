@@ -33,9 +33,9 @@ nix profile add .         # 从本地项目安装
 
 Nix 包附带 Bash、Zsh 和 Fish 的补全脚本。
 
-运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.1.0`。
+运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.2.0`。
 
-后台运行的 tunnel 会记住 gst 的路径。升级或移动 gst 后，执行 `gst restart --all`。
+后台 daemon 会记住 gst 的路径。升级或移动 gst 后，执行 `gst restart --all`，用新的 gst 重启 daemon；任何启动、停止、重启或修改 tunnel 的命令也会这样做。
 
 ## 使用前准备
 
@@ -179,11 +179,13 @@ gst set myhost --cleanup-listeners=false
 
 ## 后台运行
 
-- 每个启动的 tunnel 是一个用户级后台服务：Linux 上是 systemd 用户服务 `gst-<name>.service`，macOS 上是 launchd 代理 `local.gst.<name>`。服务由 gst 创建和删除，不需要手动管理。
-- tunnel 退出后 5 秒自动重启，没有次数限制。
-- macOS 上，后台进程失败时会立即记录错误，但可能保持存活直到连接尝试开始后满 30 秒，为“本地网络”权限提示留出显示时间。这只是尽力而为，并不保证提示一定出现；停止 tunnel 会立即中断等待。`running` 只表示进程仍在运行，不代表 tunnel 已就绪。
-- `gst list` 中的状态：`running` 正在运行；`down` 失败后正在等待重启，用 `gst logs` 和 `gst check` 排查；`stopped` 已停止。
-- 日志：Linux 上在 journald。macOS 上在 `~/Library/Logs/gst/<name>.log`，超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 tunnel 的日志最多约 2 MiB；`gst remove` 会删除它们。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
+- 所有启动的 tunnel 都由一个后台进程（gst daemon）运行。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。启动第一个 tunnel 时 gst 安装它，没有任何已启动的 tunnel 时删除它，不需要手动管理。
+- gst 命令通过只有你能访问的 socket 与 daemon 通信：Linux 上是 `~/.local/state/gst/gst.sock`（设置了 `$XDG_STATE_HOME` 时在其下），macOS 上是 `~/Library/Application Support/gst/gst.sock`。
+- tunnel 失败后 5 秒自动重连，没有次数限制。daemon 本身退出后，服务会在 5 秒后重启它。
+- `gst list` 中的状态：`running` 已连接且所有 forward 都在监听；`connecting` 正在连接；`down` 失败后正在等待重连，用 `gst logs` 和 `gst check` 排查；`stopped` 已停止。对未在运行的 tunnel，`gst show` 和 `gst list --json` 会给出最近一次错误。
+- 每个 tunnel 有自己的日志：Linux 上在 `~/.local/state/gst/logs/<name>.log`，macOS 上在 `~/Library/Logs/gst/<name>.log`。超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 tunnel 的日志最多约 2 MiB；`gst remove` 会删除它们。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
+- daemon 自身的日志：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。
+- 从 gst 0.1 升级：0.1 中每个 tunnel 是单独的服务（`gst-<name>.service`、`local.gst.<name>`）。升级后第一个读取配置的 gst 命令会把有服务的 tunnel 交给 daemon 运行并删除这些服务，其余 tunnel 标记为已停止。
 - Linux 上，要让 tunnel 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，tunnel 在登录后启动、注销后停止。
 
 ## 排查问题
@@ -212,4 +214,4 @@ gst set myhost --cleanup-listeners=false
 
 ## 配置文件
 
-tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，后台服务会沿用同一个路径。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。反向 SOCKS 不需要改变配置文件结构：它保存为目标为空的 `remote` forward。
+tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以在另一个配置文件中启动或修改 tunnel，会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。反向 SOCKS 不需要改变配置文件结构：它保存为目标为空的 `remote` forward。

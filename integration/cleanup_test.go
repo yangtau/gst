@@ -5,7 +5,6 @@ package integration
 import (
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -14,17 +13,18 @@ import (
 
 func TestCleanupKillsStaleListenerOfLoginUser(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
+	p := startPair(t)
+	s := p.server
 	s.startListener("tunnel", 2222)
-	target := startEchoTarget(t)
+	p.client.startEcho(echoPort)
 
-	tunnel := startTunnel(t, s.config(true, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: target}))
+	tunnel := p.client.startTunnel(p.config(true, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: echoTarget}))
 	tunnel.waitReady(t)
 
 	if s.hasProcess("tunnel", "nc") {
 		t.Fatal("stale listener survived cleanup")
 	}
-	if err := echoRoundTrip(s.hostAddr(2222), "after cleanup"); err != nil {
+	if err := p.client.roundtrip(s.addr(2222)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -35,15 +35,16 @@ func TestCleanupKillsStaleListenerOfLoginUser(t *testing.T) {
 // server's ClientAliveInterval (1 s × 2 in the test image) frees the port.
 func TestStaleSessionIsReapedByServerNotCleanup(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
-	target := startEchoTarget(t)
-	forward := config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: target}
+	p := startPair(t)
+	s := p.server
+	p.client.startEcho(echoPort)
+	forward := config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: echoTarget}
 
-	stale := startTunnel(t, s.config(false, forward))
+	stale := p.client.startTunnel(p.config(false, forward))
 	stale.waitReady(t)
-	stale.signal(t, syscall.SIGSTOP)
+	stale.signal(t, "STOP")
 
-	blocked := startTunnel(t, s.config(true, forward))
+	blocked := p.client.startTunnel(p.config(true, forward))
 	if code, _ := blocked.waitExit(t, 20*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}
@@ -54,19 +55,20 @@ func TestStaleSessionIsReapedByServerNotCleanup(t *testing.T) {
 	eventually(t, 10*time.Second, "sshd did not reap the stale session", func() bool {
 		return len(s.listenerOwners(2222)) == 0
 	})
-	current := startTunnel(t, s.config(true, forward))
+	current := p.client.startTunnel(p.config(true, forward))
 	current.waitReady(t)
-	if err := echoRoundTrip(s.hostAddr(2222), "served by the new tunnel"); err != nil {
+	if err := p.client.roundtrip(s.addr(2222)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestCleanupSparesOtherUsersListener(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
+	p := startPair(t)
+	s := p.server
 	s.startListener("other", 2222)
 
-	tunnel := startTunnel(t, s.config(true, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: unusedAddr(t)}))
+	tunnel := p.client.startTunnel(p.config(true, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: refusedTarget}))
 	if code, _ := tunnel.waitExit(t, 20*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}
@@ -80,10 +82,11 @@ func TestCleanupSparesOtherUsersListener(t *testing.T) {
 
 func TestBusyPortWithoutCleanupFails(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
+	p := startPair(t)
+	s := p.server
 	s.startListener("tunnel", 2222)
 
-	tunnel := startTunnel(t, s.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: unusedAddr(t)}))
+	tunnel := p.client.startTunnel(p.config(false, config.Forward{Direction: config.Remote, Listen: "0.0.0.0:2222", Target: refusedTarget}))
 	if code, _ := tunnel.waitExit(t, 10*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}

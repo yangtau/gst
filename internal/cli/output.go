@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,25 +10,25 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
 // tunnelView is a tunnel as gst list and show print it. Its JSON
 // form is part of the command line interface.
 type tunnelView struct {
-	Name                     string         `json:"name"`
-	Status                   service.Status `json:"status"`
-	Destination              string         `json:"destination"`
-	IdentityFile             string         `json:"identity_file,omitempty"`
-	KnownHostsFile           string         `json:"known_hosts_file,omitempty"`
-	ConnectTimeoutSeconds    int64          `json:"connect_timeout_seconds,omitempty"`
-	KeepaliveIntervalSeconds int64          `json:"keepalive_interval_seconds,omitempty"`
-	KeepaliveCountMax        int64          `json:"keepalive_count_max,omitempty"`
-	CleanupListeners         bool           `json:"cleanup_listeners"`
-	Forwards                 []forwardView  `json:"forwards"`
-	Resolved                 *resolved      `json:"resolved,omitempty"`
-	ResolveError             string         `json:"resolve_error,omitempty"`
+	Name                     string        `json:"name"`
+	Status                   string        `json:"status"`
+	Error                    string        `json:"error,omitempty"`
+	Destination              string        `json:"destination"`
+	IdentityFile             string        `json:"identity_file,omitempty"`
+	KnownHostsFile           string        `json:"known_hosts_file,omitempty"`
+	ConnectTimeoutSeconds    int64         `json:"connect_timeout_seconds,omitempty"`
+	KeepaliveIntervalSeconds int64         `json:"keepalive_interval_seconds,omitempty"`
+	KeepaliveCountMax        int64         `json:"keepalive_count_max,omitempty"`
+	CleanupListeners         bool          `json:"cleanup_listeners"`
+	Forwards                 []forwardView `json:"forwards"`
+	Resolved                 *resolved     `json:"resolved,omitempty"`
+	ResolveError             string        `json:"resolve_error,omitempty"`
 }
 
 // resolved is what the tunnel uses after applying the ssh configuration.
@@ -57,10 +58,12 @@ func forwardViews(forwards []config.Forward) []forwardView {
 	return views
 }
 
-func (a *app) view(name string, t *config.Tunnel) tunnelView {
+func (a *app) view(ctx context.Context, name string, t *config.Tunnel) tunnelView {
+	status, lastErr := a.status(ctx, name, t)
 	return tunnelView{
 		Name:                     name,
-		Status:                   a.status(name),
+		Status:                   status,
+		Error:                    lastErr,
 		Destination:              t.Destination,
 		IdentityFile:             t.IdentityFile,
 		KnownHostsFile:           t.KnownHostsFile,
@@ -88,7 +91,11 @@ func (v tunnelView) write(out io.Writer) error {
 	w := table(out)
 	row := func(key, value string) { fmt.Fprintf(w, "%s:\t%s\n", key, value) }
 	row("Tunnel", v.Name)
-	row("Status", string(v.Status))
+	if v.Error != "" && v.Status != statusRunning {
+		row("Status", v.Status+" (last error: "+v.Error+")")
+	} else {
+		row("Status", v.Status)
+	}
 	row("Destination", v.Destination)
 	if r := v.Resolved; r != nil {
 		row("Server", r.User+"@"+r.Server)

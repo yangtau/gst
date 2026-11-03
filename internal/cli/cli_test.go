@@ -21,51 +21,81 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// fakeServices is a service manager that only records state.
-type fakeServices struct {
-	status   map[string]service.Status
-	commands map[string][]string // last start command per tunnel
-	calls    []string
+// fakeBackend is a daemon that only records state. Sync runs the started
+// tunnels of the configuration file.
+type fakeBackend struct {
+	config    string
+	installed bool
+	command   []string                    // last daemon command
+	running   map[string]bool             // tunnels the daemon runs
+	states    map[string]wire.TunnelState // overrides the running state
+	legacy    map[string]bool             // gst 0.1 services
+	calls     []string
 }
 
-func (f *fakeServices) Start(name string, command []string) error {
-	f.calls = append(f.calls, "start "+name)
-	f.status[name] = service.Running
-	f.commands[name] = command
-	return nil
-}
-
-func (f *fakeServices) Stop(name string) error {
-	f.calls = append(f.calls, "stop "+name)
-	delete(f.status, name)
-	return nil
-}
-
-func (f *fakeServices) Status(name string) (service.Status, error) {
-	if s, ok := f.status[name]; ok {
-		return s, nil
+func (f *fakeBackend) Sync(_ context.Context, command []string, anyStarted bool) error {
+	f.calls = append(f.calls, "sync")
+	f.installed, f.command, f.running = anyStarted, command, map[string]bool{}
+	if !anyStarted {
+		return nil
 	}
-	return service.Stopped, nil
+	cfg, err := config.Load(f.config)
+	if err != nil {
+		return err
+	}
+	for name, t := range cfg.Tunnels {
+		if !t.Stopped {
+			f.running[name] = true
+		}
+	}
+	return nil
 }
 
-func (f *fakeServices) RemoveLogs(name string) error {
+func (f *fakeBackend) Restart(_ context.Context, names []string) error {
+	f.calls = append(f.calls, "restart "+strings.Join(names, " "))
+	return nil
+}
+
+func (f *fakeBackend) States(context.Context) (map[string]wire.TunnelState, bool) {
+	if !f.installed {
+		return nil, false
+	}
+	states := map[string]wire.TunnelState{}
+	for name := range f.running {
+		states[name] = wire.TunnelState{Name: name, State: wire.StateRunning}
+		if s, ok := f.states[name]; ok {
+			states[name] = s
+		}
+	}
+	return states, true
+}
+
+func (f *fakeBackend) RemoveLogs(name string) error {
 	f.calls = append(f.calls, "remove-logs "+name)
 	return nil
 }
 
-func (f *fakeServices) Logs(_ context.Context, name string, lines int, follow bool, w io.Writer) error {
+func (f *fakeBackend) Logs(_ context.Context, name string, lines int, follow bool, w io.Writer) error {
 	f.calls = append(f.calls, "logs "+name)
+	return nil
+}
+
+func (f *fakeBackend) HasLegacy(name string) bool { return f.legacy[name] }
+
+func (f *fakeBackend) RemoveLegacy(name string) error {
+	f.calls = append(f.calls, "remove-legacy "+name)
+	delete(f.legacy, name)
 	return nil
 }
 
 type testEnv struct {
 	t        *testing.T
 	config   string
-	services *fakeServices
+	back     *fakeBackend
 	hosts    map[string]sshconfig.Host // ssh -G results by destination
 	identity string
 	exe      string
@@ -89,10 +119,10 @@ func newEnv(t *testing.T) *testEnv {
 	e := &testEnv{
 		t:        t,
 		config:   filepath.Join(dir, "gst", "config.json"),
-		services: &fakeServices{status: map[string]service.Status{}, commands: map[string][]string{}},
 		identity: filepath.Join(dir, "id_ed25519"),
 		exe:      "/usr/local/bin/gst",
 	}
+	e.back = &fakeBackend{config: e.config, states: map[string]wire.TunnelState{}, legacy: map[string]bool{}}
 	write(t, e.identity, string(pem.EncodeToMemory(block)))
 	knownHosts := filepath.Join(dir, "known_hosts")
 	write(t, knownHosts, knownhosts.Line([]string{"ssh.example.com:22", "127.0.0.1:2"}, signer.PublicKey())+"\n")
@@ -119,7 +149,7 @@ func (e *testEnv) gst(args ...string) (int, string, string) {
 	a := &app{
 		stdout:     &stdout,
 		stderr:     &stderr,
-		newManager: func() (service.Manager, error) { return e.services, nil },
+		newBackend: func() (backend, error) { return e.back, nil },
 		resolve: func(_ context.Context, destination string) (sshconfig.Host, error) {
 			if h, ok := e.hosts[destination]; ok {
 				return h, nil
@@ -176,8 +206,8 @@ func TestAddStartsTunnel(t *testing.T) {
 	if got := e.tunnel("myhost"); !equalTunnels(got, want) {
 		t.Fatalf("saved %+v, want %+v", got, want)
 	}
-	if !slices.Equal(e.services.commands["myhost"], []string{e.exe, "--config", e.config, "run", "myhost"}) {
-		t.Fatalf("service command %v", e.services.commands["myhost"])
+	if !slices.Equal(e.back.command, []string{e.exe, "--config", e.config, "daemon"}) || !e.back.running["myhost"] {
+		t.Fatalf("daemon command %v, running %v", e.back.command, e.back.running)
 	}
 
 	stderr := e.expectCode(exitFailure, "add", "myhost")
@@ -276,28 +306,28 @@ func TestAddRejects(t *testing.T) {
 	if stderr := e.expectCode(exitFailure, "add", "myhost"); !strings.Contains(stderr, "go install") {
 		t.Errorf("no install hint for go run: %q", stderr)
 	}
-	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || len(e.services.calls) != 0 {
-		t.Fatalf("failed adds changed state: %+v %v", f.Tunnels, e.services.calls)
+	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || len(e.back.calls) != 0 {
+		t.Fatalf("failed adds changed state: %+v %v", f.Tunnels, e.back.calls)
 	}
 }
 
 func TestForwards(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("add", "myhost")
-	e.services.calls = nil
+	e.back.calls = nil
 
 	out := e.mustGst("forward", "add", "myhost", "-R", "*:2222:localhost:22", "-L", "15432:127.0.0.1:5432")
 	if !strings.Contains(out, "Added -R 0.0.0.0:2222:localhost:22") || !strings.Contains(out, "Restarted tunnel myhost") {
 		t.Fatalf("unexpected output %q", out)
 	}
-	if !slices.Equal(e.services.calls, []string{"start myhost"}) {
-		t.Fatalf("running tunnel not restarted once: %v", e.services.calls)
+	if !slices.Equal(e.back.calls, []string{"sync", "restart myhost"}) {
+		t.Fatalf("running tunnel not restarted once: %v", e.back.calls)
 	}
 
-	e.services.calls = nil
+	e.back.calls = nil
 	out = e.mustGst("forward", "add", "myhost", "-R", "0.0.0.0:2222:localhost:22")
-	if !strings.Contains(out, "already has") || len(e.services.calls) != 0 {
-		t.Fatalf("adding an existing forward must be a no-op: %q %v", out, e.services.calls)
+	if !strings.Contains(out, "already has") || len(e.back.calls) != 0 {
+		t.Fatalf("adding an existing forward must be a no-op: %q %v", out, e.back.calls)
 	}
 	if stderr := e.expectCode(exitFailure, "forward", "add", "myhost", "-R", "0.0.0.0:2222:localhost:2200"); !strings.Contains(stderr, "gst forward remove myhost -R 0.0.0.0:2222") {
 		t.Fatalf("conflict hint missing: %q", stderr)
@@ -338,10 +368,10 @@ func TestForwards(t *testing.T) {
 	e.mustGst("forward", "remove", "myhost", "-L", "/tmp/db.sock", "-R", "/run/agent.sock:/tmp/agent.sock")
 
 	e.mustGst("stop", "myhost")
-	e.services.calls = nil
+	e.back.calls = nil
 	out = e.mustGst("forward", "rm", "myhost", "-L", "15432")
-	if !strings.Contains(out, "Removed -L 127.0.0.1:15432:127.0.0.1:5432") || !strings.Contains(out, "stopped") || len(e.services.calls) != 0 {
-		t.Fatalf("removing from a stopped tunnel: %q %v", out, e.services.calls)
+	if !strings.Contains(out, "Removed -L 127.0.0.1:15432:127.0.0.1:5432") || !strings.Contains(out, "stopped") || len(e.back.calls) != 0 {
+		t.Fatalf("removing from a stopped tunnel: %q %v", out, e.back.calls)
 	}
 	e.expectCode(exitFailure, "forward", "remove", "myhost", "-L", "15432")
 	e.expectCode(exitFailure, "forward", "remove", "myhost", "-R", "0.0.0.0:2222:otherhost:22")
@@ -360,9 +390,9 @@ func TestReverseDynamicForwards(t *testing.T) {
 	if got := e.tunnel("myhost").Forwards[0]; got != want {
 		t.Fatalf("reverse SOCKS forward = %+v; want %+v", got, want)
 	}
-	e.services.calls = nil
-	if out := e.mustGst("forward", "add", "myhost", "-R", "127.0.0.1:1080"); !strings.Contains(out, "already has") || len(e.services.calls) != 0 {
-		t.Fatalf("duplicate must be a no-op: %q %v", out, e.services.calls)
+	e.back.calls = nil
+	if out := e.mustGst("forward", "add", "myhost", "-R", "127.0.0.1:1080"); !strings.Contains(out, "already has") || len(e.back.calls) != 0 {
+		t.Fatalf("duplicate must be a no-op: %q %v", out, e.back.calls)
 	}
 	if stderr := e.expectCode(exitFailure, "forward", "add", "myhost", "-R", "1080:localhost:22"); !strings.Contains(stderr, "gst forward remove myhost -R 127.0.0.1:1080") {
 		t.Fatalf("missing listener conflict hint: %q", stderr)
@@ -401,31 +431,43 @@ func TestLifecycle(t *testing.T) {
 	}
 	e.expectCode(exitFailure, "restart", "myhost")
 
-	e.services.calls = nil
-	e.mustGst("restart", "--all")
-	if !slices.Equal(e.services.calls, []string{"start db"}) {
-		t.Fatalf("restart --all must only restart started tunnels: %v", e.services.calls)
+	if !e.tunnel("myhost").Stopped || e.back.running["myhost"] || !e.back.running["db"] {
+		t.Fatalf("stop did not reach the daemon: %+v %v", e.tunnel("myhost"), e.back.running)
 	}
-	e.services.calls = nil
-	e.mustGst("start", "--all")
-	if !slices.Equal(e.services.calls, []string{"start myhost"}) {
-		t.Fatalf("start --all must only start stopped tunnels: %v", e.services.calls)
+
+	e.back.calls = nil
+	e.mustGst("restart", "--all")
+	if !slices.Equal(e.back.calls, []string{"sync", "restart db"}) {
+		t.Fatalf("restart --all must only restart started tunnels: %v", e.back.calls)
+	}
+	e.back.calls = nil
+	if out := e.mustGst("start", "--all"); out != "Started tunnel myhost.\n" || !e.back.running["myhost"] {
+		t.Fatalf("start --all must only start stopped tunnels: %q %v", out, e.back.running)
 	}
 	e.expectCode(exitUsage, "start")
 	e.expectCode(exitUsage, "start", "myhost", "--all")
 	e.expectCode(exitFailure, "stop", "myhost", "nope")
 
-	e.services.status["db"] = service.Down
+	e.back.states["db"] = wire.TunnelState{Name: "db", State: wire.StateDown, Error: "SSH keepalive timed out"}
 	var views []tunnelView
 	if err := json.Unmarshal([]byte(e.mustGst("list", "--json")), &views); err != nil || len(views) != 2 ||
-		views[0].Name != "db" || views[0].Status != service.Down || views[1].Status != service.Running {
+		views[0].Name != "db" || views[0].Status != statusDown || views[0].Error != "SSH keepalive timed out" || views[1].Status != statusRunning {
 		t.Fatalf("unexpected list %+v: %v", views, err)
 	}
+	if out := e.mustGst("show", "db"); !strings.Contains(out, "down (last error: SSH keepalive timed out)") {
+		t.Fatalf("show lacks the last error: %q", out)
+	}
 
-	e.services.calls = nil
+	// Without a daemon, started tunnels are down.
+	e.back.installed = false
+	if err := json.Unmarshal([]byte(e.mustGst("list", "--json")), &views); err != nil || views[1].Status != statusDown {
+		t.Fatalf("unexpected list without a daemon %+v: %v", views, err)
+	}
+
+	e.back.calls = nil
 	e.mustGst("rm", "myhost", "db")
-	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || !slices.Equal(e.services.calls, []string{"stop myhost", "remove-logs myhost", "stop db", "remove-logs db"}) {
-		t.Fatalf("remove left %+v, calls %v", f.Tunnels, e.services.calls)
+	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || !slices.Equal(e.back.calls, []string{"sync", "remove-logs myhost", "remove-logs db"}) || e.back.installed {
+		t.Fatalf("remove left %+v, calls %v, daemon installed %v", f.Tunnels, e.back.calls, e.back.installed)
 	}
 	if out := e.mustGst("list"); !strings.Contains(out, "No tunnels") {
 		t.Fatalf("unexpected output %q", out)
@@ -442,21 +484,21 @@ func TestSet(t *testing.T) {
 		t.Fatal("failed set changed the tunnel")
 	}
 
-	e.services.calls = nil
+	e.back.calls = nil
 	out := e.mustGst("set", "myhost", "--identity", "", "--keepalive-count", "0", "--destination", "db")
 	got := e.tunnel("myhost")
 	if got.IdentityFile != "" || got.KeepaliveCountMax != 0 || got.Destination != "db" {
 		t.Fatalf("set did not apply: %+v", got)
 	}
-	if !strings.Contains(out, "Restarted tunnel myhost") || !slices.Equal(e.services.calls, []string{"start myhost"}) {
-		t.Fatalf("running tunnel not restarted: %q %v", out, e.services.calls)
+	if !strings.Contains(out, "Restarted tunnel myhost") || !slices.Equal(e.back.calls, []string{"sync", "restart myhost"}) {
+		t.Fatalf("running tunnel not restarted: %q %v", out, e.back.calls)
 	}
-	e.services.calls = nil
-	if out := e.mustGst("set", "myhost", "--cleanup-listeners", "--no-restart"); !strings.Contains(out, "gst restart myhost") || len(e.services.calls) != 0 {
-		t.Fatalf("--no-restart restarted: %q %v", out, e.services.calls)
+	e.back.calls = nil
+	if out := e.mustGst("set", "myhost", "--cleanup-listeners", "--no-restart"); !strings.Contains(out, "gst restart myhost") || len(e.back.calls) != 0 {
+		t.Fatalf("--no-restart restarted: %q %v", out, e.back.calls)
 	}
-	if out := e.mustGst("set", "myhost", "--cleanup-listeners", "--keepalive-count", "0"); !strings.Contains(out, "nothing changed") || len(e.services.calls) != 0 {
-		t.Fatalf("an unchanged tunnel must not restart: %q %v", out, e.services.calls)
+	if out := e.mustGst("set", "myhost", "--cleanup-listeners", "--keepalive-count", "0"); !strings.Contains(out, "nothing changed") || len(e.back.calls) != 0 {
+		t.Fatalf("an unchanged tunnel must not restart: %q %v", out, e.back.calls)
 	}
 	e.mustGst("set", "myhost", "--cleanup-listeners=false")
 	if e.tunnel("myhost").CleanupListeners {
@@ -518,5 +560,51 @@ func TestOptionsPrecedence(t *testing.T) {
 	}
 	if _, port, _ := net.SplitHostPort(opts.Server); port != "22" {
 		t.Fatal(opts.Server)
+	}
+}
+
+func TestStopAllRemovesDaemon(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("add", "myhost")
+	e.mustGst("add", "db")
+	e.mustGst("stop", "--all")
+	if e.back.installed {
+		t.Fatal("the daemon stays installed without started tunnels")
+	}
+	e.mustGst("start", "db")
+	if !e.back.installed || !e.back.running["db"] || e.back.running["myhost"] {
+		t.Fatalf("start did not bring the daemon up: %v", e.back.running)
+	}
+}
+
+func TestMigratesLegacyServices(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(filepath.Dir(e.config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, e.config, `{"tunnels": {"myhost": {"destination": "myhost", "forwards": []}, "db": {"destination": "db", "forwards": []}}}`)
+	e.back.legacy["myhost"] = true
+
+	code, stdout, stderr := e.gst("list", "--json")
+	if code != 0 || !strings.Contains(stderr, "note: the gst daemon now runs tunnels myhost") {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	var views []tunnelView
+	if err := json.Unmarshal([]byte(stdout), &views); err != nil || views[0].Status != statusStopped || views[1].Status != statusRunning {
+		t.Fatalf("unexpected list %+v: %v", views, err)
+	}
+	if !slices.Equal(e.back.calls, []string{"remove-legacy myhost", "sync"}) {
+		t.Fatalf("unexpected calls %v", e.back.calls)
+	}
+	if f, _ := config.Load(e.config); f.Version != config.Version {
+		t.Fatalf("version %d after migration", f.Version)
+	}
+
+	// Migration happens once; help and completion never migrate.
+	e.back.calls = nil
+	e.mustGst("list")
+	e.mustGst("version")
+	if len(e.back.calls) != 0 {
+		t.Fatalf("migrated again: %v", e.back.calls)
 	}
 }

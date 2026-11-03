@@ -1,21 +1,18 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
 type systemd struct {
-	dir    string // systemd user unit directory
-	run    runner
-	stream streamer
-	notes  io.Writer
+	dir   string // systemd user unit directory
+	run   runner
+	notes io.Writer
 }
 
 func newSystemd(home string, notes io.Writer) *systemd {
@@ -23,25 +20,35 @@ func newSystemd(home string, notes io.Writer) *systemd {
 	if config == "" {
 		config = filepath.Join(home, ".config")
 	}
-	return &systemd{dir: filepath.Join(config, "systemd", "user"), run: execRun, stream: execStream, notes: notes}
+	return &systemd{dir: filepath.Join(config, "systemd", "user"), run: execRun, notes: notes}
 }
 
-func unitName(name string) string { return "gst-" + name + ".service" }
+const unitName = "gst.service"
 
-func (s *systemd) unitPath(name string) string { return filepath.Join(s.dir, unitName(name)) }
+// legacyUnit is gst 0.1's unit for one tunnel.
+func legacyUnit(name string) string { return "gst-" + name + ".service" }
 
 func (s *systemd) systemctl(args ...string) (string, error) {
 	return s.run("systemctl", append([]string{"--user"}, args...)...)
 }
 
-func (s *systemd) Start(name string, command []string) error {
+func (s *systemd) Install(command []string, restart bool) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(s.unitPath(name), []byte(systemdUnit(name, command)), 0o644); err != nil {
+	changed, err := writeIfChanged(filepath.Join(s.dir, unitName), []byte(systemdUnit(command)))
+	if err != nil {
 		return err
 	}
-	for _, args := range [][]string{{"daemon-reload"}, {"enable", unitName(name)}, {"restart", unitName(name)}} {
+	action := "start"
+	if changed || restart {
+		action = "restart"
+	}
+	steps := [][]string{{"enable", unitName}, {action, unitName}}
+	if changed {
+		steps = append([][]string{{"daemon-reload"}}, steps...)
+	}
+	for _, args := range steps {
 		if _, err := s.systemctl(args...); err != nil {
 			return err
 		}
@@ -62,58 +69,43 @@ func (s *systemd) noteLinger() {
 	}
 }
 
-func (s *systemd) Stop(name string) error {
-	if !fileExists(s.unitPath(name)) {
+func (s *systemd) Uninstall() error { return s.remove(unitName) }
+
+func (s *systemd) HasLegacy(name string) bool {
+	return fileExists(filepath.Join(s.dir, legacyUnit(name)))
+}
+
+func (s *systemd) RemoveLegacy(name string) error { return s.remove(legacyUnit(name)) }
+
+func (s *systemd) remove(unit string) error {
+	path := filepath.Join(s.dir, unit)
+	if !fileExists(path) {
 		return nil
 	}
-	if _, err := s.systemctl("disable", "--now", unitName(name)); err != nil {
+	if _, err := s.systemctl("disable", "--now", unit); err != nil {
 		return err
 	}
-	if err := os.Remove(s.unitPath(name)); err != nil {
+	if err := os.Remove(path); err != nil {
 		return err
 	}
 	_, err := s.systemctl("daemon-reload")
 	return err
 }
 
-func (s *systemd) Status(name string) (Status, error) {
-	if !fileExists(s.unitPath(name)) {
-		return Stopped, nil
-	}
-	out, err := s.systemctl("show", unitName(name), "--property=ActiveState", "--value")
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(out) == "active" {
-		return Running, nil
-	}
-	return Down, nil
-}
-
-// RemoveLogs does nothing: journald owns the log and expires it.
-func (s *systemd) RemoveLogs(string) error { return nil }
-
-func (s *systemd) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
-	args := []string{"--user", "--unit", unitName(name), "--lines", strconv.Itoa(lines), "--no-pager", "--output", "short-iso"}
-	if follow {
-		args = append(args, "--follow")
-	}
-	return s.stream(ctx, w, "journalctl", args...)
-}
-
-// systemdUnit restarts the tunnel 5 s after every exit, without a limit,
-// and gives it 15 s to exit after SIGTERM.
-func systemdUnit(name string, command []string) string {
+// systemdUnit restarts the daemon 5 s after every exit, without a limit,
+// and gives it 15 s to exit after SIGTERM. Its log goes to journald.
+func systemdUnit(command []string) string {
 	quoted := make([]string, len(command))
 	for i, arg := range command {
 		quoted[i] = systemdQuote(arg)
 	}
 	return fmt.Sprintf(`[Unit]
-Description=gst tunnel %s
+Description=gst daemon
 StartLimitIntervalSec=0
 
 [Service]
 ExecStart=%s
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
@@ -121,7 +113,7 @@ KillSignal=SIGTERM
 
 [Install]
 WantedBy=default.target
-`, name, strings.Join(quoted, " "))
+`, strings.Join(quoted, " "))
 }
 
 var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%", "$", "$$")

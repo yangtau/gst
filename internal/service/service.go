@@ -1,42 +1,61 @@
-// Package service runs each tunnel as a per-user background service, a
-// systemd user unit on Linux and a launchd agent on macOS, which restarts
-// the tunnel whenever it exits.
+// Package service installs the gst daemon as a per-user background
+// service, a systemd user unit on Linux and a launchd agent on macOS, which
+// starts at login and restarts the daemon whenever it exits. It also
+// removes the per-tunnel services of gst 0.1.
 package service
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
 
-// Status is the state of a tunnel's service.
-type Status string
-
-const (
-	Stopped Status = "stopped" // no service exists
-	Running Status = "running" // the tunnel process is running
-	Down    Status = "down"    // the service exists, but its process is not running, as between restarts
-)
-
-// Manager controls the background services of tunnels by name.
+// Manager controls the daemon's background service.
 type Manager interface {
-	// Start writes the service definition, enables it at login or boot,
-	// and starts it, restarting it if it already runs.
-	Start(name string, command []string) error
-	// Stop stops the service and deletes its definition. Stopping a
-	// tunnel without a service does nothing.
-	Stop(name string) error
-	// RemoveLogs deletes the log files that gst keeps for a stopped tunnel.
-	RemoveLogs(name string) error
-	Status(name string) (Status, error)
-	// Logs writes the last lines of the service's log to w and then, if
-	// follow is set, new lines until ctx is done.
-	Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error
+	// Install writes the service definition to run command, enables it at
+	// login or boot, and makes sure it runs. A running service restarts
+	// when its definition changed or restart is set.
+	Install(command []string, restart bool) error
+	// Uninstall stops the service and deletes its definition. Uninstalling
+	// a missing service does nothing.
+	Uninstall() error
+	// HasLegacy reports whether gst 0.1 left a service for the named tunnel.
+	HasLegacy(name string) bool
+	// RemoveLegacy stops and deletes gst 0.1's service for the named tunnel.
+	RemoveLegacy(name string) error
+}
+
+// Paths are where the daemon keeps its files on this platform.
+type Paths struct {
+	Socket string // control socket
+	LogDir string // tunnel logs, <name>.log
+}
+
+// DefaultPaths returns the paths for this platform: on Linux, under
+// $XDG_STATE_HOME/gst (~/.local/state/gst); on macOS, the socket under
+// ~/Library/Application Support/gst and the logs in ~/Library/Logs/gst.
+func DefaultPaths() (Paths, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Paths{}, fmt.Errorf("home directory lookup failed: %w", err)
+	}
+	if runtime.GOOS == "darwin" {
+		return Paths{
+			Socket: filepath.Join(home, "Library", "Application Support", "gst", "gst.sock"),
+			LogDir: filepath.Join(home, "Library", "Logs", "gst"),
+		}, nil
+	}
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" {
+		state = filepath.Join(home, ".local", "state")
+	}
+	dir := filepath.Join(state, "gst")
+	return Paths{Socket: filepath.Join(dir, "gst.sock"), LogDir: filepath.Join(dir, "logs")}, nil
 }
 
 // New returns the manager for this platform. Advice for the user, such as
@@ -71,21 +90,16 @@ func execRun(name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// streamer runs a command that writes its output to w until it exits or
-// ctx is done.
-type streamer func(ctx context.Context, w io.Writer, name string, args ...string) error
-
-func execStream(ctx context.Context, w io.Writer, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout = w
-	cmd.Stderr = w
-	if err := cmd.Run(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("%s: %w", name, err)
-	}
-	return nil
-}
-
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// writeIfChanged writes data to path unless path already holds it, and
+// reports whether it wrote.
+func writeIfChanged(path string, data []byte) (bool, error) {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+		return false, nil
+	}
+	return true, os.WriteFile(path, data, 0o644)
 }

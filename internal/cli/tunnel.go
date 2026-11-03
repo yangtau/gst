@@ -1,37 +1,38 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
 func (a *app) startCommand() *cobra.Command {
 	return a.lifecycleCommand("start", "Start tunnels in the background",
 		"Start stopped tunnels in the background. Starting a running tunnel does\nnothing.",
-		"  gst start myhost\n  gst start --all", a.startTunnel)
+		"  gst start myhost\n  gst start --all", a.startTunnels)
 }
 
 func (a *app) stopCommand() *cobra.Command {
 	return a.lifecycleCommand("stop", "Stop tunnels but keep them configured",
 		"Stop tunnels, so they no longer run in the background or start at login.\nThe tunnels stay configured; start them again with gst start.",
-		"  gst stop myhost\n  gst stop --all", a.stopTunnel)
+		"  gst stop myhost\n  gst stop --all", a.stopTunnels)
 }
 
 func (a *app) restartCommand() *cobra.Command {
 	return a.lifecycleCommand("restart", "Restart running tunnels",
 		"Restart started tunnels, for example after upgrading gst or changing\n~/.ssh/config.",
-		"  gst restart myhost\n  gst restart --all", a.restartTunnel)
+		"  gst restart myhost\n  gst restart --all", a.restartTunnels)
 }
 
 func (a *app) addCommand() *cobra.Command {
@@ -98,7 +99,7 @@ use "*" or an empty bind_address for all interfaces.`,
 			if err := a.preflight(cmd.Context(), t); err != nil {
 				return err
 			}
-			if _, err := a.serviceCommand(name); err != nil {
+			if _, err := a.daemonCommand(); err != nil {
 				return err
 			}
 			err = a.update(func(f *config.File) error {
@@ -112,7 +113,7 @@ use "*" or an empty bind_address for all interfaces.`,
 			if err != nil {
 				return err
 			}
-			if err := a.startService(name); err != nil {
+			if err := a.sync(cmd.Context()); err != nil {
 				return withHint(fmt.Errorf("tunnel %s was added but did not start: %w", name, err), "retry with `gst start "+name+"`")
 			}
 			fmt.Fprintf(a.stdout, "Added tunnel %s and started it in the background.\n", name)
@@ -179,7 +180,7 @@ forwards.`,
 				return nil
 			}
 			fmt.Fprintf(a.stdout, "Updated tunnel %s.\n", name)
-			return a.applyChange(name, noRestart)
+			return a.applyChange(cmd.Context(), name, noRestart)
 		}),
 	}
 	cmd.Flags().StringVar(&destination, "destination", "", "ssh destination, such as host, user@host, or ssh://user@host:port")
@@ -190,7 +191,7 @@ forwards.`,
 
 // lifecycleCommand builds start, stop, and restart, which act on the named
 // tunnels or, with --all, on every tunnel the action applies to.
-func (a *app) lifecycleCommand(use, short, long, example string, action func(cmd *cobra.Command, name string, t *config.Tunnel, all bool) error) *cobra.Command {
+func (a *app) lifecycleCommand(use, short, long, example string, action func(ctx context.Context, f *config.File, names []string, all bool) error) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:               use + " <name>... | --all",
@@ -218,72 +219,115 @@ func (a *app) lifecycleCommand(use, short, long, example string, action func(cmd
 					return err
 				}
 			}
-			var errs []error
-			for _, name := range names {
-				if err := action(cmd, name, f.Tunnels[name], all); err != nil {
-					errs = append(errs, err)
-				}
-			}
-			if len(errs) == 1 {
-				return errs[0]
-			}
-			return errors.Join(errs...)
+			return action(cmd.Context(), f, slices.Compact(slices.Sorted(slices.Values(names))), all)
 		}),
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "act on every tunnel")
 	return cmd
 }
 
-func (a *app) startTunnel(cmd *cobra.Command, name string, t *config.Tunnel, all bool) error {
-	if a.status(name) != service.Stopped {
-		if !all {
-			fmt.Fprintf(a.stdout, "Tunnel %s is already started.\n", name)
-		}
+// joinErrors returns nil, the only error, or all of errs.
+func joinErrors(errs []error) error {
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	return errors.Join(errs...)
+}
+
+// setStopped records whether the named tunnels are stopped.
+func (a *app) setStopped(names []string, stopped bool) error {
+	if len(names) == 0 {
 		return nil
 	}
-	if err := a.preflight(cmd.Context(), t); err != nil {
-		return fmt.Errorf("start %s: %w", name, err)
+	return a.update(func(f *config.File) error {
+		for _, name := range names {
+			if t := f.Tunnels[name]; t != nil {
+				t.Stopped = stopped
+			}
+		}
+		return nil
+	})
+}
+
+func (a *app) startTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+	var errs []error
+	var started []string
+	for _, name := range names {
+		t := f.Tunnels[name]
+		if !t.Stopped {
+			if !all {
+				fmt.Fprintf(a.stdout, "Tunnel %s is already started.\n", name)
+			}
+			continue
+		}
+		if err := a.preflight(ctx, t); err != nil {
+			errs = append(errs, fmt.Errorf("start %s: %w", name, err))
+			continue
+		}
+		started = append(started, name)
 	}
-	if err := a.startService(name); err != nil {
-		return fmt.Errorf("start %s: %w", name, err)
+	if err := a.setStopped(started, false); err != nil {
+		return err
 	}
-	fmt.Fprintf(a.stdout, "Started tunnel %s.\n", name)
+	// Syncing also brings up a daemon that is not running.
+	if err := a.sync(ctx); err != nil {
+		return joinErrors(append(errs, fmt.Errorf("start: %w", err)))
+	}
+	for _, name := range started {
+		fmt.Fprintf(a.stdout, "Started tunnel %s.\n", name)
+	}
+	return joinErrors(errs)
+}
+
+func (a *app) stopTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+	var stopped []string
+	for _, name := range names {
+		if f.Tunnels[name].Stopped {
+			if !all {
+				fmt.Fprintf(a.stdout, "Tunnel %s is already stopped.\n", name)
+			}
+			continue
+		}
+		stopped = append(stopped, name)
+	}
+	if err := a.setStopped(stopped, true); err != nil {
+		return err
+	}
+	if err := a.sync(ctx); err != nil {
+		return fmt.Errorf("stop: %w", err)
+	}
+	for _, name := range stopped {
+		fmt.Fprintf(a.stdout, "Stopped tunnel %s.\n", name)
+	}
 	return nil
 }
 
-func (a *app) stopTunnel(_ *cobra.Command, name string, _ *config.Tunnel, all bool) error {
-	if a.status(name) == service.Stopped {
-		if !all {
-			fmt.Fprintf(a.stdout, "Tunnel %s is already stopped.\n", name)
+func (a *app) restartTunnels(ctx context.Context, f *config.File, names []string, all bool) error {
+	var errs []error
+	var restart []string
+	for _, name := range names {
+		t := f.Tunnels[name]
+		if t.Stopped {
+			if !all {
+				errs = append(errs, withHint(fmt.Errorf("tunnel %s is stopped", name), "start it with `gst start "+name+"`"))
+			}
+			continue
 		}
-		return nil
-	}
-	m, err := a.services()
-	if err == nil {
-		err = m.Stop(name)
-	}
-	if err != nil {
-		return fmt.Errorf("stop %s: %w", name, err)
-	}
-	fmt.Fprintf(a.stdout, "Stopped tunnel %s.\n", name)
-	return nil
-}
-
-func (a *app) restartTunnel(cmd *cobra.Command, name string, t *config.Tunnel, all bool) error {
-	if a.status(name) == service.Stopped {
-		if all {
-			return nil
+		if err := a.preflight(ctx, t); err != nil {
+			errs = append(errs, fmt.Errorf("restart %s: %w", name, err))
+			continue
 		}
-		return withHint(fmt.Errorf("tunnel %s is stopped", name), "start it with `gst start "+name+"`")
+		restart = append(restart, name)
 	}
-	if err := a.preflight(cmd.Context(), t); err != nil {
-		return fmt.Errorf("restart %s: %w", name, err)
+	if len(restart) > 0 {
+		if err := a.restart(ctx, restart); err != nil {
+			return joinErrors(append(errs, fmt.Errorf("restart: %w", err)))
+		}
 	}
-	if err := a.startService(name); err != nil {
-		return fmt.Errorf("restart %s: %w", name, err)
+	for _, name := range restart {
+		fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)
 	}
-	fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)
-	return nil
+	return joinErrors(errs)
 }
 
 func (a *app) removeCommand() *cobra.Command {
@@ -305,18 +349,6 @@ func (a *app) removeCommand() *cobra.Command {
 					return err
 				}
 			}
-			m, err := a.services()
-			if err != nil {
-				return err
-			}
-			for _, name := range args {
-				if err := a.stopTunnel(cmd, name, nil, true); err != nil {
-					return err
-				}
-				if err := m.RemoveLogs(name); err != nil {
-					return err
-				}
-			}
 			err = a.update(func(f *config.File) error {
 				for _, name := range args {
 					delete(f.Tunnels, name)
@@ -325,6 +357,18 @@ func (a *app) removeCommand() *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if err := a.sync(cmd.Context()); err != nil {
+				return withHint(fmt.Errorf("tunnels were removed from the configuration, but the daemon may still run them: %w", err), "retry with `gst stop --all` or `gst restart --all`")
+			}
+			b, err := a.backend()
+			if err != nil {
+				return err
+			}
+			for _, name := range args {
+				if err := b.RemoveLogs(name); err != nil {
+					return err
+				}
 			}
 			for _, name := range args {
 				fmt.Fprintf(a.stdout, "Removed tunnel %s.\n", name)
@@ -340,8 +384,9 @@ func (a *app) listCommand() *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List tunnels and their status",
-		Long: `List tunnels and their status: running, down (failed and retrying;
-see gst logs and gst check), or stopped.`,
+		Long: `List tunnels and their status: running (connected, with every forward
+listening), connecting, down (failed and retrying; see gst logs and
+gst check), or stopped.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()
@@ -350,7 +395,7 @@ see gst logs and gst check), or stopped.`,
 			}
 			views := make([]tunnelView, 0, len(f.Tunnels))
 			for _, name := range sortedNames(f) {
-				views = append(views, a.view(name, f.Tunnels[name]))
+				views = append(views, a.view(cmd.Context(), name, f.Tunnels[name]))
 			}
 			if asJSON {
 				return writeJSON(a.stdout, views)
@@ -394,7 +439,7 @@ func (a *app) showCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			v := a.view(name, t)
+			v := a.view(cmd.Context(), name, t)
 			if opts, err := a.options(cmd.Context(), t); err != nil {
 				v.ResolveError = err.Error()
 			} else {
@@ -435,13 +480,13 @@ for details.`,
 			if _, err := lookup(f, name); err != nil {
 				return err
 			}
-			m, err := a.services()
+			b, err := a.backend()
 			if err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return m.Logs(ctx, name, lines, follow, a.stdout)
+			return b.Logs(ctx, name, lines, follow, a.stdout)
 		}),
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep printing new lines")

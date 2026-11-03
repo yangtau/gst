@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func (a *app) rootCommand() *cobra.Command {
 	// Help lists commands in the order they are added, grouped by task.
@@ -38,6 +38,12 @@ report state accept --json.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		if err := a.migrate(cmd); err != nil {
+			return &failure{err}
+		}
+		return nil
+	}
 	root.PersistentFlags().StringVar(&a.configFlag, "config", "", "configuration file (default: $GST_CONFIG, else ~/.config/gst/config.json)")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
 	root.SetUsageTemplate(strings.NewReplacer(
@@ -69,7 +75,7 @@ report state accept --json.`,
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},
-	}, a.runCommand())
+	}, a.runCommand(), a.daemonRunCommand())
 	setHelpColors(root)
 	return root
 }

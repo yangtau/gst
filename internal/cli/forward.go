@@ -96,7 +96,7 @@ restarts to apply the change unless --no-restart is given.`,
 			if !added {
 				return nil
 			}
-			return a.applyChange(name, noRestart)
+			return a.applyChange(cmd.Context(), name, noRestart)
 		}),
 	}
 	forwards.register(cmd.Flags(), false)
@@ -155,7 +155,7 @@ restarts to apply the change unless --no-restart is given.`,
 			for _, fwd := range removed {
 				fmt.Fprintf(a.stdout, "Removed %s from tunnel %s.\n", fwd.Spec(), name)
 			}
-			return a.applyChange(name, noRestart)
+			return a.applyChange(cmd.Context(), name, noRestart)
 		}),
 	}
 	forwards.register(cmd.Flags(), true)

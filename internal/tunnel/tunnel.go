@@ -34,6 +34,8 @@ type Options struct {
 	KeepaliveTimeout  time.Duration // how long one probe may stay unanswered
 	CleanupListeners  bool
 	Forwards          []config.Forward
+	Logger            *log.Logger // receives the tunnel's log; nil means the standard logger
+	OnReady           func()      // called once every forward listens; may be nil
 }
 
 // Run connects to the server and serves the forwards until ctx is
@@ -53,6 +55,9 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	if opts.Logger == nil {
+		opts.Logger = log.Default()
+	}
 	t := &tunnel{
 		opts:            opts,
 		client:          client,
@@ -99,7 +104,10 @@ func (t *tunnel) serve(ctx context.Context) error {
 			return err
 		}
 	}
-	log.Print("tunnel ready")
+	t.opts.Logger.Print("tunnel ready")
+	if t.opts.OnReady != nil {
+		t.opts.OnReady()
+	}
 
 	select {
 	case <-ctx.Done():

@@ -3,59 +3,53 @@
 package integration
 
 import (
-	"bufio"
-	"net"
-	"os"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
-// The remote socket is reached with nc inside the container, the remote
-// socket target is a one-shot nc listener there, and the local socket
-// targets sshd, so each direction proves that the right side dialed.
+// The remote socket is reached with nc on the server, the remote socket
+// target is a one-shot nc listener there, and the local socket targets a
+// service on the server's loopback, so each direction proves that the
+// right side dialed.
 func TestUnixSocketForwards(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
-	target := startEchoTarget(t)
-	localSocket := filepath.Join(socketDir(t), "sshd.sock")
-	localTCP := unusedAddr(t)
-	s.startSocketListener("tunnel", "/home/tunnel/greeting.sock", "greeting")
+	p := startPair(t)
+	p.client.startEcho(echoPort)
+	p.server.serve(4000, "from-server")
+	localSocket := nodeHome + "/local.sock"
+	p.server.startSocketListener("tunnel", "/home/tunnel/greeting.sock", "greeting")
 
-	tunnel := startTunnel(t, s.config(false,
-		config.Forward{Direction: config.Remote, Listen: "/home/tunnel/remote.sock", Target: target},
-		config.Forward{Direction: config.Local, Listen: localSocket, Target: "127.0.0.1:22"},
-		config.Forward{Direction: config.Local, Listen: localTCP, Target: "/home/tunnel/greeting.sock"},
+	tunnel := p.client.startTunnel(p.config(false,
+		config.Forward{Direction: config.Remote, Listen: "/home/tunnel/remote.sock", Target: echoTarget},
+		config.Forward{Direction: config.Local, Listen: localSocket, Target: "127.0.0.1:4000"},
+		config.Forward{Direction: config.Local, Listen: "127.0.0.1:15000", Target: "/home/tunnel/greeting.sock"},
 	))
 	tunnel.waitReady(t)
 
-	if out, err := s.exec("tunnel", "sh", "-c", `printf hello | nc -N -U /home/tunnel/remote.sock`); err != nil || out != "reply:hello" {
+	if out, err := p.server.exec("tunnel", "sh", "-c", `printf hello | nc -N -U /home/tunnel/remote.sock`); err != nil || out != "reply:hello" {
 		t.Fatalf("remote socket forward: %q, %v", out, err)
 	}
-	if line := readLine(t, "unix", localSocket); !strings.HasPrefix(line, "SSH-2.0-") {
-		t.Fatalf("no sshd banner through the local socket: %q", line)
+	if out, err := p.client.helper("line", "unix", localSocket); err != nil || out != "from-server\n" {
+		t.Fatalf("local socket forward: %q, %v", out, err)
 	}
-	if line := readLine(t, "tcp", localTCP); line != "greeting" {
-		t.Fatalf("remote socket target: %q", line)
+	if out, err := p.client.helper("line", "tcp", "127.0.0.1:15000"); err != nil || out != "greeting\n" {
+		t.Fatalf("remote socket target: %q, %v", out, err)
 	}
-	if info, err := os.Stat(localSocket); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("local socket mode %v: %v", info.Mode(), err)
+	if mode := p.client.mustSh(`stat -c %a "$1"`, localSocket); mode != "600\n" {
+		t.Fatalf("local socket mode %q", mode)
 	}
 
-	tunnel.signal(t, syscall.SIGTERM)
+	tunnel.signal(t, "TERM")
 	if code, _ := tunnel.waitExit(t, 5*time.Second); code != 0 {
 		t.Fatalf("exit code %d, want 0", code)
 	}
-	if _, err := os.Lstat(localSocket); !os.IsNotExist(err) {
+	if _, err := p.client.sh(`test ! -e "$1"`, localSocket); err != nil {
 		t.Fatal("local socket survived shutdown")
 	}
-	if logs := tunnel.logs(); strings.Contains(logs, ".sock") {
-		t.Fatalf("log reveals socket paths:\n%s", logs)
-	}
+	tunnel.assertPrivateLog(t, ".sock")
 }
 
 // sshd leaves a forward's socket file behind, even when the tunnel exits
@@ -63,8 +57,9 @@ func TestUnixSocketForwards(t *testing.T) {
 // the file blocks the next session until cleanup removes it.
 func TestCleanupRemovesStaleRemoteSockets(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
-	target := startEchoTarget(t)
+	p := startPair(t)
+	s := p.server
+	p.client.startEcho(echoPort)
 	stale, live := "/home/tunnel/stale.sock", "/home/tunnel/live.sock"
 	s.leaveStaleSocket("tunnel", stale)
 	if _, err := s.exec("tunnel", "sh", "-c", `nc -lkU "$1" </dev/null >/dev/null 2>&1 &`, "sh", live); err != nil {
@@ -72,7 +67,7 @@ func TestCleanupRemovesStaleRemoteSockets(t *testing.T) {
 	}
 	s.waitForSocket(live)
 
-	blocked := startTunnel(t, s.config(false, config.Forward{Direction: config.Remote, Listen: stale, Target: target}))
+	blocked := p.client.startTunnel(p.config(false, config.Forward{Direction: config.Remote, Listen: stale, Target: echoTarget}))
 	if code, _ := blocked.waitExit(t, 10*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}
@@ -80,9 +75,9 @@ func TestCleanupRemovesStaleRemoteSockets(t *testing.T) {
 		t.Fatal("missing listener failure log")
 	}
 
-	tunnel := startTunnel(t, s.config(true,
-		config.Forward{Direction: config.Remote, Listen: stale, Target: target},
-		config.Forward{Direction: config.Remote, Listen: live, Target: target},
+	tunnel := p.client.startTunnel(p.config(true,
+		config.Forward{Direction: config.Remote, Listen: stale, Target: echoTarget},
+		config.Forward{Direction: config.Remote, Listen: live, Target: echoTarget},
 	))
 	tunnel.waitReady(t)
 	if s.hasProcess("tunnel", "nc") {
@@ -97,25 +92,25 @@ func TestCleanupRemovesStaleRemoteSockets(t *testing.T) {
 
 func TestCleanupSparesOtherUsersSocket(t *testing.T) {
 	t.Parallel()
-	s := startSSHServer(t)
+	p := startPair(t)
 	path := "/tmp/other.sock"
-	s.leaveStaleSocket("other", path)
+	p.server.leaveStaleSocket("other", path)
 
-	tunnel := startTunnel(t, s.config(true, config.Forward{Direction: config.Remote, Listen: path, Target: unusedAddr(t)}))
+	tunnel := p.client.startTunnel(p.config(true, config.Forward{Direction: config.Remote, Listen: path, Target: refusedTarget}))
 	if code, _ := tunnel.waitExit(t, 20*time.Second); code != 1 {
 		t.Fatalf("exit code %d, want 1", code)
 	}
 	if !strings.Contains(tunnel.logs(), "remote listener cleanup failed") {
 		t.Fatal("missing cleanup failure log")
 	}
-	if out, err := s.exec("root", "stat", "-c", "%U %F", path); err != nil || out != "other socket\n" {
+	if out, err := p.server.exec("root", "stat", "-c", "%U %F", path); err != nil || out != "other socket\n" {
 		t.Fatalf("cleanup removed another user's socket: %q, %v", out, err)
 	}
 }
 
 // startSocketListener serves one connection on a container socket owned by
 // user, answering with line.
-func (s *sshServer) startSocketListener(user, path, line string) {
+func (s *node) startSocketListener(user, path, line string) {
 	s.t.Helper()
 	if _, err := s.exec(user, "sh", "-c", `printf '%s\n' "$2" | nc -N -lU "$1" >/dev/null 2>&1 &`, "sh", path, line); err != nil {
 		s.t.Fatal(err)
@@ -124,7 +119,7 @@ func (s *sshServer) startSocketListener(user, path, line string) {
 }
 
 // leaveStaleSocket leaves a socket file owned by user that nothing listens on.
-func (s *sshServer) leaveStaleSocket(user, path string) {
+func (s *node) leaveStaleSocket(user, path string) {
 	s.t.Helper()
 	if _, err := s.exec(user, "sh", "-c", `nc -lU "$1" </dev/null >/dev/null 2>&1 & while [ ! -S "$1" ]; do sleep 0.1; done; kill $!`, "sh", path); err != nil {
 		s.t.Fatal(err)
@@ -135,34 +130,10 @@ func (s *sshServer) leaveStaleSocket(user, path string) {
 	s.waitForSocket(path)
 }
 
-func (s *sshServer) waitForSocket(path string) {
+func (s *node) waitForSocket(path string) {
 	s.t.Helper()
 	eventually(s.t, 5*time.Second, "socket did not appear", func() bool {
 		_, err := s.exec("root", "test", "-S", path)
 		return err == nil
 	})
-}
-
-// socketDir returns a directory for local sockets. It lives in /tmp because
-// the run directory may be too long for a socket address on macOS.
-func socketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "gst-it-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
-func readLine(t *testing.T, network, addr string) string {
-	t.Helper()
-	conn, err := net.DialTimeout(network, addr, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, _ := bufio.NewReader(conn).ReadString('\n')
-	return strings.TrimSuffix(line, "\n")
 }

@@ -19,8 +19,15 @@ import (
 	"unicode"
 )
 
-// File is the configuration file: tunnels keyed by name.
+// Version is the current configuration format. Version 2 added Stopped:
+// before it, whether a tunnel ran was recorded by its own background
+// service.
+const Version = 2
+
+// File is the configuration file: tunnels keyed by name. Version is 0 in
+// files written before versions were recorded.
 type File struct {
+	Version int                `json:"version,omitempty"`
 	Tunnels map[string]*Tunnel `json:"tunnels"`
 }
 
@@ -37,6 +44,8 @@ type Tunnel struct {
 	KeepaliveCountMax        int64     `json:"keepalive_count_max,omitempty"`
 	CleanupListeners         bool      `json:"cleanup_listeners,omitempty"`
 	Forwards                 []Forward `json:"forwards"`
+	// Stopped tunnels stay configured, but the daemon does not run them.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
@@ -54,11 +63,11 @@ func DefaultPath() (string, error) {
 }
 
 // Load reads and validates the configuration file. A missing file is an
-// empty configuration.
+// empty configuration of the current version.
 func Load(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &File{Tunnels: map[string]*Tunnel{}}, nil
+		return &File{Version: Version, Tunnels: map[string]*Tunnel{}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -93,6 +102,9 @@ func parse(data []byte) (*File, error) {
 }
 
 func (f *File) validate() error {
+	if f.Version < 0 || f.Version > Version {
+		return fmt.Errorf("unsupported config version %d; upgrade gst", f.Version)
+	}
 	for name, t := range f.Tunnels {
 		if err := ValidateName(name); err != nil {
 			return err

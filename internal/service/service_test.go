@@ -1,9 +1,7 @@
 package service
 
 import (
-	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,63 +24,66 @@ func (f *fakeRunner) run(name string, args ...string) (string, error) {
 	return f.respond(call)
 }
 
-func (f *fakeRunner) stream(_ context.Context, w io.Writer, name string, args ...string) error {
-	f.run(name, args...)
-	return nil
-}
-
 func TestSystemd(t *testing.T) {
 	fake := &fakeRunner{respond: func(call string) (string, error) {
-		switch {
-		case strings.HasPrefix(call, "loginctl"):
+		if strings.HasPrefix(call, "loginctl") {
 			return "no\n", nil
-		case strings.Contains(call, "ActiveState"):
-			return "activating\n", nil
 		}
 		return "", nil
 	}}
 	var notes strings.Builder
-	s := &systemd{dir: t.TempDir(), run: fake.run, stream: fake.stream, notes: &notes}
+	s := &systemd{dir: t.TempDir(), run: fake.run, notes: &notes}
 
-	if status, _ := s.Status("myhost"); status != Stopped {
-		t.Fatalf("status %q before start", status)
-	}
-	if err := s.Stop("myhost"); err != nil || len(fake.calls) != 0 {
-		t.Fatalf("stopping a missing service ran %v: %v", fake.calls, err)
+	if err := s.Uninstall(); err != nil || len(fake.calls) != 0 {
+		t.Fatalf("uninstalling a missing service ran %v: %v", fake.calls, err)
 	}
 
-	if err := s.Start("myhost", []string{"/opt/my bin/gst", "--config", `/c/100%$HOME"x`, "run", "myhost"}); err != nil {
+	command := []string{"/opt/my bin/gst", "--config", `/c/100%$HOME"x`, "daemon"}
+	if err := s.Install(command, false); err != nil {
 		t.Fatal(err)
 	}
-	unit, err := os.ReadFile(filepath.Join(s.dir, "gst-myhost.service"))
+	unit, err := os.ReadFile(filepath.Join(s.dir, "gst.service"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(unit), `ExecStart="/opt/my bin/gst" "--config" "/c/100%%$$HOME\"x" "run" "myhost"`) {
+	if !strings.Contains(string(unit), `ExecStart="/opt/my bin/gst" "--config" "/c/100%%$$HOME\"x" "daemon"`) {
 		t.Fatalf("unexpected unit:\n%s", unit)
 	}
-	wantCalls := []string{"systemctl --user daemon-reload", "systemctl --user enable gst-myhost.service", "systemctl --user restart gst-myhost.service"}
+	wantCalls := []string{"systemctl --user daemon-reload", "systemctl --user enable gst.service", "systemctl --user restart gst.service"}
 	if !slices.Equal(fake.calls[:3], wantCalls) || !strings.Contains(notes.String(), "loginctl enable-linger") {
 		t.Fatalf("unexpected calls %v, notes %q", fake.calls, notes.String())
 	}
 
-	if status, _ := s.Status("myhost"); status != Down {
-		t.Fatalf("status %q, want down", status)
+	// An unchanged unit only makes sure the service runs.
+	fake.calls = nil
+	if err := s.Install(command, false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fake.calls[:2], []string{"systemctl --user enable gst.service", "systemctl --user start gst.service"}) {
+		t.Fatalf("unexpected calls %v", fake.calls)
 	}
 	fake.calls = nil
-	if err := s.Logs(context.Background(), "myhost", 20, true, io.Discard); err != nil || !strings.Contains(fake.calls[0], "--unit gst-myhost.service --lines 20") || !strings.HasSuffix(fake.calls[0], "--follow") {
-		t.Fatalf("unexpected logs call %v: %v", fake.calls, err)
+	if err := s.Install(command, true); err != nil || fake.calls[1] != "systemctl --user restart gst.service" {
+		t.Fatalf("forced restart ran %v: %v", fake.calls, err)
 	}
 
 	fake.calls = nil
-	if err := s.Stop("myhost"); err != nil {
+	if err := s.Uninstall(); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(fake.calls, []string{"systemctl --user disable --now gst-myhost.service", "systemctl --user daemon-reload"}) {
+	if !slices.Equal(fake.calls, []string{"systemctl --user disable --now gst.service", "systemctl --user daemon-reload"}) {
 		t.Fatalf("unexpected calls %v", fake.calls)
 	}
-	if status, _ := s.Status("myhost"); status != Stopped {
-		t.Fatalf("status %q after stop", status)
+
+	if err := os.WriteFile(filepath.Join(s.dir, "gst-myhost.service"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasLegacy("myhost") || s.HasLegacy("db") {
+		t.Fatal("legacy unit not detected")
+	}
+	fake.calls = nil
+	if err := s.RemoveLegacy("myhost"); err != nil || s.HasLegacy("myhost") || fake.calls[0] != "systemctl --user disable --now gst-myhost.service" {
+		t.Fatalf("legacy unit not removed: %v %v", fake.calls, err)
 	}
 }
 
@@ -90,77 +91,80 @@ func TestLaunchd(t *testing.T) {
 	home := t.TempDir()
 	l := newLaunchd(home, 501)
 	l.poll = 0
-	loaded := false
+	loaded := map[string]bool{}
 	printsLeft := 0 // loaded prints still answered after bootout
 	fake := &fakeRunner{respond: func(call string) (string, error) {
+		fields := strings.Fields(call)
+		target := fields[len(fields)-1]
 		switch {
 		case strings.HasPrefix(call, "launchctl print"):
-			if !loaded {
+			if !loaded[target] {
 				return "", errors.New("not loaded")
 			}
 			if printsLeft--; printsLeft == 0 {
-				loaded = false
+				delete(loaded, target)
 			}
-			return "gui/501/local.gst.myhost = {\n\tstate = running\n\tprogram = /bin/gst\n}\n", nil
+			return "state = running\n", nil
 		case strings.HasPrefix(call, "launchctl bootstrap"):
-			loaded = true
+			label := strings.TrimSuffix(filepath.Base(target), ".plist")
+			loaded["gui/501/"+label] = true
 			printsLeft = -1
 		case strings.HasPrefix(call, "launchctl bootout"):
 			printsLeft = 2
 		}
 		return "", nil
 	}}
-	l.run, l.stream = fake.run, fake.stream
+	l.run = fake.run
 
-	if err := l.Start("myhost", []string{"/bin/gst", "run", "a<b&c"}); err != nil {
+	if err := l.Install([]string{"/bin/gst", "--config", "a<b&c", "daemon"}, false); err != nil {
 		t.Fatal(err)
 	}
-	plist, err := os.ReadFile(filepath.Join(home, "Library/LaunchAgents/local.gst.myhost.plist"))
+	plistPath := filepath.Join(home, "Library/LaunchAgents/local.gst.plist")
+	plist, err := os.ReadFile(plistPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(home, "Library/Logs/gst/myhost.log")
-	if !strings.Contains(string(plist), "<string>a&lt;b&amp;c</string>\n\t\t<string>--log-file</string>\n\t\t<string>"+logPath+"</string>\n\t</array>") {
+	logPath := filepath.Join(home, "Library/Logs/gst-daemon.log")
+	if !strings.Contains(string(plist), "<string>a&lt;b&amp;c</string>\n\t\t<string>daemon</string>\n\t\t<string>--log-file</string>\n\t\t<string>"+logPath+"</string>\n\t</array>") {
 		t.Fatalf("unexpected plist:\n%s", plist)
 	}
-	want := []string{"launchctl enable gui/501/local.gst.myhost", "launchctl print gui/501/local.gst.myhost", "launchctl bootstrap gui/501 " + filepath.Join(home, "Library/LaunchAgents/local.gst.myhost.plist")}
+	want := []string{"launchctl enable gui/501/local.gst", "launchctl print gui/501/local.gst", "launchctl bootstrap gui/501 " + plistPath}
 	if !slices.Equal(fake.calls, want) {
 		t.Fatalf("unexpected calls %v", fake.calls)
 	}
-	if status, _ := l.Status("myhost"); status != Running {
-		t.Fatalf("status %q, want running", status)
+
+	// An unchanged, loaded agent stays as it is unless restart is set.
+	fake.calls = nil
+	if err := l.Install([]string{"/bin/gst", "--config", "a<b&c", "daemon"}, false); err != nil || len(fake.calls) != 1 {
+		t.Fatalf("unchanged install ran %v: %v", fake.calls, err)
+	}
+	fake.calls = nil
+	if err := l.Install([]string{"/bin/gst", "--config", "a<b&c", "daemon"}, true); err != nil || fake.calls[1] != "launchctl kickstart -k gui/501/local.gst" {
+		t.Fatalf("forced restart ran %v: %v", fake.calls, err)
 	}
 
-	// Starting a loaded agent reloads it and waits until it is gone.
+	// A changed command reloads the agent and waits until it is gone.
 	fake.calls = nil
-	if err := l.Start("myhost", []string{"/bin/gst", "run", "myhost"}); err != nil {
+	if err := l.Install([]string{"/usr/bin/gst", "daemon"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(fake.calls, "launchctl bootout gui/501/local.gst.myhost") || !strings.HasPrefix(fake.calls[len(fake.calls)-1], "launchctl bootstrap") {
+	if !slices.Contains(fake.calls, "launchctl bootout gui/501/local.gst") || !strings.HasPrefix(fake.calls[len(fake.calls)-1], "launchctl bootstrap") {
 		t.Fatalf("unexpected calls %v", fake.calls)
 	}
 
 	printsLeft = 1
-	if err := l.Stop("myhost"); err != nil {
-		t.Fatal(err)
-	}
-	if status, _ := l.Status("myhost"); status != Stopped {
-		t.Fatalf("status %q after stop", status)
-	}
-	fake.calls = nil
-	if err := l.Logs(context.Background(), "myhost", 5, false, io.Discard); err != nil || len(fake.calls) != 0 {
-		t.Fatalf("logs without a log file ran %v: %v", fake.calls, err)
+	if err := l.Uninstall(); err != nil || fileExists(plistPath) {
+		t.Fatalf("agent remains after uninstall: %v", err)
 	}
 
-	for _, path := range []string{logPath, logPath + ".1"} {
-		if err := os.WriteFile(path, nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	legacy := filepath.Join(home, "Library/LaunchAgents/local.gst.myhost.plist")
+	if err := os.WriteFile(legacy, nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if err := l.RemoveLogs("myhost"); err != nil || fileExists(logPath) || fileExists(logPath+".1") {
-		t.Fatalf("logs remain after RemoveLogs: %v", err)
+	if !l.HasLegacy("myhost") || l.HasLegacy("db") {
+		t.Fatal("legacy agent not detected")
 	}
-	if err := l.RemoveLogs("myhost"); err != nil {
-		t.Fatalf("removing missing logs: %v", err)
+	if err := l.RemoveLegacy("myhost"); err != nil || l.HasLegacy("myhost") {
+		t.Fatalf("legacy agent not removed: %v", err)
 	}
 }

@@ -1,4 +1,5 @@
-package cli
+// Package logfile writes logs to files that rotate at MaxSize.
+package logfile
 
 import (
 	"os"
@@ -6,26 +7,29 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxLogSize = 1 << 20
+// MaxSize is the size at which a log file rotates.
+const MaxSize = 1 << 20
 
-// logFile is a background tunnel's log. Before a write grows the file past
-// maxLogSize, it moves the file to path.1, replacing the older one, and
-// starts a new file, so a tunnel keeps at most two. The descriptors in
+// File is a log file. Before a write grows the file past MaxSize, it moves
+// the file to path.1, replacing the older one, and starts a new file, so
+// a log keeps at most two files. The descriptors in
 // redirect follow the current file, so that what the Go runtime writes to
 // standard error, such as a panic, lands there too.
-type logFile struct {
+type File struct {
 	path     string
 	redirect []int
 	file     *os.File
 	size     int64
 }
 
-func openLog(path string, redirect []int) (*logFile, error) {
-	l := &logFile{path: path, redirect: redirect}
+// Open opens or creates the log file at path, redirecting the file
+// descriptors in redirect to it.
+func Open(path string, redirect []int) (*File, error) {
+	l := &File{path: path, redirect: redirect}
 	return l, l.open()
 }
 
-func (l *logFile) open() error {
+func (l *File) open() error {
 	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
@@ -49,8 +53,8 @@ func (l *logFile) open() error {
 }
 
 // Write is called by one log.Logger, which serializes calls.
-func (l *logFile) Write(p []byte) (int, error) {
-	if l.size > 0 && l.size+int64(len(p)) > maxLogSize {
+func (l *File) Write(p []byte) (int, error) {
+	if l.size > 0 && l.size+int64(len(p)) > MaxSize {
 		// On failure, keep writing to the current file rather than lose lines.
 		if err := os.Rename(l.path, l.path+".1"); err == nil {
 			l.open()
@@ -61,4 +65,4 @@ func (l *logFile) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (l *logFile) Close() error { return l.file.Close() }
+func (l *File) Close() error { return l.file.Close() }

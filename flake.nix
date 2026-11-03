@@ -21,7 +21,7 @@
           default = self.packages.${system}.gst;
           gst = (pkgs.buildGo126Module {
             pname = "gst";
-            version = "0.1.0";
+            version = "0.2.0";
             src = pkgs.lib.cleanSource ./.;
             vendorHash = "sha256-nBF+ogGgkPh3Xu4nIGLh1WOSzwXmo6zP/0nC9ySsmsU=";
             subPackages = [ "cmd/gst" ];

@@ -14,9 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // Exit codes.
@@ -38,7 +38,7 @@ func Execute(args []string) int {
 	a := &app{
 		stdout:     os.Stdout,
 		stderr:     os.Stderr,
-		newManager: func() (service.Manager, error) { return service.New(os.Stderr) },
+		newBackend: func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
 		resolve:    sshconfig.Resolve,
 		executable: os.Executable,
 	}
@@ -47,12 +47,13 @@ func Execute(args []string) int {
 
 type app struct {
 	stdout, stderr io.Writer
-	newManager     func() (service.Manager, error)
+	newBackend     func() (backend, error)
 	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
 	executable     func() (string, error)
 
 	configFlag string
-	manager    service.Manager
+	back       backend
+	states     map[string]wire.TunnelState // what the daemon reported, fetched once
 }
 
 func (a *app) execute(ctx context.Context, args []string) int {
@@ -177,27 +178,44 @@ func sortedNames(f *config.File) []string {
 	return names
 }
 
-func (a *app) services() (service.Manager, error) {
-	if a.manager == nil {
-		m, err := a.newManager()
+func (a *app) backend() (backend, error) {
+	if a.back == nil {
+		b, err := a.newBackend()
 		if err != nil {
 			return nil, err
 		}
-		a.manager = m
+		a.back = b
 	}
-	return a.manager, nil
+	return a.back, nil
 }
 
-func (a *app) status(name string) service.Status {
-	m, err := a.services()
-	if err != nil {
-		return "unknown"
+// Tunnel statuses, as gst list and show print them.
+const (
+	statusStopped    = "stopped"
+	statusConnecting = wire.StateConnecting
+	statusRunning    = wire.StateRunning
+	statusDown       = wire.StateDown
+)
+
+// status returns the status of tunnel name, configured as t, and its last
+// error. A started tunnel that the daemon does not run is down.
+func (a *app) status(ctx context.Context, name string, t *config.Tunnel) (string, string) {
+	if t.Stopped {
+		return statusStopped, ""
 	}
-	status, err := m.Status(name)
-	if err != nil {
-		return "unknown"
+	if a.states == nil {
+		a.states = map[string]wire.TunnelState{}
+		if b, err := a.backend(); err == nil {
+			if states, ok := b.States(ctx); ok {
+				a.states = states
+			}
+		}
 	}
-	return status
+	s, ok := a.states[name]
+	if !ok {
+		return statusDown, ""
+	}
+	return s.State, s.Error
 }
 
 // options resolves t's destination with ssh and applies t's overrides.
@@ -254,8 +272,8 @@ func (a *app) preflight(ctx context.Context, t *config.Tunnel) error {
 	return nil
 }
 
-// serviceCommand is the command line the background service runs.
-func (a *app) serviceCommand(name string) ([]string, error) {
+// daemonCommand is the command line the daemon's service runs.
+func (a *app) daemonCommand() ([]string, error) {
 	exe, err := a.executable()
 	if err != nil {
 		return nil, err
@@ -273,31 +291,60 @@ func (a *app) serviceCommand(name string) ([]string, error) {
 	if def, err := config.DefaultPath(); err != nil || path != def {
 		command = append(command, "--config", path)
 	}
-	return append(command, "run", name), nil
+	return append(command, "daemon"), nil
 }
 
-func (a *app) startService(name string) error {
-	command, err := a.serviceCommand(name)
+// sync makes the daemon run the started tunnels of the configuration.
+func (a *app) sync(ctx context.Context) error {
+	f, err := a.load()
 	if err != nil {
 		return err
 	}
-	m, err := a.services()
+	anyStarted := false
+	for _, t := range f.Tunnels {
+		anyStarted = anyStarted || !t.Stopped
+	}
+	var command []string
+	if anyStarted {
+		if command, err = a.daemonCommand(); err != nil {
+			return err
+		}
+	}
+	b, err := a.backend()
 	if err != nil {
 		return err
 	}
-	return m.Start(name, command)
+	return b.Sync(ctx, command, anyStarted)
+}
+
+// restart restarts started tunnels with their current configuration.
+func (a *app) restart(ctx context.Context, names []string) error {
+	if err := a.sync(ctx); err != nil {
+		return err
+	}
+	b, err := a.backend()
+	if err != nil {
+		return err
+	}
+	return b.Restart(ctx, names)
 }
 
 // applyChange restarts a started tunnel so that a configuration change
 // takes effect, and tells the user what happened.
-func (a *app) applyChange(name string, noRestart bool) error {
-	switch {
-	case a.status(name) == service.Stopped:
+func (a *app) applyChange(ctx context.Context, name string, noRestart bool) error {
+	f, err := a.load()
+	if err != nil {
+		return err
+	}
+	switch t := f.Tunnels[name]; {
+	case t == nil:
+		return nil
+	case t.Stopped:
 		fmt.Fprintf(a.stdout, "Tunnel %s is stopped; the change applies when you start it.\n", name)
 	case noRestart:
 		fmt.Fprintf(a.stdout, "Restart the tunnel to apply the change: gst restart %s\n", name)
 	default:
-		if err := a.startService(name); err != nil {
+		if err := a.restart(ctx, []string{name}); err != nil {
 			return withHint(fmt.Errorf("restart tunnel %s: %w", name, err), "retry with `gst restart "+name+"`")
 		}
 		fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)

@@ -3,7 +3,6 @@ package tunnel
 import (
 	"context"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -24,7 +23,7 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 		timer.Stop()
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("SOCKS request failed for forward %d", r.id)
+				t.opts.Logger.Printf("SOCKS request failed for forward %d", r.id)
 			}
 			return
 		}
@@ -38,7 +37,7 @@ func (t *tunnel) forward(ctx context.Context, r route, incoming net.Conn) {
 	}
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("target connection failed for forward %d", r.id)
+			t.opts.Logger.Printf("target connection failed for forward %d", r.id)
 		}
 		return
 	}

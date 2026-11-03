@@ -21,7 +21,7 @@ import (
 func runTests(m *testing.M) (code int) {
 	if testDir = os.Getenv("GST_INTEGRATION_CHILD"); testDir != "" {
 		containerRuntime = os.Getenv("CONTAINER_RUNTIME")
-		tunnelBinary = filepath.Join(testDir, "gst")
+		nodeBinary, helperBinary = binaries(testDir)
 		if err := requireImage(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
