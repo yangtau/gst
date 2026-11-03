@@ -108,9 +108,6 @@ use "*" or an empty bind_address for all interfaces.`,
 					return &usageError{err}
 				}
 			}
-			if err := a.preflight(cmd.Context(), t); err != nil {
-				return err
-			}
 			if _, err := a.daemonCommand(); err != nil {
 				return err
 			}
@@ -119,8 +116,8 @@ use "*" or an empty bind_address for all interfaces.`,
 					return withHint(fmt.Errorf("tunnel %s already exists", name),
 						fmt.Sprintf("change it with `gst set %s` or `gst forward add %s`, or remove it with `gst remove %s`", name, name, name))
 				}
-				if t.Via == config.ViaMesh && f.Mesh == nil {
-					return withHint(errors.New("a tunnel through the mesh needs the mesh"), "enable it with `gst mesh enable`")
+				if err := a.preflight(cmd.Context(), f, t); err != nil {
+					return err
 				}
 				f.Tunnels[name] = t
 				return nil
@@ -185,7 +182,7 @@ forwards.`,
 					unchanged = true
 					return nil
 				}
-				return a.preflight(cmd.Context(), t)
+				return a.preflight(cmd.Context(), f, t)
 			})
 			if err != nil {
 				return err
@@ -275,7 +272,7 @@ func (a *app) startTunnels(ctx context.Context, out io.Writer, f *config.File, n
 			}
 			continue
 		}
-		if err := a.preflight(ctx, t); err != nil {
+		if err := a.preflight(ctx, f, t); err != nil {
 			errs = append(errs, fmt.Errorf("start %s: %w", name, err))
 			continue
 		}
@@ -328,7 +325,7 @@ func (a *app) restartTunnels(ctx context.Context, out io.Writer, f *config.File,
 			}
 			continue
 		}
-		if err := a.preflight(ctx, t); err != nil {
+		if err := a.preflight(ctx, f, t); err != nil {
 			errs = append(errs, fmt.Errorf("restart %s: %w", name, err))
 			continue
 		}

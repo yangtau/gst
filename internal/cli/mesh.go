@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -320,20 +319,17 @@ gst node has a tunnel with --mesh to it.`,
 
 // parseTarget reads a port, host:port, or socket path of gst connect.
 func parseTarget(s string) (wire.Target, error) {
-	if strings.HasPrefix(s, "/") {
-		return wire.Target{Network: "unix", Address: s}, nil
+	t := wire.Target{Network: "tcp", Address: s}
+	switch {
+	case config.IsSocket(s):
+		t.Network = "unix"
+	case !strings.Contains(s, ":"):
+		t.Address = "localhost:" + s
 	}
-	host, port := "localhost", s
-	if strings.Contains(s, ":") {
-		var err error
-		if host, port, err = net.SplitHostPort(s); err != nil || host == "" {
-			return wire.Target{}, usage("invalid target %q: use a port, host:port, or an absolute socket path", s)
-		}
+	if !config.ValidTarget(t.Network, t.Address) {
+		return wire.Target{}, usage("invalid target %q: use a port, host:port, or an absolute socket path", s)
 	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return wire.Target{}, usage("invalid port in %q", s)
-	}
-	return wire.Target{Network: "tcp", Address: net.JoinHostPort(host, port)}, nil
+	return t, nil
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }
@@ -342,11 +338,12 @@ func shortID(id string) string { return id[:min(8, len(id))] }
 // daemon on this machine. A peer's daemon runs it over SSH.
 func (a *app) peerBridgeCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:    "peer-bridge",
-		Short:  "Connect standard input and output to the gst daemon",
-		Long:   "Connect standard input and output to the gst daemon on this machine, for a peer's gst, which runs this command over SSH.",
-		Hidden: true,
-		Args:   a.args(0, 0),
+		Use:         "peer-bridge",
+		Annotations: standalone,
+		Short:       "Connect standard input and output to the gst daemon",
+		Long:        "Connect standard input and output to the gst daemon on this machine, for a peer's gst, which runs this command over SSH.",
+		Hidden:      true,
+		Args:        a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			paths, err := service.DefaultPaths()
 			if err != nil {

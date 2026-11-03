@@ -39,10 +39,9 @@ const FeatureYamux = "yamux"
 
 // NodeInfo identifies a gst node in the mesh.
 type NodeInfo struct {
-	ID       string   `json:"id"`   // random and stable, set by gst mesh enable
-	Name     string   `json:"name"` // chosen by the node's user; not unique
-	Software string   `json:"software"`
-	Features []string `json:"features,omitempty"`
+	ID       string `json:"id"`   // random and stable, set by gst mesh enable
+	Name     string `json:"name"` // chosen by the node's user; not unique
+	Software string `json:"software"`
 	// HostKeys are the SHA-256 fingerprints of the node's sshd host keys,
 	// which tell that a tunnel's server is this node.
 	HostKeys []string `json:"host_keys,omitempty"`

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -21,12 +20,12 @@ import (
 // backend runs tunnels in the background. The real one controls the gst
 // daemon; tests use a fake.
 type backend interface {
-	// Sync makes the background match the configuration file. When the
-	// daemon is needed, for started tunnels or the mesh, it installs the
-	// daemon's service to run command, restarts a daemon that runs another
-	// gst, and tells the daemon to reload the configuration; otherwise it
-	// removes the service.
-	Sync(ctx context.Context, command []string, needed bool) error
+	// Sync makes the background match the configuration file. With a
+	// command, as when started tunnels or the mesh need the daemon, it
+	// installs the daemon's service to run command, restarts a daemon that
+	// runs another gst, and tells the daemon to reload the configuration;
+	// with none, it removes the service.
+	Sync(ctx context.Context, command []string) error
 	// Restart restarts started tunnels in a daemon that Sync brought up.
 	Restart(ctx context.Context, names []string) error
 	// States returns the states of the tunnels that the daemon runs, and
@@ -76,16 +75,8 @@ func newDaemonBackend(notes io.Writer, executable func() (string, error)) (backe
 	}}, nil
 }
 
-// daemonLogHint says where the daemon logs its own problems.
-func daemonLogHint() string {
-	if runtime.GOOS == "darwin" {
-		return "see the daemon log in ~/Library/Logs/gst-daemon.log"
-	}
-	return "see the daemon log with `journalctl --user -u gst`"
-}
-
-func (b *daemonBackend) Sync(ctx context.Context, command []string, needed bool) error {
-	if !needed {
+func (b *daemonBackend) Sync(ctx context.Context, command []string) error {
+	if command == nil {
 		return b.manager.Uninstall()
 	}
 	build, err := b.build()
@@ -111,7 +102,7 @@ func (b *daemonBackend) Sync(ctx context.Context, command []string, needed bool)
 	}
 	defer c.Close()
 	if _, err := c.Reload(ctx); err != nil {
-		return withHint(fmt.Errorf("the gst daemon could not reload: %w", err), daemonLogHint())
+		return withHint(fmt.Errorf("the gst daemon could not reload: %w", err), b.manager.LogHint())
 	}
 	return nil
 }
@@ -125,7 +116,7 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 	for {
 		c, err := daemon.DialWait(ctx, b.paths.Socket, software, build)
 		if err != nil {
-			return nil, withHint(fmt.Errorf("the gst daemon does not answer: %w", err), daemonLogHint())
+			return nil, withHint(fmt.Errorf("the gst daemon does not answer: %w", err), b.manager.LogHint())
 		}
 		if build == "" || c.Daemon.Build == build {
 			return c, nil
@@ -133,7 +124,7 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 		c.Close()
 		select {
 		case <-ctx.Done():
-			return nil, withHint(errors.New("the gst daemon still runs another gst after a restart"), daemonLogHint())
+			return nil, withHint(errors.New("the gst daemon still runs another gst after a restart"), b.manager.LogHint())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -59,10 +60,13 @@ func (t *Tunnel) Remove() {
 	t.n.Update()
 }
 
-// SetState reports the tunnel's state, as in wire.TunnelState.
+// SetState reports the tunnel's state, as in wire.TunnelState. Only
+// whether it runs matters for routes, so only that change is published at
+// once; a tunnel that keeps failing would otherwise flood the mesh with
+// every retry.
 func (t *Tunnel) SetState(state string) {
 	t.mu.Lock()
-	changed := t.state != state
+	changed := (t.state == wire.StateRunning) != (state == wire.StateRunning)
 	t.state = state
 	t.mu.Unlock()
 	if changed {
@@ -178,7 +182,7 @@ func startBridge(client *ssh.Client, remoteGst string) (io.ReadWriteCloser, erro
 	}
 	conn := &bridgeConn{Reader: stdout, Writer: stdin, session: session, stderr: limitedBuffer{max: 512}}
 	session.Stderr = &conn.stderr
-	if err := session.Start(shellQuote(remoteGst) + " peer-bridge"); err != nil {
+	if err := session.Start(tunnel.ShellQuote(remoteGst) + " peer-bridge"); err != nil {
 		session.Close()
 		return nil, fmt.Errorf("start the remote gst: %w", err)
 	}
@@ -222,8 +226,4 @@ func (b *limitedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return strings.TrimSpace(b.buf.String())
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

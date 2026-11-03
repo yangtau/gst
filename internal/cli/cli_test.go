@@ -55,10 +55,10 @@ func (c *fakeConn) Write(p []byte) (int, error) { return c.sent.Write(p) }
 func (c *fakeConn) CloseWrite() error           { close(c.done); return nil }
 func (c *fakeConn) Close() error                { return nil }
 
-func (f *fakeBackend) Sync(_ context.Context, command []string, needed bool) error {
+func (f *fakeBackend) Sync(_ context.Context, command []string) error {
 	f.calls = append(f.calls, "sync")
-	f.installed, f.command, f.running = needed, command, map[string]bool{}
-	if !needed {
+	f.installed, f.command, f.running = command != nil, command, map[string]bool{}
+	if command == nil {
 		return nil
 	}
 	cfg, err := config.Load(f.config)

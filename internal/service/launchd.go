@@ -78,6 +78,8 @@ func (l *launchd) Install(command []string, restart bool) error {
 
 func (l *launchd) Uninstall() error { return l.remove(daemonLabel) }
 
+func (l *launchd) LogHint() string { return "see the daemon log in " + l.logPath }
+
 func (l *launchd) HasLegacy(name string) bool { return fileExists(l.plistPath(legacyLabel(name))) }
 
 func (l *launchd) RemoveLegacy(name string) error { return l.remove(legacyLabel(name)) }

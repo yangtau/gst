@@ -90,8 +90,8 @@ func TestRelayThroughPeer(t *testing.T) {
 	}
 	for _, tt := range []struct{ node, network, address, want string }{
 		{"nowhere", "tcp", addr, "no machine"},
-		{"devcn", "udp", addr, "unsupported target network"},
-		{"devcn", "tcp", "no-port", "invalid target address"},
+		{"devcn", "udp", addr, "invalid target udp"},
+		{"devcn", "tcp", "no-port", "invalid target tcp"},
 	} {
 		if _, err := mini.Dial(ctx, tt.node, tt.network, tt.address); err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("dial %s %s %s: %v, want %q", tt.node, tt.network, tt.address, err, tt.want)

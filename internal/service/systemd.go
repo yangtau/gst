@@ -71,6 +71,10 @@ func (s *systemd) noteLinger() {
 
 func (s *systemd) Uninstall() error { return s.remove(unitName) }
 
+func (s *systemd) LogHint() string {
+	return "see the daemon log with `journalctl --user -u " + strings.TrimSuffix(unitName, ".service") + "`"
+}
+
 func (s *systemd) HasLegacy(name string) bool {
 	return fileExists(filepath.Join(s.dir, legacyUnit(name)))
 }

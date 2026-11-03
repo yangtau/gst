@@ -62,13 +62,12 @@ func (n *Node) publish(force bool) {
 	}
 	edges := n.edges()
 	old, ok := n.records[n.info.ID]
-	if ok && !force && !n.republish && reflect.DeepEqual(old.Node, n.info) && reflect.DeepEqual(old.Edges, edges) {
+	if ok && !force && reflect.DeepEqual(old.Node, n.info) && reflect.DeepEqual(old.Edges, edges) {
 		return
 	}
 	now := time.Now()
 	seq := max(old.Seq+1, n.seqFloor+1, uint64(now.UnixNano()))
 	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Edges: edges}
-	n.republish = false
 	n.notify()
 }
 
@@ -144,7 +143,7 @@ func (n *Node) merge(recs []wire.Record) {
 			// also pass this node's current record back, which is no news.
 			if r.Seq > n.records[n.info.ID].Seq {
 				n.seqFloor = max(n.seqFloor, r.Seq)
-				n.republish = true
+				delete(n.records, n.info.ID) // so that publish replaces it
 				n.Update()
 			}
 			continue
@@ -166,18 +165,16 @@ func (n *Node) merge(recs []wire.Record) {
 // When the exchange fails otherwise, sync closes the session, so that the
 // link starts over rather than staying up without updates.
 func (n *Node) sync(ctx context.Context, session *yamux.Session) {
-	stream, err := session.OpenStream()
-	if err != nil {
-		return
-	}
-	defer stream.Close()
-	defer context.AfterFunc(ctx, func() { stream.Close() })()
 	var recs wire.Records
-	err = wire.Call(stream, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
+	conn, err := call(ctx, session, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
+	if err == nil {
+		defer conn.Close()
+		defer context.AfterFunc(ctx, func() { conn.Close() })()
+	}
 	for err == nil {
 		n.merge(recs.Records)
 		recs = wire.Records{}
-		err = wire.ReadFrame(stream, &recs)
+		err = wire.ReadFrame(conn, &recs)
 	}
 	var callErr *wire.Error
 	if ctx.Err() == nil && !(errors.As(err, &callErr) && callErr.Code == wire.CodeUnsupportedMethod) {
@@ -199,8 +196,8 @@ func (n *Node) serveSync(ctx context.Context, conn net.Conn, p wire.SyncParams, 
 	if err := accept(wire.Records{Records: batches[0]}); err != nil {
 		return err
 	}
-	for {
-		for _, b := range batches[1:] {
+	for pending := batches[1:]; ; {
+		for _, b := range pending {
 			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := wire.WriteFrame(conn, wire.Records{Records: b}); err != nil {
 				return err
@@ -212,7 +209,10 @@ func (n *Node) serveSync(ctx context.Context, conn net.Conn, p wire.SyncParams, 
 			return nil
 		}
 		recs, changed = n.newer(sent)
-		batches = append([][]wire.Record{nil}, batch(recs)...)
+		pending = nil
+		if len(recs) > 0 {
+			pending = batch(recs)
+		}
 	}
 }
 

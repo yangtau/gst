@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -40,8 +41,6 @@ type Config struct {
 	RetryDelay time.Duration
 	// Log receives the daemon's own log; the standard logger when nil.
 	Log *log.Logger
-	// MeshRetry is the wait before a failed peer link retries; 10 s when zero.
-	MeshRetry time.Duration
 	// HostKeyFiles is the glob of this machine's sshd host public keys,
 	// which identify it in the mesh; /etc/ssh/ssh_host_*_key.pub when empty.
 	HostKeyFiles string
@@ -71,9 +70,6 @@ func New(cfg Config) *Daemon {
 		cfg.Log = log.Default()
 	}
 	m := mesh.New(cfg.Software, cfg.Log)
-	if cfg.MeshRetry > 0 {
-		m.SetRetry(cfg.MeshRetry)
-	}
 	if cfg.HostKeyFiles != "" {
 		m.SetHostKeyFiles(cfg.HostKeyFiles)
 	}
@@ -213,15 +209,7 @@ func (d *Daemon) Status() wire.Status {
 		states = append(states, s.state())
 	}
 	d.mu.Unlock()
-	slices.SortFunc(states, func(a, b wire.TunnelState) int {
-		if a.Name < b.Name {
-			return -1
-		}
-		if a.Name > b.Name {
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(states, func(a, b wire.TunnelState) int { return cmp.Compare(a.Name, b.Name) })
 	return wire.Status{Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath, Tunnels: states}
 }
 
@@ -273,14 +261,18 @@ func (d *Daemon) Restart(ctx context.Context, names []string) error {
 			return wire.Errorf(wire.CodeNotFound, "tunnel %s is not started", name)
 		}
 	}
+	names = slices.Compact(slices.Sorted(slices.Values(names)))
+	var stop []*supervisor
+	d.mu.Lock()
 	for _, name := range names {
-		d.mu.Lock()
-		old := d.tunnels[name]
-		delete(d.tunnels, name)
-		d.mu.Unlock()
-		if old != nil {
-			old.stop()
+		if old := d.tunnels[name]; old != nil {
+			stop = append(stop, old)
+			delete(d.tunnels, name)
 		}
+	}
+	d.mu.Unlock()
+	stopAll(stop)
+	for _, name := range names {
 		if err := d.start(name, f.Tunnels[name]); err != nil {
 			return err
 		}

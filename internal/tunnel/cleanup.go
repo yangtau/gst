@@ -27,7 +27,7 @@ func cleanupListeners(client *ssh.Client, forwards []config.Forward, timeout tim
 		switch {
 		case fwd.Direction != config.Remote:
 		case config.IsSocket(fwd.Listen):
-			args = append(args, shellQuote(fwd.Listen))
+			args = append(args, ShellQuote(fwd.Listen))
 		default:
 			args = append(args, strconv.Itoa(int(fwd.ListenAddr().Port())))
 		}
@@ -57,7 +57,8 @@ func cleanupListeners(client *ssh.Client, forwards []config.Forward, timeout tim
 	return nil
 }
 
-// shellQuote quotes s for the login shell that runs the cleanup command.
-func shellQuote(s string) string {
+// ShellQuote quotes s as one word for a POSIX shell, such as the login
+// shell that runs a command over SSH.
+func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

@@ -53,20 +53,27 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Logger == nil {
 		opts.Logger = log.Default()
 	}
-	if opts.Dial != nil {
-		ctx, cancel := context.WithCancel(ctx)
-		t := &tunnel{opts: opts, failure: make(chan error, 1), listenersClosed: make(chan struct{})}
-		defer t.shutdown(cancel)
-		return t.serve(ctx)
-	}
-	clientConfig, err := newClientConfig(opts)
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	t := &tunnel{opts: opts, dial: opts.Dial, failure: make(chan error, 1), listenersClosed: make(chan struct{})}
+	if opts.Dial == nil {
+		client, hostKey, err := connect(ctx, opts)
+		if err != nil {
+			return err
+		}
+		t.client, t.hostKey, t.dial = client, hostKey, client.DialContext
+	}
+	defer t.shutdown(cancel)
+	return t.serve(ctx)
+}
 
+// connect opens the SSH connection and returns it with the server's
+// verified host key.
+func connect(ctx context.Context, opts Options) (*ssh.Client, ssh.PublicKey, error) {
+	clientConfig, err := newClientConfig(opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	var hostKey ssh.PublicKey
 	verify := clientConfig.HostKeyCallback
 	clientConfig.HostKeyCallback = func(host string, remote net.Addr, key ssh.PublicKey) error {
@@ -78,18 +85,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	client, err := dial(ctx, opts.Server, clientConfig, opts.ConnectTimeout)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-
-	t := &tunnel{
-		opts:            opts,
-		client:          client,
-		hostKey:         hostKey,
-		failure:         make(chan error, 1),
-		listenersClosed: make(chan struct{}),
-	}
-	defer t.shutdown(cancel)
-	return t.serve(ctx)
+	return client, hostKey, nil
 }
 
 // tunnel holds the state of one SSH connection and its listeners.
@@ -97,6 +95,7 @@ type tunnel struct {
 	opts      Options
 	client    *ssh.Client // nil with Options.Dial
 	hostKey   ssh.PublicKey
+	dial      func(ctx context.Context, network, address string) (net.Conn, error) // to targets of local and dynamic forwards
 	listeners []net.Listener
 	workers   sync.WaitGroup
 
@@ -107,10 +106,10 @@ type tunnel struct {
 func (t *tunnel) serve(ctx context.Context) error {
 	if t.client != nil {
 		t.watch(ctx)
-	}
-	if t.opts.CleanupListeners && t.client != nil {
-		if err := cleanupListeners(t.client, t.opts.Forwards, t.opts.ConnectTimeout); err != nil {
-			return err
+		if t.opts.CleanupListeners {
+			if err := cleanupListeners(t.client, t.opts.Forwards, t.opts.ConnectTimeout); err != nil {
+				return err
+			}
 		}
 	}
 	for i, fwd := range t.opts.Forwards {
@@ -174,13 +173,9 @@ func (t *tunnel) listen(ctx context.Context, id int, fwd config.Forward) error {
 	default:
 		r.listener, err = net.ListenTCP("tcp", addr)
 	}
-	switch {
-	case fwd.Direction == config.Remote:
+	r.dial = t.dial
+	if fwd.Direction == config.Remote {
 		r.dial = new(net.Dialer).DialContext
-	case t.client == nil:
-		r.dial = t.opts.Dial
-	default:
-		r.dial = t.client.DialContext
 	}
 	if err != nil {
 		return fmt.Errorf("listener start failed for forward %d", id)

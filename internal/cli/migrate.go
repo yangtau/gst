@@ -64,13 +64,20 @@ func (a *app) migrate(cmd *cobra.Command) error {
 	return nil
 }
 
+// standalone marks a command that does not work with the configured
+// tunnels, such as version and the commands that the background runs, so
+// that it skips migration.
+var standalone = map[string]string{"gst.standalone": "true"}
+
 // needsConfig reports whether cmd works with the configured tunnels, as
-// opposed to help, completion, version, and the commands that the
-// background runs.
+// opposed to cobra's help and completion and the standalone commands.
 func needsConfig(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
 		switch c.Name() {
-		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd, "version", "run", "daemon", "peer-bridge":
+		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+			return false
+		}
+		if c.Annotations["gst.standalone"] != "" {
 			return false
 		}
 	}

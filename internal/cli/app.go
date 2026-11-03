@@ -230,10 +230,16 @@ func statusOf(name string, t *config.Tunnel, states map[string]wire.TunnelState)
 }
 
 // options resolves t's destination with ssh and applies t's overrides.
+// options resolves t into the options to run it with. A tunnel through the
+// mesh has no SSH connection of its own, so only its forwards and connect
+// timeout apply; whoever runs it supplies Options.Dial.
 func (a *app) options(ctx context.Context, t *config.Tunnel) (tunnel.Options, error) {
-	host, err := a.resolve(ctx, t.Destination)
-	if err != nil {
-		return tunnel.Options{}, err
+	var host sshconfig.Host
+	if t.Via != config.ViaMesh {
+		var err error
+		if host, err = a.resolve(ctx, t.Destination); err != nil {
+			return tunnel.Options{}, err
+		}
 	}
 	opts := tunnel.Options{
 		Server:           host.Address(),
@@ -268,14 +274,17 @@ func firstPositive[T time.Duration | int64](values ...T) T {
 	return 0
 }
 
-// preflight checks offline that t can start: its destination resolves, an
-// identity is usable, and known_hosts records the server. A tunnel through
-// the mesh only needs valid settings.
-func (a *app) preflight(ctx context.Context, t *config.Tunnel) error {
+// preflight checks offline that t, a tunnel of f, can start: its
+// destination resolves, an identity is usable, and known_hosts records the
+// server. A tunnel through the mesh needs valid settings and the mesh.
+func (a *app) preflight(ctx context.Context, f *config.File, t *config.Tunnel) error {
 	if t.Via == config.ViaMesh {
 		// No SSH connection to check; the mesh routes each connection.
 		if err := t.Validate(); err != nil {
 			return &usageError{err}
+		}
+		if f.Mesh == nil {
+			return withHint(errors.New("a tunnel through the mesh needs the mesh"), "enable it with `gst mesh enable`")
 		}
 		return nil
 	}
@@ -328,14 +337,14 @@ func (a *app) sync(ctx context.Context) error {
 		for _, t := range f.Tunnels {
 			needed = needed || !t.Stopped
 		}
-		var command []string
-		if needed {
-			var err error
-			if command, err = a.daemonCommand(); err != nil {
-				return err
-			}
+		if !needed {
+			return b.Sync(ctx, nil)
 		}
-		return b.Sync(ctx, command, needed)
+		command, err := a.daemonCommand()
+		if err != nil {
+			return err
+		}
+		return b.Sync(ctx, command)
 	})
 }
 

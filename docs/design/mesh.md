@@ -136,7 +136,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 
 | 方法 | 参数 | 结果 / 后续 |
 | --- | --- | --- |
-| `node.info` | 无 | 节点 id、名字、software、features、host key 指纹（已实现） |
+| `node.info` | 无 | 节点 id、名字、software、host key 指纹（已实现） |
 | `topology.sync` | `{"known": {节点 id: seq}}`：调用方已有记录的 seq | `{"records": [...]}`：被调方比调用方新的记录；之后该流持续推送 `{"records": [...]}` 帧，每次变化一帧（已实现） |
 | `relay.open` | `{"path": [节点...], "target": {"network": "tcp", "address": "127.0.0.1:5432"}}` | 成功后该流变为到目标的原始字节流；路径上每一跳把剩余路径转发给下一跳（已实现） |
 

@@ -35,6 +35,18 @@ func parseListenAddress(address string) (netip.AddrPort, bool) {
 	return netip.AddrPortFrom(addr, port), true
 }
 
+// ValidTarget reports whether address is a target that gst can dial on
+// network: host and port for "tcp" or a socket path for "unix".
+func ValidTarget(network, address string) bool {
+	switch network {
+	case "tcp":
+		return isDialAddress(address)
+	case "unix":
+		return isSocketPath(address)
+	}
+	return false
+}
+
 // isDialAddress reports whether address is an IP literal or DNS hostname
 // followed by a port.
 func isDialAddress(address string) bool {

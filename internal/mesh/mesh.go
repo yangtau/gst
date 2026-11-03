@@ -6,13 +6,13 @@
 package mesh
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,14 +33,13 @@ type Node struct {
 	update       chan struct{} // asks Run to publish
 	peer         wire.Server   // the methods that peers call
 
-	mu        sync.Mutex
-	info      wire.NodeInfo // ID is empty while the mesh is disabled
-	tunnels   map[*Tunnel]struct{}
-	links     map[*link]struct{}
-	records   map[string]wire.Record // by node id, this node's included
-	changed   chan struct{}          // closed and replaced when records change
-	seqFloor  uint64                 // the highest Seq seen on this node's own record
-	republish bool                   // publish even if the record did not change
+	mu       sync.Mutex
+	info     wire.NodeInfo // ID is empty while the mesh is disabled
+	tunnels  map[*Tunnel]struct{}
+	links    map[*link]struct{}
+	records  map[string]wire.Record // by node id, this node's included
+	changed  chan struct{}          // closed and replaced when records change
+	seqFloor uint64                 // the highest Seq seen on this node's own record
 }
 
 // New returns a node, disabled until Configure enables it.
@@ -119,7 +118,7 @@ func (n *Node) Peers() wire.Peers {
 		p.Links = append(p.Links, l.state())
 	}
 	slices.SortFunc(p.Links, func(a, b wire.PeerLink) int {
-		return strings.Compare(a.Direction+a.Tunnel+a.Peer.Name+a.Peer.ID, b.Direction+b.Tunnel+b.Peer.Name+b.Peer.ID)
+		return cmp.Or(cmp.Compare(a.Direction, b.Direction), cmp.Compare(a.Tunnel, b.Tunnel), cmp.Compare(a.Peer.Name, b.Peer.Name), cmp.Compare(a.Peer.ID, b.Peer.ID))
 	})
 	return p
 }
@@ -228,18 +227,14 @@ func (n *Node) run(ctx context.Context, l *link, session *yamux.Session, onUp fu
 }
 
 func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeInfo, error) {
-	stream, err := session.OpenStream()
-	if err != nil {
-		return wire.NodeInfo{}, err
-	}
-	defer stream.Close()
-	stop := context.AfterFunc(ctx, func() { stream.Close() })
-	defer stop()
-	stream.SetDeadline(time.Now().Add(30 * time.Second))
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	var info wire.NodeInfo
-	if err := wire.Call(stream, wire.MethodNodeInfo, nil, &info); err != nil {
+	conn, err := call(ctx, session, wire.MethodNodeInfo, nil, &info)
+	if err != nil {
 		return info, fmt.Errorf("ask the peer who it is: %w", err)
 	}
+	conn.Close()
 	if info.ID == "" {
 		return info, errors.New("the peer sent no node id")
 	}

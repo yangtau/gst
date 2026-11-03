@@ -70,10 +70,11 @@ report state accept --json.`,
 	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand(), a.uiCommand())
 	addGroup("mesh", a.meshCommand(), a.connectCommand())
 	root.AddCommand(&cobra.Command{
-		Use:     "version",
-		Short:   "Show the gst version",
-		GroupID: "inspect",
-		Args:    a.args(0, 0),
+		Use:         "version",
+		Annotations: standalone,
+		Short:       "Show the gst version",
+		GroupID:     "inspect",
+		Args:        a.args(0, 0),
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},

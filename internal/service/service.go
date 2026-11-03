@@ -28,6 +28,8 @@ type Manager interface {
 	HasLegacy(name string) bool
 	// RemoveLegacy stops and deletes gst 0.1's service for the named tunnel.
 	RemoveLegacy(name string) error
+	// LogHint tells the user where the daemon's own log is.
+	LogHint() string
 }
 
 // Paths are where the daemon keeps its files on this platform.

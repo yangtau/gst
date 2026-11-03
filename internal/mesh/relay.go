@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/yamux"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -29,10 +30,6 @@ func (n *Node) Dial(ctx context.Context, node, network, address string) (net.Con
 	if !n.Enabled() {
 		return nil, errDisabled
 	}
-	target := wire.Target{Network: network, Address: address}
-	if err := checkTarget(target); err != nil {
-		return nil, err
-	}
 	topo := n.Topology()
 	dest, err := FindNode(topo, node)
 	if err != nil {
@@ -44,29 +41,15 @@ func (n *Node) Dial(ctx context.Context, node, network, address string) (net.Con
 	}
 	ctx, cancel := context.WithTimeout(ctx, relayTimeout)
 	defer cancel()
-	return n.open(ctx, path, target)
-}
-
-func checkTarget(t wire.Target) *wire.Error {
-	switch t.Network {
-	case "tcp":
-		if _, _, err := net.SplitHostPort(t.Address); err != nil {
-			return wire.Errorf(wire.CodeInvalidParams, "invalid target address %q", t.Address)
-		}
-	case "unix":
-		if !strings.HasPrefix(t.Address, "/") {
-			return wire.Errorf(wire.CodeInvalidParams, "invalid target socket %q", t.Address)
-		}
-	default:
-		return wire.Errorf(wire.CodeInvalidParams, "unsupported target network %q", t.Network)
-	}
-	return nil
+	return n.open(ctx, path, wire.Target{Network: network, Address: address})
 }
 
 // open connects to target along path, which starts with this node.
 func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net.Conn, error) {
 	self := n.self()
 	switch {
+	case !config.ValidTarget(target.Network, target.Address):
+		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid target %s %q", target.Network, target.Address)
 	case self.ID == "":
 		return nil, wire.Errorf(wire.CodeFailed, "gst mesh is not enabled on the relaying machine")
 	case len(path) == 0 || path[0] != self.ID:
@@ -110,17 +93,8 @@ func unwrapDial(err error) error {
 // relayOver asks the peer at the other end of session to continue along
 // path, which starts with that peer.
 func relayOver(ctx context.Context, session *yamux.Session, path []string, target wire.Target) (net.Conn, error) {
-	stream, err := session.OpenStream()
+	conn, err := call(ctx, session, wire.MethodRelayOpen, wire.RelayParams{Path: path, Target: target}, nil)
 	if err != nil {
-		return nil, wire.Errorf(wire.CodeFailed, "the peer link closed")
-	}
-	conn := streamConn{stream, session}
-	// Closing a yamux stream only ends writing; a deadline ends the wait
-	// for the answer.
-	stop := context.AfterFunc(ctx, func() { stream.SetDeadline(time.Now()) })
-	err = wire.Call(conn, wire.MethodRelayOpen, wire.RelayParams{Path: path, Target: target}, nil)
-	if !stop() || err != nil {
-		conn.Close()
 		var callErr *wire.Error
 		if errors.As(err, &callErr) {
 			return nil, callErr
@@ -133,7 +107,30 @@ func relayOver(ctx context.Context, session *yamux.Session, path []string, targe
 	return conn, nil
 }
 
-// streamConn is a relayed connection over a yamux stream. CloseWrite ends
+// call opens a stream to the peer at the other end of session and calls
+// method on it; ctx bounds the call. The stream stays open for what
+// follows the answer, such as a relayed connection or pushed frames.
+func call(ctx context.Context, session *yamux.Session, method string, params, result any) (streamConn, error) {
+	stream, err := session.OpenStream()
+	if err != nil {
+		return streamConn{}, errLinkLost
+	}
+	conn := streamConn{stream, session}
+	// Closing a yamux stream only ends writing; a deadline ends the wait
+	// for the answer.
+	stop := context.AfterFunc(ctx, func() { stream.SetDeadline(time.Now()) })
+	err = wire.Call(conn, method, params, result)
+	if !stop() && err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		conn.Close()
+		return streamConn{}, err
+	}
+	return conn, nil
+}
+
+// streamConn is a connection over a yamux stream. CloseWrite ends
 // writing, as closing a yamux stream does, while Close also ends reading.
 // When the peer link is lost, reading fails rather than ending cleanly, so
 // that the relay at each end closes the connection instead of waiting for
@@ -197,9 +194,6 @@ func (n *Node) tunnelTo(id string) *ssh.Client {
 // serveRelay answers relay.open and then carries the connection's bytes
 // until either side ends.
 func (n *Node) serveRelay(ctx context.Context, conn net.Conn, p wire.RelayParams, accept func(any) error) error {
-	if err := checkTarget(p.Target); err != nil {
-		return err
-	}
 	dialCtx, cancel := context.WithTimeout(ctx, relayTimeout)
 	target, err := n.open(dialCtx, p.Path, p.Target)
 	cancel()

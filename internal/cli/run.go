@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
@@ -17,11 +18,12 @@ import (
 // and users.
 func (a *app) runCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:    "run <name>",
-		Short:  "Run a tunnel in the foreground until it fails or is interrupted",
-		Long:   "Run a tunnel in the foreground until it fails or receives SIGINT or SIGTERM. Do not run it while the tunnel is started in the background.",
-		Hidden: true,
-		Args:   a.args(1, 1),
+		Use:         "run <name>",
+		Annotations: standalone,
+		Short:       "Run a tunnel in the foreground until it fails or is interrupted",
+		Long:        "Run a tunnel in the foreground until it fails or receives SIGINT or SIGTERM. Do not run it while the tunnel is started in the background.",
+		Hidden:      true,
+		Args:        a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			f, err := a.load()
 			if err != nil {
@@ -31,6 +33,10 @@ func (a *app) runCommand() *cobra.Command {
 			t := f.Tunnels[args[0]]
 			if t == nil {
 				log.Printf("no tunnel named %s", args[0])
+				return &exitError{exitUsage}
+			}
+			if t.Via == config.ViaMesh {
+				log.Print("a tunnel through the mesh runs only in the gst daemon")
 				return &exitError{exitUsage}
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)

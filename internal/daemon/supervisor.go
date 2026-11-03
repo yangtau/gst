@@ -12,7 +12,6 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
-	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -110,21 +109,6 @@ func (s *supervisor) run() {
 }
 
 func (s *supervisor) connect() error {
-	if s.spec.Via == config.ViaMesh {
-		timeout := time.Duration(s.spec.ConnectTimeoutSeconds) * time.Second
-		if timeout == 0 {
-			timeout = 30 * time.Second
-		}
-		return s.d.cfg.Run(s.ctx, tunnel.Options{
-			ConnectTimeout: timeout,
-			Forwards:       s.spec.Forwards,
-			Logger:         s.log,
-			OnReady:        func() { s.set(wire.StateRunning, "") },
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return s.d.mesh.Dial(ctx, s.spec.Destination, network, address)
-			},
-		})
-	}
 	opts, err := s.d.cfg.Resolve(s.ctx, &s.spec)
 	if err != nil {
 		// Resolution errors quote the ssh configuration.
@@ -132,6 +116,11 @@ func (s *supervisor) connect() error {
 	}
 	opts.Logger = s.log
 	opts.OnReady = func() { s.set(wire.StateRunning, "") }
+	if s.spec.Via == config.ViaMesh {
+		opts.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return s.d.mesh.Dial(ctx, s.spec.Destination, network, address)
+		}
+	}
 	if s.meshTunnel != nil {
 		opts.Attach = s.meshTunnel.Connected
 	}
