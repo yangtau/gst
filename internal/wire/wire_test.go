@@ -2,8 +2,8 @@ package wire
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -46,35 +46,49 @@ func TestFrames(t *testing.T) {
 	}
 }
 
+// accept answers the control role and refuses others, as a daemon would.
+func accept(conn net.Conn) (Hello, error) {
+	theirs, err := ReadHello(conn)
+	if err != nil {
+		return theirs, err
+	}
+	var refusal *Error
+	if theirs.Role != RoleControl {
+		refusal = Errorf(CodeUnsupportedRole, "no")
+	}
+	return theirs, Answer(conn, theirs, Hello{Software: "gst test", Role: RoleControl}, refusal)
+}
+
 func TestHandshakeAndCalls(t *testing.T) {
+	var s Server
+	Handle(&s, "echo", func(_ context.Context, p struct{ Text string }) (any, error) { return p, nil })
+	Handle(&s, "empty", func(context.Context, struct{}) (any, error) { return nil, nil })
+	Handle(&s, "fail", func(context.Context, struct{}) (any, error) { return nil, errors.New("it broke") })
+	Handle(&s, "missing", func(context.Context, struct{}) (any, error) { return nil, Errorf(CodeNotFound, "gone") })
+	// A stream method answers and then owns the stream: here it sends the
+	// text back raw.
+	HandleStream(&s, "raw", func(_ context.Context, conn net.Conn, p struct{ Text string }, accept func(any) error) error {
+		if p.Text == "" {
+			return Errorf(CodeInvalidParams, "no text")
+		}
+		if err := accept(nil); err != nil {
+			return err
+		}
+		_, err := conn.Write([]byte(p.Text))
+		return err
+	})
+
 	client, server := net.Pipe()
 	defer client.Close()
 	done := make(chan error, 1)
 	go func() {
 		defer server.Close()
-		hello, err := Accept(server, Hello{Software: "gst test", Role: RoleControl}, func(h Hello) *Error {
-			if h.Role != RoleControl {
-				return Errorf(CodeUnsupportedRole, "no")
-			}
-			return nil
-		})
+		hello, err := accept(server)
 		if err != nil || hello.Software != "cli" {
 			done <- err
 			return
 		}
-		done <- Serve(server, func(method string, params json.RawMessage) (any, *Error) {
-			switch method {
-			case "echo":
-				var p struct{ Text string }
-				if err := DecodeParams(params, &p); err != nil {
-					return nil, err
-				}
-				return p, nil
-			case "empty":
-				return nil, nil
-			}
-			return nil, Errorf(CodeUnsupportedMethod, "method %q is not supported", method)
-		})
+		done <- s.Serve(context.Background(), server)
 	}()
 
 	hello, err := Dial(client, Hello{Software: "cli", Role: RoleControl})
@@ -88,14 +102,23 @@ func TestHandshakeAndCalls(t *testing.T) {
 	if err := Call(client, "empty", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	var werr *Error
-	if err := Call(client, "nope", nil, nil); !errors.As(err, &werr) || werr.Code != CodeUnsupportedMethod {
-		t.Fatalf("unknown method gave %v", err)
+	for method, code := range map[string]string{"nope": CodeUnsupportedMethod, "fail": CodeFailed, "missing": CodeNotFound, "raw": CodeInvalidParams} {
+		var werr *Error
+		if err := Call(client, method, nil, nil); !errors.As(err, &werr) || werr.Code != code {
+			t.Fatalf("%s gave %v, want %s", method, err, code)
+		}
 	}
+	var werr *Error
 	if err := Call(client, "echo", "not an object", &out); !errors.As(err, &werr) || werr.Code != CodeInvalidParams {
 		t.Fatalf("bad params gave %v", err)
 	}
-	client.Close()
+	if err := Call(client, "raw", map[string]string{"Text": "bytes"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(client)
+	if string(data) != "bytes" {
+		t.Fatalf("stream carried %q", data)
+	}
 	if err := <-done; err != nil {
 		t.Fatalf("server ended with %v", err)
 	}
@@ -112,12 +135,7 @@ func TestHandshakeRefusal(t *testing.T) {
 		client, server := net.Pipe()
 		go func() {
 			defer server.Close()
-			Accept(server, Hello{Role: RoleControl}, func(h Hello) *Error {
-				if h.Role != RoleControl {
-					return Errorf(CodeUnsupportedRole, "no")
-				}
-				return nil
-			})
+			accept(server)
 		}()
 		// Dial always sends the current protocol, so write the hello directly.
 		if err := WriteFrame(client, tt.hello); err != nil {

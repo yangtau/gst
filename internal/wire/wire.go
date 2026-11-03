@@ -1,6 +1,6 @@
 // Package wire implements the gst protocol, which gst commands use to talk
-// to the gst daemon and, in later versions, daemons use to talk to each
-// other. docs/design/mesh.md describes it.
+// to the gst daemon and daemons use to talk to each other.
+// docs/design/mesh.md describes it.
 //
 // Messages are frames: a big-endian uint32 length followed by that many
 // bytes of JSON. Every connection starts with an exchange of Hello frames.
@@ -10,11 +10,13 @@
 package wire
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 )
 
 // Protocol is the highest protocol version this implementation speaks.
@@ -132,31 +134,30 @@ func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 	return theirs, nil
 }
 
-// Accept performs the accepting side's handshake on rw. check may refuse
-// the connection by returning an Error, which is sent to the other side
-// and returned. reply, when given, picks the Hello to answer with, as the
-// answer may depend on the role.
-func Accept(rw io.ReadWriter, mine Hello, check func(Hello) *Error, reply ...func(Hello) Hello) (Hello, error) {
+// ReadHello reads the Hello that opens a connection, on the accepting
+// side, which answers it with Answer.
+func ReadHello(r io.Reader) (Hello, error) {
 	var theirs Hello
-	if err := ReadFrame(rw, &theirs); err != nil {
-		return Hello{}, err
-	}
-	if len(reply) > 0 {
-		mine = reply[0](theirs)
-	}
+	err := ReadFrame(r, &theirs)
+	return theirs, err
+}
+
+// Answer answers theirs with mine, refusing the connection with refusal
+// when it is not nil or when theirs speaks no protocol version this side
+// does. A refusal is sent to the other side and returned.
+func Answer(w io.Writer, theirs, mine Hello, refusal *Error) error {
 	mine.Protocol = Protocol
+	mine.Error = refusal
 	if theirs.Protocol < 1 {
 		mine.Error = Errorf(CodeUnsupportedProto, "protocol version %d is not supported", theirs.Protocol)
-	} else if check != nil {
-		mine.Error = check(theirs)
 	}
-	if err := WriteFrame(rw, mine); err != nil {
-		return theirs, err
+	if err := WriteFrame(w, mine); err != nil {
+		return err
 	}
 	if mine.Error != nil {
-		return theirs, mine.Error
+		return mine.Error
 	}
-	return theirs, nil
+	return nil
 }
 
 // Call sends a request on a stream and decodes the result into result,
@@ -192,31 +193,109 @@ func Call(rw io.ReadWriter, method string, params, result any) error {
 	return nil
 }
 
-// Handler answers one request. It returns a value to encode as the result
-// or an Error.
-type Handler func(method string, params json.RawMessage) (any, *Error)
+// Server answers the calls on a stream with the methods registered with
+// Handle and HandleStream, in order, until the stream ends or a stream
+// method takes it over. It answers unknown methods with
+// unsupported_method, undecodable params with invalid_params, and a
+// failed call with its error: an *Error as it is, any other error with
+// code failed and the error's text.
+type Server struct {
+	methods map[string]method
+}
 
-// Serve answers requests on a stream until it ends or a frame cannot be
-// read or written. A clean end returns nil.
-func Serve(rw io.ReadWriter, handle Handler) error {
+type method struct {
+	// call answers one call, with accept or, before accepting, with an
+	// error. After accepting, a method that takes over owns the stream,
+	// and its error is dropped.
+	call      func(ctx context.Context, conn net.Conn, params json.RawMessage, accept func(result any) error) error
+	takesOver bool
+}
+
+// Handle registers a method that answers with a result, after which the
+// stream carries the next call. Missing params leave p zero.
+func Handle[P any](s *Server, name string, fn func(ctx context.Context, p P) (any, error)) {
+	register(s, name, false, func(ctx context.Context, _ net.Conn, p P, accept func(any) error) error {
+		result, err := fn(ctx, p)
+		if err != nil {
+			return err
+		}
+		return accept(result)
+	})
+}
+
+// HandleStream registers a method that takes the stream over: it calls
+// accept with its result to answer the call, after which it owns conn for
+// whatever the method defines, such as the bytes of a connection, until it
+// returns. Returning an error before accepting answers with the error.
+func HandleStream[P any](s *Server, name string, fn func(ctx context.Context, conn net.Conn, p P, accept func(result any) error) error) {
+	register(s, name, true, fn)
+}
+
+func register[P any](s *Server, name string, takesOver bool, fn func(context.Context, net.Conn, P, func(any) error) error) {
+	if s.methods == nil {
+		s.methods = map[string]method{}
+	}
+	s.methods[name] = method{takesOver: takesOver, call: func(ctx context.Context, conn net.Conn, params json.RawMessage, accept func(any) error) error {
+		var p P
+		if len(params) > 0 && json.Unmarshal(params, &p) != nil {
+			return Errorf(CodeInvalidParams, "invalid params")
+		}
+		return fn(ctx, conn, p, accept)
+	}}
+}
+
+// Serve answers the calls on conn. It returns nil when conn ends cleanly
+// between calls or once a stream method that took it over returns.
+func (s *Server) Serve(ctx context.Context, conn net.Conn) error {
 	for {
 		var req Request
-		if err := ReadFrame(rw, &req); err != nil {
+		if err := ReadFrame(conn, &req); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
 		}
-		result, callErr := handle(req.Method, req.Params)
-		if err := Reply(rw, result, callErr); err != nil {
-			return err
+		m, ok := s.methods[req.Method]
+		if !ok {
+			if err := reply(conn, nil, Errorf(CodeUnsupportedMethod, "method %q is not supported", req.Method)); err != nil {
+				return err
+			}
+			continue
+		}
+		accepted := false
+		var replyErr error
+		err := m.call(ctx, conn, req.Params, func(result any) error {
+			accepted = true
+			replyErr = reply(conn, result, nil)
+			return replyErr
+		})
+		switch {
+		case !accepted:
+			replyErr = reply(conn, nil, AsError(err))
+		case m.takesOver:
+			return nil
+		}
+		if replyErr != nil {
+			return replyErr
 		}
 	}
 }
 
-// Reply writes the response to a request: result, or callErr when it is
+// AsError returns err as the *Error to answer a call with.
+func AsError(err error) *Error {
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	if err == nil {
+		err = errors.New("the call failed")
+	}
+	return Errorf(CodeFailed, "%v", err)
+}
+
+// reply writes the response to a request: result, or callErr when it is
 // not nil.
-func Reply(w io.Writer, result any, callErr *Error) error {
+func reply(w io.Writer, result any, callErr *Error) error {
 	resp := Response{Error: callErr}
 	if callErr == nil && result != nil {
 		raw, err := json.Marshal(result)
@@ -227,16 +306,4 @@ func Reply(w io.Writer, result any, callErr *Error) error {
 		}
 	}
 	return WriteFrame(w, resp)
-}
-
-// DecodeParams decodes a request's params into v; missing params leave v
-// unchanged.
-func DecodeParams(params json.RawMessage, v any) *Error {
-	if len(params) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(params, v); err != nil {
-		return Errorf(CodeInvalidParams, "invalid params")
-	}
-	return nil
 }

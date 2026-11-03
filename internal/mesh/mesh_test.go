@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,36 +17,42 @@ import (
 
 func newNode(name string) *Node {
 	n := New("gst test", log.New(io.Discard, "", 0))
+	n.SetRetry(20 * time.Millisecond)
 	if name != "" {
 		n.Configure(&config.Mesh{ID: fmt.Sprintf("%032x", []byte(name)), Name: name})
 	}
 	return n
 }
 
-// connect links client to server as a tunnel with mesh on would, with the
-// handshake that the server's daemon performs on its control socket, and
-// returns the outgoing link's result once it ends.
-func connect(ctx context.Context, client, server *Node) (*link, chan error) {
-	return connectOver(ctx, client, server, "srv")
+// linkTunnel adds a running tunnel with mesh on to client, whose server
+// is server, with host key fingerprint hostKey. Its peer links run over
+// in-process pipes that server accepts as its daemon would.
+func linkTunnel(ctx context.Context, client, server *Node, name, hostKey string) *Tunnel {
+	t := client.AddTunnel(name, name, "", log.New(io.Discard, "", 0))
+	t.SetState(wire.StateRunning)
+	go t.connected(ctx, nil, hostKey, func() (io.ReadWriteCloser, error) {
+		a, b := net.Pipe()
+		go func() {
+			theirs, err := wire.ReadHello(b)
+			if err != nil {
+				b.Close()
+				return
+			}
+			server.Accept(ctx, b, theirs)
+		}()
+		return a, nil
+	})
+	return t
 }
 
-func connectOver(ctx context.Context, client, server *Node, tunnel string) (*link, chan error) {
-	a, b := net.Pipe()
-	go func() {
-		_, err := wire.Accept(b, wire.Hello{Role: wire.RoleControl}, server.CheckHello, func(wire.Hello) wire.Hello { return server.Hello() })
-		if err != nil {
-			b.Close()
-			return
+// outLink returns n's link over tunnel, if any.
+func outLink(n *Node, tunnel string) (wire.PeerLink, bool) {
+	for _, l := range n.Peers().Links {
+		if l.Direction == wire.LinkOut && l.Tunnel == tunnel {
+			return l, true
 		}
-		server.Accept(ctx, b)
-	}()
-	l := client.add(wire.LinkOut, tunnel)
-	done := make(chan error, 1)
-	go func() {
-		done <- client.linkOver(ctx, l, a, nil)
-		client.remove(l)
-	}()
-	return l, done
+	}
+	return wire.PeerLink{}, false
 }
 
 func waitFor(t *testing.T, msg string, cond func() bool) {
@@ -63,7 +70,7 @@ func TestLinkIntroducesPeers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m3, mini := newNode("m3"), newNode("mini")
-	_, done := connect(ctx, m3, mini)
+	linkTunnel(ctx, m3, mini, "srv", "")
 
 	waitFor(t, "links not up", func() bool {
 		out, in := m3.Peers().Links, mini.Peers().Links
@@ -77,16 +84,13 @@ func TestLinkIntroducesPeers(t *testing.T) {
 		t.Fatalf("incoming link %+v", in)
 	}
 
-	// Disabling the mesh on the server closes the link on both sides.
+	// Disabling the mesh on the server closes the link on both sides, and
+	// the server refuses it from then on.
 	mini.Configure(nil)
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "closed") {
-			t.Fatalf("link ended with %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("link survived disabling the mesh")
-	}
+	waitFor(t, "link survived disabling the mesh", func() bool {
+		l, _ := outLink(m3, "srv")
+		return l.State != wire.LinkUp && strings.Contains(l.Error, "gst mesh enable")
+	})
 	waitFor(t, "incoming link not removed", func() bool { return len(mini.Peers().Links) == 0 })
 }
 
@@ -100,22 +104,23 @@ func TestLinkRefusals(t *testing.T) {
 	}{
 		{"server disabled", newNode("m3"), newNode(""), "gst mesh enable"},
 		{"self", newNode("m3"), newNode("m3"), "this machine"},
+		{"client disabled", newNode(""), newNode("m3"), "not enabled on this machine"},
 	} {
-		_, done := connect(ctx, tt.client, tt.server)
-		select {
-		case err := <-done:
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("%s: got %v, want %q", tt.name, err, tt.want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Errorf("%s: link did not fail", tt.name)
-		}
+		linkTunnel(ctx, tt.client, tt.server, "srv", "")
+		waitFor(t, tt.name+": link did not fail with "+tt.want, func() bool {
+			l, _ := outLink(tt.client, "srv")
+			return l.State == wire.LinkDown && strings.Contains(l.Error, tt.want)
+		})
 	}
 }
 
 func TestUnknownPeerMethods(t *testing.T) {
 	n := newNode("m3")
-	if _, err := n.handle("relay.open", nil); err == nil || err.Code != wire.CodeUnsupportedMethod {
+	a, b := net.Pipe()
+	defer a.Close()
+	go n.peer.Serve(context.Background(), b)
+	var werr *wire.Error
+	if err := wire.Call(a, "mesh.unknown", nil, nil); !errors.As(err, &werr) || werr.Code != wire.CodeUnsupportedMethod {
 		t.Fatalf("got %v", err)
 	}
 }

@@ -62,18 +62,12 @@ func TestRelayThroughPeer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m3, mini, devcn := newNode("m3"), newNode("mini"), newNode("devcn")
-	m3.SetEdges(func() []wire.Edge {
-		return []wire.Edge{
-			{Tunnel: "devcn", State: wire.StateRunning},
-			{Tunnel: "mini", State: wire.StateRunning},
-		}
-	})
 	for _, n := range []*Node{m3, mini, devcn} {
 		go n.Run(ctx)
 		n.Update()
 	}
-	connectOver(ctx, m3, mini, "mini")
-	connectOver(ctx, m3, devcn, "devcn")
+	linkTunnel(ctx, m3, mini, "mini", "")
+	linkTunnel(ctx, m3, devcn, "devcn", "")
 	waitFor(t, "mini does not see devcn", func() bool {
 		path, err := Route(mini.Topology(), devcn.self().ID)
 		return err == nil && len(path) == 3
@@ -157,12 +151,11 @@ func TestRelayEndsWithLink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m3, devcn := newNode("m3"), newNode("devcn")
-	m3.SetEdges(func() []wire.Edge { return []wire.Edge{{Tunnel: "devcn", State: wire.StateRunning}} })
 	for _, n := range []*Node{m3, devcn} {
 		go n.Run(ctx)
 		n.Update()
 	}
-	connectOver(ctx, m3, devcn, "devcn")
+	linkTunnel(ctx, m3, devcn, "devcn", "")
 	waitFor(t, "m3 does not see devcn", func() bool {
 		path, err := Route(m3.Topology(), devcn.self().ID)
 		return err == nil && len(path) == 2

@@ -6,9 +6,7 @@
 package mesh
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,24 +17,25 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// Node is this machine's place in the mesh: its identity and its links.
+// Node is this machine's place in the mesh: its identity, its tunnels with
+// mesh on, its peer links, and what it knows of the other nodes.
 type Node struct {
 	software     string
 	log          *log.Logger // the daemon's log
 	retry        time.Duration
 	ttl          time.Duration // lifetime of this node's record
 	hostKeyFiles string        // glob of the sshd host public keys
-	edges        func() []wire.Edge
 	update       chan struct{} // asks Run to publish
+	peer         wire.Server   // the methods that peers call
 
 	mu        sync.Mutex
 	info      wire.NodeInfo // ID is empty while the mesh is disabled
+	tunnels   map[*Tunnel]struct{}
 	links     map[*link]struct{}
 	records   map[string]wire.Record // by node id, this node's included
 	changed   chan struct{}          // closed and replaced when records change
@@ -46,17 +45,22 @@ type Node struct {
 
 // New returns a node, disabled until Configure enables it.
 func New(software string, daemonLog *log.Logger) *Node {
-	return &Node{
+	n := &Node{
 		software:     software,
 		log:          daemonLog,
 		retry:        10 * time.Second,
 		ttl:          30 * time.Minute,
 		hostKeyFiles: "/etc/ssh/ssh_host_*_key.pub",
 		update:       make(chan struct{}, 1),
+		tunnels:      map[*Tunnel]struct{}{},
 		links:        map[*link]struct{}{},
 		records:      map[string]wire.Record{},
 		changed:      make(chan struct{}),
 	}
+	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.self(), nil })
+	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
+	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
+	return n
 }
 
 // SetRetry sets the wait before an outgoing link that failed retries.
@@ -65,10 +69,6 @@ func (n *Node) SetRetry(d time.Duration) { n.retry = d }
 // SetHostKeyFiles sets the glob of this machine's sshd host public keys,
 // whose fingerprints identify it as a tunnel's server.
 func (n *Node) SetHostKeyFiles(glob string) { n.hostKeyFiles = glob }
-
-// SetEdges sets the source of this node's tunnels with mesh on; the
-// node fills in their peer links. Call Update when its result changes.
-func (n *Node) SetEdges(edges func() []wire.Edge) { n.edges = edges }
 
 // Configure applies the mesh settings; nil disables the mesh and closes
 // every link.
@@ -104,6 +104,8 @@ func (n *Node) self() wire.NodeInfo {
 // Enabled reports whether this machine takes part in the mesh.
 func (n *Node) Enabled() bool { return n.self().ID != "" }
 
+var errDisabled = wire.Errorf(wire.CodeFailed, "gst mesh is not enabled on this machine; run `gst mesh enable`")
+
 // Peers reports this node and its links.
 func (n *Node) Peers() wire.Peers {
 	n.mu.Lock()
@@ -122,26 +124,26 @@ func (n *Node) Peers() wire.Peers {
 	return p
 }
 
-// CheckHello accepts a peer's Hello on the control socket when the mesh is
-// enabled and the peer speaks yamux.
-func (n *Node) CheckHello(h wire.Hello) *wire.Error {
-	if !n.Enabled() {
-		return wire.Errorf(wire.CodeUnsupportedRole, "gst mesh is not enabled on this machine; run `gst mesh enable` there")
-	}
-	if !slices.Contains(h.Features, wire.FeatureYamux) {
-		return wire.Errorf(wire.CodeUnsupportedRole, "the peer does not support yamux")
-	}
-	return nil
-}
-
-// Hello is this node's Hello for peer connections.
-func (n *Node) Hello() wire.Hello {
+// hello is this node's Hello for peer connections.
+func (n *Node) hello() wire.Hello {
 	return wire.Hello{Software: n.software, Role: wire.RolePeer, Features: []string{wire.FeatureYamux}}
 }
 
-// Accept serves a peer link whose handshake succeeded on conn, until it
-// ends or ctx is done.
-func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser) {
+// Accept serves a peer link on conn, whose other end sent theirs to open
+// it, until the link ends or ctx is done. It answers theirs, refusing
+// the link while the mesh is disabled.
+func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.Hello) {
+	var refusal *wire.Error
+	switch {
+	case !n.Enabled():
+		refusal = wire.Errorf(wire.CodeUnsupportedRole, "gst mesh is not enabled on this machine; run `gst mesh enable` there")
+	case !slices.Contains(theirs.Features, wire.FeatureYamux):
+		refusal = wire.Errorf(wire.CodeUnsupportedRole, "the peer does not support yamux")
+	}
+	if wire.Answer(conn, theirs, n.hello(), refusal) != nil {
+		conn.Close()
+		return
+	}
 	session, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
 		conn.Close()
@@ -153,78 +155,6 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser) {
 	if err := n.run(ctx, l, session, nil); err != nil && ctx.Err() == nil && n.Enabled() {
 		n.log.Print("incoming peer link ended")
 	}
-}
-
-// Link keeps a peer link to the server of tunnel over client until ctx is
-// done, retrying after failures. remoteGst is the server's gst command.
-// tunnelLog receives the tunnel's log, which omits the reasons, as they
-// may quote the server; gst mesh peers shows them.
-func (n *Node) Link(ctx context.Context, tunnel string, client *ssh.Client, remoteGst string, tunnelLog *log.Logger) {
-	l := n.add(wire.LinkOut, tunnel)
-	l.mu.Lock()
-	l.client = client
-	l.mu.Unlock()
-	defer n.remove(l)
-	lastErr := ""
-	for {
-		l.set(wire.LinkConnecting, wire.NodeInfo{}, "")
-		var err error
-		if n.Enabled() {
-			err = n.dial(ctx, l, client, remoteGst, func() {
-				tunnelLog.Print("peer link up")
-				lastErr = ""
-			})
-		} else {
-			err = errors.New("gst mesh is not enabled on this machine; run `gst mesh enable`")
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		// Log once per reason rather than at every retry.
-		if err.Error() != lastErr {
-			tunnelLog.Print("peer link down")
-			lastErr = err.Error()
-		}
-		l.set(wire.LinkDown, wire.NodeInfo{}, err.Error())
-		n.Update()
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(n.retry):
-		}
-	}
-}
-
-func (n *Node) dial(ctx context.Context, l *link, client *ssh.Client, remoteGst string, onUp func()) error {
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("open an SSH session: %w", err)
-	}
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		session.Close()
-		return err
-	}
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		session.Close()
-		return err
-	}
-	stderr := &limitedBuffer{max: 512}
-	session.Stderr = stderr
-	if remoteGst == "" {
-		remoteGst = "gst"
-	}
-	if err := session.Start(shellQuote(remoteGst) + " peer-bridge"); err != nil {
-		session.Close()
-		return fmt.Errorf("start the remote gst: %w", err)
-	}
-	conn := &sessionConn{Reader: stdout, Writer: stdin, session: session}
-	err = n.linkOver(ctx, l, conn, onUp)
-	if errors.Is(err, errNoAnswer) && stderr.String() != "" {
-		return fmt.Errorf("the remote gst failed: %s", stderr.String())
-	}
-	return err
 }
 
 // handshakeTimeout bounds the start of the remote gst and its Hello.
@@ -242,7 +172,7 @@ func (n *Node) linkOver(ctx context.Context, l *link, conn io.ReadWriteCloser, o
 	// A remote gst that starts but never answers would hold the link in
 	// connecting forever.
 	timeout := time.AfterFunc(handshakeTimeout, func() { conn.Close() })
-	hello, err := wire.Dial(conn, n.Hello())
+	hello, err := wire.Dial(conn, n.hello())
 	if !timeout.Stop() && err == nil {
 		err = errors.New("handshake timed out")
 	}
@@ -316,41 +246,22 @@ func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeI
 	return info, nil
 }
 
-// serve answers the calls that the peer opens streams for, one per
-// stream.
+// serve answers the calls that the peer opens streams for, until the
+// session ends. The context of each call ends with the session.
 func (n *Node) serve(ctx context.Context, session *yamux.Session) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			return
 		}
 		go func() {
-			defer stream.Close()
-			defer context.AfterFunc(ctx, func() { stream.Close() })()
-			var req wire.Request
-			if err := wire.ReadFrame(stream, &req); err != nil {
-				return
-			}
-			switch req.Method {
-			case wire.MethodTopologySync:
-				n.serveSync(stream, session, req.Params)
-				return
-			case wire.MethodRelayOpen:
-				n.serveRelay(ctx, streamConn{stream, session}, req.Params)
-				return
-			}
-			result, callErr := n.handle(req.Method, req.Params)
-			wire.Reply(stream, result, callErr)
+			conn := streamConn{stream, session}
+			defer conn.Close()
+			defer context.AfterFunc(ctx, func() { conn.Close() })()
+			n.peer.Serve(ctx, conn)
 		}()
-	}
-}
-
-func (n *Node) handle(method string, _ json.RawMessage) (any, *wire.Error) {
-	switch method {
-	case wire.MethodNodeInfo:
-		return n.self(), nil
-	default:
-		return nil, wire.Errorf(wire.CodeUnsupportedMethod, "method %q is not supported", method)
 	}
 }
 
@@ -382,7 +293,6 @@ type link struct {
 	info     wire.PeerLink
 	lastPeer string // the id of the last peer, kept while the link is down
 	session  *yamux.Session
-	client   *ssh.Client // the tunnel's connection, for outgoing links
 }
 
 func (l *link) set(state string, peer wire.NodeInfo, errText string) {
@@ -411,53 +321,29 @@ func (l *link) closeSession() {
 	}
 }
 
-func (l *link) peerID() string {
+// sessionTo returns the session if the link is up with node id.
+func (l *link) sessionTo(id string) *yamux.Session {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.lastPeer
+	if l.info.State == wire.LinkUp && l.info.Peer.ID == id && l.session != nil && !l.session.IsClosed() {
+		return l.session
+	}
+	return nil
+}
+
+// peer returns the id of the link's peer while the link is up or, when
+// it is not, of its last peer, and whether the link is up.
+func (l *link) peer() (id string, up bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.info.State == wire.LinkUp {
+		return l.info.Peer.ID, true
+	}
+	return l.lastPeer, false
 }
 
 func (l *link) state() wire.PeerLink {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.info
-}
-
-// sessionConn is the remote gst's standard input and output.
-type sessionConn struct {
-	io.Reader
-	io.Writer
-	session *ssh.Session
-	once    sync.Once
-}
-
-func (c *sessionConn) Close() error {
-	c.once.Do(func() { c.session.Close() })
-	return nil
-}
-
-// limitedBuffer keeps the first max bytes written to it.
-type limitedBuffer struct {
-	mu  sync.Mutex
-	max int
-	buf bytes.Buffer
-}
-
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if room := b.max - b.buf.Len(); room > 0 {
-		b.buf.Write(p[:min(room, len(p))])
-	}
-	return len(p), nil
-}
-
-func (b *limitedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return strings.TrimSpace(b.buf.String())
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

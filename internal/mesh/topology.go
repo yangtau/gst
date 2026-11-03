@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,16 +55,12 @@ func (n *Node) Run(ctx context.Context) {
 // force, raising its Seq. Seq follows the clock, so that it keeps growing
 // across restarts of the daemon.
 func (n *Node) publish(force bool) {
-	var edges []wire.Edge
-	if n.edges != nil {
-		edges = n.edges()
-	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.info.ID == "" {
 		return
 	}
-	edges = n.linkEdges(edges)
+	edges := n.edges()
 	old, ok := n.records[n.info.ID]
 	if ok && !force && !n.republish && reflect.DeepEqual(old.Node, n.info) && reflect.DeepEqual(old.Edges, edges) {
 		return
@@ -75,26 +72,14 @@ func (n *Node) publish(force bool) {
 	n.notify()
 }
 
-// linkEdges fills in the peer links of this node's edges; n.mu is held.
-func (n *Node) linkEdges(edges []wire.Edge) []wire.Edge {
-	out := make([]wire.Edge, 0, len(edges))
-	for _, e := range edges {
-		e.Peer, e.Linked = "", false
-		for l := range n.links {
-			st := l.state()
-			if st.Direction != wire.LinkOut || st.Tunnel != e.Tunnel {
-				continue
-			}
-			if st.State == wire.LinkUp {
-				e.Peer, e.Linked = st.Peer.ID, true
-			} else {
-				e.Peer = l.peerID()
-			}
-		}
-		out = append(out, e)
+// edges describes this node's tunnels as they are now; n.mu is held.
+func (n *Node) edges() []wire.Edge {
+	edges := make([]wire.Edge, 0, len(n.tunnels))
+	for t := range n.tunnels {
+		edges = append(edges, t.edge())
 	}
-	slices.SortFunc(out, func(a, b wire.Edge) int { return cmp.Compare(a.Tunnel, b.Tunnel) })
-	return out
+	slices.SortFunc(edges, func(a, b wire.Edge) int { return cmp.Compare(a.Tunnel, b.Tunnel) })
+	return edges
 }
 
 // notify wakes the streams that push records; n.mu is held.
@@ -202,12 +187,7 @@ func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 
 // serveSync answers topology.sync: it sends the records newer than the
 // caller's and then every change, until the session ends.
-func (n *Node) serveSync(stream *yamux.Stream, session *yamux.Session, params []byte) {
-	var p wire.SyncParams
-	if err := wire.DecodeParams(params, &p); err != nil {
-		wire.Reply(stream, nil, err)
-		return
-	}
+func (n *Node) serveSync(ctx context.Context, conn net.Conn, p wire.SyncParams, accept func(any) error) error {
 	sent := map[string]uint64{}
 	for id, seq := range p.Known {
 		sent[id] = seq
@@ -215,21 +195,21 @@ func (n *Node) serveSync(stream *yamux.Stream, session *yamux.Session, params []
 	// The answer carries the first batch; further batches follow as pushes.
 	recs, changed := n.newer(sent)
 	batches := batch(recs)
-	stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if wire.Reply(stream, wire.Records{Records: batches[0]}, nil) != nil {
-		return
+	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if err := accept(wire.Records{Records: batches[0]}); err != nil {
+		return err
 	}
 	for {
 		for _, b := range batches[1:] {
-			stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if wire.WriteFrame(stream, wire.Records{Records: b}) != nil {
-				return
+			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if err := wire.WriteFrame(conn, wire.Records{Records: b}); err != nil {
+				return err
 			}
 		}
 		select {
 		case <-changed:
-		case <-session.CloseChan():
-			return
+		case <-ctx.Done():
+			return nil
 		}
 		recs, changed = n.newer(sent)
 		batches = append([][]wire.Record{nil}, batch(recs)...)
@@ -263,14 +243,18 @@ func batch(recs []wire.Record) [][]wire.Record {
 	return batches
 }
 
-// Topology reports the mesh as this node knows it.
+// Topology reports the mesh as this node knows it, with this node's
+// tunnels as they are now rather than as last published.
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
 	self := n.info
 	recs := make([]wire.Record, 0, len(n.records))
-	for _, r := range n.records {
-		recs = append(recs, r)
+	for id, r := range n.records {
+		if id != self.ID {
+			recs = append(recs, r)
+		}
 	}
+	recs = append(recs, wire.Record{Node: self, Edges: n.edges()})
 	n.mu.Unlock()
 	if self.ID == "" {
 		return wire.Topology{Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
@@ -329,31 +313,8 @@ func buildTopology(self wire.NodeInfo, recs []wire.Record, now time.Time) wire.T
 		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.Tunnel, b.Tunnel))
 	})
 
-	// This node reaches a machine over a running tunnel of a node it
-	// reaches, and goes on from there through a peer link, in either
-	// direction, since relaying needs gst at both ends.
-	nodes[self.ID].Reachable = true
-	relays := map[string]bool{self.ID: true}
-	queue := []string{self.ID}
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
-		for _, e := range edges {
-			var next string
-			switch {
-			case e.From == id && (e.Linked || e.State == wire.StateRunning):
-				next = e.To
-			case e.To == id && e.Linked:
-				next = e.From
-			default:
-				continue
-			}
-			nodes[next].Reachable = true
-			if e.Linked && !relays[next] {
-				relays[next] = true
-				queue = append(queue, next)
-			}
-		}
+	for id := range reach(edges, self.ID) {
+		nodes[id].Reachable = true
 	}
 
 	t := wire.Topology{Self: self.ID, Nodes: make([]wire.TopoNode, 0, len(nodes)), Edges: edges}
@@ -367,6 +328,42 @@ func buildTopology(self wire.NodeInfo, recs []wire.Record, now time.Time) wire.T
 		return cmp.Or(boolOrder(a.Gst, b.Gst), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 	})
 	return t
+}
+
+// reach finds the machines that self reaches: over a running tunnel of
+// a machine that it reaches through, and on from there through a peer
+// link, in either direction, since relaying needs gst at both ends. It
+// returns, for each, the machine before it on a shortest path; self has
+// none.
+func reach(edges []wire.TopoEdge, self string) map[string]string {
+	prev := map[string]string{self: ""}
+	relays := map[string]bool{self: true}
+	queue := []string{self}
+	for len(queue) > 0 {
+		at := queue[0]
+		queue = queue[1:]
+		for _, e := range edges {
+			var next string
+			switch {
+			case e.From == at && (e.Linked || e.State == wire.StateRunning):
+				next = e.To
+			case e.To == at && e.Linked:
+				next = e.From
+			default:
+				continue
+			}
+			if _, seen := prev[next]; !seen {
+				prev[next] = at
+			}
+			if e.Linked && !relays[next] {
+				// Paths go on past a machine only over a peer link.
+				relays[next] = true
+				prev[next] = at
+				queue = append(queue, next)
+			}
+		}
+	}
+	return prev
 }
 
 // boolOrder sorts true before false.

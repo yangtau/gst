@@ -2,10 +2,10 @@ package mesh
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,7 +27,7 @@ const (
 // addresses.
 func (n *Node) Dial(ctx context.Context, node, network, address string) (net.Conn, error) {
 	if !n.Enabled() {
-		return nil, wire.Errorf(wire.CodeFailed, "gst mesh is not enabled on this machine; run `gst mesh enable`")
+		return nil, errDisabled
 	}
 	target := wire.Target{Network: network, Address: address}
 	if err := checkTarget(target); err != nil {
@@ -166,11 +166,7 @@ func (n *Node) sessionTo(id string) *yamux.Session {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for l := range n.links {
-		l.mu.Lock()
-		up := l.info.State == wire.LinkUp && l.info.Peer.ID == id && l.session != nil && !l.session.IsClosed()
-		session := l.session
-		l.mu.Unlock()
-		if up {
+		if session := l.sessionTo(id); session != nil {
 			return session
 		}
 	}
@@ -181,58 +177,41 @@ func (n *Node) sessionTo(id string) *yamux.Session {
 // server is the machine id.
 func (n *Node) tunnelTo(id string) *ssh.Client {
 	topo := n.Topology()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	for _, e := range topo.Edges {
-		if e.From != topo.Self || e.To != id || e.State != wire.StateRunning {
+		if e.From != topo.Self || e.To != id {
 			continue
 		}
-		n.mu.Lock()
-		for l := range n.links {
-			l.mu.Lock()
-			client := l.client
-			match := l.info.Direction == wire.LinkOut && l.info.Tunnel == e.Tunnel && client != nil
-			l.mu.Unlock()
-			if match {
-				n.mu.Unlock()
-				return client
+		for t := range n.tunnels {
+			if t.name == e.Tunnel {
+				if client := t.connection(); client != nil {
+					return client
+				}
 			}
 		}
-		n.mu.Unlock()
 	}
 	return nil
 }
 
-// serveRelay answers relay.open on stream and then carries the
-// connection's bytes until either side ends.
-func (n *Node) serveRelay(ctx context.Context, stream streamConn, params json.RawMessage) {
-	var p wire.RelayParams
-	if err := wire.DecodeParams(params, &p); err != nil {
-		wire.Reply(stream, nil, err)
-		return
-	}
+// serveRelay answers relay.open and then carries the connection's bytes
+// until either side ends.
+func (n *Node) serveRelay(ctx context.Context, conn net.Conn, p wire.RelayParams, accept func(any) error) error {
 	if err := checkTarget(p.Target); err != nil {
-		wire.Reply(stream, nil, err)
-		return
+		return err
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, relayTimeout)
-	conn, err := n.open(dialCtx, p.Path, p.Target)
+	target, err := n.open(dialCtx, p.Path, p.Target)
 	cancel()
 	if err != nil {
-		wire.Reply(stream, nil, asWireError(err))
-		return
+		return err
 	}
-	defer conn.Close()
-	if wire.Reply(stream, nil, nil) != nil {
-		return
+	defer target.Close()
+	if err := accept(nil); err != nil {
+		return err
 	}
-	tunnel.Relay(stream, conn)
-}
-
-func asWireError(err error) *wire.Error {
-	var callErr *wire.Error
-	if errors.As(err, &callErr) {
-		return callErr
-	}
-	return wire.Errorf(wire.CodeFailed, "%v", err)
+	tunnel.Relay(conn, target)
+	return nil
 }
 
 // FindNode finds a machine of topo by its id, its name, or a prefix of at
@@ -269,43 +248,20 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 // goes on past a machine only over a peer link that is up, in either
 // direction; its last step may also be a running tunnel without one.
 func Route(topo wire.Topology, id string) ([]string, error) {
-	if id == topo.Self {
-		return []string{id}, nil
-	}
-	// parent leads back to Self from every machine that relays.
-	parent := map[string]string{topo.Self: ""}
-	queue := []string{topo.Self}
-	for len(queue) > 0 {
-		from := queue[0]
-		queue = queue[1:]
-		for _, e := range topo.Edges {
-			var next string
-			switch {
-			case e.From == from && (e.Linked || e.State == wire.StateRunning):
-				next = e.To
-			case e.To == from && e.Linked:
-				next = e.From
-			default:
-				continue
-			}
-			if next == id {
-				path := []string{id}
-				for at := from; at != ""; at = parent[at] {
-					path = append([]string{at}, path...)
-				}
-				return path, nil
-			}
-			if _, seen := parent[next]; e.Linked && !seen {
-				parent[next] = from
-				queue = append(queue, next)
+	prev := reach(topo.Edges, topo.Self)
+	if _, ok := prev[id]; !ok {
+		name := id
+		for _, node := range topo.Nodes {
+			if node.ID == id {
+				name = node.Name
 			}
 		}
+		return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: it is not reachable through running tunnels and peer links; see gst mesh nodes", name)
 	}
-	name := id
-	for _, node := range topo.Nodes {
-		if node.ID == id {
-			name = node.Name
-		}
+	var path []string
+	for at := id; at != ""; at = prev[at] {
+		path = append(path, at)
 	}
-	return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: it is not reachable through running tunnels and peer links; see gst mesh nodes", name)
+	slices.Reverse(path)
+	return path, nil
 }

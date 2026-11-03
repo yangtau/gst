@@ -45,18 +45,12 @@ func TestTopologySpreads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m3, mini, devcn := newNode("m3"), newNode("mini"), newNode("devcn")
-	m3.SetEdges(func() []wire.Edge {
-		return []wire.Edge{
-			{Tunnel: "devcn", Destination: "devcn.example.com", State: wire.StateRunning, HostKey: "SHA256:devcn"},
-			{Tunnel: "mini", Destination: "mini", State: wire.StateRunning, HostKey: "SHA256:mini"},
-		}
-	})
 	for _, n := range []*Node{m3, mini, devcn} {
 		go n.Run(ctx)
 		n.Update()
 	}
-	connectOver(ctx, m3, mini, "mini")
-	connectOver(ctx, m3, devcn, "devcn")
+	linkTunnel(ctx, m3, mini, "mini", "SHA256:mini")
+	linkTunnel(ctx, m3, devcn, "devcn", "SHA256:devcn")
 
 	want := "mini+gst+reach devcn+gst+reach m3+gst+reach | m3>devcn:devcn:running:linked m3>mini:mini:running:linked"
 	waitFor(t, "mini does not see the mesh", func() bool { return describe(mini.Topology()) == want })

@@ -5,7 +5,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -52,7 +51,8 @@ type Config struct {
 type Daemon struct {
 	cfg Config
 
-	mesh *mesh.Node
+	mesh    *mesh.Node
+	control wire.Server // the methods of control connections
 
 	ops     sync.Mutex // serializes reloads and restarts
 	mu      sync.Mutex // guards tunnels
@@ -78,26 +78,26 @@ func New(cfg Config) *Daemon {
 		m.SetHostKeyFiles(cfg.HostKeyFiles)
 	}
 	d := &Daemon{cfg: cfg, mesh: m, tunnels: map[string]*supervisor{}}
-	m.SetEdges(d.meshEdges)
-	return d
-}
-
-// meshEdges describes the tunnels with mesh on.
-func (d *Daemon) meshEdges() []wire.Edge {
-	d.mu.Lock()
-	var list []*supervisor
-	for _, s := range d.tunnels {
-		if s.spec.Mesh {
-			list = append(list, s)
+	none := func(f func() any) func(context.Context, struct{}) (any, error) {
+		return func(context.Context, struct{}) (any, error) { return f(), nil }
+	}
+	wire.Handle(&d.control, wire.MethodStatus, none(func() any { return d.Status() }))
+	wire.Handle(&d.control, wire.MethodPeers, none(func() any { return m.Peers() }))
+	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Topology() }))
+	wire.Handle(&d.control, wire.MethodReload, func(ctx context.Context, _ struct{}) (any, error) {
+		if err := d.Reload(ctx); err != nil {
+			return nil, err
 		}
-	}
-	d.mu.Unlock()
-	edges := make([]wire.Edge, 0, len(list))
-	for _, s := range list {
-		st := s.state()
-		edges = append(edges, wire.Edge{Tunnel: s.name, Destination: s.spec.Destination, State: st.State, HostKey: s.hostKeyFingerprint()})
-	}
-	return edges
+		return d.Status(), nil
+	})
+	wire.Handle(&d.control, wire.MethodRestart, func(ctx context.Context, p wire.RestartParams) (any, error) {
+		if err := d.Restart(ctx, p.Names); err != nil {
+			return nil, err
+		}
+		return d.Status(), nil
+	})
+	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
+	return d
 }
 
 // Serve takes the control socket, starts the configured tunnels, and
@@ -170,106 +170,39 @@ func listen(socket string) (net.Listener, func(), error) {
 	return listener, func() { listener.Close(); lock.Close() }, nil
 }
 
-func (d *Daemon) hello() wire.Hello {
-	return wire.Hello{Software: d.cfg.Software, Role: wire.RoleControl, Build: d.cfg.Build}
-}
-
 // serveConn serves a gst command (role control) or, through gst
 // peer-bridge, a peer daemon (role peer).
 func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
-	var role string
-	hello := d.hello()
-	_, err := wire.Accept(conn, hello, func(h wire.Hello) *wire.Error {
-		role = h.Role
-		switch h.Role {
-		case wire.RoleControl:
-			return nil
-		case wire.RolePeer:
-			return d.mesh.CheckHello(h)
-		}
-		return wire.Errorf(wire.CodeUnsupportedRole, "role %q is not supported", h.Role)
-	}, func(h wire.Hello) wire.Hello {
-		if h.Role == wire.RolePeer {
-			return d.mesh.Hello()
-		}
-		return hello
-	})
+	theirs, err := wire.ReadHello(conn)
 	if err != nil {
 		return
 	}
-	if role == wire.RolePeer {
-		d.mesh.Accept(ctx, conn)
-		return
-	}
-	for {
-		var req wire.Request
-		if err := wire.ReadFrame(conn, &req); err != nil {
-			return
+	mine := wire.Hello{Software: d.cfg.Software, Role: wire.RoleControl, Build: d.cfg.Build}
+	switch theirs.Role {
+	case wire.RolePeer:
+		d.mesh.Accept(ctx, conn, theirs)
+	case wire.RoleControl:
+		if wire.Answer(conn, theirs, mine, nil) == nil {
+			d.control.Serve(ctx, conn)
 		}
-		if req.Method == wire.MethodConnect {
-			d.connect(ctx, conn, req.Params)
-			return
-		}
-		result, callErr := d.handle(ctx, req.Method, req.Params)
-		if err := wire.Reply(conn, result, callErr); err != nil {
-			return
-		}
+	default:
+		wire.Answer(conn, theirs, mine, wire.Errorf(wire.CodeUnsupportedRole, "role %q is not supported", theirs.Role))
 	}
 }
 
 // connect answers mesh.connect and then carries the bytes of the
 // connection until either side ends.
-func (d *Daemon) connect(ctx context.Context, conn net.Conn, params json.RawMessage) {
-	var p wire.ConnectParams
-	if err := wire.DecodeParams(params, &p); err != nil {
-		wire.Reply(conn, nil, err)
-		return
-	}
+func (d *Daemon) connect(ctx context.Context, conn net.Conn, p wire.ConnectParams, accept func(any) error) error {
 	target, err := d.mesh.Dial(ctx, p.Node, p.Target.Network, p.Target.Address)
 	if err != nil {
-		var callErr *wire.Error
-		if !errors.As(err, &callErr) {
-			callErr = wire.Errorf(wire.CodeFailed, "%v", err)
-		}
-		wire.Reply(conn, nil, callErr)
-		return
+		return err
 	}
 	defer target.Close()
-	if wire.Reply(conn, nil, nil) != nil {
-		return
+	if err := accept(nil); err != nil {
+		return err
 	}
 	tunnel.Relay(conn, target)
-}
-
-func (d *Daemon) handle(ctx context.Context, method string, params json.RawMessage) (any, *wire.Error) {
-	switch method {
-	case wire.MethodStatus:
-		return d.Status(), nil
-	case wire.MethodPeers:
-		return d.mesh.Peers(), nil
-	case wire.MethodNodes:
-		return d.mesh.Topology(), nil
-	case wire.MethodReload:
-		if err := d.Reload(ctx); err != nil {
-			return nil, wire.Errorf(wire.CodeFailed, "%v", err)
-		}
-		return d.Status(), nil
-	case wire.MethodRestart:
-		var p wire.RestartParams
-		if err := wire.DecodeParams(params, &p); err != nil {
-			return nil, err
-		}
-		if err := d.Restart(ctx, p.Names); err != nil {
-			var werr *wire.Error
-			if errors.As(err, &werr) {
-				return nil, werr
-			}
-			return nil, wire.Errorf(wire.CodeFailed, "%v", err)
-		}
-		return d.Status(), nil
-	default:
-		return nil, wire.Errorf(wire.CodeUnsupportedMethod, "method %q is not supported", method)
-	}
+	return nil
 }
 
 // Status reports the daemon and its tunnels, sorted by name.
@@ -373,7 +306,6 @@ func (d *Daemon) start(name string, t *config.Tunnel) error {
 	d.tunnels[name] = s
 	d.mu.Unlock()
 	go s.run()
-	d.mesh.Update()
 	d.cfg.Log.Printf("tunnel %s started", name)
 	return nil
 }

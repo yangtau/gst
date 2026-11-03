@@ -9,10 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
+	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -29,12 +28,13 @@ type supervisor struct {
 	ctx     context.Context
 	stopped chan struct{}
 
+	meshTunnel *mesh.Tunnel // for a tunnel with mesh on
+
 	mu         sync.Mutex
 	current    string
 	since      time.Time
 	lastErr    string
 	reconnects int
-	hostKey    string // the server's host key fingerprint, once connected
 }
 
 func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.File) *supervisor {
@@ -43,7 +43,7 @@ func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.F
 	if logOut != nil {
 		w = logOut
 	}
-	return &supervisor{
+	s := &supervisor{
 		d:       d,
 		name:    name,
 		spec:    spec,
@@ -55,6 +55,10 @@ func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.F
 		current: wire.StateConnecting,
 		since:   time.Now(),
 	}
+	if spec.Mesh {
+		s.meshTunnel = d.mesh.AddTunnel(name, spec.Destination, spec.RemoteGst, s.log)
+	}
+	return s
 }
 
 func (s *supervisor) set(state, lastErr string) {
@@ -66,15 +70,9 @@ func (s *supervisor) set(state, lastErr string) {
 	if lastErr != "" {
 		s.lastErr = lastErr
 	}
-	if s.spec.Mesh {
-		s.d.mesh.Update()
+	if s.meshTunnel != nil {
+		s.meshTunnel.SetState(state)
 	}
-}
-
-func (s *supervisor) hostKeyFingerprint() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hostKey
 }
 
 func (s *supervisor) state() wire.TunnelState {
@@ -134,14 +132,8 @@ func (s *supervisor) connect() error {
 	}
 	opts.Logger = s.log
 	opts.OnReady = func() { s.set(wire.StateRunning, "") }
-	if s.spec.Mesh {
-		opts.Attach = func(ctx context.Context, client *ssh.Client, hostKey ssh.PublicKey) {
-			s.mu.Lock()
-			s.hostKey = ssh.FingerprintSHA256(hostKey)
-			s.mu.Unlock()
-			s.d.mesh.Update()
-			s.d.mesh.Link(ctx, s.name, client, s.spec.RemoteGst, s.log)
-		}
+	if s.meshTunnel != nil {
+		opts.Attach = s.meshTunnel.Connected
 	}
 	return s.d.cfg.Run(s.ctx, opts)
 }
@@ -151,7 +143,9 @@ func (s *supervisor) stop() {
 	s.cancel()
 	<-s.stopped
 	s.log.Print("tunnel stopped")
-	s.d.mesh.Update()
+	if s.meshTunnel != nil {
+		s.meshTunnel.Remove()
+	}
 	s.d.cfg.Log.Printf("tunnel %s stopped", s.name)
 	if s.logOut != nil {
 		s.logOut.Close()
