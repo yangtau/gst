@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func validTunnel() *Tunnel {
@@ -286,4 +288,40 @@ func TestPaths(t *testing.T) {
 			t.Errorf("AbsPath(%q) accepted", path)
 		}
 	}
+}
+
+func TestApply(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Update(path, func(f *File) error {
+		f.Tunnels["web"] = &Tunnel{Destination: "myhost", Forwards: []Forward{}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Applies run one at a time, each with the configuration as it is then.
+	var mu sync.Mutex
+	running := 0
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			err := Apply(path, func(f *File) error {
+				mu.Lock()
+				running++
+				overlap := running > 1
+				mu.Unlock()
+				time.Sleep(10 * time.Millisecond)
+				mu.Lock()
+				running--
+				mu.Unlock()
+				if overlap || f.Tunnels["web"] == nil {
+					return errors.New("overlapping apply or missing tunnel")
+				}
+				return nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
 }

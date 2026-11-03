@@ -315,25 +315,28 @@ func (a *app) daemonCommand() ([]string, error) {
 
 // sync makes the daemon run the started tunnels of the configuration.
 func (a *app) sync(ctx context.Context) error {
-	f, err := a.load()
+	path, err := a.configPath()
 	if err != nil {
 		return err
-	}
-	needed := f.Mesh != nil
-	for _, t := range f.Tunnels {
-		needed = needed || !t.Stopped
-	}
-	var command []string
-	if needed {
-		if command, err = a.daemonCommand(); err != nil {
-			return err
-		}
 	}
 	b, err := a.backend()
 	if err != nil {
 		return err
 	}
-	return b.Sync(ctx, command, needed)
+	return config.Apply(path, func(f *config.File) error {
+		needed := f.Mesh != nil
+		for _, t := range f.Tunnels {
+			needed = needed || !t.Stopped
+		}
+		var command []string
+		if needed {
+			var err error
+			if command, err = a.daemonCommand(); err != nil {
+				return err
+			}
+		}
+		return b.Sync(ctx, command, needed)
+	})
 }
 
 // restart restarts started tunnels with their current configuration.

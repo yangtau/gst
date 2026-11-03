@@ -149,8 +149,9 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser) {
 	}
 	l := n.add(wire.LinkIn, "")
 	defer n.remove(l)
+	// The reason may quote the peer, so the log leaves it out.
 	if err := n.run(ctx, l, session, nil); err != nil && ctx.Err() == nil && n.Enabled() {
-		n.log.Printf("incoming peer link ended: %v", err)
+		n.log.Print("incoming peer link ended")
 	}
 }
 
@@ -226,6 +227,9 @@ func (n *Node) dial(ctx context.Context, l *link, client *ssh.Client, remoteGst 
 	return err
 }
 
+// handshakeTimeout bounds the start of the remote gst and its Hello.
+const handshakeTimeout = 30 * time.Second
+
 var errNoAnswer = errors.New("the remote gst did not answer; is gst 0.2 or later installed there? See --remote-gst")
 
 // linkOver runs the connecting side of a peer link over conn, which leads
@@ -235,7 +239,13 @@ func (n *Node) linkOver(ctx context.Context, l *link, conn io.ReadWriteCloser, o
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 
+	// A remote gst that starts but never answers would hold the link in
+	// connecting forever.
+	timeout := time.AfterFunc(handshakeTimeout, func() { conn.Close() })
 	hello, err := wire.Dial(conn, n.Hello())
+	if !timeout.Stop() && err == nil {
+		err = errors.New("handshake timed out")
+	}
 	if err != nil {
 		var refused *wire.Error
 		if errors.As(err, &refused) {
@@ -326,7 +336,7 @@ func (n *Node) serve(ctx context.Context, session *yamux.Session) {
 				n.serveSync(stream, session, req.Params)
 				return
 			case wire.MethodRelayOpen:
-				n.serveRelay(ctx, stream, req.Params)
+				n.serveRelay(ctx, streamConn{stream, session}, req.Params)
 				return
 			}
 			result, callErr := n.handle(req.Method, req.Params)

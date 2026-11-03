@@ -3,6 +3,8 @@ package mesh
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -149,12 +151,13 @@ func (n *Node) merge(recs []wire.Record) {
 	now := time.Now()
 	changed := false
 	for _, r := range recs {
-		if !config.ValidMeshID(r.Node.ID) || len(r.Edges) > maxEdges || !r.Expires.After(now) {
+		if !config.ValidMeshID(r.Node.ID) || len(r.Edges) > maxEdges || !r.Expires.After(now) || !fits(r) {
 			continue
 		}
 		if r.Node.ID == n.info.ID {
-			// An older run of this daemon published it; outdo it.
-			if r.Seq >= n.records[n.info.ID].Seq {
+			// An older run of this daemon published it; outdo it. Peers
+			// also pass this node's current record back, which is no news.
+			if r.Seq > n.records[n.info.ID].Seq {
 				n.seqFloor = max(n.seqFloor, r.Seq)
 				n.republish = true
 				n.Update()
@@ -175,6 +178,8 @@ func (n *Node) merge(recs []wire.Record) {
 
 // sync asks the peer for its records and keeps merging the ones it
 // pushes until the session ends. A peer without topology.sync sends none.
+// When the exchange fails otherwise, sync closes the session, so that the
+// link starts over rather than staying up without updates.
 func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 	stream, err := session.OpenStream()
 	if err != nil {
@@ -183,15 +188,15 @@ func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 	defer stream.Close()
 	defer context.AfterFunc(ctx, func() { stream.Close() })()
 	var recs wire.Records
-	if err := wire.Call(stream, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs); err != nil {
-		return
-	}
-	for {
+	err = wire.Call(stream, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
+	for err == nil {
 		n.merge(recs.Records)
 		recs = wire.Records{}
-		if err := wire.ReadFrame(stream, &recs); err != nil {
-			return
-		}
+		err = wire.ReadFrame(stream, &recs)
+	}
+	var callErr *wire.Error
+	if ctx.Err() == nil && !(errors.As(err, &callErr) && callErr.Code == wire.CodeUnsupportedMethod) {
+		session.Close()
 	}
 }
 
@@ -207,26 +212,55 @@ func (n *Node) serveSync(stream *yamux.Stream, session *yamux.Session, params []
 	for id, seq := range p.Known {
 		sent[id] = seq
 	}
+	// The answer carries the first batch; further batches follow as pushes.
 	recs, changed := n.newer(sent)
+	batches := batch(recs)
 	stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if wire.Reply(stream, wire.Records{Records: recs}, nil) != nil {
+	if wire.Reply(stream, wire.Records{Records: batches[0]}, nil) != nil {
 		return
 	}
 	for {
+		for _, b := range batches[1:] {
+			stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if wire.WriteFrame(stream, wire.Records{Records: b}) != nil {
+				return
+			}
+		}
 		select {
 		case <-changed:
 		case <-session.CloseChan():
 			return
 		}
 		recs, changed = n.newer(sent)
-		if len(recs) == 0 {
-			continue
-		}
-		stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if wire.WriteFrame(stream, wire.Records{Records: recs}) != nil {
-			return
-		}
+		batches = append([][]wire.Record{nil}, batch(recs)...)
 	}
+}
+
+// maxBatch bounds the encoded records of one frame. Nodes keep only
+// records that fit, so that they can pass every record on.
+const maxBatch = wire.MaxFrame / 2
+
+func fits(r wire.Record) bool {
+	raw, err := json.Marshal(r)
+	return err == nil && len(raw) <= maxBatch
+}
+
+// batch splits records into lists that each fit in a frame; it returns at
+// least one list.
+func batch(recs []wire.Record) [][]wire.Record {
+	batches := [][]wire.Record{{}}
+	size := 0
+	for _, r := range recs {
+		raw, _ := json.Marshal(r)
+		last := len(batches) - 1
+		if size+len(raw) > maxBatch && len(batches[last]) > 0 {
+			batches = append(batches, []wire.Record{})
+			last, size = last+1, 0
+		}
+		batches[last] = append(batches[last], r)
+		size += len(raw)
+	}
+	return batches
 }
 
 // Topology reports the mesh as this node knows it.

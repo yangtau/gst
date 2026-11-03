@@ -651,6 +651,13 @@ func TestMigratesLegacyServices(t *testing.T) {
 	if len(e.back.calls) != 0 {
 		t.Fatalf("migrated again: %v", e.back.calls)
 	}
+
+	// A service left behind by an interrupted migration goes later.
+	e.back.legacy["db"] = true
+	e.mustGst("list")
+	if !slices.Equal(e.back.calls, []string{"remove-legacy db", "sync"}) || e.back.legacy["db"] {
+		t.Fatalf("leftover service: calls %v", e.back.calls)
+	}
 }
 
 func TestMesh(t *testing.T) {

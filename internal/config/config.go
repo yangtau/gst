@@ -149,19 +149,11 @@ func (f *File) validate() error {
 // writes the result atomically, so concurrent gst commands do not lose
 // each other's changes. Nothing is written if fn fails.
 func Update(path string, fn func(*File) error) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	unlock, err := lock(path + ".lock")
 	if err != nil {
-		return fmt.Errorf("open config lock: %w", err)
+		return err
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("lock config: %w", err)
-	}
-
+	defer unlock()
 	f, err := Load(path)
 	if err != nil {
 		return err
@@ -182,6 +174,41 @@ func Update(path string, fn func(*File) error) error {
 		return err
 	}
 	return writeFileAtomic(path, append(data, '\n'))
+}
+
+// Apply runs fn on the configuration file under a lock of its own, so
+// that gst commands that apply the configuration in the background, each
+// after its own change, do so one at a time with the latest configuration;
+// otherwise one could act on a configuration that another has changed
+// since. fn may read the configuration but not update it.
+func Apply(path string, fn func(*File) error) error {
+	unlock, err := lock(path + ".apply.lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	f, err := Load(path)
+	if err != nil {
+		return err
+	}
+	return fn(f)
+}
+
+// lock takes an exclusive lock on the file at path, creating it and its
+// directory.
+func lock(path string) (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create config directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open config lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock config: %w", err)
+	}
+	return func() { f.Close() }, nil
 }
 
 func writeFileAtomic(path string, data []byte) error {

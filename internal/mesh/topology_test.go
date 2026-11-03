@@ -2,7 +2,9 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,13 +121,64 @@ func TestMergeKeepsNewest(t *testing.T) {
 		t.Fatalf("records %+v", n.records)
 	}
 
-	// A record of this node from an earlier run makes it outdo that one.
+	// Peers pass this node's own record back; that changes nothing.
 	n.publish(false)
+	select { // drop the request from Configure
+	case <-n.update:
+	default:
+	}
+	own := n.records[id("mini")]
+	n.merge([]wire.Record{own})
+	select {
+	case <-n.update:
+		t.Fatal("an echo of this node's record made it publish again")
+	default:
+	}
+
+	// A record of this node from an earlier run makes it outdo that one.
 	future := n.records[id("mini")].Seq + uint64(time.Hour)
 	n.merge([]wire.Record{rec("mini", future)})
 	<-n.update
 	n.publish(false)
 	if seq := n.records[id("mini")].Seq; seq <= future {
 		t.Fatalf("own seq %d, earlier run %d", seq, future)
+	}
+}
+
+func TestBatch(t *testing.T) {
+	big := wire.Record{Node: wire.NodeInfo{ID: id("big")}, Edges: make([]wire.Edge, 1000)}
+	for i := range big.Edges {
+		big.Edges[i] = wire.Edge{Tunnel: fmt.Sprintf("tunnel-%d", i), Destination: strings.Repeat("d", 200), State: wire.StateRunning}
+	}
+	if !fits(big) {
+		t.Fatal("a record of 1000 edges does not fit in a batch")
+	}
+	batches := batch([]wire.Record{big, big, big, big})
+	if len(batches) < 2 {
+		t.Fatalf("%d batches", len(batches))
+	}
+	total := 0
+	for _, b := range batches {
+		raw, _ := json.Marshal(wire.Records{Records: b})
+		if len(raw) > wire.MaxFrame {
+			t.Fatalf("batch of %d bytes", len(raw))
+		}
+		total += len(b)
+	}
+	if total != 4 {
+		t.Fatalf("%d records in batches", total)
+	}
+	if b := batch(nil); len(b) != 1 || len(b[0]) != 0 {
+		t.Fatalf("batches of nothing: %v", b)
+	}
+
+	huge := big
+	huge.Edges = slices.Repeat(big.Edges, 4)[:maxEdges]
+	huge.Edges[0].Destination = strings.Repeat("d", wire.MaxFrame)
+	n := newNode("mini")
+	huge.Seq, huge.Expires = 1, time.Now().Add(time.Hour)
+	n.merge([]wire.Record{huge})
+	if _, ok := n.records[huge.Node.ID]; ok {
+		t.Fatal("kept a record too large to pass on")
 	}
 }

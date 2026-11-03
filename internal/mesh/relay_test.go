@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -147,5 +148,65 @@ func TestRoute(t *testing.T) {
 	}
 	if _, err := FindNode(topo, "web"); err == nil || !strings.Contains(err.Error(), "several machines") {
 		t.Errorf("ambiguous name: %v", err)
+	}
+}
+
+// When the peer link is lost, both ends of a relayed connection close,
+// even if neither side ever ends its direction.
+func TestRelayEndsWithLink(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m3, devcn := newNode("m3"), newNode("devcn")
+	m3.SetEdges(func() []wire.Edge { return []wire.Edge{{Tunnel: "devcn", State: wire.StateRunning}} })
+	for _, n := range []*Node{m3, devcn} {
+		go n.Run(ctx)
+		n.Update()
+	}
+	connectOver(ctx, m3, devcn, "devcn")
+	waitFor(t, "m3 does not see devcn", func() bool {
+		path, err := Route(m3.Topology(), devcn.self().ID)
+		return err == nil && len(path) == 2
+	})
+
+	// The target never writes and never closes.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	targetClosed := make(chan struct{})
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		io.Copy(io.Discard, c)
+		close(targetClosed)
+	}()
+
+	c, err := m3.Dial(ctx, "devcn", "tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	read := make(chan error, 1)
+	go func() {
+		_, err := c.Read(make([]byte, 1))
+		read <- err
+	}()
+	devcn.Configure(nil) // closes the link
+	select {
+	case err := <-read:
+		if err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("read after the link was lost: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection outlived its peer link")
+	}
+	select {
+	case <-targetClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the target connection outlived the peer link")
 	}
 }

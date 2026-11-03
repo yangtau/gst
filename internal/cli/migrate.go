@@ -12,12 +12,13 @@ import (
 // migrate moves a configuration from gst 0.1, where each started tunnel
 // had its own background service, to the daemon: tunnels with a service
 // stay started and move to the daemon; the others are marked stopped.
+// Services that an interrupted migration left behind are removed later.
 func (a *app) migrate(cmd *cobra.Command) error {
 	if !needsConfig(cmd) {
 		return nil
 	}
 	f, err := a.load()
-	if err != nil || f.Version >= config.Version {
+	if err != nil {
 		// A broken configuration is reported by the command itself.
 		return nil
 	}
@@ -25,24 +26,28 @@ func (a *app) migrate(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	var moved []string
-	err = a.update(func(f *config.File) error {
-		moved = nil
-		if f.Version >= config.Version {
-			return nil
-		}
-		for _, name := range sortedNames(f) {
-			if b.HasLegacy(name) {
-				moved = append(moved, name)
-			} else {
-				f.Tunnels[name].Stopped = true
+	if f.Version < config.Version {
+		err = a.update(func(f *config.File) error {
+			if f.Version >= config.Version {
+				return nil
 			}
+			for _, name := range sortedNames(f) {
+				if !b.HasLegacy(name) {
+					f.Tunnels[name].Stopped = true
+				}
+			}
+			f.Version = config.Version
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-		f.Version = config.Version
-		return nil
-	})
-	if err != nil {
-		return err
+	}
+	var moved []string
+	for _, name := range sortedNames(f) {
+		if b.HasLegacy(name) {
+			moved = append(moved, name)
+		}
 	}
 	for _, name := range moved {
 		if err := b.RemoveLegacy(name); err != nil {

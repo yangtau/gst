@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -113,10 +114,13 @@ func relayOver(ctx context.Context, session *yamux.Session, path []string, targe
 	if err != nil {
 		return nil, wire.Errorf(wire.CodeFailed, "the peer link closed")
 	}
-	stop := context.AfterFunc(ctx, func() { stream.Close() })
-	err = wire.Call(stream, wire.MethodRelayOpen, wire.RelayParams{Path: path, Target: target}, nil)
+	conn := streamConn{stream, session}
+	// Closing a yamux stream only ends writing; a deadline ends the wait
+	// for the answer.
+	stop := context.AfterFunc(ctx, func() { stream.SetDeadline(time.Now()) })
+	err = wire.Call(conn, wire.MethodRelayOpen, wire.RelayParams{Path: path, Target: target}, nil)
 	if !stop() || err != nil {
-		stream.Close()
+		conn.Close()
 		var callErr *wire.Error
 		if errors.As(err, &callErr) {
 			return nil, callErr
@@ -126,7 +130,35 @@ func relayOver(ctx context.Context, session *yamux.Session, path []string, targe
 		}
 		return nil, wire.Errorf(wire.CodeFailed, "the relay failed: %v", err)
 	}
-	return stream, nil
+	return conn, nil
+}
+
+// streamConn is a relayed connection over a yamux stream. CloseWrite ends
+// writing, as closing a yamux stream does, while Close also ends reading.
+// When the peer link is lost, reading fails rather than ending cleanly, so
+// that the relay at each end closes the connection instead of waiting for
+// the other direction, which would never end.
+type streamConn struct {
+	*yamux.Stream
+	session *yamux.Session
+}
+
+var errLinkLost = errors.New("the peer link closed")
+
+func (c streamConn) Read(p []byte) (int, error) {
+	n, err := c.Stream.Read(p)
+	if err == io.EOF && c.session.IsClosed() {
+		err = errLinkLost
+	}
+	return n, err
+}
+
+func (c streamConn) CloseWrite() error { return c.Stream.Close() }
+
+func (c streamConn) Close() error {
+	err := c.Stream.Close()
+	c.Stream.SetReadDeadline(time.Now())
+	return err
 }
 
 // sessionTo returns the session of an up peer link with node id.
@@ -171,7 +203,7 @@ func (n *Node) tunnelTo(id string) *ssh.Client {
 
 // serveRelay answers relay.open on stream and then carries the
 // connection's bytes until either side ends.
-func (n *Node) serveRelay(ctx context.Context, stream *yamux.Stream, params json.RawMessage) {
+func (n *Node) serveRelay(ctx context.Context, stream streamConn, params json.RawMessage) {
 	var p wire.RelayParams
 	if err := wire.DecodeParams(params, &p); err != nil {
 		wire.Reply(stream, nil, err)
