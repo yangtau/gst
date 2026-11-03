@@ -15,10 +15,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -34,8 +36,9 @@ func (a *app) uiCommand() *cobra.Command {
 		Long: `Show this machine's tunnels, its peer links, and the mesh as this machine
 knows it in a web page that keeps itself up to date. gst ui serves the page
 on 127.0.0.1 until interrupted, prints its address, and opens it in a
-browser. The address ends with a secret that the page needs; anyone with
-the address can view the page, which only shows and changes nothing.`,
+browser. The page can also start, stop, and restart this machine's
+tunnels. The address ends with a secret that the page needs; anyone with
+the address can use the page while gst ui runs.`,
 		Example: `  gst ui
   gst ui --port 8370 --no-open   # on a server: ssh -L 8370:localhost:8370 myhost`,
 		Args: a.args(0, 0),
@@ -145,6 +148,11 @@ func (a *app) uiState(ctx context.Context) (uiState, error) {
 // a CORS preflight that the handler never approves; the Host check stops
 // DNS rebinding.
 func (a *app) uiHandler(token string) http.Handler {
+	authorized := func(r *http.Request) bool {
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		return ok && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	}
+	var acting sync.Mutex // one change at a time, as from one command line
 	mux := http.NewServeMux()
 	static, err := fs.Sub(uiFiles, "ui")
 	if err != nil {
@@ -152,8 +160,7 @@ func (a *app) uiHandler(token string) http.Handler {
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
-		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		if !authorized(r) {
 			http.Error(w, "open the address that gst ui printed", http.StatusUnauthorized)
 			return
 		}
@@ -166,6 +173,20 @@ func (a *app) uiHandler(token string) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(state)
+	})
+	mux.HandleFunc("POST /api/tunnels/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(r) {
+			http.Error(w, "open the address that gst ui printed", http.StatusUnauthorized)
+			return
+		}
+		acting.Lock()
+		defer acting.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		result, status := a.uiAction(ctx, r.PathValue("name"), r.PathValue("action"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(result)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !loopbackHost(r.Host) {
@@ -192,4 +213,48 @@ func loopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// uiResult is the outcome of a change made on the page: what the command
+// line would print, and its error and hint.
+type uiResult struct {
+	Message string `json:"message,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Hint    string `json:"hint,omitempty"`
+}
+
+// uiAction starts, stops, or restarts one tunnel as gst start, stop, and
+// restart do, and returns what they would print.
+func (a *app) uiAction(ctx context.Context, name, action string) (uiResult, int) {
+	var out strings.Builder
+	c := *a // a copy that prints to out and fetches its own states
+	c.stdout, c.states = &out, nil
+	var run func(ctx context.Context, f *config.File, names []string, all bool) error
+	switch action {
+	case "start":
+		run = c.startTunnels
+	case "stop":
+		run = c.stopTunnels
+	case "restart":
+		run = c.restartTunnels
+	default:
+		return uiResult{Error: fmt.Sprintf("unknown action %q", action)}, http.StatusNotFound
+	}
+	f, err := c.load()
+	if err == nil {
+		_, err = lookup(f, name)
+		if err == nil {
+			err = run(ctx, f, []string{name}, false)
+		}
+	}
+	result := uiResult{Message: strings.TrimSpace(out.String())}
+	if err == nil {
+		return result, http.StatusOK
+	}
+	result.Error = err.Error()
+	var hinted *hintError
+	if errors.As(err, &hinted) {
+		result.Hint = hinted.hint
+	}
+	return result, http.StatusConflict
 }

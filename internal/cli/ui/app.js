@@ -79,10 +79,63 @@ function renderTunnels(tunnels) {
     if (t.via === "mesh") dest.push(el("span", { class: "sub" }, "through the mesh"));
     else if (t.mesh) dest.push(el("span", { class: "sub" }, "mesh on"));
     const fwds = t.forwards.length ? t.forwards.map((f) => el("span", { class: "fwd" }, f.spec)) : [el("span", { class: "sub" }, "none")];
-    return [el("strong", null, t.name), status, dest, fwds];
+    return [el("strong", null, t.name), status, dest, fwds, actions(t)];
   }));
   $("tunnels").hidden = tunnels.length === 0;
   $("tunnels-empty").hidden = tunnels.length !== 0;
+}
+
+// actions returns the buttons that change a tunnel, as gst start, stop,
+// and restart do.
+function actions(t) {
+  const names = t.status === "stopped" ? ["start"] : ["restart", "stop"];
+  const box = el("span", { class: "actions" });
+  for (const action of names) {
+    const b = el("button", { type: "button", class: action === "stop" ? "quiet" : "" }, ACTIONS[action][0]);
+    b.disabled = busy;
+    b.addEventListener("click", () => act(t.name, action));
+    box.append(b);
+  }
+  return box;
+}
+
+let busy = false;
+let noticeTimer;
+const ACTIONS = { start: ["Start", "Starting"], stop: ["Stop", "Stopping"], restart: ["Restart", "Restarting"] };
+
+async function act(name, action) {
+  if (busy) return;
+  busy = true;
+  clearTimeout(noticeTimer);
+  for (const b of document.querySelectorAll(".actions button")) b.disabled = true;
+  showNotice(`${ACTIONS[action][1]} ${name}…`);
+  try {
+    const res = await fetch(`api/tunnels/${encodeURIComponent(name)}/${action}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token },
+    });
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    if (res.ok) {
+      showNotice(body.message || "Done.");
+      noticeTimer = setTimeout(() => showNotice(""), 6000);
+    } else {
+      showNotice("");
+      showAlert((body.error || res.statusText) + (body.hint ? ` — ${body.hint}` : ""));
+      alertSticky = Date.now() + 8000;
+    }
+  } catch (err) {
+    showNotice("");
+    showAlert(String(err.message || err));
+  } finally {
+    busy = false;
+    refresh();
+  }
+}
+
+function showNotice(text) {
+  const n = $("notice");
+  n.textContent = text || "";
+  n.hidden = !text;
 }
 
 function renderPeers(peers) {
@@ -237,7 +290,7 @@ function render(state) {
   const notes = [];
   if (!state.daemon && state.tunnels.some((t) => t.status !== "stopped")) notes.push("The gst daemon does not answer; started tunnels show as down. Start it with gst start or gst mesh enable.");
   for (const e of state.errors || []) notes.push(e);
-  showAlert(notes.join(" "));
+  if (Date.now() > alertSticky) showAlert(notes.join(" "));
 
   renderTunnels(state.tunnels);
 
@@ -257,6 +310,7 @@ function render(state) {
 }
 
 let timer;
+let alertSticky = 0; // until then, the alert shows an action's error
 
 async function refresh() {
   clearTimeout(timer);

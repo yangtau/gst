@@ -15,6 +15,7 @@
 </header>
 <main>
   <p id="alert" class="alert" hidden></p>
+  <p id="notice" class="notice" role="status" hidden></p>
 
   <section id="mesh-section" hidden>
     <h2>Mesh</h2>
@@ -31,7 +32,7 @@
   <section>
     <h2>Tunnels</h2>
     <div class="table-wrap"><table id="tunnels">
-      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Forwards</th></tr></thead>
+      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Forwards</th><th><span class="sr">Actions</span></th></tr></thead>
       <tbody></tbody>
     </table></div>
     <p id="tunnels-empty" class="muted" hidden>No tunnels. Add one with <code>gst add &lt;name&gt; [destination]</code>.</p>

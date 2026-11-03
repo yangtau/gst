@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +84,59 @@ func TestUIState(t *testing.T) {
 	}
 	if web := s.Tunnels[1]; web.Status != statusDown || web.Error != "SSH connection closed" {
 		t.Fatalf("web %+v", web)
+	}
+}
+
+func TestUIActions(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("add", "web", "myhost", "-L", "8080:localhost:80")
+	e.mustGst("add", "db", "myhost", "-L", "15432:localhost:5432")
+	e.mustGst("stop", "db")
+	srv := httptest.NewServer(e.app(io.Discard, io.Discard).uiHandler("secret"))
+	defer srv.Close()
+
+	post := func(path, auth string) (int, uiResult) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", srv.URL+path, nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var r uiResult
+		json.NewDecoder(res.Body).Decode(&r)
+		return res.StatusCode, r
+	}
+
+	if code, _ := post("/api/tunnels/web/stop", ""); code != http.StatusUnauthorized {
+		t.Fatalf("stop without the token: %d", code)
+	}
+	if !e.back.running["web"] {
+		t.Fatal("a request without the token stopped the tunnel")
+	}
+	if code, r := post("/api/tunnels/web/stop", "Bearer secret"); code != http.StatusOK || r.Message != "Stopped tunnel web." {
+		t.Fatalf("stop: %d %+v", code, r)
+	}
+	if !e.tunnel("web").Stopped || e.back.running["web"] {
+		t.Fatal("web still runs")
+	}
+	if code, r := post("/api/tunnels/db/start", "Bearer secret"); code != http.StatusOK || r.Message != "Started tunnel db." || !e.back.running["db"] {
+		t.Fatalf("start: %d %+v", code, r)
+	}
+	if code, r := post("/api/tunnels/db/restart", "Bearer secret"); code != http.StatusOK || !slices.Contains(e.back.calls, "restart db") {
+		t.Fatalf("restart: %d %+v", code, r)
+	}
+	if code, r := post("/api/tunnels/web/restart", "Bearer secret"); code != http.StatusConflict || !strings.Contains(r.Hint, "gst start web") {
+		t.Fatalf("restart a stopped tunnel: %d %+v", code, r)
+	}
+	if code, r := post("/api/tunnels/nope/start", "Bearer secret"); code != http.StatusConflict || !strings.Contains(r.Error, "nope") {
+		t.Fatalf("start a missing tunnel: %d %+v", code, r)
+	}
+	if code, _ := post("/api/tunnels/db/remove", "Bearer secret"); code != http.StatusNotFound {
+		t.Fatalf("unknown action: %d", code)
 	}
 }
 

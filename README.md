@@ -93,7 +93,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | `gst show <name>` | Show a tunnel's settings and what ssh resolves it to |
 | `gst logs <name> [-f] [-n N]` | Print the log |
 | `gst check <name>` | Diagnose: ssh config, identity, known_hosts, network, login |
-| `gst ui [--port N] [--no-open]` | Show tunnels, peer links, and a map of the mesh in a browser |
+| `gst ui [--port N] [--no-open]` | Show tunnels, peer links, and a map of the mesh in a browser; start, stop, and restart tunnels there |
 | `gst mesh enable [--name name]` / `gst mesh disable` | Join or leave the mesh of linked machines |
 | `gst mesh peers` | List peer links |
 | `gst mesh nodes` | Show every machine in the mesh and the tunnels between them |
@@ -240,7 +240,7 @@ ssh -o ProxyCommand='gst connect %n 22' devcn
 
 ### Web page
 
-`gst ui` shows this machine's tunnels, its peer links, and a map of the mesh in a browser page that updates itself every few seconds. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; change things with the commands above.
+`gst ui` shows this machine's tunnels, its peer links, and a map of the mesh in a browser page that updates itself every few seconds. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. Its buttons start, stop, and restart this machine's tunnels, as `gst start`, `stop`, and `restart` do; other changes still take the commands above.
 
 ```bash
 gst ui
@@ -249,7 +249,7 @@ gst ui --port 8370 --no-open
 ssh -L 8370:localhost:8370 myhost   # then open the printed address on this machine
 ```
 
-- The address ends with a random secret after `#`, which the page needs; anyone with the full address can view the page while `gst ui` runs. Each run makes a new secret.
+- The address ends with a random secret after `#`, which the page needs; anyone with the full address can use the page while `gst ui` runs. Each run makes a new secret.
 - The map places machines by their distance from this one. Blue arrows are tunnels with a peer link up, grey ones running tunnels, and dashed red ones tunnels that are not running; arrows point from the machine that runs the tunnel to its server. Machines this one cannot reach are faded.
 
 ## Troubleshooting

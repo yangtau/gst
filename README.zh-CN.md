@@ -93,7 +93,7 @@ gst remove myhost  # 停止并删除
 | `gst show <name>` | 查看 tunnel 的设置和 ssh 解析结果 |
 | `gst logs <name> [-f] [-n N]` | 查看日志 |
 | `gst check <name>` | 诊断：ssh 配置、私钥、known_hosts、网络、登录 |
-| `gst ui [--port N] [--no-open]` | 在浏览器中查看 tunnel、peer link 和 mesh 拓扑图 |
+| `gst ui [--port N] [--no-open]` | 在浏览器中查看 tunnel、peer link 和 mesh 拓扑图，并可启动、停止、重启 tunnel |
 | `gst mesh enable [--name name]` / `gst mesh disable` | 加入或退出由多台机器组成的 mesh |
 | `gst mesh peers` | 列出 peer link |
 | `gst mesh nodes` | 显示 mesh 中的所有机器以及它们之间的 tunnel |
@@ -240,7 +240,7 @@ ssh -o ProxyCommand='gst connect %n 22' devcn
 
 ### 网页
 
-`gst ui` 在浏览器页面中显示本机的 tunnel、peer link 和 mesh 拓扑图，每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面只用于查看，修改仍使用上面的命令。
+`gst ui` 在浏览器页面中显示本机的 tunnel、peer link 和 mesh 拓扑图，每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面上的按钮可以启动、停止、重启本机的 tunnel，效果与 `gst start`、`stop`、`restart` 相同；其他修改仍使用上面的命令。
 
 ```bash
 gst ui
@@ -249,7 +249,7 @@ gst ui --port 8370 --no-open
 ssh -L 8370:localhost:8370 myhost   # 然后在本机打开打印出的地址
 ```
 
-- 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能查看页面。每次运行生成新的密钥。
+- 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。
 - 拓扑图按与本机的距离排列机器。蓝色箭头是 peer link 为 up 的 tunnel，灰色是运行中的 tunnel，红色虚线是未运行的 tunnel；箭头从运行 tunnel 的机器指向它的服务器。本机无法到达的机器显示为淡色。
 
 ## 排查问题

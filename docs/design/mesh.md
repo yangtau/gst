@@ -1,6 +1,6 @@
 # gst mesh 设计
 
-状态：第 1–4 步（单进程 daemon、peer link、拓扑扩散、中转转发）和第 5 步的只读部分已实现；在 Web UI 中配置本节点尚未实现。
+状态：第 1–5 步已实现；Web UI 目前能启动、停止、重启本节点的 tunnel，其他配置仍只能用命令行。
 
 ## 目标
 
@@ -19,7 +19,7 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
 4. **中转转发**：`gst add <name> <node> --via mesh -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
-5. **Web UI**：`gst ui` 提供本地页面；先只读（已实现），再支持配置本节点。
+5. **Web UI**：`gst ui` 提供本地页面，显示本节点和全局拓扑，并能启动、停止、重启本节点的 tunnel。（已实现）
 
 ## 已确定的决策
 
@@ -181,4 +181,5 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
   - 响应带 `Content-Security-Policy: default-src 'self'`、`nosniff`、`no-referrer`、`no-store`。页面用 DOM 文本节点渲染所有字段，因为名字和 destination 来自其他节点。
 - `/api/state` 每次请求都重新读取配置并调用 daemon：`tunnels`（与 `gst list --json` 相同的视图）、`daemon`（daemon 是否应答）、`node`、`peers`（`mesh.peers`）、`topology`（`mesh.nodes`）。它只供页面使用，字段可以改变；脚本应使用各命令的 `--json`。
 - 页面每 3 秒轮询一次，标签页隐藏时暂停。拓扑图按与本节点的 BFS 距离（沿边的任一方向）分列，无法连通的节点放在最后一列。
-- 下一步：在页面中配置本节点（启动、停止、重启 tunnel 等）。需要写操作时，接口只接受带 token 的 `POST`，并复用 CLI 的配置更新和 daemon 调用。
+- `POST /api/tunnels/{name}/{start|stop|restart}` 同样需要 token，执行与 `gst start|stop|restart <name>` 相同的代码（包括启动前检查和必要时拉起 daemon），一次只执行一个；返回命令行会打印的 `message`，失败时为 `error` 和 `hint`（HTTP 409）。跨站页面发不出带 `Authorization` 的请求，`gst ui` 也不响应 CORS 预检，因此不需要另外的 CSRF token。
+- 以后可以按同样的方式加入其他本节点配置（forward、mesh 开关等）；其他节点仍然只读。

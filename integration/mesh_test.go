@@ -186,6 +186,43 @@ func (n *node) waitNodes(want ...string) wire.Topology {
 	}
 }
 
+// uiServer is gst ui running on a node.
+type uiServer struct {
+	n           *node
+	base, token string
+}
+
+// startUI starts gst ui on n and reads its address.
+func (n *node) startUI() *uiServer {
+	n.t.Helper()
+	n.mustSh(`setsid gst ui --no-open --port 8370 </dev/null >~/ui.out 2>&1 &`)
+	var url string
+	eventually(n.t, 10*time.Second, "gst ui printed no address", func() bool {
+		out, _ := n.sh(`cat ~/ui.out`)
+		_, rest, ok := strings.Cut(out, "gst ui: ")
+		url, _, _ = strings.Cut(rest, "\n")
+		return ok && strings.Contains(url, "#")
+	})
+	base, token, _ := strings.Cut(url, "#")
+	return &uiServer{n, base, token}
+}
+
+// request sends an HTTP request to gst ui, with its token or without, and
+// returns the status code and body.
+func (u *uiServer) request(method, path string, withToken bool) (string, string) {
+	u.n.t.Helper()
+	args := []string{"http", method, u.base + path}
+	if withToken {
+		args = append(args, u.token)
+	}
+	out, err := u.n.helper(args...)
+	if err != nil {
+		u.n.t.Fatalf("gst ui %s %s: %v", method, path, err)
+	}
+	code, body, _ := strings.Cut(out, "\n")
+	return code, body
+}
+
 // m3 has mesh tunnels to mini and devcn. mini sees devcn through m3: first
 // as an SSH server, then, once devcn joins the mesh, as a gst node.
 func TestMeshTopology(t *testing.T) {
@@ -216,26 +253,17 @@ func TestMeshTopology(t *testing.T) {
 		t.Fatalf("unexpected gst mesh nodes:\n%s", out)
 	}
 
-	// gst ui serves the same view, to holders of the token it prints.
-	mini.mustSh(`setsid gst ui --no-open --port 8370 </dev/null >~/ui.out 2>&1 &`)
-	var url string
-	eventually(t, 10*time.Second, "gst ui printed no address", func() bool {
-		out, _ := mini.sh(`cat ~/ui.out`)
-		_, rest, ok := strings.Cut(out, "gst ui: ")
-		url, _, _ = strings.Cut(rest, "\n")
-		return ok && strings.Contains(url, "#")
-	})
-	base, token, _ := strings.Cut(url, "#")
-	if out, err := mini.helper("get", base+"api/state"); err != nil || !strings.HasPrefix(out, "401\n") {
-		t.Fatalf("state without the token: %q, %v", out, err)
+	// gst ui on m3 serves the same view, to holders of the token it prints.
+	ui := m3.startUI()
+	if code, _ := ui.request("GET", "api/state", false); code != "401" {
+		t.Fatalf("state without the token: %s", code)
 	}
-	out, err := mini.helper("get", base+"api/state", token)
-	status, body, _ := strings.Cut(out, "\n")
+	code, body := ui.request("GET", "api/state", true)
 	var state struct {
 		Topology wire.Topology `json:"topology"`
 	}
-	if err != nil || status != "200" || json.Unmarshal([]byte(body), &state) != nil {
-		t.Fatalf("state: %q, %v", out, err)
+	if code != "200" || json.Unmarshal([]byte(body), &state) != nil {
+		t.Fatalf("state: %s %q", code, body)
 	}
 	if got := summary(state.Topology); !slices.Contains(got, "node devcn ssh reachable") || !slices.Contains(got, "edge m3 mini mini running linked") {
 		t.Fatalf("gst ui shows:\n%s", strings.Join(got, "\n"))
@@ -252,7 +280,13 @@ func TestMeshTopology(t *testing.T) {
 
 	// Without the tunnel, devcn's record stays until it expires, but mini
 	// can no longer reach it.
-	m3.mustGst("stop", "devcn")
+	// Stopped from the page, as gst stop would.
+	if code, _ := ui.request("POST", "api/tunnels/devcn/stop", false); code != "401" {
+		t.Fatalf("stop without the token: %s", code)
+	}
+	if code, body := ui.request("POST", "api/tunnels/devcn/stop", true); code != "200" || !strings.Contains(body, "Stopped tunnel devcn.") {
+		t.Fatalf("stop from gst ui: %s %q", code, body)
+	}
 	mini.waitNodes(
 		"node mini gst reachable",
 		"node m3 gst reachable",
