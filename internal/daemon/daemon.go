@@ -1,6 +1,8 @@
-// Package daemon runs the gst daemon: one background process per user that
-// runs every started tunnel of the configuration file and answers gst
-// commands on a Unix control socket using the gst protocol (internal/wire).
+// Package daemon runs the gst daemon: one background process per user
+// that is this machine's node in the mesh. It runs the started links of
+// the configuration file, accepts the links of other machines, serves the
+// proxy and the maps, and answers gst commands on a Unix control socket
+// using the gst protocol (internal/wire).
 package daemon
 
 import (
@@ -8,20 +10,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
-	"github.com/yangtau/ssh-tunnel/internal/tunnel"
+	"github.com/yangtau/ssh-tunnel/internal/relay"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -29,40 +34,46 @@ import (
 type Config struct {
 	ConfigPath string // the gst configuration file
 	Socket     string // control socket path
-	LogDir     string // directory of the tunnels' logs, <name>.log
-	Software   string // reported in Hello and Status, such as "gst 0.2.0"
+	LogDir     string // directory of the links' logs, <name>.log
+	Software   string // reported in Hello and Status, such as "gst 0.3.0"
 	Build      string // identifies the executable; see Build
 
-	// Resolve turns a configured tunnel into the options to run it with.
-	Resolve func(ctx context.Context, t *config.Tunnel) (tunnel.Options, error)
-	// Run runs a tunnel until ctx is done or it fails; tunnel.Run when nil.
-	Run func(ctx context.Context, opts tunnel.Options) error
-	// RetryDelay is the wait after a tunnel fails; 5 s when zero.
+	// Connect opens a connection to the daemon on the machine of the link
+	// called name, as gst peer-bridge there does; closing it ends
+	// everything under it. Its errors are logged, so they must not quote
+	// addresses, users, or paths.
+	Connect func(ctx context.Context, name string, l *config.Link) (io.ReadWriteCloser, error)
+	// RetryDelay is the first wait after a link fails, which doubles with
+	// each failure up to maxRetry; 5 s when zero.
 	RetryDelay time.Duration
 	// Log receives the daemon's own log; the standard logger when nil.
 	Log *log.Logger
-	// HostKeyFiles is the glob of this machine's sshd host public keys,
-	// which identify it in the mesh; /etc/ssh/ssh_host_*_key.pub when empty.
-	HostKeyFiles string
 }
 
-// Daemon runs tunnels and answers control connections.
+// Daemon runs links, listeners, and control connections.
 type Daemon struct {
 	cfg Config
 
 	mesh    *mesh.Node
 	control wire.Server // the methods of control connections
+	use     atomic.Pointer[use]
 
-	ops     sync.Mutex // serializes reloads and restarts
-	mu      sync.Mutex // guards tunnels
-	tunnels map[string]*supervisor
+	ops      sync.Mutex // serializes reloads and restarts
+	mu       sync.Mutex // guards links and listeners
+	links    map[string]*supervisor
+	proxy    *listener
+	maps     map[string]*listener // by listen address
+	serveCtx context.Context      // the listeners' context, which ends with Serve
+}
+
+// use is how the configuration uses the mesh, for the proxy.
+type use struct {
+	proxy  string
+	routes config.Routes
 }
 
 // New returns a daemon for cfg.
 func New(cfg Config) *Daemon {
-	if cfg.Run == nil {
-		cfg.Run = tunnel.Run
-	}
 	if cfg.RetryDelay == 0 {
 		cfg.RetryDelay = 5 * time.Second
 	}
@@ -70,15 +81,12 @@ func New(cfg Config) *Daemon {
 		cfg.Log = log.Default()
 	}
 	m := mesh.New(cfg.Software, cfg.Log)
-	if cfg.HostKeyFiles != "" {
-		m.SetHostKeyFiles(cfg.HostKeyFiles)
-	}
-	d := &Daemon{cfg: cfg, mesh: m, tunnels: map[string]*supervisor{}}
+	d := &Daemon{cfg: cfg, mesh: m, links: map[string]*supervisor{}, maps: map[string]*listener{}, serveCtx: context.Background()}
+	d.use.Store(&use{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
 	}
 	wire.Handle(&d.control, wire.MethodStatus, none(func() any { return d.Status() }))
-	wire.Handle(&d.control, wire.MethodPeers, none(func() any { return m.Peers() }))
 	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Topology() }))
 	wire.Handle(&d.control, wire.MethodReload, func(ctx context.Context, _ struct{}) (any, error) {
 		if err := d.Reload(ctx); err != nil {
@@ -96,9 +104,9 @@ func New(cfg Config) *Daemon {
 	return d
 }
 
-// Serve takes the control socket, starts the configured tunnels, and
-// answers control connections until ctx is done, when it stops every
-// tunnel. Only one daemon can serve a socket at a time.
+// Serve takes the control socket, starts what the configuration asks
+// for, and answers control connections until ctx is done, when it stops
+// everything. Only one daemon can serve a socket at a time.
 func (d *Daemon) Serve(ctx context.Context) error {
 	listener, unlock, err := listen(d.cfg.Socket)
 	if err != nil {
@@ -109,10 +117,13 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	meshCtx, stopMesh := context.WithCancel(ctx)
 	defer stopMesh()
 	go d.mesh.Run(meshCtx)
+	d.mu.Lock()
+	d.serveCtx = meshCtx
+	d.mu.Unlock()
 
 	if err := d.Reload(ctx); err != nil {
 		// Keep serving: a later reload, after the configuration is
-		// fixed, can still start the tunnels.
+		// fixed, can still start the links.
 		d.cfg.Log.Print(err)
 	}
 	d.cfg.Log.Printf("%s daemon ready", d.cfg.Software)
@@ -193,29 +204,40 @@ func (d *Daemon) connect(ctx context.Context, conn net.Conn, p wire.ConnectParam
 	if err != nil {
 		return err
 	}
-	defer target.Close()
 	if err := accept(nil); err != nil {
+		target.Close()
 		return err
 	}
-	tunnel.Relay(conn, target)
+	relay.Pipe(conn, target)
 	return nil
 }
 
-// Status reports the daemon and its tunnels, sorted by name.
+// Status reports the daemon and what it runs, sorted.
 func (d *Daemon) Status() wire.Status {
 	d.mu.Lock()
-	states := make([]wire.TunnelState, 0, len(d.tunnels))
-	for _, s := range d.tunnels {
-		states = append(states, s.state())
+	st := wire.Status{
+		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
+		Node: d.mesh.Self(), Links: []wire.LinkState{}, Maps: []wire.Listener{},
+	}
+	if d.proxy != nil {
+		st.Proxy = d.proxy.state()
+	}
+	for _, s := range d.links {
+		st.Links = append(st.Links, s.state())
+	}
+	for _, l := range d.maps {
+		st.Maps = append(st.Maps, l.state())
 	}
 	d.mu.Unlock()
-	slices.SortFunc(states, func(a, b wire.TunnelState) int { return cmp.Compare(a.Name, b.Name) })
-	return wire.Status{Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath, Tunnels: states}
+	slices.SortFunc(st.Links, func(a, b wire.LinkState) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortFunc(st.Maps, func(a, b wire.Listener) int { return cmp.Compare(a.Listen, b.Listen) })
+	return st
 }
 
-// Reload reads the configuration and starts the started tunnels that do
-// not run and stops the tunnels that are stopped or gone. Tunnels whose
-// configuration changed keep running as they are until Restart.
+// Reload reads the configuration and applies it: the node's identity,
+// the proxy, the maps, and the routes as they are; the started links that
+// do not run start, and the links that are stopped or gone stop. Links
+// whose configuration changed keep running as they are until Restart.
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
@@ -223,23 +245,25 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	d.mesh.Configure(f.Mesh)
+	d.mesh.Configure(f.Node)
+	d.use.Store(&use{proxy: f.ProxyAddress(), routes: f.Routes})
+	d.listen(f)
 	var stop []*supervisor
 	d.mu.Lock()
-	for name, s := range d.tunnels {
-		if t := f.Tunnels[name]; t == nil || t.Stopped {
+	for name, s := range d.links {
+		if l := f.Links[name]; l == nil || l.Stopped {
 			stop = append(stop, s)
-			delete(d.tunnels, name)
+			delete(d.links, name)
 		}
 	}
 	d.mu.Unlock()
 	stopAll(stop)
-	for name, t := range f.Tunnels {
+	for name, l := range f.Links {
 		d.mu.Lock()
-		running := d.tunnels[name] != nil
+		running := d.links[name] != nil
 		d.mu.Unlock()
-		if !t.Stopped && !running {
-			if err := d.start(name, t); err != nil {
+		if !l.Stopped && !running {
+			if err := d.start(name, l); err != nil {
 				return err
 			}
 		}
@@ -247,8 +271,8 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	return nil
 }
 
-// Restart restarts the named tunnels with their current configuration.
-// Every name must be a started tunnel.
+// Restart restarts the named links with their current configuration.
+// Every name must be a started link.
 func (d *Daemon) Restart(ctx context.Context, names []string) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
@@ -257,32 +281,32 @@ func (d *Daemon) Restart(ctx context.Context, names []string) error {
 		return err
 	}
 	for _, name := range names {
-		if t := f.Tunnels[name]; t == nil || t.Stopped {
-			return wire.Errorf(wire.CodeNotFound, "tunnel %s is not started", name)
+		if l := f.Links[name]; l == nil || l.Stopped {
+			return wire.Errorf(wire.CodeNotFound, "link %s is not started", name)
 		}
 	}
 	names = slices.Compact(slices.Sorted(slices.Values(names)))
 	var stop []*supervisor
 	d.mu.Lock()
 	for _, name := range names {
-		if old := d.tunnels[name]; old != nil {
+		if old := d.links[name]; old != nil {
 			stop = append(stop, old)
-			delete(d.tunnels, name)
+			delete(d.links, name)
 		}
 	}
 	d.mu.Unlock()
 	stopAll(stop)
 	for _, name := range names {
-		if err := d.start(name, f.Tunnels[name]); err != nil {
+		if err := d.start(name, f.Links[name]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// start runs a tunnel until it is stopped, independent of the request
-// that started it.
-func (d *Daemon) start(name string, t *config.Tunnel) error {
+// start runs a link until it is stopped, independent of the request that
+// started it.
+func (d *Daemon) start(name string, l *config.Link) error {
 	var logOut *logfile.File
 	if d.cfg.LogDir != "" {
 		if err := os.MkdirAll(d.cfg.LogDir, 0o700); err != nil {
@@ -290,27 +314,37 @@ func (d *Daemon) start(name string, t *config.Tunnel) error {
 		}
 		var err error
 		if logOut, err = logfile.Open(filepath.Join(d.cfg.LogDir, name+".log"), nil); err != nil {
-			return fmt.Errorf("open the log of tunnel %s: %w", name, err)
+			return fmt.Errorf("open the log of link %s: %w", name, err)
 		}
 	}
-	s := newSupervisor(d, name, *t, logOut)
+	s := newSupervisor(d, name, *l, logOut)
 	d.mu.Lock()
-	d.tunnels[name] = s
+	d.links[name] = s
 	d.mu.Unlock()
 	go s.run()
-	d.cfg.Log.Printf("tunnel %s started", name)
+	d.cfg.Log.Printf("link %s started", name)
 	return nil
 }
 
+// stopAll stops every link and listener.
 func (d *Daemon) stopAll() {
 	d.mu.Lock()
-	all := make([]*supervisor, 0, len(d.tunnels))
-	for name, s := range d.tunnels {
+	all := make([]*supervisor, 0, len(d.links))
+	for name, s := range d.links {
 		all = append(all, s)
-		delete(d.tunnels, name)
+		delete(d.links, name)
 	}
+	listeners := slices.Collect(maps.Values(d.maps))
+	if d.proxy != nil {
+		listeners = append(listeners, d.proxy)
+	}
+	clear(d.maps)
+	d.proxy = nil
 	d.mu.Unlock()
 	stopAll(all)
+	for _, l := range listeners {
+		l.close()
+	}
 }
 
 func stopAll(list []*supervisor) {

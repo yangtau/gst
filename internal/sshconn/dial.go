@@ -1,4 +1,4 @@
-package tunnel
+package sshconn
 
 import (
 	"context"

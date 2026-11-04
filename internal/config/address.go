@@ -1,11 +1,95 @@
 package config
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
+	"path"
 	"strconv"
 	"strings"
+	"unicode"
 )
+
+// IsSocket reports whether an address is a Unix socket path rather than
+// a host and port.
+func IsSocket(address string) bool {
+	return strings.HasPrefix(address, "/")
+}
+
+// Network returns the network of a target or listen address: "unix" for
+// a socket path, else "tcp".
+func Network(address string) string {
+	if IsSocket(address) {
+		return "unix"
+	}
+	return "tcp"
+}
+
+// ValidTarget reports whether address is a target that gst can dial on
+// network: host and port for "tcp" or a socket path for "unix".
+func ValidTarget(network, address string) bool {
+	switch network {
+	case "tcp":
+		return isDialAddress(address)
+	case "unix":
+		return isSocketPath(address)
+	}
+	return false
+}
+
+// ParseListen parses where a map listens: a port, which means 127.0.0.1,
+// "bind_address:port", where bind_address is an IP, "localhost", or "*"
+// for all interfaces, or a Unix socket path, which is anything with a "/"
+// and may be relative or start with "~". IPv6 addresses use brackets.
+func ParseListen(spec string) (string, error) {
+	if strings.Contains(spec, "/") {
+		p, err := AbsPath(spec)
+		if err != nil {
+			return "", err
+		}
+		if !isSocketPath(p) {
+			return "", fmt.Errorf("invalid socket path %q", spec)
+		}
+		return p, nil
+	}
+	bind, port := "localhost", spec
+	if i := strings.LastIndex(spec, ":"); i >= 0 {
+		bind, port = spec[:i], spec[i+1:]
+	}
+	var addr netip.Addr
+	switch bind {
+	case "localhost":
+		addr = netip.MustParseAddr("127.0.0.1")
+	case "", "*":
+		addr = netip.IPv4Unspecified()
+	default:
+		var ok bool
+		if addr, ok = parseIP(strings.TrimSuffix(strings.TrimPrefix(bind, "["), "]")); !ok {
+			return "", fmt.Errorf("invalid listen address %q: the bind address is not an IP address, localhost, or *", spec)
+		}
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return "", fmt.Errorf("invalid listen address %q: want a port, bind_address:port, or a socket path", spec)
+	}
+	return netip.AddrPortFrom(addr, uint16(n)).String(), nil
+}
+
+// ParseTarget parses an address on a machine: a port, which means
+// localhost there, host:port, or an absolute Unix socket path.
+func ParseTarget(spec string) (string, error) {
+	address := spec
+	if !IsSocket(spec) && !strings.Contains(spec, ":") {
+		address = "localhost:" + spec
+	}
+	if IsSocket(address) {
+		address = path.Clean(address)
+	}
+	if !ValidTarget(Network(address), address) {
+		return "", fmt.Errorf("invalid target %q: want a port, host:port, or an absolute socket path", spec)
+	}
+	return address, nil
+}
 
 // splitHostPort splits "host:port", requiring a non-empty host and a
 // numeric port in 1..65535. Service names such as "ssh" are rejected.
@@ -21,8 +105,7 @@ func splitHostPort(address string) (string, uint16, bool) {
 	return host, uint16(port), true
 }
 
-// parseListenAddress accepts only an IP literal and port, so the address
-// means the same whichever side binds it.
+// parseListenAddress accepts only an IP literal and port.
 func parseListenAddress(address string) (netip.AddrPort, bool) {
 	host, port, ok := splitHostPort(address)
 	if !ok {
@@ -35,16 +118,10 @@ func parseListenAddress(address string) (netip.AddrPort, bool) {
 	return netip.AddrPortFrom(addr, port), true
 }
 
-// ValidTarget reports whether address is a target that gst can dial on
-// network: host and port for "tcp" or a socket path for "unix".
-func ValidTarget(network, address string) bool {
-	switch network {
-	case "tcp":
-		return isDialAddress(address)
-	case "unix":
-		return isSocketPath(address)
-	}
-	return false
+// isSocketPath reports whether p is a clean absolute path without control
+// characters.
+func isSocketPath(p string) bool {
+	return IsSocket(p) && path.Clean(p) == p && !strings.ContainsFunc(p, unicode.IsControl)
 }
 
 // isDialAddress reports whether address is an IP literal or DNS hostname

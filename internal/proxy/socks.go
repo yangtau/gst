@@ -1,4 +1,4 @@
-package tunnel
+package proxy
 
 import (
 	"encoding/binary"
@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"syscall"
 
-	"golang.org/x/crypto/ssh"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // The server side of SOCKS5 (RFC 1928), limited to CONNECT without
-// authentication, used for both dynamic and reverse dynamic forwards.
+// authentication.
 
 const (
 	socksVersion   = 5
@@ -32,6 +32,7 @@ const (
 	socksSucceeded           = 0
 	socksGeneralFailure      = 1
 	socksNotAllowed          = 2
+	socksHostUnreachable     = 4
 	socksConnectionRefused   = 5
 	socksCommandNotSupported = 7
 	socksAddressNotSupported = 8
@@ -98,8 +99,8 @@ func socksRequest(c net.Conn) (string, error) {
 	return net.JoinHostPort(name, strconv.Itoa(int(binary.BigEndian.Uint16(port[:])))), nil
 }
 
-// socksReply answers a request. The bound address is left zero for both
-// directions, as direct-tcpip channels do not report one.
+// socksReply answers a request. The bound address is left zero, as
+// connections through the mesh have none on this machine.
 func socksReply(c net.Conn, code byte) error {
 	_, err := c.Write([]byte{socksVersion, code, 0, socksIPv4, 0, 0, 0, 0, 0, 0})
 	return err
@@ -107,15 +108,15 @@ func socksReply(c net.Conn, code byte) error {
 
 // socksReplyCode maps the result of dialing a requested address to a reply code.
 func socksReplyCode(err error) byte {
-	var openErr *ssh.OpenChannelError
+	var callErr *wire.Error
 	switch {
 	case err == nil:
 		return socksSucceeded
-	case errors.As(err, &openErr) && openErr.Reason == ssh.Prohibited:
+	case errors.As(err, &callErr) && callErr.Code == wire.CodeForbidden:
 		return socksNotAllowed
+	case errors.As(err, &callErr) && callErr.Code == wire.CodeNotFound:
+		return socksHostUnreachable
 	case errors.Is(err, syscall.ECONNREFUSED):
-		return socksConnectionRefused
-	case errors.As(err, &openErr) && openErr.Reason == ssh.ConnectionFailed:
 		return socksConnectionRefused
 	}
 	return socksGeneralFailure

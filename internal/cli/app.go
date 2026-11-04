@@ -2,10 +2,12 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -15,7 +17,7 @@ import (
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
-	"github.com/yangtau/ssh-tunnel/internal/tunnel"
+	"github.com/yangtau/ssh-tunnel/internal/sshconn"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -26,7 +28,7 @@ const (
 	exitUsage   = 2 // invalid command line or configuration
 )
 
-// Settings used when neither the tunnel nor the ssh configuration sets them.
+// Settings used when neither the link nor the ssh configuration sets them.
 const (
 	defaultConnectTimeout    = 15 * time.Second
 	defaultKeepaliveInterval = 15 * time.Second
@@ -57,7 +59,6 @@ type app struct {
 
 	configFlag string
 	back       backend
-	states     map[string]wire.TunnelState // what the daemon reported, fetched once
 }
 
 func (a *app) execute(ctx context.Context, args []string) int {
@@ -157,29 +158,24 @@ func (a *app) update(fn func(*config.File) error) error {
 	return config.Update(path, fn)
 }
 
-func lookup(f *config.File, name string) (*config.Tunnel, error) {
-	t := f.Tunnels[name]
-	if t == nil {
-		return nil, namesHint(f, fmt.Errorf("no tunnel named %s", name))
+func lookup(f *config.File, name string) (*config.Link, error) {
+	l := f.Links[name]
+	if l == nil {
+		return nil, namesHint(f, fmt.Errorf("no link named %s", name))
 	}
-	return t, nil
+	return l, nil
 }
 
-// namesHint adds f's tunnel names to err.
+// namesHint adds f's link names to err.
 func namesHint(f *config.File, err error) error {
-	if len(f.Tunnels) == 0 {
-		return withHint(err, "there are no tunnels yet; add one with `gst add <name>`")
+	if len(f.Links) == 0 {
+		return withHint(err, "there are no links yet; add one with `gst link add <name>`")
 	}
-	return withHint(err, "tunnels: "+strings.Join(sortedNames(f), ", "))
+	return withHint(err, "links: "+strings.Join(sortedNames(f), ", "))
 }
 
 func sortedNames(f *config.File) []string {
-	names := make([]string, 0, len(f.Tunnels))
-	for name := range f.Tunnels {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(f.Links))
 }
 
 func (a *app) backend() (backend, error) {
@@ -193,7 +189,7 @@ func (a *app) backend() (backend, error) {
 	return a.back, nil
 }
 
-// Tunnel statuses, as gst list and show print them.
+// Link statuses, as gst link list and show print them.
 const (
 	statusStopped    = "stopped"
 	statusConnecting = wire.StateConnecting
@@ -201,64 +197,57 @@ const (
 	statusDown       = wire.StateDown
 )
 
-// status returns the status of tunnel name, configured as t, and its last
-// error, with the daemon's states fetched once per command.
-func (a *app) status(ctx context.Context, name string, t *config.Tunnel) (string, string) {
-	if a.states == nil {
-		a.states = map[string]wire.TunnelState{}
-		if b, err := a.backend(); err == nil {
-			if states, ok := b.States(ctx); ok {
-				a.states = states
+// status returns what the daemon reports, or nil when no daemon answers.
+func (a *app) status(ctx context.Context) *wire.Status {
+	b, err := a.backend()
+	if err != nil {
+		return nil
+	}
+	if st, ok := b.Status(ctx); ok {
+		return &st
+	}
+	return nil
+}
+
+// linkStatus returns the status of link name, configured as l, and its
+// state as the daemon reports it, which is zero for a link that the daemon
+// does not run. A started link that the daemon does not run is down.
+func linkStatus(name string, l *config.Link, st *wire.Status) (string, wire.LinkState) {
+	if l.Stopped {
+		return statusStopped, wire.LinkState{}
+	}
+	if st != nil {
+		for _, s := range st.Links {
+			if s.Name == name {
+				return s.State, s
 			}
 		}
 	}
-	return statusOf(name, t, a.states)
+	return statusDown, wire.LinkState{}
 }
 
-// statusOf returns the status of tunnel name, configured as t, and its last
-// error, given the states the daemon reported. A started tunnel that the
-// daemon does not run is down.
-func statusOf(name string, t *config.Tunnel, states map[string]wire.TunnelState) (string, string) {
-	if t.Stopped {
-		return statusStopped, ""
+// options resolves l's destination with ssh and applies l's overrides.
+func (a *app) options(ctx context.Context, l *config.Link) (sshconn.Options, error) {
+	host, err := a.resolve(ctx, l.Destination)
+	if err != nil {
+		return sshconn.Options{}, err
 	}
-	s, ok := states[name]
-	if !ok {
-		return statusDown, ""
+	opts := sshconn.Options{
+		Server:          host.Address(),
+		User:            host.User,
+		IdentityFiles:   host.IdentityFiles,
+		KnownHostsFiles: host.KnownHostsFiles,
 	}
-	return s.State, s.Error
-}
-
-// options resolves t's destination with ssh and applies t's overrides.
-// options resolves t into the options to run it with. A tunnel through the
-// mesh has no SSH connection of its own, so only its forwards and connect
-// timeout apply; whoever runs it supplies Options.Dial.
-func (a *app) options(ctx context.Context, t *config.Tunnel) (tunnel.Options, error) {
-	var host sshconfig.Host
-	if _, through := t.MeshMachine(); !through {
-		var err error
-		if host, err = a.resolve(ctx, t.Destination); err != nil {
-			return tunnel.Options{}, err
-		}
+	if l.IdentityFile != "" {
+		opts.IdentityFiles = []string{l.IdentityFile}
 	}
-	opts := tunnel.Options{
-		Server:           host.Address(),
-		User:             host.User,
-		IdentityFiles:    host.IdentityFiles,
-		KnownHostsFiles:  host.KnownHostsFiles,
-		CleanupListeners: t.CleanupListeners,
-		Forwards:         t.Forwards,
-	}
-	if t.IdentityFile != "" {
-		opts.IdentityFiles = []string{t.IdentityFile}
-	}
-	if t.KnownHostsFile != "" {
-		opts.KnownHostsFiles = []string{t.KnownHostsFile}
+	if l.KnownHostsFile != "" {
+		opts.KnownHostsFiles = []string{l.KnownHostsFile}
 	}
 	maxDuration := time.Duration(config.MaxSeconds) * time.Second
-	opts.ConnectTimeout = min(firstPositive(seconds(t.ConnectTimeoutSeconds), host.ConnectTimeout, defaultConnectTimeout), maxDuration)
-	opts.KeepaliveInterval = min(firstPositive(seconds(t.KeepaliveIntervalSeconds), host.ServerAliveInterval, defaultKeepaliveInterval), maxDuration)
-	count := min(firstPositive(t.KeepaliveCountMax, int64(host.ServerAliveCountMax), defaultKeepaliveCount), config.MaxKeepaliveCount)
+	opts.ConnectTimeout = min(firstPositive(seconds(l.ConnectTimeoutSeconds), host.ConnectTimeout, defaultConnectTimeout), maxDuration)
+	opts.KeepaliveInterval = min(firstPositive(seconds(l.KeepaliveIntervalSeconds), host.ServerAliveInterval, defaultKeepaliveInterval), maxDuration)
+	count := min(firstPositive(l.KeepaliveCountMax, int64(host.ServerAliveCountMax), defaultKeepaliveCount), config.MaxKeepaliveCount)
 	opts.KeepaliveTimeout = opts.KeepaliveInterval * time.Duration(count)
 	return opts, nil
 }
@@ -274,30 +263,56 @@ func firstPositive[T time.Duration | int64](values ...T) T {
 	return 0
 }
 
-// preflight checks offline that t, a tunnel of f, can start: its
-// destination resolves, an identity is usable, and known_hosts records the
-// server. A tunnel through the mesh needs valid settings and the mesh.
-func (a *app) preflight(ctx context.Context, f *config.File, t *config.Tunnel) error {
-	if _, through := t.MeshMachine(); through {
-		// No SSH connection to check; the mesh routes each connection.
-		if err := t.Validate(); err != nil {
-			return &usageError{err}
-		}
-		if f.Mesh == nil {
-			return withHint(errors.New("a tunnel through the mesh needs the mesh"), "enable it with `gst mesh enable`")
-		}
-		return nil
-	}
-	opts, err := a.options(ctx, t)
+// preflight checks offline that link l can connect: its destination
+// resolves, an identity is usable, and known_hosts records the server.
+func (a *app) preflight(ctx context.Context, l *config.Link) error {
+	opts, err := a.options(ctx, l)
 	if err != nil {
-		return withHint(err, "check the destination and your ssh configuration with `ssh -G "+t.Destination+"`")
+		return withHint(err, "check the destination and your ssh configuration with `ssh -G "+l.Destination+"`")
 	}
-	for _, step := range tunnel.Diagnose(ctx, opts, false) {
+	for _, step := range sshconn.Diagnose(ctx, opts, false, "") {
 		if !step.OK {
 			return withHint(fmt.Errorf("%s: %s", step.Name, step.Detail), step.Hint)
 		}
 	}
 	return nil
+}
+
+// remoteGst returns the command that runs gst on l's server.
+func remoteGst(l *config.Link) string {
+	return sshconn.ShellQuote(cmp.Or(l.RemoteGst, "gst"))
+}
+
+// connectLink connects to the daemon on the machine of link l over SSH,
+// for the daemon. Its errors omit addresses, users, and paths.
+func (a *app) connectLink(ctx context.Context, _ string, l *config.Link) (io.ReadWriteCloser, error) {
+	opts, err := a.options(ctx, l)
+	if err != nil {
+		// Resolution errors quote the ssh configuration.
+		return nil, errors.New("ssh config resolution failed")
+	}
+	conn, err := sshconn.Dial(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	session, err := conn.Start(remoteGst(l) + " peer-bridge")
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &linkConn{session, conn}, nil
+}
+
+// linkConn is gst peer-bridge on a link's server; closing it closes the
+// SSH connection too.
+type linkConn struct {
+	*sshconn.Session
+	conn *sshconn.Conn
+}
+
+func (c *linkConn) Close() error {
+	c.Session.Close()
+	return c.conn.Close()
 }
 
 // daemonCommand is the command line the daemon's service runs.
@@ -322,7 +337,8 @@ func (a *app) daemonCommand() ([]string, error) {
 	return append(command, "daemon"), nil
 }
 
-// sync makes the daemon run the started tunnels of the configuration.
+// sync makes the daemon apply the configuration, starting it unless gst
+// is down on this machine.
 func (a *app) sync(ctx context.Context) error {
 	path, err := a.configPath()
 	if err != nil {
@@ -333,11 +349,8 @@ func (a *app) sync(ctx context.Context) error {
 		return err
 	}
 	return config.Apply(path, func(f *config.File) error {
-		needed := f.Mesh != nil
-		for _, t := range f.Tunnels {
-			needed = needed || !t.Stopped
-		}
-		if !needed {
+		if f.Down {
+			fmt.Fprintln(a.stderr, "note: gst is down on this machine; changes apply after `gst up`")
 			return b.Sync(ctx, nil)
 		}
 		command, err := a.daemonCommand()
@@ -348,7 +361,7 @@ func (a *app) sync(ctx context.Context) error {
 	})
 }
 
-// restart restarts started tunnels with their current configuration.
+// restart restarts started links with their current configuration.
 func (a *app) restart(ctx context.Context, names []string) error {
 	if err := a.sync(ctx); err != nil {
 		return err
@@ -360,25 +373,25 @@ func (a *app) restart(ctx context.Context, names []string) error {
 	return b.Restart(ctx, names)
 }
 
-// applyChange restarts a started tunnel so that a configuration change
+// applyChange restarts a started link so that a configuration change
 // takes effect, and tells the user what happened.
 func (a *app) applyChange(ctx context.Context, name string, noRestart bool) error {
 	f, err := a.load()
 	if err != nil {
 		return err
 	}
-	switch t := f.Tunnels[name]; {
-	case t == nil:
+	switch l := f.Links[name]; {
+	case l == nil:
 		return nil
-	case t.Stopped:
-		fmt.Fprintf(a.stdout, "Tunnel %s is stopped; the change applies when you start it.\n", name)
+	case l.Stopped:
+		fmt.Fprintf(a.stdout, "Link %s is stopped; the change applies when you start it.\n", name)
 	case noRestart:
-		fmt.Fprintf(a.stdout, "Restart the tunnel to apply the change: gst restart %s\n", name)
+		fmt.Fprintf(a.stdout, "Restart the link to apply the change: gst link restart %s\n", name)
 	default:
 		if err := a.restart(ctx, []string{name}); err != nil {
-			return withHint(fmt.Errorf("restart tunnel %s: %w", name, err), "retry with `gst restart "+name+"`")
+			return withHint(fmt.Errorf("restart link %s: %w", name, err), "retry with `gst link restart "+name+"`")
 		}
-		fmt.Fprintf(a.stdout, "Restarted tunnel %s.\n", name)
+		fmt.Fprintf(a.stdout, "Restarted link %s.\n", name)
 	}
 	return nil
 }

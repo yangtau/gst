@@ -9,32 +9,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func (a *app) rootCommand() *cobra.Command {
 	// Help lists commands in the order they are added, grouped by task.
 	cobra.EnableCommandSorting = false
 	root := asGroup(&cobra.Command{
 		Use:   "gst",
-		Short: "Keep SSH port forwards running in the background",
-		Long: `gst keeps SSH port forwards running in the background.
+		Short: "Link your machines into a private mesh over SSH",
+		Long: `gst links your machines into a private mesh over SSH, without root.
 
-A tunnel is a named SSH connection to a host from your ssh configuration,
-with forwards in either direction:
+Each machine runs a gst daemon in the background. A link is an SSH
+connection from one machine to another that also has gst; linked
+machines pass on what they know, so every machine can reach every other
+one, through the links between them. Reach them by:
 
-  -R  listen on the server, connect from this machine (like ssh -R)
-  -L  listen on this machine, connect from the server (like ssh -L)
-
-A started tunnel runs in the background, starts at login, and reconnects
-after failures.
+  connect  gst connect <machine> <port>, also as an ssh ProxyCommand
+  proxy    a SOCKS5 and HTTP proxy where <machine>.gst is that machine
+  map      a local port or socket that leads to a machine's port or socket
+  route    send the proxy's connections to some hosts out through an exit
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
 report state accept --json.`,
-		Example: `  gst add myhost -R 2222:localhost:22             # tunnel to the ssh config host "myhost"
-  gst forward add myhost -L 15432:127.0.0.1:5432  # add a forward; the tunnel restarts
-  gst list                                        # tunnels and their status
-  gst check myhost                                # diagnose connection problems`,
+		Example: `  gst link add devcn                   # link to the ssh config host "devcn"
+  gst nodes                            # every machine in the mesh
+  gst map add 15432 devcn:5432         # local port 15432 leads to devcn's 5432
+  curl http://devcn.gst:8080/          # with ALL_PROXY from gst proxy`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})
@@ -54,10 +55,9 @@ report state accept --json.`,
 	).Replace(root.UsageTemplate()))
 
 	root.AddGroup(
-		&cobra.Group{ID: "configure", Title: "Configure tunnels:"},
-		&cobra.Group{ID: "run", Title: "Run tunnels:"},
-		&cobra.Group{ID: "inspect", Title: "Inspect tunnels:"},
-		&cobra.Group{ID: "mesh", Title: "Link machines:"},
+		&cobra.Group{ID: "mesh", Title: "Build the mesh:"},
+		&cobra.Group{ID: "reach", Title: "Reach machines:"},
+		&cobra.Group{ID: "machine", Title: "This machine:"},
 	)
 	addGroup := func(id string, cmds ...*cobra.Command) {
 		for _, cmd := range cmds {
@@ -65,20 +65,18 @@ report state accept --json.`,
 			root.AddCommand(cmd)
 		}
 	}
-	addGroup("configure", a.addCommand(), a.setCommand(), a.forwardCommand(), a.removeCommand())
-	addGroup("run", a.startCommand(), a.stopCommand(), a.restartCommand())
-	addGroup("inspect", a.listCommand(), a.showCommand(), a.logsCommand(), a.checkCommand(), a.uiCommand())
-	addGroup("mesh", a.meshCommand(), a.connectCommand())
-	root.AddCommand(&cobra.Command{
+	addGroup("mesh", a.linkCommand(), a.nodesCommand())
+	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand())
+	addGroup("machine", a.nameCommand(), a.exitCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:         "version",
 		Annotations: standalone,
 		Short:       "Show the gst version",
-		GroupID:     "inspect",
 		Args:        a.args(0, 0),
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},
-	}, a.runCommand(), a.daemonRunCommand(), a.peerBridgeCommand())
+	})
+	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand())
 	setHelpColors(root)
 	return root
 }
@@ -125,7 +123,7 @@ func (a *app) args(minN, maxN int) cobra.PositionalArgs {
 		if len(args) < minN {
 			err := usage("missing argument %s", strings.TrimSuffix(placeholders(cmd)[len(args)], "..."))
 			if cmd.ValidArgsFunction != nil {
-				return a.tunnelsHint(err)
+				return a.linksHint(err)
 			}
 			return err
 		}
@@ -147,8 +145,8 @@ func placeholders(cmd *cobra.Command) []string {
 	return names
 }
 
-// tunnelsHint adds the existing tunnel names to err.
-func (a *app) tunnelsHint(err error) error {
+// linksHint adds the existing link names to err.
+func (a *app) linksHint(err error) error {
 	f, loadErr := a.load()
 	if loadErr != nil {
 		return err
@@ -164,8 +162,8 @@ func quoteAll(values []string, sep string) string {
 	return strings.Join(quoted, sep)
 }
 
-// completeTunnels completes tunnel names.
-func (a *app) completeTunnels(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+// completeLinks completes link names.
+func (a *app) completeLinks(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	f, err := a.load()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp

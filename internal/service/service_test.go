@@ -74,17 +74,6 @@ func TestSystemd(t *testing.T) {
 	if !slices.Equal(fake.calls, []string{"systemctl --user disable --now gst.service", "systemctl --user daemon-reload"}) {
 		t.Fatalf("unexpected calls %v", fake.calls)
 	}
-
-	if err := os.WriteFile(filepath.Join(s.dir, "gst-myhost.service"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !s.HasLegacy("myhost") || s.HasLegacy("db") {
-		t.Fatal("legacy unit not detected")
-	}
-	fake.calls = nil
-	if err := s.RemoveLegacy("myhost"); err != nil || s.HasLegacy("myhost") || fake.calls[0] != "systemctl --user disable --now gst-myhost.service" {
-		t.Fatalf("legacy unit not removed: %v %v", fake.calls, err)
-	}
 }
 
 func TestLaunchd(t *testing.T) {
@@ -155,16 +144,5 @@ func TestLaunchd(t *testing.T) {
 	printsLeft = 1
 	if err := l.Uninstall(); err != nil || fileExists(plistPath) {
 		t.Fatalf("agent remains after uninstall: %v", err)
-	}
-
-	legacy := filepath.Join(home, "Library/LaunchAgents/local.gst.myhost.plist")
-	if err := os.WriteFile(legacy, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !l.HasLegacy("myhost") || l.HasLegacy("db") {
-		t.Fatal("legacy agent not detected")
-	}
-	if err := l.RemoveLegacy("myhost"); err != nil || l.HasLegacy("myhost") {
-		t.Fatalf("legacy agent not removed: %v", err)
 	}
 }

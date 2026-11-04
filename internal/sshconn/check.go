@@ -1,4 +1,4 @@
-package tunnel
+package sshconn
 
 import (
 	"context"
@@ -21,10 +21,11 @@ type Step struct {
 }
 
 // Diagnose checks the identities and known_hosts entries and, if online,
-// the connection and login, stopping at the first failure. Unlike Run, it
-// reports paths, addresses, and server errors, because it is meant for the
-// user to read.
-func Diagnose(ctx context.Context, opts Options, online bool) []Step {
+// the connection, the login, and then, unless probe is empty, that the
+// command probe runs on the server, stopping at the first failure. Unlike
+// Dial, it reports paths, addresses, and server errors, because it is
+// meant for the user to read.
+func Diagnose(ctx context.Context, opts Options, online bool, probe string) []Step {
 	var steps []Step
 	add := func(s Step) bool {
 		steps = append(steps, s)
@@ -37,7 +38,12 @@ func Diagnose(ctx context.Context, opts Options, online bool) []Step {
 	if !add(step) {
 		return steps
 	}
-	add(checkLogin(opts, conn))
+	client, step := checkLogin(opts, conn)
+	if !add(step) || probe == "" {
+		return steps
+	}
+	defer client.Close()
+	add(checkProbe(client, probe))
 	return steps
 }
 
@@ -106,17 +112,19 @@ func checkConnect(ctx context.Context, opts Options) (net.Conn, Step) {
 	return conn, step
 }
 
-func checkLogin(opts Options, conn net.Conn) Step {
-	defer conn.Close()
+// checkLogin logs in over conn and returns the client when it can.
+func checkLogin(opts Options, conn net.Conn) (*ssh.Client, Step) {
 	step := Step{Name: "login"}
 	clientConfig, err := newClientConfig(opts)
 	if err != nil {
+		conn.Close()
 		step.Detail = err.Error()
-		return step
+		return nil, step
 	}
 	conn.SetDeadline(time.Now().Add(opts.ConnectTimeout))
 	sshConn, channels, requests, err := ssh.NewClientConn(conn, opts.Server, clientConfig)
 	if err != nil {
+		conn.Close()
 		step.Detail = err.Error()
 		var keyErr *knownhosts.KeyError
 		switch {
@@ -125,11 +133,36 @@ func checkLogin(opts Options, conn net.Conn) Step {
 		case strings.Contains(err.Error(), "unable to authenticate"):
 			step.Hint = "authorize the identity on the server, for example with `ssh-copy-id " + loginTarget(opts) + "`"
 		}
-		return step
+		return nil, step
 	}
-	ssh.NewClient(sshConn, channels, requests).Close()
+	conn.SetDeadline(time.Time{})
 	step.OK = true
 	step.Detail = "logged in as " + opts.User
+	return ssh.NewClient(sshConn, channels, requests), step
+}
+
+// checkProbe runs probe on the server and reports the first line of its
+// output.
+func checkProbe(client *ssh.Client, probe string) Step {
+	step := Step{Name: "remote gst"}
+	session, err := client.NewSession()
+	if err != nil {
+		step.Detail = err.Error()
+		return step
+	}
+	defer session.Close()
+	out, err := session.CombinedOutput(probe)
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if err != nil {
+		step.Detail = fmt.Sprintf("%s failed: %v", probe, err)
+		if first != "" {
+			step.Detail += ": " + first
+		}
+		step.Hint = "install gst 0.3 or later on the server, in the PATH of its login shell, or give its path with --remote-gst"
+		return step
+	}
+	step.OK = true
+	step.Detail = first
 	return step
 }
 

@@ -25,9 +25,6 @@ func newSystemd(home string, notes io.Writer) *systemd {
 
 const unitName = "gst.service"
 
-// legacyUnit is gst 0.1's unit for one tunnel.
-func legacyUnit(name string) string { return "gst-" + name + ".service" }
-
 func (s *systemd) systemctl(args ...string) (string, error) {
 	return s.run("systemctl", append([]string{"--user"}, args...)...)
 }
@@ -74,12 +71,6 @@ func (s *systemd) Uninstall() error { return s.remove(unitName) }
 func (s *systemd) LogHint() string {
 	return "see the daemon log with `journalctl --user -u " + strings.TrimSuffix(unitName, ".service") + "`"
 }
-
-func (s *systemd) HasLegacy(name string) bool {
-	return fileExists(filepath.Join(s.dir, legacyUnit(name)))
-}
-
-func (s *systemd) RemoveLegacy(name string) error { return s.remove(legacyUnit(name)) }
 
 func (s *systemd) remove(unit string) error {
 	path := filepath.Join(s.dir, unit)

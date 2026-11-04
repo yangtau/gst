@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
 	"sync"
 	"time"
 
@@ -15,34 +14,36 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// supervisor runs one tunnel and reconnects it after every failure until
-// it is stopped.
+// maxRetry bounds the wait before a link that keeps failing retries.
+const maxRetry = 5 * time.Minute
+
+// supervisor runs one link and reconnects it after every failure until it
+// is stopped, waiting longer after each failure in a row.
 type supervisor struct {
 	d       *Daemon
 	name    string
-	spec    config.Tunnel // the configuration it was started with
-	logOut  *logfile.File // nil when the daemon keeps no tunnel logs
+	spec    config.Link   // the configuration it was started with
+	logOut  *logfile.File // nil when the daemon keeps no link logs
 	log     *log.Logger
-	cancel  context.CancelFunc
 	ctx     context.Context
+	cancel  context.CancelFunc
 	stopped chan struct{}
-
-	meshTunnel *mesh.Tunnel // for an SSH tunnel without NoMesh
 
 	mu         sync.Mutex
 	current    string
 	since      time.Time
 	lastErr    string
 	reconnects int
+	peer       *wire.NodeInfo
 }
 
-func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.File) *supervisor {
+func newSupervisor(d *Daemon, name string, spec config.Link, logOut *logfile.File) *supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
 	var w io.Writer = io.Discard
 	if logOut != nil {
 		w = logOut
 	}
-	s := &supervisor{
+	return &supervisor{
 		d:       d,
 		name:    name,
 		spec:    spec,
@@ -54,13 +55,9 @@ func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.F
 		current: wire.StateConnecting,
 		since:   time.Now(),
 	}
-	if _, through := spec.MeshMachine(); !through && !spec.NoMesh {
-		s.meshTunnel = d.mesh.AddTunnel(name, spec.Destination, spec.RemoteGst, s.log)
-	}
-	return s
 }
 
-func (s *supervisor) set(state, lastErr string) {
+func (s *supervisor) set(state, lastErr string, peer *wire.NodeInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.current != state {
@@ -69,73 +66,66 @@ func (s *supervisor) set(state, lastErr string) {
 	if lastErr != "" {
 		s.lastErr = lastErr
 	}
-	if s.meshTunnel != nil {
-		s.meshTunnel.SetState(state)
-	}
+	s.peer = peer
 }
 
-func (s *supervisor) state() wire.TunnelState {
+func (s *supervisor) state() wire.LinkState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return wire.TunnelState{Name: s.name, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects}
+	return wire.LinkState{Name: s.name, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
 }
 
-// run connects until stop. Errors are logged; like the tunnel package's,
-// they omit addresses, users, and paths.
+// run connects until stop. The log leaves out what the other machine
+// reported, which may quote it; Status shows it.
 func (s *supervisor) run() {
 	defer close(s.stopped)
+	wait := s.d.cfg.RetryDelay
 	for {
-		s.set(wire.StateConnecting, "")
-		err := s.connect()
+		s.set(wire.StateConnecting, "", nil)
+		err := s.connect(func(peer wire.NodeInfo) {
+			s.set(wire.StateRunning, "", &peer)
+			s.log.Print("link up")
+			wait = s.d.cfg.RetryDelay
+		})
 		if s.ctx.Err() != nil {
 			return
 		}
 		if err == nil {
-			err = errors.New("tunnel ended unexpectedly")
+			err = errors.New("the link ended")
 		}
-		s.log.Print(err)
-		s.set(wire.StateDown, err.Error())
-		timer := time.NewTimer(s.d.cfg.RetryDelay)
+		var remote *mesh.RemoteError
+		if errors.As(err, &remote) {
+			s.log.Print("the remote gst failed; see gst link list")
+		} else {
+			s.log.Print(err)
+		}
+		s.set(wire.StateDown, err.Error(), nil)
 		select {
 		case <-s.ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-time.After(wait):
 		}
+		wait = min(2*wait, maxRetry)
 		s.mu.Lock()
 		s.reconnects++
 		s.mu.Unlock()
 	}
 }
 
-func (s *supervisor) connect() error {
-	opts, err := s.d.cfg.Resolve(s.ctx, &s.spec)
+func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
+	conn, err := s.d.cfg.Connect(s.ctx, s.name, &s.spec)
 	if err != nil {
-		// Resolution errors quote the ssh configuration.
-		return errors.New("ssh config resolution failed")
+		return err
 	}
-	opts.Logger = s.log
-	opts.OnReady = func() { s.set(wire.StateRunning, "") }
-	if machine, ok := s.spec.MeshMachine(); ok {
-		opts.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
-			return s.d.mesh.Dial(ctx, machine, network, address)
-		}
-	}
-	if s.meshTunnel != nil {
-		opts.Attach = s.meshTunnel.Connected
-	}
-	return s.d.cfg.Run(s.ctx, opts)
+	return s.d.mesh.Link(s.ctx, s.name, conn, onUp)
 }
 
-// stop ends the tunnel and waits until it has shut down.
+// stop ends the link and waits until it has shut down.
 func (s *supervisor) stop() {
 	s.cancel()
 	<-s.stopped
-	s.log.Print("tunnel stopped")
-	if s.meshTunnel != nil {
-		s.meshTunnel.Remove()
-	}
-	s.d.cfg.Log.Printf("tunnel %s stopped", s.name)
+	s.log.Print("link stopped")
+	s.d.cfg.Log.Printf("link %s stopped", s.name)
 	if s.logOut != nil {
 		s.logOut.Close()
 	}

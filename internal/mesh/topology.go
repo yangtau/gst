@@ -4,16 +4,11 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
-	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"time"
 
 	"github.com/hashicorp/yamux"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
@@ -62,22 +57,24 @@ func (n *Node) publish(force bool) {
 	}
 	edges := n.edges()
 	old, ok := n.records[n.info.ID]
-	if ok && !force && reflect.DeepEqual(old.Node, n.info) && reflect.DeepEqual(old.Edges, edges) {
+	if ok && !force && old.Node == n.info && slices.Equal(old.Links, edges) {
 		return
 	}
 	now := time.Now()
 	seq := max(old.Seq+1, n.seqFloor+1, uint64(now.UnixNano()))
-	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Edges: edges}
+	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Links: edges}
 	n.notify()
 }
 
-// edges describes this node's tunnels as they are now; n.mu is held.
+// edges describes the running links that this node opened; n.mu is held.
 func (n *Node) edges() []wire.Edge {
-	edges := make([]wire.Edge, 0, len(n.tunnels))
-	for t := range n.tunnels {
-		edges = append(edges, t.edge())
+	edges := []wire.Edge{}
+	for l := range n.links {
+		if l.name != "" {
+			edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
+		}
 	}
-	slices.SortFunc(edges, func(a, b wire.Edge) int { return cmp.Compare(a.Tunnel, b.Tunnel) })
+	slices.SortFunc(edges, func(a, b wire.Edge) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer)) })
 	return edges
 }
 
@@ -135,7 +132,7 @@ func (n *Node) merge(recs []wire.Record) {
 	now := time.Now()
 	changed := false
 	for _, r := range recs {
-		if !config.ValidMeshID(r.Node.ID) || len(r.Edges) > maxEdges || !r.Expires.After(now) || !fits(r) {
+		if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !r.Expires.After(now) || !fits(r) {
 			continue
 		}
 		if r.Node.ID == n.info.ID {
@@ -161,9 +158,9 @@ func (n *Node) merge(recs []wire.Record) {
 }
 
 // sync asks the peer for its records and keeps merging the ones it
-// pushes until the session ends. A peer without topology.sync sends none.
-// When the exchange fails otherwise, sync closes the session, so that the
-// link starts over rather than staying up without updates.
+// pushes until the session ends. When the exchange fails, sync closes the
+// session, so that the link starts over rather than staying up without
+// updates.
 func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 	var recs wire.Records
 	conn, err := call(ctx, session, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
@@ -176,8 +173,7 @@ func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 		recs = wire.Records{}
 		err = wire.ReadFrame(conn, &recs)
 	}
-	var callErr *wire.Error
-	if ctx.Err() == nil && !(errors.As(err, &callErr) && callErr.Code == wire.CodeUnsupportedMethod) {
+	if ctx.Err() == nil {
 		session.Close()
 	}
 }
@@ -244,7 +240,7 @@ func batch(recs []wire.Record) [][]wire.Record {
 }
 
 // Topology reports the mesh as this node knows it, with this node's
-// tunnels as they are now rather than as last published.
+// links as they are now rather than as last published.
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
 	self := n.info
@@ -254,110 +250,79 @@ func (n *Node) Topology() wire.Topology {
 			recs = append(recs, r)
 		}
 	}
-	recs = append(recs, wire.Record{Node: self, Edges: n.edges()})
+	recs = append(recs, wire.Record{Node: self, Links: n.edges()})
 	n.mu.Unlock()
 	if self.ID == "" {
 		return wire.Topology{Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
 	}
-	t := buildTopology(self, recs, time.Now())
-	t.Enabled = true
-	return t
+	return buildTopology(self.ID, recs, time.Now())
 }
 
-// buildTopology joins the live records into machines and the tunnels
-// between them. A tunnel leads to the gst node it is linked with, or else
-// to the gst node whose host keys include the server's, or else to an SSH
-// server without gst.
-func buildTopology(self wire.NodeInfo, recs []wire.Record, now time.Time) wire.Topology {
-	recs = slices.DeleteFunc(slices.Clone(recs), func(r wire.Record) bool {
-		return r.Node.ID != self.ID && !r.Expires.After(now)
-	})
-	slices.SortFunc(recs, func(a, b wire.Record) int { return cmp.Compare(a.Node.ID, b.Node.ID) })
-
+// buildTopology joins the live records into nodes and the links between
+// them, and finds the shortest path from self to each node it reaches.
+// Links carry connections both ways.
+func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology {
 	nodes := map[string]*wire.TopoNode{}
-	hostOwner := map[string]string{}
 	for _, r := range recs {
-		nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Gst: true, Software: r.Node.Software, HostKeys: r.Node.HostKeys, Expires: r.Expires}
-		for _, k := range r.Node.HostKeys {
-			if _, taken := hostOwner[k]; !taken {
-				hostOwner[k] = r.Node.ID
-			}
+		if r.Node.ID == self || r.Expires.After(now) {
+			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Exit: r.Node.Exit, Expires: r.Expires}
 		}
 	}
-	if nodes[self.ID] == nil {
-		nodes[self.ID] = &wire.TopoNode{ID: self.ID, Name: self.Name, Gst: true, Software: self.Software, HostKeys: self.HostKeys}
-	}
-
 	edges := []wire.TopoEdge{}
 	for _, r := range recs {
-		for _, e := range r.Edges {
-			var to string
-			switch {
-			case e.Peer != "" && nodes[e.Peer] != nil && nodes[e.Peer].Gst:
-				to = e.Peer
-			case e.HostKey != "" && hostOwner[e.HostKey] != "":
-				to = hostOwner[e.HostKey]
-			case e.HostKey != "":
-				to = "ssh:" + e.HostKey
-			default:
-				to = "tunnel:" + r.Node.ID + "/" + e.Tunnel
+		if nodes[r.Node.ID] == nil {
+			continue
+		}
+		for _, e := range r.Links {
+			if nodes[e.Peer] == nil {
+				// Its record has not arrived yet.
+				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}
 			}
-			if nodes[to] == nil {
-				nodes[to] = &wire.TopoNode{ID: to, Name: e.Tunnel}
-			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: to, Tunnel: e.Tunnel, Destination: e.Destination, State: e.State, Linked: e.Linked})
+			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name})
 		}
 	}
-
 	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
-		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.Tunnel, b.Tunnel))
+		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.Link, b.Link), cmp.Compare(a.To, b.To))
 	})
 
-	for id := range reach(edges, self.ID) {
-		nodes[id].Reachable = true
+	prev := reach(edges, self)
+	for id := range prev {
+		node := nodes[id]
+		node.Reachable = true
+		for at := id; at != ""; at = prev[at] {
+			node.Path = append(node.Path, at)
+		}
+		slices.Reverse(node.Path)
 	}
 
-	t := wire.Topology{Self: self.ID, Nodes: make([]wire.TopoNode, 0, len(nodes)), Edges: edges}
+	t := wire.Topology{Self: self, Nodes: make([]wire.TopoNode, 0, len(nodes)), Edges: edges}
 	for _, node := range nodes {
 		t.Nodes = append(t.Nodes, *node)
 	}
 	slices.SortFunc(t.Nodes, func(a, b wire.TopoNode) int {
-		if a.ID == self.ID || b.ID == self.ID {
-			return boolOrder(a.ID == self.ID, b.ID == self.ID)
-		}
-		return cmp.Or(boolOrder(a.Gst, b.Gst), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+		return cmp.Or(boolOrder(a.ID == self, b.ID == self), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 	})
 	return t
 }
 
-// reach finds the machines that self reaches: over a running tunnel of
-// a machine that it reaches through, and on from there through a peer
-// link, in either direction, since relaying needs gst at both ends. It
-// returns, for each, the machine before it on a shortest path; self has
-// none.
+// reach finds the nodes that self reaches over links, in either
+// direction. It returns, for each, the node before it on a shortest path;
+// self has none.
 func reach(edges []wire.TopoEdge, self string) map[string]string {
 	prev := map[string]string{self: ""}
-	relays := map[string]bool{self: true}
 	queue := []string{self}
 	for len(queue) > 0 {
 		at := queue[0]
 		queue = queue[1:]
 		for _, e := range edges {
-			var next string
-			switch {
-			case e.From == at && (e.Linked || e.State == wire.StateRunning):
+			next := ""
+			switch at {
+			case e.From:
 				next = e.To
-			case e.To == at && e.Linked:
+			case e.To:
 				next = e.From
-			default:
-				continue
 			}
-			if _, seen := prev[next]; !seen {
-				prev[next] = at
-			}
-			if e.Linked && !relays[next] {
-				// Paths go on past a machine only over a peer link.
-				relays[next] = true
+			if _, seen := prev[next]; next != "" && !seen {
 				prev[next] = at
 				queue = append(queue, next)
 			}
@@ -375,23 +340,4 @@ func boolOrder(a, b bool) int {
 		return -1
 	}
 	return 1
-}
-
-// readHostKeys returns the fingerprints of the public keys matching glob.
-func readHostKeys(glob string) []string {
-	paths, _ := filepath.Glob(glob)
-	var keys []string
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		key, _, _, _, err := ssh.ParseAuthorizedKey(data)
-		if err != nil {
-			continue
-		}
-		keys = append(keys, ssh.FingerprintSHA256(key))
-	}
-	slices.Sort(keys)
-	return slices.Compact(keys)
 }

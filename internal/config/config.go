@@ -1,5 +1,7 @@
-// Package config reads and writes the gst configuration file, which holds
-// the named tunnels. The gst CLI is its only intended writer.
+// Package config reads and writes the gst configuration file: this
+// machine's node identity, its links to other machines, and how it uses
+// the mesh (proxy, maps, and routes). The gst CLI is its only intended
+// writer.
 package config
 
 import (
@@ -21,65 +23,66 @@ import (
 	"unicode"
 )
 
-// Version is the current configuration format. Version 2 added Stopped:
-// before it, whether a tunnel ran was recorded by its own background
-// service.
-const Version = 2
+// Version is the current configuration format. Version 3 replaced the
+// tunnels and their forwards with links, maps, and routes.
+const Version = 3
 
-// File is the configuration file: tunnels keyed by name. Version is 0 in
-// files written before versions were recorded.
+// The proxy's listen address when the file sets none, and the setting
+// that turns the proxy off.
+const (
+	DefaultProxy = "127.0.0.1:1080"
+	ProxyOff     = "off"
+)
+
+// File is the configuration file.
 type File struct {
-	Version int   `json:"version,omitempty"`
-	Mesh    *Mesh `json:"mesh,omitempty"`
-	// NoMesh keeps this machine out of the gst mesh, which it otherwise
-	// joins once it has a tunnel or a peer links to it.
-	NoMesh  bool               `json:"no_mesh,omitempty"`
-	Tunnels map[string]*Tunnel `json:"tunnels"`
+	Version int   `json:"version"`
+	Node    *Node `json:"node,omitempty"` // set by Update
+	// Down keeps the daemon from running until gst up.
+	Down   bool             `json:"down,omitempty"`
+	Proxy  string           `json:"proxy,omitempty"` // listen address, DefaultProxy when empty, or ProxyOff
+	Links  map[string]*Link `json:"links"`
+	Maps   []Map            `json:"maps"`
+	Routes Routes           `json:"routes"`
 }
 
-// Mesh is present when this machine takes part in the gst mesh: its daemon
-// accepts peer links and keeps running without started tunnels. See
-// File.JoinMesh.
-type Mesh struct {
+// Node is this machine's identity in the mesh.
+type Node struct {
 	ID   string `json:"id"`   // random and stable
-	Name string `json:"name"` // shown to peers
+	Name string `json:"name"` // shown to others; not unique
+	// Exit lets other machines connect through this one to addresses
+	// that are not on this machine.
+	Exit bool `json:"exit,omitempty"`
 }
 
-// Tunnel is one SSH connection and the forwards it serves. Destination is
-// resolved with "ssh -G" each time the tunnel starts, so the user's ssh
+// Link is an SSH connection to another machine's gst. Destination is
+// resolved with "ssh -G" each time the link connects, so the user's ssh
 // configuration supplies host, port, user, identities, known_hosts files,
 // and timeouts. The optional fields override what ssh resolves.
-//
-// A destination of mesh:<machine> instead names a machine of the gst mesh:
-// the tunnel has no SSH connection of its own, and its forwards connect
-// through the mesh from that machine. Such a tunnel has only local and
-// dynamic forwards and, of the SSH settings, only the connect timeout.
-type Tunnel struct {
-	Destination              string    `json:"destination"`
-	IdentityFile             string    `json:"identity_file,omitempty"`
-	KnownHostsFile           string    `json:"known_hosts_file,omitempty"`
-	ConnectTimeoutSeconds    int64     `json:"connect_timeout_seconds,omitempty"`
-	KeepaliveIntervalSeconds int64     `json:"keepalive_interval_seconds,omitempty"`
-	KeepaliveCountMax        int64     `json:"keepalive_count_max,omitempty"`
-	CleanupListeners         bool      `json:"cleanup_listeners,omitempty"`
-	Forwards                 []Forward `json:"forwards"`
-	// Stopped tunnels stay configured, but the daemon does not run them.
-	Stopped bool `json:"stopped,omitempty"`
-	// NoMesh keeps the tunnel from linking this machine's gst with the
-	// server's while the mesh is enabled.
-	NoMesh bool `json:"no_mesh,omitempty"`
-	// RemoteGst is the server's gst command for the peer link; "gst" in
-	// the login shell's PATH when empty.
+type Link struct {
+	Destination              string `json:"destination"`
+	IdentityFile             string `json:"identity_file,omitempty"`
+	KnownHostsFile           string `json:"known_hosts_file,omitempty"`
+	ConnectTimeoutSeconds    int64  `json:"connect_timeout_seconds,omitempty"`
+	KeepaliveIntervalSeconds int64  `json:"keepalive_interval_seconds,omitempty"`
+	KeepaliveCountMax        int64  `json:"keepalive_count_max,omitempty"`
+	// RemoteGst is the server's gst command; "gst" in the login shell's
+	// PATH when empty.
 	RemoteGst string `json:"remote_gst,omitempty"`
+	// Stopped links stay configured, but the daemon does not run them.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
-// MeshPrefix starts the destination of a tunnel through the gst mesh.
-const MeshPrefix = "mesh:"
-
-// MeshMachine returns the machine of a tunnel through the gst mesh: a node
-// name, id, or id prefix as gst mesh nodes shows them.
-func (t *Tunnel) MeshMachine() (machine string, ok bool) {
-	return strings.CutPrefix(t.Destination, MeshPrefix)
+// ProxyAddress returns the proxy's listen address, or "" when the proxy
+// is off.
+func (f *File) ProxyAddress() string {
+	switch f.Proxy {
+	case "":
+		return DefaultProxy
+	case ProxyOff:
+		return ""
+	}
+	return f.Proxy
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
@@ -96,61 +99,126 @@ func DefaultPath() (string, error) {
 	return filepath.Join(dir, "gst", "config.json"), nil
 }
 
+func empty() *File {
+	return &File{Version: Version, Links: map[string]*Link{}, Maps: []Map{}, Routes: Routes{}}
+}
+
 // Load reads and validates the configuration file. A missing file is an
-// empty configuration of the current version.
+// empty configuration. A file of an earlier version is converted, as
+// Upgrade would, without writing it.
 func Load(path string) (*File, error) {
+	f, _, err := load(path)
+	return f, err
+}
+
+// load is Load that also returns, for a converted file, the notes of
+// Upgrade, and nil notes otherwise.
+func load(path string) (*File, []string, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &File{Version: Version, Tunnels: map[string]*Tunnel{}}, nil
+		return empty(), nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("read config %s: %w", path, err)
 	}
-	f, err := parse(data)
+	f, notes, err := parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	return f, nil
+	return f, notes, nil
 }
 
 // parse decodes and validates a configuration document. Errors name the
-// tunnel and forward but not configured values, because the tunnel process
-// logs them.
-func parse(data []byte) (*File, error) {
-	var f File
+// link, map, or route but not configured values, because the daemon logs
+// them.
+func parse(data []byte) (*File, []string, error) {
+	var head struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return nil, nil, errors.New("invalid JSON")
+	}
+	if head.Version < Version {
+		return parseLegacy(data)
+	}
+	f := empty()
+	if err := decodeStrict(data, f); err != nil {
+		return nil, nil, err
+	}
+	if err := f.normalize(); err != nil {
+		return nil, nil, err
+	}
+	return f, nil, nil
+}
+
+func decodeStrict(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return nil, errors.New("invalid JSON or unknown field")
+	if err := dec.Decode(v); err != nil {
+		return errors.New("invalid JSON or unknown field")
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("unexpected data after the JSON object")
+		return errors.New("unexpected data after the JSON object")
 	}
-	if f.Tunnels == nil {
-		f.Tunnels = map[string]*Tunnel{}
+	return nil
+}
+
+// normalize fills in empty collections and validates f.
+func (f *File) normalize() error {
+	if f.Links == nil {
+		f.Links = map[string]*Link{}
 	}
-	if err := f.validate(); err != nil {
-		return nil, err
+	if f.Maps == nil {
+		f.Maps = []Map{}
 	}
-	return &f, nil
+	if f.Routes == nil {
+		f.Routes = Routes{}
+	}
+	return f.validate()
 }
 
 func (f *File) validate() error {
-	if f.Version < 0 || f.Version > Version {
+	if f.Version != Version {
 		return fmt.Errorf("unsupported config version %d; upgrade gst", f.Version)
 	}
-	if m := f.Mesh; m != nil && (!meshIDPattern.MatchString(m.ID) || ValidateNodeName(m.Name) != nil) {
-		return errors.New("invalid mesh id or name")
+	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil) {
+		return errors.New("invalid node id or name")
 	}
-	for name, t := range f.Tunnels {
+	if _, ok := parseListenAddress(f.ProxyAddress()); !ok && f.Proxy != ProxyOff {
+		return errors.New("invalid proxy address")
+	}
+	for name, l := range f.Links {
 		if err := ValidateName(name); err != nil {
 			return err
 		}
-		if t == nil {
-			return fmt.Errorf("tunnel %s is null", name)
+		if l == nil {
+			return fmt.Errorf("link %s is null", name)
 		}
-		if err := t.Validate(); err != nil {
-			return fmt.Errorf("tunnel %s: %w", name, err)
+		if err := l.Validate(); err != nil {
+			return fmt.Errorf("link %s: %w", name, err)
+		}
+	}
+	for i, m := range f.Maps {
+		if err := m.validate(); err != nil {
+			return fmt.Errorf("map %d: %w", i+1, err)
+		}
+		if m.Listen == f.ProxyAddress() {
+			return fmt.Errorf("map %d listens on the proxy address", i+1)
+		}
+		for _, earlier := range f.Maps[:i] {
+			if earlier.Listen == m.Listen {
+				return fmt.Errorf("map %d: duplicate listen address", i+1)
+			}
+		}
+	}
+	for i, r := range f.Routes {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("route %d: %w", i+1, err)
+		}
+		for _, earlier := range f.Routes[:i] {
+			if earlier.Match == r.Match {
+				return fmt.Errorf("route %d: duplicate match", i+1)
+			}
 		}
 	}
 	return nil
@@ -158,38 +226,49 @@ func (f *File) validate() error {
 
 // Update applies fn to the configuration file under an exclusive lock and
 // writes the result atomically, so concurrent gst commands do not lose
-// each other's changes. Nothing is written if fn fails.
+// each other's changes. Nothing is written if fn fails. The file always
+// gets a node identity.
 func Update(path string, fn func(*File) error) error {
+	_, err := update(path, fn)
+	return err
+}
+
+// Upgrade writes a configuration file of an earlier version in the
+// current format. It returns whether it did and notes on the forwards
+// that the current format has no place for. Other files stay as they are.
+func Upgrade(path string) (upgraded bool, notes []string, err error) {
+	if _, notes, err := load(path); err != nil || notes == nil {
+		return false, nil, err
+	}
+	notes, err = update(path, func(*File) error { return nil })
+	// Another gst may have upgraded the file meanwhile.
+	return err == nil && notes != nil, notes, err
+}
+
+func update(path string, fn func(*File) error) ([]string, error) {
 	unlock, err := lock(path + ".lock")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
-	f, err := Load(path)
+	f, notes, err := load(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := fn(f); err != nil {
-		return err
+		return nil, err
 	}
-	if f.NoMesh {
-		f.Mesh = nil
-	} else if len(f.Tunnels) > 0 {
-		f.JoinMesh()
+	if f.Node == nil {
+		f.Node = &Node{ID: NewNodeID(), Name: DefaultNodeName()}
 	}
-	if err := f.validate(); err != nil {
-		return err
-	}
-	for _, t := range f.Tunnels {
-		if t.Forwards == nil {
-			t.Forwards = []Forward{}
-		}
+	if err := f.normalize(); err != nil {
+		return nil, err
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return writeFileAtomic(path, append(data, '\n'))
+	return notes, writeFileAtomic(path, append(data, '\n'))
 }
 
 // Apply runs fn on the configuration file under a lock of its own, so
@@ -233,18 +312,17 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write config: %w", err)
+	_, err = tmp.Write(data)
+	if err == nil {
+		err = tmp.Sync()
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write config: %w", err)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
@@ -252,32 +330,26 @@ func writeFileAtomic(path string, data []byte) error {
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-var meshIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var nodeIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-// ValidMeshID reports whether id is a mesh node id.
-func ValidMeshID(id string) bool { return meshIDPattern.MatchString(id) }
+// ValidNodeID reports whether id is a node id.
+func ValidNodeID(id string) bool { return nodeIDPattern.MatchString(id) }
 
-// ValidateNodeName checks a mesh node name, which follows the rules of
-// tunnel names.
-func ValidateNodeName(name string) error {
+// NewNodeID returns a random node id.
+func NewNodeID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// ValidateName checks a link or node name. Names become parts of file
+// names and of host names under .gst, so they are restricted to a
+// portable character set.
+func ValidateName(name string) error {
 	if !namePattern.MatchString(name) {
-		return fmt.Errorf("invalid node name %q: use 1-32 lowercase letters, digits, or '-', starting with a letter or digit", name)
+		return fmt.Errorf("invalid name %q: use 1-32 lowercase letters, digits, or '-', starting with a letter or digit", name)
 	}
 	return nil
-}
-
-// NewMeshID returns a random mesh node id.
-func NewMeshID() string {
-	return hex.EncodeToString(randomBytes(16))
-}
-
-// JoinMesh gives this machine its place in the mesh, with a new id and the
-// default name, unless it has one or NoMesh is set. Update calls it once
-// the configuration has a tunnel.
-func (f *File) JoinMesh() {
-	if f.Mesh == nil && !f.NoMesh {
-		f.Mesh = &Mesh{ID: NewMeshID(), Name: DefaultNodeName()}
-	}
 }
 
 // DefaultNodeName derives a valid node name from the host name.
@@ -297,19 +369,10 @@ func DefaultNodeName() string {
 	if len(name) > 32 {
 		name = strings.Trim(name[:32], "-")
 	}
-	if ValidateNodeName(name) != nil {
+	if ValidateName(name) != nil {
 		return "node"
 	}
 	return name
-}
-
-// ValidateName checks a tunnel name. Names become part of service names and
-// log file names, so they are restricted to a portable character set.
-func ValidateName(name string) error {
-	if !namePattern.MatchString(name) {
-		return fmt.Errorf("invalid tunnel name %q: use 1-32 lowercase letters, digits, or '-', starting with a letter or digit", name)
-	}
-	return nil
 }
 
 // ValidateDestination checks an ssh destination such as "myhost",
@@ -323,46 +386,23 @@ func ValidateDestination(destination string) error {
 	return nil
 }
 
-// Validate checks a tunnel. Paths must be absolute; durations and counts
+// Validate checks a link. Paths must be absolute; durations and counts
 // are either zero (unset) or positive and representable.
-func (t *Tunnel) Validate() error {
-	if err := ValidateDestination(t.Destination); err != nil {
+func (l *Link) Validate() error {
+	if err := ValidateDestination(l.Destination); err != nil {
 		return err
 	}
-	for _, path := range []string{t.IdentityFile, t.KnownHostsFile} {
+	for _, path := range []string{l.IdentityFile, l.KnownHostsFile} {
 		if path != "" && (!filepath.IsAbs(path) || strings.ContainsRune(path, 0)) {
 			return errors.New("identity and known_hosts paths must be absolute")
 		}
 	}
-	if strings.ContainsFunc(t.RemoteGst, func(r rune) bool { return unicode.IsControl(r) }) {
+	if strings.ContainsFunc(l.RemoteGst, unicode.IsControl) {
 		return errors.New("invalid remote gst command")
 	}
-	if err := t.validateMeshMachine(); err != nil {
-		return err
-	}
-	if !isUnsetOrSeconds(t.ConnectTimeoutSeconds) || !isUnsetOrSeconds(t.KeepaliveIntervalSeconds) ||
-		t.KeepaliveCountMax < 0 || t.KeepaliveCountMax > MaxKeepaliveCount {
+	if !isUnsetOrSeconds(l.ConnectTimeoutSeconds) || !isUnsetOrSeconds(l.KeepaliveIntervalSeconds) ||
+		l.KeepaliveCountMax < 0 || l.KeepaliveCountMax > MaxKeepaliveCount {
 		return errors.New("invalid timeout or keepalive settings")
-	}
-	return validateForwards(t.Forwards)
-}
-
-func (t *Tunnel) validateMeshMachine() error {
-	machine, ok := t.MeshMachine()
-	if !ok {
-		return nil
-	}
-	if !namePattern.MatchString(machine) {
-		return errors.New("invalid destination: mesh:<machine> needs a machine of gst mesh nodes")
-	}
-	if t.IdentityFile != "" || t.KnownHostsFile != "" || t.KeepaliveIntervalSeconds != 0 || t.KeepaliveCountMax != 0 ||
-		t.CleanupListeners || t.NoMesh || t.RemoteGst != "" {
-		return errors.New("a tunnel through the mesh has no SSH connection; of the SSH settings it takes only --connect-timeout")
-	}
-	for i, f := range t.Forwards {
-		if f.Direction == Remote {
-			return fmt.Errorf("forward %d: a tunnel through the mesh cannot have -R forwards", i+1)
-		}
 	}
 	return nil
 }
@@ -396,10 +436,4 @@ func AbsPath(path string) (string, error) {
 		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
 	}
 	return filepath.Abs(path)
-}
-
-func randomBytes(n int) []byte {
-	b := make([]byte, n)
-	rand.Read(b)
-	return b
 }

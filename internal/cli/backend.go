@@ -17,35 +17,28 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// backend runs tunnels in the background. The real one controls the gst
-// daemon; tests use a fake.
+// backend is the gst daemon on this machine. The real one controls the
+// daemon's service; tests use a fake.
 type backend interface {
 	// Sync makes the background match the configuration file. With a
-	// command, as when started tunnels or the mesh need the daemon, it
-	// installs the daemon's service to run command, restarts a daemon that
-	// runs another gst, and tells the daemon to reload the configuration;
-	// with none, it removes the service.
+	// command, it installs the daemon's service to run command, restarts
+	// a daemon that runs another gst, and tells the daemon to reload the
+	// configuration; with none, it removes the service.
 	Sync(ctx context.Context, command []string) error
-	// Restart restarts started tunnels in a daemon that Sync brought up.
+	// Restart restarts started links in a daemon that Sync brought up.
 	Restart(ctx context.Context, names []string) error
-	// States returns the states of the tunnels that the daemon runs, and
-	// false when no daemon answers.
-	States(ctx context.Context) (map[string]wire.TunnelState, bool)
-	// Logs writes the last lines of a tunnel's log to w and then, if
-	// follow is set, new lines until ctx is done.
-	Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error
-	RemoveLogs(name string) error
-	// Peers returns the daemon's peer links.
-	Peers(ctx context.Context) (wire.Peers, error)
+	// Status returns what the daemon reports, and false when no daemon
+	// answers.
+	Status(ctx context.Context) (wire.Status, bool)
 	// Nodes returns the mesh as the daemon knows it.
 	Nodes(ctx context.Context) (wire.Topology, error)
 	// Connect connects to target on a machine of the mesh through the
 	// daemon.
 	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
-	// HasLegacy and RemoveLegacy find and remove gst 0.1's per-tunnel
-	// services.
-	HasLegacy(name string) bool
-	RemoveLegacy(name string) error
+	// Logs writes the last lines of a link's log to w and then, if
+	// follow is set, new lines until ctx is done.
+	Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error
+	RemoveLogs(name string) error
 }
 
 const software = "gst " + version
@@ -156,28 +149,12 @@ func (b *daemonBackend) query(ctx context.Context, fn func(ctx context.Context, 
 	return fn(ctx, c)
 }
 
-func (b *daemonBackend) States(ctx context.Context) (map[string]wire.TunnelState, bool) {
-	var status wire.Status
+func (b *daemonBackend) Status(ctx context.Context) (st wire.Status, ok bool) {
 	err := b.query(ctx, func(ctx context.Context, c *daemon.Client) (err error) {
-		status, err = c.Status(ctx)
+		st, err = c.Status(ctx)
 		return err
 	})
-	if err != nil {
-		return nil, false
-	}
-	states := make(map[string]wire.TunnelState, len(status.Tunnels))
-	for _, s := range status.Tunnels {
-		states[s.Name] = s
-	}
-	return states, true
-}
-
-func (b *daemonBackend) Peers(ctx context.Context) (peers wire.Peers, err error) {
-	err = b.query(ctx, func(ctx context.Context, c *daemon.Client) error {
-		peers, err = c.Peers(ctx)
-		return err
-	})
-	return peers, err
+	return st, err == nil
 }
 
 func (b *daemonBackend) Nodes(ctx context.Context) (topo wire.Topology, err error) {
@@ -213,7 +190,7 @@ func (b *daemonBackend) logPath(name string) string {
 func (b *daemonBackend) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
 	path := b.logPath(name)
 	if _, err := os.Stat(path); err != nil && !follow {
-		_, err := fmt.Fprintf(w, "No log for tunnel %s yet.\n", name)
+		_, err := fmt.Fprintf(w, "No log for link %s yet.\n", name)
 		return err
 	}
 	args := []string{"-n", strconv.Itoa(lines)}
@@ -237,6 +214,3 @@ func (b *daemonBackend) RemoveLogs(name string) error {
 	}
 	return nil
 }
-
-func (b *daemonBackend) HasLegacy(name string) bool     { return b.manager.HasLegacy(name) }
-func (b *daemonBackend) RemoveLegacy(name string) error { return b.manager.RemoveLegacy(name) }

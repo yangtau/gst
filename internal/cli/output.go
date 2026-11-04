@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"context"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,30 +10,29 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/tunnel"
+	"github.com/yangtau/ssh-tunnel/internal/sshconn"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// tunnelView is a tunnel as gst list and show print it. Its JSON
-// form is part of the command line interface.
-type tunnelView struct {
-	Name                     string        `json:"name"`
-	Status                   string        `json:"status"`
-	Error                    string        `json:"error,omitempty"`
-	Destination              string        `json:"destination"`
-	IdentityFile             string        `json:"identity_file,omitempty"`
-	KnownHostsFile           string        `json:"known_hosts_file,omitempty"`
-	ConnectTimeoutSeconds    int64         `json:"connect_timeout_seconds,omitempty"`
-	KeepaliveIntervalSeconds int64         `json:"keepalive_interval_seconds,omitempty"`
-	KeepaliveCountMax        int64         `json:"keepalive_count_max,omitempty"`
-	CleanupListeners         bool          `json:"cleanup_listeners"`
-	NoMesh                   bool          `json:"no_mesh"`
-	RemoteGst                string        `json:"remote_gst,omitempty"`
-	Forwards                 []forwardView `json:"forwards"`
-	Resolved                 *resolved     `json:"resolved,omitempty"`
-	ResolveError             string        `json:"resolve_error,omitempty"`
+// linkView is a link as gst link list and show print it. Its JSON form is
+// part of the command line interface.
+type linkView struct {
+	Name                     string         `json:"name"`
+	Status                   string         `json:"status"`
+	Error                    string         `json:"error,omitempty"`
+	Peer                     *wire.NodeInfo `json:"peer,omitempty"` // the node at the other end, while running
+	Destination              string         `json:"destination"`
+	IdentityFile             string         `json:"identity_file,omitempty"`
+	KnownHostsFile           string         `json:"known_hosts_file,omitempty"`
+	ConnectTimeoutSeconds    int64          `json:"connect_timeout_seconds,omitempty"`
+	KeepaliveIntervalSeconds int64          `json:"keepalive_interval_seconds,omitempty"`
+	KeepaliveCountMax        int64          `json:"keepalive_count_max,omitempty"`
+	RemoteGst                string         `json:"remote_gst,omitempty"`
+	Resolved                 *resolved      `json:"resolved,omitempty"`
+	ResolveError             string         `json:"resolve_error,omitempty"`
 }
 
-// resolved is what the tunnel uses after applying the ssh configuration.
+// resolved is what the link uses after applying the ssh configuration.
 type resolved struct {
 	Server                   string   `json:"server"`
 	User                     string   `json:"user"`
@@ -44,46 +43,24 @@ type resolved struct {
 	KeepaliveTimeoutSeconds  int64    `json:"keepalive_timeout_seconds"`
 }
 
-type forwardView struct {
-	Number    int    `json:"number"`
-	Direction string `json:"direction"`
-	Listen    string `json:"listen"`
-	Target    string `json:"target"`
-	Spec      string `json:"spec"`
-}
-
-func forwardViews(forwards []config.Forward) []forwardView {
-	views := make([]forwardView, len(forwards))
-	for i, f := range forwards {
-		views[i] = forwardView{i + 1, f.Direction, f.Listen, f.Target, f.Spec()}
-	}
-	return views
-}
-
-func (a *app) view(ctx context.Context, name string, t *config.Tunnel) tunnelView {
-	status, lastErr := a.status(ctx, name, t)
-	return newTunnelView(name, t, status, lastErr)
-}
-
-func newTunnelView(name string, t *config.Tunnel, status, lastErr string) tunnelView {
-	return tunnelView{
+func newLinkView(name string, l *config.Link, st *wire.Status) linkView {
+	status, state := linkStatus(name, l, st)
+	return linkView{
 		Name:                     name,
 		Status:                   status,
-		Error:                    lastErr,
-		Destination:              t.Destination,
-		IdentityFile:             t.IdentityFile,
-		KnownHostsFile:           t.KnownHostsFile,
-		ConnectTimeoutSeconds:    t.ConnectTimeoutSeconds,
-		KeepaliveIntervalSeconds: t.KeepaliveIntervalSeconds,
-		KeepaliveCountMax:        t.KeepaliveCountMax,
-		CleanupListeners:         t.CleanupListeners,
-		NoMesh:                   t.NoMesh,
-		RemoteGst:                t.RemoteGst,
-		Forwards:                 forwardViews(t.Forwards),
+		Error:                    state.Error,
+		Peer:                     state.Peer,
+		Destination:              l.Destination,
+		IdentityFile:             l.IdentityFile,
+		KnownHostsFile:           l.KnownHostsFile,
+		ConnectTimeoutSeconds:    l.ConnectTimeoutSeconds,
+		KeepaliveIntervalSeconds: l.KeepaliveIntervalSeconds,
+		KeepaliveCountMax:        l.KeepaliveCountMax,
+		RemoteGst:                l.RemoteGst,
 	}
 }
 
-func resolvedView(opts tunnel.Options) *resolved {
+func resolvedView(opts sshconn.Options) *resolved {
 	return &resolved{
 		Server:                   opts.Server,
 		User:                     opts.User,
@@ -95,20 +72,30 @@ func resolvedView(opts tunnel.Options) *resolved {
 	}
 }
 
-func (v tunnelView) write(out io.Writer) error {
+// statusText is the status with the last error of a link that is not running.
+func (v linkView) statusText() string {
+	if v.Error != "" && v.Status != statusRunning {
+		return v.Status + " (last error: " + v.Error + ")"
+	}
+	return v.Status
+}
+
+// peerText names the node at the other end of a running link.
+func (v linkView) peerText() string {
+	if v.Peer == nil {
+		return "-"
+	}
+	return v.Peer.Name + " (" + shortID(v.Peer.ID) + ")"
+}
+
+func (v linkView) write(out io.Writer) error {
 	w := table(out)
 	row := func(key, value string) { fmt.Fprintf(w, "%s:\t%s\n", key, value) }
-	row("Tunnel", v.Name)
-	if v.Error != "" && v.Status != statusRunning {
-		row("Status", v.Status+" (last error: "+v.Error+")")
-	} else {
-		row("Status", v.Status)
-	}
+	row("Link", v.Name)
+	row("Status", v.statusText())
+	row("Peer", v.peerText())
 	row("Destination", v.Destination)
-	machine, through := strings.CutPrefix(v.Destination, config.MeshPrefix)
-	if through {
-		row("Server", "none; connects through the gst mesh from "+machine)
-	} else if r := v.Resolved; r != nil {
+	if r := v.Resolved; r != nil {
 		row("Server", r.User+"@"+r.Server)
 		row("Identities", strings.Join(r.IdentityFiles, ", "))
 		row("Known hosts", strings.Join(r.KnownHostsFiles, ", "))
@@ -117,33 +104,11 @@ func (v tunnelView) write(out io.Writer) error {
 	} else {
 		row("Server", "unresolved: "+v.ResolveError)
 	}
-	if !through {
-		cleanup := "off"
-		if v.CleanupListeners {
-			cleanup = "on"
-		}
-		row("Cleanup listeners", cleanup)
-		mesh := "links with the server's gst while the mesh is enabled"
-		if v.RemoteGst != "" {
-			mesh += "; remote gst " + v.RemoteGst
-		}
-		if v.NoMesh {
-			mesh = "off (--no-mesh)"
-		}
-		row("Mesh", mesh)
-	}
-	if len(v.Forwards) == 0 {
-		row("Forwards", "none")
-	} else {
-		row("Forwards", "")
-		for _, f := range v.Forwards {
-			fmt.Fprintf(w, "  %d\t%s\n", f.Number, f.Spec)
-		}
-	}
+	row("Remote gst", cmp.Or(v.RemoteGst, "gst"))
 	return w.Flush()
 }
 
-func writeSteps(out io.Writer, steps []tunnel.Step) {
+func writeSteps(out io.Writer, steps []sshconn.Step) {
 	w := table(out)
 	for _, s := range steps {
 		mark := "ok"
@@ -157,6 +122,8 @@ func writeSteps(out io.Writer, steps []tunnel.Step) {
 	}
 	w.Flush()
 }
+
+func shortID(id string) string { return id[:min(8, len(id))] }
 
 func table(out io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)

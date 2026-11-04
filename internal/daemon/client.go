@@ -58,13 +58,13 @@ func (c *Client) Status(ctx context.Context) (s wire.Status, err error) {
 	return
 }
 
-// Reload makes the daemon sync its tunnels with the configuration file.
+// Reload makes the daemon apply the configuration file.
 func (c *Client) Reload(ctx context.Context) (s wire.Status, err error) {
 	err = c.call(ctx, wire.MethodReload, nil, &s)
 	return
 }
 
-// Restart restarts the named tunnels.
+// Restart restarts the named links.
 func (c *Client) Restart(ctx context.Context, names []string) (s wire.Status, err error) {
 	err = c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names}, &s)
 	return
@@ -73,12 +73,6 @@ func (c *Client) Restart(ctx context.Context, names []string) (s wire.Status, er
 // Nodes returns the mesh as the daemon knows it.
 func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
 	err = c.call(ctx, wire.MethodNodes, nil, &t)
-	return
-}
-
-// Peers returns the daemon's peer links.
-func (c *Client) Peers(ctx context.Context) (p wire.Peers, err error) {
-	err = c.call(ctx, wire.MethodPeers, nil, &p)
 	return
 }
 

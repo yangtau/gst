@@ -32,9 +32,6 @@ func newLaunchd(home string, uid int) *launchd {
 
 const daemonLabel = "local.gst"
 
-// legacyLabel is gst 0.1's agent for one tunnel.
-func legacyLabel(name string) string { return "local.gst." + name }
-
 func (l *launchd) target(label string) string { return l.domain + "/" + label }
 
 func (l *launchd) plistPath(label string) string {
@@ -79,10 +76,6 @@ func (l *launchd) Install(command []string, restart bool) error {
 func (l *launchd) Uninstall() error { return l.remove(daemonLabel) }
 
 func (l *launchd) LogHint() string { return "see the daemon log in " + l.logPath }
-
-func (l *launchd) HasLegacy(name string) bool { return fileExists(l.plistPath(legacyLabel(name))) }
-
-func (l *launchd) RemoveLegacy(name string) error { return l.remove(legacyLabel(name)) }
 
 func (l *launchd) remove(label string) error {
 	if !fileExists(l.plistPath(label)) {

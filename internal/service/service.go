@@ -1,7 +1,6 @@
 // Package service installs the gst daemon as a per-user background
 // service, a systemd user unit on Linux and a launchd agent on macOS, which
-// starts at login and restarts the daemon whenever it exits. It also
-// removes the per-tunnel services of gst 0.1.
+// starts at login and restarts the daemon whenever it exits.
 package service
 
 import (
@@ -24,10 +23,6 @@ type Manager interface {
 	// Uninstall stops the service and deletes its definition. Uninstalling
 	// a missing service does nothing.
 	Uninstall() error
-	// HasLegacy reports whether gst 0.1 left a service for the named tunnel.
-	HasLegacy(name string) bool
-	// RemoveLegacy stops and deletes gst 0.1's service for the named tunnel.
-	RemoveLegacy(name string) error
 	// LogHint tells the user where the daemon's own log is.
 	LogHint() string
 }
@@ -35,7 +30,7 @@ type Manager interface {
 // Paths are where the daemon keeps its files on this platform.
 type Paths struct {
 	Socket string // control socket
-	LogDir string // tunnel logs, <name>.log
+	LogDir string // link logs, <name>.log
 }
 
 // DefaultPaths returns the paths for this platform: on Linux, under

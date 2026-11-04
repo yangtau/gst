@@ -19,8 +19,10 @@ import (
 	"net"
 )
 
-// Protocol is the highest protocol version this implementation speaks.
-const Protocol = 1
+// Protocol is the protocol version this implementation speaks. Version 2
+// replaced tunnels and their forwards with links between gst nodes; it
+// does not talk to version 1.
+const Protocol = 2
 
 // MaxFrame is the largest frame payload accepted, in bytes.
 const MaxFrame = 1 << 20
@@ -61,6 +63,7 @@ const (
 	CodeUnsupportedProto  = "unsupported_protocol"
 	CodeInvalidParams     = "invalid_params"
 	CodeNotFound          = "not_found"
+	CodeForbidden         = "forbidden"
 	CodeFailed            = "failed"
 )
 
@@ -118,7 +121,8 @@ func ReadFrame(r io.Reader, v any) error {
 }
 
 // Dial performs the connecting side's handshake on rw and returns the
-// other side's Hello. A refusal is returned as an *Error.
+// other side's Hello. A refusal, or an answer in an older protocol, is
+// returned as an *Error.
 func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 	mine.Protocol = Protocol
 	if err := WriteFrame(rw, mine); err != nil {
@@ -130,6 +134,9 @@ func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 	}
 	if theirs.Error != nil {
 		return theirs, theirs.Error
+	}
+	if theirs.Protocol < Protocol {
+		return theirs, Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.3 or later", theirs.Software)
 	}
 	return theirs, nil
 }
@@ -143,13 +150,13 @@ func ReadHello(r io.Reader) (Hello, error) {
 }
 
 // Answer answers theirs with mine, refusing the connection with refusal
-// when it is not nil or when theirs speaks no protocol version this side
-// does. A refusal is sent to the other side and returned.
+// when it is not nil or when theirs speaks an older protocol. A refusal is
+// sent to the other side and returned.
 func Answer(w io.Writer, theirs, mine Hello, refusal *Error) error {
 	mine.Protocol = Protocol
 	mine.Error = refusal
-	if theirs.Protocol < 1 {
-		mine.Error = Errorf(CodeUnsupportedProto, "protocol version %d is not supported", theirs.Protocol)
+	if theirs.Protocol < Protocol {
+		mine.Error = Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.3 or later", theirs.Software)
 	}
 	if err := WriteFrame(w, mine); err != nil {
 		return err
