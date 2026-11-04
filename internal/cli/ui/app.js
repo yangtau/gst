@@ -111,7 +111,7 @@ function renderNodes(topo, names) {
 // last. Links are straight lines labeled with their names.
 function renderGraph(topo, names) {
   const map = $("map");
-  const W = 150, H = 44, COL = 230, ROW = 70, PAD = 24;
+  const W = 150, H = 44, COL = 230, ROW = 86, PAD = 24;
 
   const adj = {};
   for (const n of topo.nodes) adj[n.id] = [];
@@ -154,32 +154,74 @@ function renderGraph(topo, names) {
     svg("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" },
       svg("path", { d: "M0,0 L10,5 L0,10 z", class: "arrow" })));
 
-  // clip returns where the line from the center of box a towards b leaves a.
+  const center = (a) => ({ x: a.x + W / 2, y: a.y + H / 2 });
+
+  // clip returns where the line from the center of box a towards point b
+  // leaves a.
   const clip = (a, b) => {
-    const cx = a.x + W / 2, cy = a.y + H / 2;
-    const dx = b.x + W / 2 - cx, dy = b.y + H / 2 - cy;
-    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    const c = center(a);
+    const dx = b.x - c.x, dy = b.y - c.y;
+    if (dx === 0 && dy === 0) return c;
     const s = Math.min(dx ? W / 2 / Math.abs(dx) : Infinity, dy ? H / 2 / Math.abs(dy) : Infinity);
-    return { x: cx + dx * s, y: cy + dy * s };
+    return { x: c.x + dx * s, y: c.y + dy * s };
+  };
+
+  // curve is the line from box a to box b, bent sideways by bend.
+  const curve = (a, b, bend) => {
+    const ca = center(a), cb = center(b);
+    const dx = cb.x - ca.x, dy = cb.y - ca.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const c = { x: (ca.x + cb.x) / 2 - (dy / len) * bend, y: (ca.y + cb.y) / 2 + (dx / len) * bend };
+    return { p: clip(a, c), c, q: clip(b, c) };
+  };
+
+  const pointAt = ({ p, c, q }, t) => ({
+    x: (1 - t) ** 2 * p.x + 2 * t * (1 - t) * c.x + t ** 2 * q.x,
+    y: (1 - t) ** 2 * p.y + 2 * t * (1 - t) * c.y + t ** 2 * q.y,
+  });
+
+  const samples = (k) => Array.from({ length: 41 }, (_, i) => pointAt(k, i / 40));
+
+  // crosses reports whether curve k passes over a box other than its ends'.
+  const crosses = (k, a, b) => Object.values(pos).some((box) => box !== a && box !== b &&
+    samples(k).some(({ x, y }) => x > box.x - 8 && x < box.x + W + 8 && y > box.y - 8 && y < box.y + H + 8));
+
+  // route bends the line from a to b away from base until it passes no
+  // other box, so that a line never seems to end at a machine it passes.
+  // It tries the right of the graph first, or its bottom for a level line,
+  // where there is room.
+  const route = (a, b, base) => {
+    const ca = center(a), cb = center(b);
+    const out = cb.y > ca.y || (cb.y === ca.y && cb.x < ca.x) ? -1 : 1;
+    for (let i = 0; i <= 16; i++) {
+      const k = curve(a, b, base + out * (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 36);
+      if (!crosses(k, a, b)) return k;
+    }
+    return curve(a, b, base);
   };
 
   // Several links between the same two machines are bent apart.
   const seen = {};
   const edgeLayer = svg("g");
   const labelLayer = svg("g");
+  let left = 0, top = 0, right = width, bottom = height;
   for (const e of edges) {
     const key = [e.from, e.to].sort().join("\0");
-    const k = (seen[key] = (seen[key] || 0) + 1) - 1;
-    const a = pos[e.from], b = pos[e.to];
-    let p = clip(a, b), q = clip(b, a);
-    const len = Math.hypot(q.x - p.x, q.y - p.y) || 1;
-    const bend = (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 26 * (e.from < e.to ? 1 : -1);
-    const mx = (p.x + q.x) / 2 + (-(q.y - p.y) / len) * bend;
-    const my = (p.y + q.y) / 2 + ((q.x - p.x) / len) * bend;
-    edgeLayer.append(svg("path", { d: `M${p.x},${p.y} Q${mx},${my} ${q.x},${q.y}`, class: "edge", "marker-end": "url(#arrow)" },
+    const n = (seen[key] = (seen[key] || 0) + 1) - 1;
+    const k = route(pos[e.from], pos[e.to], (n % 2 ? -1 : 1) * Math.ceil(n / 2) * 26 * (e.from < e.to ? 1 : -1));
+    edgeLayer.append(svg("path", { d: `M${k.p.x},${k.p.y} Q${k.c.x},${k.c.y} ${k.q.x},${k.q.y}`, class: "edge", "marker-end": "url(#arrow)" },
       svg("title", null, `${names[e.from]} → ${names[e.to]}: link ${e.link}`)));
-    // The curve's midpoint is halfway to the control point.
-    labelLayer.append(svg("text", { x: (p.x + q.x) / 4 + mx / 2, y: (p.y + q.y) / 4 + my / 2 - 4, "text-anchor": "middle", class: "edge-label" }, e.link));
+    const mid = pointAt(k, 0.5);
+    labelLayer.append(svg("text", { x: mid.x, y: mid.y - 4, "text-anchor": "middle", class: "edge-label" }, e.link));
+    // A line bent around a box may leave the columns; the graph grows to hold it.
+    for (const { x, y } of samples(k)) {
+      left = Math.min(left, x - PAD);
+      right = Math.max(right, x + PAD);
+      top = Math.min(top, y - PAD);
+      bottom = Math.max(bottom, y + PAD);
+    }
+    right = Math.max(right, mid.x + 4 * e.link.length + PAD);
+    left = Math.min(left, mid.x - 4 * e.link.length - PAD);
   }
 
   const nodeLayer = svg("g");
@@ -199,10 +241,10 @@ function renderGraph(topo, names) {
     nodeLayer.append(g);
   }
 
-  map.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  map.style.maxWidth = width + "px";
+  map.setAttribute("viewBox", `${left} ${top} ${right - left} ${bottom - top}`);
+  map.style.maxWidth = right - left + "px";
   // On narrow screens the graph scrolls rather than shrinking past legibility.
-  map.style.minWidth = Math.min(width, 520) + "px";
+  map.style.minWidth = Math.min(right - left, 520) + "px";
   map.replaceChildren(defs, edgeLayer, nodeLayer, labelLayer);
 }
 
