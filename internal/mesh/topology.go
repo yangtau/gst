@@ -257,11 +257,22 @@ func batch(recs []wire.Record) [][]wire.Record {
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
 	self := n.info
+	linked := map[string]bool{}
+	for l := range n.links {
+		linked[l.peer.ID] = true
+	}
 	recs := make([]wire.Record, 0, len(n.records))
 	for id, r := range n.records {
-		if id != self.ID {
-			recs = append(recs, r)
+		if id == self.ID {
+			continue
 		}
+		if !linked[id] {
+			// This node knows its own links best: a link to it that is
+			// gone can stay in the other node's record until that record
+			// expires, as the other node cannot reach it to say so.
+			r.Links = slices.DeleteFunc(slices.Clone(r.Links), func(e wire.Edge) bool { return e.Peer == self.ID })
+		}
+		recs = append(recs, r)
 	}
 	recs = append(recs, wire.Record{Node: self, Links: n.edges()})
 	n.mu.Unlock()
@@ -283,7 +294,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 	}
 	edges := []wire.TopoEdge{}
 	for _, r := range recs {
-		if nodes[r.Node.ID] == nil {
+		if r.Node.ID != self && !r.Expires.After(now) {
 			continue
 		}
 		for _, e := range r.Links {
