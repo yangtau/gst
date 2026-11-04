@@ -27,7 +27,7 @@ func nid(name string) string {
 // test ends. An empty name gives a node without identity.
 func newNode(t *testing.T, name string) *Node {
 	t.Helper()
-	n := New("gst test", log.New(io.Discard, "", 0))
+	n := New("gst test", log.New(io.Discard, "", 0), nil)
 	if name != "" {
 		n.Configure(&config.Node{ID: nid(name), Name: name})
 	}
@@ -391,7 +391,7 @@ func TestConfigure(t *testing.T) {
 }
 
 func TestRecordsExpireAndRefresh(t *testing.T) {
-	a := New("gst test", log.New(io.Discard, "", 0))
+	a := New("gst test", log.New(io.Discard, "", 0), nil)
 	a.ttl = 150 * time.Millisecond
 	a.Configure(&config.Node{ID: nid("a"), Name: "a"})
 	runCtx, stopRun := context.WithCancel(t.Context())

@@ -33,7 +33,7 @@ between them. Linked machines pass on what they know, so the list
 includes machines several links away. ROUTE is the way connections to a
 machine take from here. A machine is named by its name, its id or an id
 prefix of at least 4 characters, or the name of a link to it, optionally
-followed by .gst.`,
+followed by .gst. gst status <machine> shows what a machine runs.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			b, err := a.backend()

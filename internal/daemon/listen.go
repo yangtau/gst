@@ -159,7 +159,7 @@ func (d *Daemon) dialProxy(ctx context.Context, address string) (net.Conn, error
 	if machine, ok := strings.CutSuffix(strings.ToLower(strings.TrimSuffix(host, ".")), ".gst"); ok {
 		return d.mesh.Dial(ctx, machine, "tcp", net.JoinHostPort("localhost", port))
 	}
-	if via, ok := d.use.Load().routes.Lookup(host); ok {
+	if via, ok := d.config.Load().Routes.Lookup(host); ok {
 		return d.mesh.Dial(ctx, via, "tcp", address)
 	}
 	var dialer net.Dialer
@@ -167,6 +167,6 @@ func (d *Daemon) dialProxy(ctx context.Context, address string) (net.Conn, error
 }
 
 func (d *Daemon) pac() []byte {
-	u := d.use.Load()
-	return proxy.PAC(u.proxy, u.routes)
+	f := d.config.Load()
+	return proxy.PAC(f.ProxyAddress(), f.Routes)
 }

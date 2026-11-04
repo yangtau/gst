@@ -43,7 +43,7 @@ func (n *Node) Dial(ctx context.Context, ref, network, address string) (net.Conn
 func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net.Conn, error) {
 	self := n.Self()
 	switch {
-	case !config.ValidTarget(target.Network, target.Address):
+	case target != (wire.Target{Network: wire.NetworkGst}) && !config.ValidTarget(target.Network, target.Address):
 		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid target %s %q", target.Network, target.Address)
 	case self.ID == "":
 		return nil, wire.Errorf(wire.CodeFailed, "gst on the relaying machine has no node identity")
@@ -53,6 +53,9 @@ func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net
 		return nil, wire.Errorf(wire.CodeInvalidParams, "the relay path is longer than %d nodes", maxPath)
 	}
 	if len(path) == 1 {
+		if target.Network == wire.NetworkGst {
+			return n.callee(), nil
+		}
 		if !self.Exit && !onThisMachine(target) {
 			return nil, wire.Errorf(wire.CodeForbidden, "%s is not an exit, so it connects only to addresses on its own machine; run `gst exit on` there to let it connect to %s", self.Name, target.Address)
 		}
@@ -79,6 +82,35 @@ func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net
 		return nil, wire.Errorf(wire.CodeFailed, "the relay failed: %v", err)
 	}
 	return conn, nil
+}
+
+// callee returns a connection that carries calls to this node's peer
+// methods, as one to the gst node at the end of a path does.
+func (n *Node) callee() net.Conn {
+	caller, callee := net.Pipe()
+	go func() {
+		defer callee.Close()
+		n.peer.Serve(context.Background(), callee)
+	}()
+	return caller
+}
+
+// Call calls method on the machine that ref names, along the mesh, as
+// Dial finds it; ctx bounds the call.
+func (n *Node) Call(ctx context.Context, ref, method string, params, result any) error {
+	conn, err := n.Dial(ctx, ref, wire.NetworkGst, "")
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer context.AfterFunc(ctx, func() { conn.Close() })()
+	if err := wire.Call(conn, method, params, result); err != nil {
+		if ctx.Err() != nil {
+			return wire.Errorf(wire.CodeFailed, "%s did not answer in time", ref)
+		}
+		return err
+	}
+	return nil
 }
 
 // onThisMachine reports whether target is an address on the machine that

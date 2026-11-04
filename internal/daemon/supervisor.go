@@ -72,7 +72,7 @@ func (s *supervisor) set(state, lastErr string, peer *wire.NodeInfo) {
 func (s *supervisor) state() wire.LinkState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return wire.LinkState{Name: s.name, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
+	return wire.LinkState{Name: s.name, Destination: s.spec.Destination, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
 }
 
 // run connects until stop. The log leaves out what the other machine

@@ -168,6 +168,24 @@ func (a *app) uiHandler(token string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(state)
 	})
+	mux.HandleFunc("GET /api/nodes/{node}", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(r) {
+			http.Error(w, "open the address that gst ui printed", http.StatusUnauthorized)
+			return
+		}
+		b, err := a.backend()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		st, err := b.NodeStatus(r.Context(), r.PathValue("node"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(st)
+	})
 	mux.HandleFunc("POST /api/links/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r) {
 			http.Error(w, "open the address that gst ui printed", http.StatusUnauthorized)

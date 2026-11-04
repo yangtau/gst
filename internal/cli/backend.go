@@ -32,6 +32,9 @@ type backend interface {
 	Status(ctx context.Context) (wire.Status, bool)
 	// Nodes returns the mesh as the daemon knows it.
 	Nodes(ctx context.Context) (wire.Topology, error)
+	// NodeStatus returns the status of the daemon on a machine of the
+	// mesh, asked through the mesh.
+	NodeStatus(ctx context.Context, node string) (wire.Status, error)
 	// Connect connects to target on a machine of the mesh through the
 	// daemon.
 	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
@@ -176,6 +179,18 @@ func (b *daemonBackend) Nodes(ctx context.Context) (topo wire.Topology, err erro
 		return err
 	})
 	return topo, err
+}
+
+func (b *daemonBackend) NodeStatus(ctx context.Context, node string) (st wire.Status, err error) {
+	// The mesh bounds the relay; the query timeout would cut it short.
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	if err != nil {
+		return st, err
+	}
+	defer c.Close()
+	return c.NodeStatus(ctx, node)
 }
 
 // Connect connects through the mesh. The connection is set up within

@@ -234,7 +234,7 @@ func TestMerge(t *testing.T) {
 }
 
 func TestMergeLimitsRecords(t *testing.T) {
-	n := New("gst test", nil)
+	n := New("gst test", nil, nil)
 	n.info = wire.NodeInfo{ID: nid("a"), Name: "a"}
 	future := time.Now().Add(time.Hour)
 	for i := range maxRecords + 10 {
@@ -255,7 +255,7 @@ func TestMergeLimitsRecords(t *testing.T) {
 }
 
 func TestMergeWithoutIdentityIgnoresRecords(t *testing.T) {
-	n := New("gst test", nil)
+	n := New("gst test", nil, nil)
 	n.merge([]wire.Record{rec("b")})
 	if len(n.records) != 0 {
 		t.Fatalf("records = %v", n.records)

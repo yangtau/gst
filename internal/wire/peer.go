@@ -13,6 +13,9 @@ const (
 	// MethodRelayOpen ("relay.open") takes RelayParams. On success the
 	// stream carries the bytes of a connection to the target.
 	MethodRelayOpen = "relay.open"
+	// MethodPeerStatus ("node.status") takes no params and returns the
+	// Status of the callee's daemon.
+	MethodPeerStatus = "node.status"
 )
 
 // FeatureYamux in a peer Hello says that the connection continues as a
@@ -27,12 +30,16 @@ type RelayParams struct {
 	Target Target   `json:"target"`
 }
 
-// Target is an address to connect to: network "tcp" with host:port, or
-// "unix" with a socket path.
+// Target is an address to connect to: network "tcp" with host:port,
+// "unix" with a socket path, or NetworkGst.
 type Target struct {
 	Network string `json:"network"`
 	Address string `json:"address"`
 }
+
+// NetworkGst, with no address, is the gst node at the end of the path
+// itself: the connection carries peer calls to it, one after another.
+const NetworkGst = "gst"
 
 // NodeInfo identifies a gst node.
 type NodeInfo struct {

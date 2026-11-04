@@ -607,8 +607,8 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 		f.Links["y"] = &config.Link{Destination: "b"}
 		f.Links["off"] = &config.Link{Destination: "b", Stopped: true}
 	})
-	if len(st.Links) != 2 {
-		t.Fatalf("links = %+v; a stopped link must not run", st.Links)
+	if len(st.Links) != 3 || st.Links[0].Name != "off" || st.Links[0].State != wire.StateStopped || st.Links[0].Destination != "b" {
+		t.Fatalf("links = %+v; a stopped link must show as stopped", st.Links)
 	}
 	waitFor(t, "both run", func() bool {
 		x, _ := a.link("x")
@@ -618,8 +618,8 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 
 	// Stopping or removing a link ends it and leaves the others running.
 	st = a.apply(func(f *config.File) { f.Links["x"].Stopped = true; delete(f.Links, "y") })
-	if len(st.Links) != 0 {
-		t.Fatalf("links = %+v", st.Links)
+	if len(st.Links) != 2 || st.Links[0].State != wire.StateStopped || st.Links[1].State != wire.StateStopped {
+		t.Fatalf("links = %+v, want off and x stopped", st.Links)
 	}
 	waitFor(t, "b is no longer linked to", func() bool { return !a.reaches("b") })
 
@@ -907,7 +907,7 @@ func TestServeStopsEverything(t *testing.T) {
 		}
 	}
 	st := a.d.Status()
-	if len(st.Links) != 0 || st.Proxy.Listen != "" || len(st.Maps) != 0 {
-		t.Fatalf("status after stop = %+v", st)
+	if len(st.Links) != 1 || st.Links[0].State != wire.StateDown || st.Proxy.Error != "" || st.Maps[0].Error != "" {
+		t.Fatalf("status after stop = %+v, want the configuration with nothing running", st)
 	}
 }

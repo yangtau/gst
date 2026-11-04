@@ -40,7 +40,8 @@ type fakeBackend struct {
 	nodesErr   error
 
 	linkStates   map[string]wire.LinkState // replaces the state of a running link
-	listenErrors map[string]string         // listen address -> why it does not listen
+	nodeStatus   func(node string) (wire.Status, error)
+	listenErrors map[string]string // listen address -> why it does not listen
 	topology     wire.Topology
 	logOutput    string
 	sent         bytes.Buffer // what gst connect sent
@@ -97,7 +98,7 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 	if err != nil {
 		return wire.Status{}, false
 	}
-	st := wire.Status{Software: software, Links: []wire.LinkState{}, Maps: []wire.Listener{}}
+	st := wire.Status{Software: software, Links: []wire.LinkState{}, Maps: []wire.MapState{}}
 	if cfg.Node != nil {
 		st.Node = wire.NodeInfo{ID: cfg.Node.ID, Name: cfg.Node.Name, Exit: cfg.Node.Exit}
 	}
@@ -119,9 +120,21 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 		st.Proxy = listener(address)
 	}
 	for _, m := range cfg.Maps {
-		st.Maps = append(st.Maps, listener(m.Listen))
+		st.Maps = append(st.Maps, wire.MapState{Listener: listener(m.Listen), Machine: m.Machine, Target: m.Target})
 	}
 	return st, true
+}
+
+func (f *fakeBackend) NodeStatus(ctx context.Context, node string) (wire.Status, error) {
+	f.calls = append(f.calls, "node-status "+node)
+	if f.nodeStatus != nil {
+		return f.nodeStatus(node)
+	}
+	st, ok := f.Status(ctx)
+	if !ok {
+		return wire.Status{}, errors.New("no daemon")
+	}
+	return st, nil
 }
 
 func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {

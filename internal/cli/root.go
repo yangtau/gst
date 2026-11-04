@@ -66,7 +66,7 @@ report state accept --json.`,
 			root.AddCommand(cmd)
 		}
 	}
-	addGroup("mesh", a.linkCommand(), a.nodesCommand())
+	addGroup("mesh", a.linkCommand(), a.nodesCommand(), a.statusCommand())
 	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand())
 	addGroup("machine", a.nameCommand(), a.exitCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:         "version",

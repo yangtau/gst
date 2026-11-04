@@ -93,7 +93,7 @@ func TestListenErrorsAreReportedAndRetried(t *testing.T) {
 	}
 	bySock := map[string]wire.Listener{}
 	for _, m := range st.Maps {
-		bySock[m.Listen] = m
+		bySock[m.Listen] = m.Listener
 	}
 	if bySock[sockTaken].Error != "socket in use" {
 		t.Fatalf("socket map = %+v", bySock[sockTaken])
@@ -128,8 +128,8 @@ func TestMapsAreAddedRemovedAndChanged(t *testing.T) {
 	st := a.apply(func(f *config.File) {
 		f.Maps = []config.Map{{Listen: l2, Machine: "b", Target: one}, {Listen: l1, Machine: "bee", Target: one}}
 	})
-	if len(st.Maps) != 2 || st.Maps[0].Listen > st.Maps[1].Listen {
-		t.Fatalf("maps = %+v, want two sorted by listen address", st.Maps)
+	if len(st.Maps) != 2 || st.Maps[0].Listen != l2 || st.Maps[1].Machine != "bee" {
+		t.Fatalf("maps = %+v, want both in the order of the configuration", st.Maps)
 	}
 	expectGreeting(t, dialTCP(t, l1), "one")
 	expectGreeting(t, dialTCP(t, l2), "one")

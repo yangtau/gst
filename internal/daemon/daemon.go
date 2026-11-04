@@ -6,7 +6,6 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -55,8 +54,8 @@ type Daemon struct {
 	cfg Config
 
 	mesh    *mesh.Node
-	control wire.Server // the methods of control connections
-	use     atomic.Pointer[use]
+	control wire.Server                // the methods of control connections
+	config  atomic.Pointer[config.File] // as the last reload read it
 
 	ops      sync.Mutex // serializes reloads and restarts
 	mu       sync.Mutex // guards links and listeners
@@ -64,12 +63,6 @@ type Daemon struct {
 	proxy    *listener
 	maps     map[string]*listener // by listen address
 	serveCtx context.Context      // the listeners' context, which ends with Serve
-}
-
-// use is how the configuration uses the mesh, for the proxy.
-type use struct {
-	proxy  string
-	routes config.Routes
 }
 
 // New returns a daemon for cfg.
@@ -80,9 +73,10 @@ func New(cfg Config) *Daemon {
 	if cfg.Log == nil {
 		cfg.Log = log.Default()
 	}
-	m := mesh.New(cfg.Software, cfg.Log)
-	d := &Daemon{cfg: cfg, mesh: m, links: map[string]*supervisor{}, maps: map[string]*listener{}, serveCtx: context.Background()}
-	d.use.Store(&use{})
+	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}, maps: map[string]*listener{}, serveCtx: context.Background()}
+	m := mesh.New(cfg.Software, cfg.Log, d.Status)
+	d.mesh = m
+	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
 	}
@@ -99,6 +93,10 @@ func New(cfg Config) *Daemon {
 			return nil, err
 		}
 		return d.Status(), nil
+	})
+	wire.Handle(&d.control, wire.MethodNodeStatus, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		var st wire.Status
+		return st, m.Call(ctx, p.Node, wire.MethodPeerStatus, nil, &st)
 	})
 	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
 	return d
@@ -214,23 +212,38 @@ func (d *Daemon) connect(ctx context.Context, conn net.Conn, p wire.ConnectParam
 
 // Status reports the daemon and what it runs, sorted.
 func (d *Daemon) Status() wire.Status {
-	d.mu.Lock()
+	f := d.config.Load()
 	st := wire.Status{
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
-		Node: d.mesh.Self(), Links: []wire.LinkState{}, Maps: []wire.Listener{},
+		Node: d.mesh.Self(), Proxy: wire.Listener{Listen: f.ProxyAddress()},
+		Links: []wire.LinkState{}, Maps: []wire.MapState{}, Routes: []wire.Route{},
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.proxy != nil {
 		st.Proxy = d.proxy.state()
 	}
-	for _, s := range d.links {
-		st.Links = append(st.Links, s.state())
+	for _, name := range slices.Sorted(maps.Keys(f.Links)) {
+		l := f.Links[name]
+		state := wire.LinkState{Name: name, Destination: l.Destination, State: wire.StateDown}
+		switch s := d.links[name]; {
+		case s != nil:
+			state = s.state()
+		case l.Stopped:
+			state.State = wire.StateStopped
+		}
+		st.Links = append(st.Links, state)
 	}
-	for _, l := range d.maps {
-		st.Maps = append(st.Maps, l.state())
+	for _, m := range f.Maps {
+		state := wire.MapState{Listener: wire.Listener{Listen: m.Listen}, Machine: m.Machine, Target: m.Target}
+		if l := d.maps[m.Listen]; l != nil {
+			state.Listener = l.state()
+		}
+		st.Maps = append(st.Maps, state)
 	}
-	d.mu.Unlock()
-	slices.SortFunc(st.Links, func(a, b wire.LinkState) int { return cmp.Compare(a.Name, b.Name) })
-	slices.SortFunc(st.Maps, func(a, b wire.Listener) int { return cmp.Compare(a.Listen, b.Listen) })
+	for _, r := range f.Routes {
+		st.Routes = append(st.Routes, wire.Route{Match: r.Match, Via: r.Via})
+	}
 	return st
 }
 
@@ -246,7 +259,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 		return err
 	}
 	d.mesh.Configure(f.Node)
-	d.use.Store(&use{proxy: f.ProxyAddress(), routes: f.Routes})
+	d.config.Store(f)
 	d.listen(f)
 	var stop []*supervisor
 	d.mu.Lock()

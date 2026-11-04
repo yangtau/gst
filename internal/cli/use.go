@@ -155,7 +155,7 @@ func (a *app) checkListening(ctx context.Context, address string) error {
 	if st == nil {
 		return nil
 	}
-	if status, lastErr := listenerStatus(address, st.Maps); status == statusFailed {
+	if status, lastErr := listenerStatus(address, mapListeners(st)); status == statusFailed {
 		return listenError(address, lastErr)
 	}
 	return nil
@@ -278,16 +278,26 @@ type mapView struct {
 // mapViews returns f's maps with their states in st, the daemon's
 // status, which is nil when no daemon answers.
 func mapViews(f *config.File, st *wire.Status) []mapView {
-	var states []wire.Listener
-	if st != nil {
-		states = st.Maps
-	}
+	states := mapListeners(st)
 	views := make([]mapView, len(f.Maps))
 	for i, m := range f.Maps {
 		views[i].Map = m
 		views[i].Status, views[i].Error = listenerStatus(m.Listen, states)
 	}
 	return views
+}
+
+// mapListeners returns the map listeners in st, the daemon's status, and
+// nil when st is nil because no daemon answers.
+func mapListeners(st *wire.Status) []wire.Listener {
+	if st == nil {
+		return nil
+	}
+	states := make([]wire.Listener, len(st.Maps))
+	for i, m := range st.Maps {
+		states[i] = m.Listener
+	}
+	return states
 }
 
 func (a *app) mapListCommand() *cobra.Command {

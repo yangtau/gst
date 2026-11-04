@@ -77,6 +77,12 @@ func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
 	return
 }
 
+// NodeStatus returns the status of the daemon on a machine of the mesh.
+func (c *Client) NodeStatus(ctx context.Context, node string) (s wire.Status, err error) {
+	err = c.call(ctx, wire.MethodNodeStatus, wire.NodeParams{Node: node}, &s)
+	return
+}
+
 // Connect asks the daemon to connect to target on a machine of the mesh.
 // On success the connection carries the bytes of that connection and
 // belongs to the caller; the client must not be used any more.

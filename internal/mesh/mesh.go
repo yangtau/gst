@@ -49,8 +49,8 @@ type link struct {
 }
 
 // New returns a node without an identity, which refuses links until
-// Configure gives it one.
-func New(software string, daemonLog *log.Logger) *Node {
+// Configure gives it one. status reports the daemon to the other nodes.
+func New(software string, daemonLog *log.Logger, status func() wire.Status) *Node {
 	n := &Node{
 		software: software,
 		log:      daemonLog,
@@ -63,6 +63,9 @@ func New(software string, daemonLog *log.Logger) *Node {
 	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.Self(), nil })
 	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
 	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
+	if status != nil {
+		wire.Handle(&n.peer, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return status(), nil })
+	}
 	return n
 }
 
