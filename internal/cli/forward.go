@@ -73,7 +73,7 @@ restarts to apply the change unless --no-restart is given.`,
 					return err
 				}
 				messages, added = nil, false
-				if t.Via == config.ViaMesh {
+				if _, through := t.MeshMachine(); through {
 					for _, fwd := range fwds {
 						if fwd.Direction == config.Remote {
 							return usage("tunnel %s goes through the mesh and has no server to listen on; -R needs a tunnel to an SSH server", name)

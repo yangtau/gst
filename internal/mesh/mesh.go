@@ -1,5 +1,6 @@
-// Package mesh links gst daemons with each other. A tunnel with mesh on
-// runs "gst peer-bridge" on its server over the tunnel's SSH connection;
+// Package mesh links gst daemons with each other. While the mesh is
+// enabled, each SSH tunnel without NoMesh runs "gst peer-bridge" on its
+// server over the tunnel's SSH connection;
 // the bridge connects to the server's daemon, the two daemons shake hands
 // with the gst protocol in the peer role, and the connection continues as
 // a yamux session that carries one call per stream in both directions.
@@ -23,7 +24,7 @@ import (
 )
 
 // Node is this machine's place in the mesh: its identity, its tunnels with
-// mesh on, its peer links, and what it knows of the other nodes.
+// in the mesh, its peer links, and what it knows of the other nodes.
 type Node struct {
 	software     string
 	log          *log.Logger // the daemon's log
@@ -62,7 +63,12 @@ func New(software string, daemonLog *log.Logger) *Node {
 	return n
 }
 
-// SetRetry sets the wait before an outgoing link that failed retries.
+// maxRetry bounds the wait before an outgoing link that keeps failing
+// retries.
+const maxRetry = 5 * time.Minute
+
+// SetRetry sets the first wait before an outgoing link that failed
+// retries; the wait doubles with each failure, up to maxRetry.
 func (n *Node) SetRetry(d time.Duration) { n.retry = d }
 
 // SetHostKeyFiles sets the glob of this machine's sshd host public keys,
@@ -111,7 +117,9 @@ func (n *Node) Peers() wire.Peers {
 	p := wire.Peers{Enabled: n.info.ID != "", Node: n.info, Links: []wire.PeerLink{}}
 	links := make([]*link, 0, len(n.links))
 	for l := range n.links {
-		links = append(links, l)
+		if p.Enabled {
+			links = append(links, l)
+		}
 	}
 	n.mu.Unlock()
 	for _, l := range links {

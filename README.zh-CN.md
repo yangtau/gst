@@ -97,7 +97,7 @@ gst remove myhost  # 停止并删除
 | `gst mesh enable [--name name]` / `gst mesh disable` | 加入或退出由多台机器组成的 mesh |
 | `gst mesh peers` | 列出 peer link |
 | `gst mesh nodes` | 显示 mesh 中的所有机器以及它们之间的 tunnel |
-| `gst add <name> <machine> --via mesh [-L spec]... [-D port]...` | 添加一条经由其他机器到达 mesh 中某台机器的 tunnel |
+| `gst add <name> mesh:<machine> [-L spec]... [-D port]...` | 添加一条经由其他机器到达 mesh 中某台机器的 tunnel |
 | `gst connect <machine> <port>` | 把标准输入输出连到 mesh 中某台机器的端口，可用作 `ProxyCommand` |
 | `gst version` | 查看已安装的版本 |
 
@@ -196,46 +196,44 @@ gst set myhost --cleanup-listeners=false
 
 ## 连接多台机器（mesh）
 
-多台机器上的 gst 可以互相连接。设置了 `--mesh` 的 tunnel 会通过它的 SSH 连接，把本机的 gst 和服务器上的 gst 连起来，双方都能在 `gst mesh peers` 中看到对方。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst mesh nodes` 都能看到整个网络：laptop 有到 `mini` 和 `devcn` 的 mesh tunnel 时，在 mini 上运行 `gst mesh nodes` 也能看到 laptop 和 devcn，mini 也能经由 laptop 连接 devcn。
+多台机器上的 gst 可以互相连接。只需在每台机器上执行一次 `gst mesh enable`：此后每条 tunnel 都会通过它的 SSH 连接，把本机的 gst 和服务器上的 gst 连起来，双方都能在 `gst mesh peers` 中看到对方。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst mesh nodes` 都能看到整个网络：laptop 有到 `mini` 和 `devcn` 的 tunnel 时，在 mini 上运行 `gst mesh nodes` 也能看到 laptop 和 devcn，mini 也能经由 laptop 连接 devcn。
 
 ```bash
 # 在每台参与的机器上执行（名字默认取主机名）
 gst mesh enable --name laptop
 
-# 在有 tunnel 的机器上
-gst set myhost --mesh
-gst mesh peers
-
 # 在 mesh 中的任意机器上
-gst mesh nodes
+gst mesh peers     # 本机的 link
+gst mesh nodes     # 所有机器以及它们之间的 tunnel
 ```
 
-- 两台机器都需要执行 `gst mesh enable`，服务器上需要 gst 0.2 或更高版本。gst 通过 SSH 在登录 shell 中执行 `gst peer-bridge`；如果该 shell 的 `PATH` 里找不到 gst，用 `--remote-gst` 指定路径，例如 `gst set myhost --remote-gst ~/.nix-profile/bin/gst`。
+- 建立 link 需要服务器上有 gst 0.2 或更高版本，并已执行 `gst mesh enable`。gst 通过 SSH 在登录 shell 中执行 `gst peer-bridge`；如果该 shell 的 `PATH` 里找不到 gst，用 `--remote-gst` 指定路径，例如 `gst set myhost --remote-gst ~/.nix-profile/bin/gst`。没有 gst 或没有开启 mesh 的服务器仍会作为 tunnel 能到达的机器出现在 mesh 中；它的 link 保持 `down`，重试间隔逐渐拉长，最长 5 分钟一次。
+- `gst set <name> --no-mesh` 让这条 tunnel 不在服务器上运行 gst，例如服务器对每个会话都执行强制命令时；`--no-mesh=false` 恢复。
 - 开启 mesh 后，即使没有启动任何 tunnel，daemon 也会保持运行，以便接受连接。
-- link 的状态为 `connecting`、`up` 或 `down`。`gst mesh peers` 会显示 link 断开的原因；断开后每 10 秒重试一次。link 失败不影响 tunnel 的 forward。
+- link 的状态为 `connecting`、`up` 或 `down`。`gst mesh peers` 会显示 link 断开的原因。link 失败不影响 tunnel 的 forward。
 - `gst mesh nodes` 中，gst 节点显示节点名，没有 gst 的 SSH 服务器显示连向它的 tunnel 名。服务器上的 gst 之后加入 mesh 时，它会显示为该 gst 节点。从本机经由运行中的 tunnel 能到达的机器标记为可达；要继续经过某台机器往下走，需要与它的 peer link 处于 up 状态。退出网络的机器会在 30 分钟内消失。
 - peer 之间相互信任：link 以你的用户身份登录服务器，服务器的 daemon 只通过自己的 socket 接受它。
 - `gst mesh disable` 会关闭所有 link。重新开启后会生成新的节点 id。
 
 ### 经由 mesh 连接
 
-设置了 `--via mesh` 的 tunnel 经由与目标相连的机器到达 `gst mesh nodes` 中的某台机器，本机不需要登录它：由路径上最后一台 gst 发起连接；目标机器没有 gst 时，用那台 gst 自己到它的 tunnel。`localhost` 等目标地址都是相对目标机器而言。`gst connect` 对单个连接做同样的事，使用标准输入输出。
+目标为 `mesh:<machine>` 的 tunnel 经由与目标相连的机器到达 `gst mesh nodes` 中的某台机器，本机不需要登录它：由路径上最后一台 gst 发起连接；目标机器没有 gst 时，用那台 gst 自己到它的 tunnel。`localhost` 等目标地址都是相对目标机器而言。`gst connect` 对单个连接做同样的事，使用标准输入输出。
 
 ```bash
 # 在 mini 上：本机 15432 端口经由 laptop 连到 devcn 的 5432 端口
-gst add devcn-db devcn --via mesh -L 15432:localhost:5432
+gst add devcn-db mesh:devcn -L 15432:localhost:5432
 gst check devcn-db          # 显示路径：mini → laptop → devcn
 
 # 一个从 devcn 发出连接的 SOCKS5 代理
-gst add devcn-proxy devcn --via mesh -D 1080
+gst add devcn-proxy mesh:devcn -D 1080
 
 # 经由 mesh ssh 到 devcn，使用你自己在 devcn 上的登录凭据
 ssh -o ProxyCommand='gst connect %n 22' devcn
 ```
 
 - `<machine>` 是 `gst mesh nodes` 中的名字；重名时用 id。`gst connect` 只给端口时表示该机器的 localhost，也可以给 `host:port` 或 Unix socket 的绝对路径。
-- 这类 tunnel 只能有 `-L` 和 `-D` forward，没有 SSH 设置。只要处于启动状态就会运行，不管 mesh 当前是否有可达路径；每个连接按当时最短的路径建立，没有路径时只有该连接失败。`gst check` 会显示路径。
-- 路径只能经由 up 状态的 peer link 越过一台机器；最后一段可以是任何运行中的 `--mesh` tunnel，服务器上没有 gst 也可以。
+- 这类 tunnel 只能有 `-L` 和 `-D` forward；SSH 设置中只有 `--connect-timeout` 适用。只要处于启动状态就会运行，不管 mesh 当前是否有可达路径；每个连接按当时最短的路径建立，没有路径时只有该连接失败。`gst check` 会显示路径。
+- 路径只能经由 up 状态的 peer link 越过一台机器；最后一段可以是任何运行中、没有设置 `--no-mesh` 的 tunnel，服务器上没有 gst 也可以。
 - mesh 中的每个 gst 都可以代表其他节点，连接它所在机器及其 tunnel 能到达的任何地方；只让你信任的机器加入。
 
 ### 网页

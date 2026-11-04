@@ -68,7 +68,7 @@ type Record struct {
 	Edges   []Edge    `json:"edges"`
 }
 
-// Edge is one of a node's tunnels with mesh on.
+// Edge is one of a node's tunnels in the mesh.
 type Edge struct {
 	Tunnel      string `json:"tunnel"`
 	Destination string `json:"destination"`
@@ -127,7 +127,7 @@ type TopoNode struct {
 	Expires   time.Time `json:"expires,omitzero"` // when its record expires, for gst nodes
 }
 
-// TopoEdge is a tunnel with mesh on from one node to another.
+// TopoEdge is a tunnel in the mesh from one node to another.
 type TopoEdge struct {
 	From        string `json:"from"`
 	To          string `json:"to"`

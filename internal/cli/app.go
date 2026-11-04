@@ -235,7 +235,7 @@ func statusOf(name string, t *config.Tunnel, states map[string]wire.TunnelState)
 // timeout apply; whoever runs it supplies Options.Dial.
 func (a *app) options(ctx context.Context, t *config.Tunnel) (tunnel.Options, error) {
 	var host sshconfig.Host
-	if t.Via != config.ViaMesh {
+	if _, through := t.MeshMachine(); !through {
 		var err error
 		if host, err = a.resolve(ctx, t.Destination); err != nil {
 			return tunnel.Options{}, err
@@ -278,7 +278,7 @@ func firstPositive[T time.Duration | int64](values ...T) T {
 // destination resolves, an identity is usable, and known_hosts records the
 // server. A tunnel through the mesh needs valid settings and the mesh.
 func (a *app) preflight(ctx context.Context, f *config.File, t *config.Tunnel) error {
-	if t.Via == config.ViaMesh {
+	if _, through := t.MeshMachine(); through {
 		// No SSH connection to check; the mesh routes each connection.
 		if err := t.Validate(); err != nil {
 			return &usageError{err}

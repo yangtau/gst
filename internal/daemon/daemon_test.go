@@ -256,13 +256,14 @@ func TestDaemonReplacesStaleSocket(t *testing.T) {
 	}
 }
 
-// With the mesh on, the daemon announces its tunnels with mesh on and
+// With the mesh on, the daemon announces its tunnels, except those with
+// NoMesh, and
 // connects through the mesh on behalf of gst connect.
 func TestDaemonMesh(t *testing.T) {
 	e := newEnv(t)
 	f := config.File{Version: config.Version, Mesh: &config.Mesh{ID: strings.Repeat("ab", 16), Name: "mini"}, Tunnels: map[string]*config.Tunnel{
-		"srv":   {Destination: "srv", Mesh: true, Forwards: []config.Forward{}},
-		"plain": {Destination: "plain", Forwards: []config.Forward{}},
+		"srv":   {Destination: "srv", Forwards: []config.Forward{}},
+		"plain": {Destination: "plain", NoMesh: true, Forwards: []config.Forward{}},
 	}}
 	data, _ := json.Marshal(f)
 	if err := os.WriteFile(e.cfg.ConfigPath, data, 0o600); err != nil {

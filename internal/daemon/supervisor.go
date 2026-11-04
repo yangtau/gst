@@ -27,7 +27,7 @@ type supervisor struct {
 	ctx     context.Context
 	stopped chan struct{}
 
-	meshTunnel *mesh.Tunnel // for a tunnel with mesh on
+	meshTunnel *mesh.Tunnel // for an SSH tunnel without NoMesh
 
 	mu         sync.Mutex
 	current    string
@@ -54,7 +54,7 @@ func newSupervisor(d *Daemon, name string, spec config.Tunnel, logOut *logfile.F
 		current: wire.StateConnecting,
 		since:   time.Now(),
 	}
-	if spec.Mesh {
+	if _, through := spec.MeshMachine(); !through && !spec.NoMesh {
 		s.meshTunnel = d.mesh.AddTunnel(name, spec.Destination, spec.RemoteGst, s.log)
 	}
 	return s
@@ -116,9 +116,9 @@ func (s *supervisor) connect() error {
 	}
 	opts.Logger = s.log
 	opts.OnReady = func() { s.set(wire.StateRunning, "") }
-	if s.spec.Via == config.ViaMesh {
+	if machine, ok := s.spec.MeshMachine(); ok {
 		opts.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
-			return s.d.mesh.Dial(ctx, s.spec.Destination, network, address)
+			return s.d.mesh.Dial(ctx, machine, network, address)
 		}
 	}
 	if s.meshTunnel != nil {

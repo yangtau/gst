@@ -170,7 +170,7 @@ func (n *Node) sessionTo(id string) *yamux.Session {
 	return nil
 }
 
-// tunnelTo returns the connection of a running tunnel with mesh on whose
+// tunnelTo returns the connection of a running tunnel in the mesh whose
 // server is the machine id.
 func (n *Node) tunnelTo(id string) *ssh.Client {
 	topo := n.Topology()

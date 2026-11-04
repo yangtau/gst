@@ -16,14 +16,14 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 ## 分步
 
 1. **单进程 daemon**：每台机器只有一个 gst 后台服务，持有全部 tunnel，暴露一个 unix control socket；CLI 通过 [gst 协议](#gst-协议) 与它通信。（已实现）
-2. **peer link**：tunnel 打开 `--mesh` 后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
+2. **peer link**：本机执行 `gst mesh enable` 后，每条 SSH tunnel（设置了 `--no-mesh` 的除外）连上后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
-4. **中转转发**：`gst add <name> <node> --via mesh -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
+4. **中转转发**：`gst add <name> mesh:<node> -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
 5. **Web UI**：`gst ui` 提供本地页面，显示本节点和全局拓扑，并能启动、停止、重启本节点的 tunnel。（已实现）
 
 ## 已确定的决策
 
-- **信任**：control socket 权限为 `0600`，能连上的只有本机同一用户；peer link 由 SSH 登录建立，登录的就是该用户，同样不另做认证。每条 tunnel 通过 `--mesh` 显式加入 mesh：只有加入的 tunnel 才建立 peer link、被宣告到拓扑中、允许被中转。
+- **信任**：control socket 权限为 `0600`，能连上的只有本机同一用户；peer link 由 SSH 登录建立，登录的就是该用户，同样不另做认证。加入 mesh 以机器为单位：执行 `gst mesh enable` 的机器上，每条 SSH tunnel 都建立 peer link、被宣告到拓扑中、允许被中转；单条 tunnel 可以用 `--no-mesh` 退出，例如服务器对每个会话执行强制命令时。服务器上没有 gst 时 link 失败，重试间隔从 10 秒起每次翻倍，最长 5 分钟。
 - **远程配置**：第一版只能配置本节点；其他节点的信息只读。
 - **隐私**：拓扑信息在节点之间传播、在 Web UI 和交互式命令中显示，属于交互式输出；后台日志仍不记录地址、用户和密钥路径。
 
@@ -153,8 +153,8 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 }
 ```
 
-- 每个节点只发布自己的记录，边只包括打开了 `--mesh` 的 tunnel。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`，因此 daemon 重启后仍然递增；若从 peer 收到自己旧进程发布的更大 `seq`，节点立即以更大的 `seq` 重新发布。
-- tunnel 状态、host key 或 peer link 变化时重新发布；收到更大 `seq` 的记录就替换，并通过各条 `topology.sync` 流推送给其他 peer（洪泛）。
+- 每个节点只发布自己的记录，边包括所有没有设置 `--no-mesh` 的 SSH tunnel。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`，因此 daemon 重启后仍然递增；若从 peer 收到自己旧进程发布的更大 `seq`，节点立即以更大的 `seq` 重新发布。
+- tunnel 是否运行、host key 或 peer link 变化时立即重新发布（connecting 与 down 之间的变化不单独发布，避免连不上的 tunnel 每次重试都洪泛全网）；收到更大 `seq` 的记录就替换，并通过各条 `topology.sync` 流推送给其他 peer（洪泛）。
 - 每条 peer link 建立后，双方各向对方调用一次 `topology.sync`，所以每个方向都有一条推送流。
 - 记录有效期 30 分钟，节点每 10 分钟刷新一次，因此掉线节点会在 30 分钟内从视图中消失。过期记录不再转发。
 - 可达性由查看方计算：从本节点出发，经运行中的 tunnel 到达的机器可达；要越过某台机器继续前进，需要该段 tunnel 的 peer link 处于 up（反方向也只能走 up 的 peer link），因为中转需要两端都有 gst。
@@ -163,13 +163,13 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 
 ## 中转转发（第 4 步）
 
-- **路径**由发起方根据自己的 `Topology` 计算（`mesh.Route`），取最短路径：从本节点出发，只能经由 up 的 peer link（任一方向）越过一台机器；最后一段还可以是运行中但没有 peer link 的 `--mesh` tunnel，例如到没有 gst 的服务器。路径最多 16 个节点。
+- **路径**由发起方根据自己的 `Topology` 计算（`mesh.Route`），取最短路径：从本节点出发，只能经由 up 的 peer link（任一方向）越过一台机器；最后一段还可以是运行中但没有 peer link 的 tunnel，例如到没有 gst 的服务器。路径最多 16 个节点。
 - `relay.open` 的 `path` 以被调方开头。每个节点检查 `path[0]` 是自己，然后：
   - 只剩自己：直接连接 `target`（地址相对本机）；
   - 与下一个节点有 up 的 peer link：在该会话上开新流，把 `path[1:]` 交给它；
   - 下一个节点是路径终点，且本节点有到它的运行中 tunnel：经该 tunnel 的 SSH 连接打开 `direct-tcpip` / `direct-streamlocal`，地址由那台服务器解析。
 - 失败时返回带原因的错误，沿路径原样传回发起方；错误属于交互式输出，可以包含地址。后台 tunnel 日志只记 “target connection failed for forward N”。
-- `--via mesh` 的 tunnel 保存为 `"via": "mesh"`，`destination` 是 mesh 中的机器（名字、id 或 id 前缀）。daemon 不建立 SSH 连接，只在本机监听 `-L`/`-D`，每个连接调用 `mesh.Dial` 按当时的拓扑选路；因此路径变化或暂时不可达不影响 tunnel 本身的状态。
+- 经由 mesh 的 tunnel 的 `destination` 为 `mesh:<machine>`，machine 是 mesh 中的机器（名字、id 或 id 前缀）；ssh destination 不会以 `mesh:` 开头，所以两者不冲突。daemon 不建立 SSH 连接，只在本机监听 `-L`/`-D`，每个连接调用 `mesh.Dial` 按当时的拓扑选路；因此路径变化或暂时不可达不影响 tunnel 本身的状态。
 - **信任**：与 peer link 相同，mesh 中的节点彼此完全信任：任何节点都可以让其他节点代为连接其所在机器和其 tunnel 能到达的地址。
 
 ## Web UI（第 5 步）

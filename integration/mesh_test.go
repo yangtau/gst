@@ -75,8 +75,8 @@ func TestMeshLinksThreeNodes(t *testing.T) {
 	for n, name := range map[*node]string{m3: "m3", mini: "mini", devcn: "devcn"} {
 		n.mustGst("mesh", "enable", "--name", name)
 	}
-	m3.mustGst(append([]string{"add", "mini"}, append(toMini.flags(), "--mesh")...)...)
-	m3.mustGst(append([]string{"add", "devcn"}, append(toDevcn.flags(), "--mesh")...)...)
+	m3.mustGst(append([]string{"add", "mini"}, toMini.flags()...)...)
+	m3.mustGst(append([]string{"add", "devcn"}, toDevcn.flags()...)...)
 
 	p := m3.waitLinks("out devcn up devcn", "out mini up mini")
 	mini.waitLinks("in  up m3")
@@ -109,7 +109,7 @@ func TestMeshLinksThreeNodes(t *testing.T) {
 }
 
 // A server without gst in PATH reports why the link fails; --remote-gst
-// names it.
+// names it, and --no-mesh turns the link off.
 func TestMeshRemoteGst(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
@@ -118,7 +118,7 @@ func TestMeshRemoteGst(t *testing.T) {
 	if _, err := p.server.exec("root", "mv", "/usr/local/bin/gst", "/opt/gst"); err != nil {
 		t.Fatal(err)
 	}
-	p.client.mustGst(append([]string{"add", "srv"}, append(p.flags(), "--mesh")...)...)
+	p.client.mustGst(append([]string{"add", "srv"}, p.flags()...)...)
 	p.client.waitStatus("srv", "running")
 	eventually(t, 20*time.Second, "missing link error", func() bool {
 		links := p.client.peers().Links
@@ -130,6 +130,10 @@ func TestMeshRemoteGst(t *testing.T) {
 
 	p.client.mustGst("set", "srv", "--remote-gst", "/opt/gst")
 	p.client.waitLinks("out srv up server")
+
+	// --no-mesh keeps a tunnel out of the mesh.
+	p.client.mustGst("set", "srv", "--no-mesh")
+	eventually(t, 20*time.Second, "link kept with --no-mesh", func() bool { return len(p.client.peers().Links) == 0 })
 }
 
 func (n *node) nodes() wire.Topology {
@@ -231,8 +235,8 @@ func TestMeshTopology(t *testing.T) {
 	toMini, toDevcn := trust(t, m3, mini), trust(t, m3, devcn)
 	m3.mustGst("mesh", "enable", "--name", "m3")
 	mini.mustGst("mesh", "enable", "--name", "mini")
-	m3.mustGst(append([]string{"add", "mini"}, append(toMini.flags(), "--mesh")...)...)
-	m3.mustGst(append([]string{"add", "devcn"}, append(toDevcn.flags(), "--mesh")...)...)
+	m3.mustGst(append([]string{"add", "mini"}, toMini.flags()...)...)
+	m3.mustGst(append([]string{"add", "devcn"}, toDevcn.flags()...)...)
 
 	topo := mini.waitNodes(
 		"node mini gst reachable",
@@ -316,8 +320,8 @@ func TestMeshRelay(t *testing.T) {
 	toMini, toDevcn := trust(t, m3, mini), trust(t, m3, devcn)
 	m3.mustGst("mesh", "enable", "--name", "m3")
 	mini.mustGst("mesh", "enable", "--name", "mini")
-	m3.mustGst(append([]string{"add", "mini"}, append(toMini.flags(), "--mesh")...)...)
-	m3.mustGst(append([]string{"add", "devcn"}, append(toDevcn.flags(), "--mesh")...)...)
+	m3.mustGst(append([]string{"add", "mini"}, toMini.flags()...)...)
+	m3.mustGst(append([]string{"add", "devcn"}, toDevcn.flags()...)...)
 	devcn.serve(7100, "hello from devcn")
 	mini.waitNodes(
 		"node mini gst reachable",
@@ -327,7 +331,7 @@ func TestMeshRelay(t *testing.T) {
 		"edge m3 devcn devcn running",
 	)
 
-	mini.mustGst("add", "devcn-app", "devcn", "--via", "mesh", "-L", "17100:localhost:7100", "-D", "11080")
+	mini.mustGst("add", "devcn-app", "mesh:devcn", "-L", "17100:localhost:7100", "-D", "11080")
 	mini.waitStatus("devcn-app", "running")
 	mini.eventuallyFetches(17100, "hello from devcn")
 	if out := mini.mustGst("check", "devcn-app"); !strings.Contains(out, "mini → m3 → devcn") {

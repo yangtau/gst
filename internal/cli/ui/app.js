@@ -76,8 +76,8 @@ function renderTunnels(tunnels) {
     const status = [pill(t.status)];
     if (t.error && t.status !== "running") status.push(el("span", { class: "err" }, t.error));
     const dest = [t.destination];
-    if (t.via === "mesh") dest.push(el("span", { class: "sub" }, "through the mesh"));
-    else if (t.mesh) dest.push(el("span", { class: "sub" }, "mesh on"));
+    if (t.destination.startsWith("mesh:")) dest.push(el("span", { class: "sub" }, "through the mesh"));
+    else if (t.no_mesh) dest.push(el("span", { class: "sub" }, "no mesh"));
     const fwds = t.forwards.length ? t.forwards.map((f) => el("span", { class: "fwd" }, f.spec)) : [el("span", { class: "sub" }, "none")];
     return [el("strong", null, t.name), status, dest, fwds, actions(t)];
   }));

@@ -58,11 +58,14 @@ Before saving, gst checks that an identity without a passphrase exists
 and that known_hosts records the server; it never accepts unknown host
 keys. Forwards are optional and can be added later with gst forward add.
 
-With --via mesh, <destination> is a machine of gst mesh nodes instead of
-an ssh destination, and the tunnel needs no SSH settings: the daemon
-listens on this machine and connects each forward's connections through
-the mesh, from that machine, so targets such as localhost are that
-machine's. It needs gst mesh enable and supports -L and -D only.
+A <destination> of mesh:<machine> names a machine of gst mesh nodes
+instead: the tunnel has no SSH connection of its own, and the daemon
+connects each forward's connections through the mesh, from that machine,
+so targets such as localhost are that machine's. It needs gst mesh
+enable and supports -L and -D only.
+
+While the mesh is enabled, every other tunnel also links this machine's
+gst with the gst on its server; --no-mesh turns that off for one tunnel.
 
 As in ssh, a forward without bind_address listens on loopback only;
 use "*" or an empty bind_address for all interfaces.`,
@@ -82,7 +85,7 @@ use "*" or an empty bind_address for all interfaces.`,
   gst add reverse-proxy myhost -R 1080
 
   # Reach port 5432 of the mesh machine devcn, through whichever gst links lead there
-  gst add devcn-db devcn --via mesh -L 15432:localhost:5432`,
+  gst add devcn-db mesh:devcn -L 15432:localhost:5432`,
 		Args: a.args(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -452,7 +455,7 @@ func (a *app) showCommand() *cobra.Command {
 				return err
 			}
 			v := a.view(cmd.Context(), name, t)
-			if t.Via == "" {
+			if _, through := t.MeshMachine(); !through {
 				if opts, err := a.options(cmd.Context(), t); err != nil {
 					v.ResolveError = err.Error()
 				} else {
@@ -521,8 +524,8 @@ func (a *app) checkSSH(ctx context.Context, t *config.Tunnel) []tunnel.Step {
 	return append([]tunnel.Step{step}, tunnel.Diagnose(ctx, opts, true)...)
 }
 
-// checkRoute checks that the mesh leads to a tunnel's machine.
-func (a *app) checkRoute(ctx context.Context, f *config.File, t *config.Tunnel) []tunnel.Step {
+// checkRoute checks that the mesh leads to machine.
+func (a *app) checkRoute(ctx context.Context, f *config.File, machine string) []tunnel.Step {
 	step := tunnel.Step{Name: "mesh"}
 	if f.Mesh == nil {
 		step.Detail = "the mesh is not enabled on this machine"
@@ -536,7 +539,7 @@ func (a *app) checkRoute(ctx context.Context, f *config.File, t *config.Tunnel) 
 			step.OK = true
 			step.Detail = fmt.Sprintf("this machine is %s", f.Mesh.Name)
 			route := tunnel.Step{Name: "route"}
-			path, err := routeTo(topo, t.Destination)
+			path, err := routeTo(topo, machine)
 			if err != nil {
 				route.Detail = err.Error()
 				route.Hint = "see the machines and links with `gst mesh nodes`"
@@ -595,8 +598,8 @@ with a hint. Exit status is 1 if a step fails.`,
 				return err
 			}
 			var steps []tunnel.Step
-			if t.Via == config.ViaMesh {
-				steps = a.checkRoute(cmd.Context(), f, t)
+			if machine, through := t.MeshMachine(); through {
+				steps = a.checkRoute(cmd.Context(), f, machine)
 			} else {
 				steps = a.checkSSH(cmd.Context(), t)
 			}

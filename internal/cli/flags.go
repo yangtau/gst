@@ -18,9 +18,8 @@ type settingsFlags struct {
 	keepaliveInterval time.Duration
 	keepaliveCount    int64
 	cleanup           bool
-	mesh              bool
+	noMesh            bool
 	remoteGst         string
-	via               string
 }
 
 func (s *settingsFlags) register(fs *pflag.FlagSet, clearable bool) {
@@ -30,9 +29,9 @@ func (s *settingsFlags) register(fs *pflag.FlagSet, clearable bool) {
 		zeroClears = "; 0 goes back to the default"
 		offSuffix = "; turn off with --cleanup-listeners=false"
 	}
-	meshOff := ""
+	meshOn := ""
 	if clearable {
-		meshOff = "; turn off with --mesh=false"
+		meshOn = "; link again with --no-mesh=false"
 	}
 	fs.StringVar(&s.identity, "identity", "", "private key file without a passphrase (default: IdentityFile from ssh config)"+emptyClears)
 	fs.StringVar(&s.knownHosts, "known-hosts", "", "known_hosts file (default: UserKnownHostsFile and GlobalKnownHostsFile from ssh config)"+emptyClears)
@@ -40,8 +39,7 @@ func (s *settingsFlags) register(fs *pflag.FlagSet, clearable bool) {
 	fs.DurationVar(&s.keepaliveInterval, "keepalive-interval", 0, "time between keepalive probes, in whole seconds (default: ServerAliveInterval from ssh config, else 15s)"+zeroClears)
 	fs.Int64Var(&s.keepaliveCount, "keepalive-count", 0, "give up after a probe stays unanswered for this many intervals (default: ServerAliveCountMax from ssh config, else 3)"+zeroClears)
 	fs.BoolVar(&s.cleanup, "cleanup-listeners", false, "before listening, kill the login user's processes that listen on the server ports and sockets of -R forwards, and remove the login user's socket files there that nothing listens on; only for listeners dedicated to this tunnel"+offSuffix)
-	fs.BoolVar(&s.mesh, "mesh", false, "link this machine's gst with the server's gst over the tunnel, so that each sees the other in gst mesh peers; both need gst mesh enable"+meshOff)
-	fs.StringVar(&s.via, "via", "", "\"mesh\" to connect through the gst mesh: the destination is then a machine of gst mesh nodes, and forwards connect from it; only -L and -D"+emptyClears)
+	fs.BoolVar(&s.noMesh, "no-mesh", false, "do not link this machine's gst with the server's gst over the tunnel while the mesh is enabled"+meshOn)
 	fs.StringVar(&s.remoteGst, "remote-gst", "", "gst command on the server for the mesh link, when gst is not in the PATH of its login shell (default: gst)"+emptyClears)
 }
 
@@ -99,20 +97,13 @@ func (s *settingsFlags) apply(cmd *cobra.Command, t *config.Tunnel) (bool, error
 		changed = true
 		t.CleanupListeners = s.cleanup
 	}
-	if flags.Changed("mesh") {
+	if flags.Changed("no-mesh") {
 		changed = true
-		t.Mesh = s.mesh
+		t.NoMesh = s.noMesh
 	}
 	if flags.Changed("remote-gst") {
 		changed = true
 		t.RemoteGst = s.remoteGst
-	}
-	if flags.Changed("via") {
-		changed = true
-		if s.via != "" && s.via != config.ViaMesh {
-			return false, usage("--via must be \"mesh\" or ''")
-		}
-		t.Via = s.via
 	}
 	return changed, nil
 }

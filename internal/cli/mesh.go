@@ -22,13 +22,15 @@ func (a *app) meshCommand() *cobra.Command {
 	cmd := asGroup(&cobra.Command{
 		Use:   "mesh",
 		Short: "Link gst on several machines",
-		Long: `Link gst on several machines. A tunnel with --mesh links this machine's
-gst with the gst on its server, over the tunnel's SSH connection, so that
-each sees the other in gst mesh peers. Linked machines pass on what they
-know, so gst mesh nodes on any of them shows every machine in the mesh.
-Both machines need gst mesh enable;
-the server needs gst 0.2 or later in the PATH of its login shell, or
---remote-gst. With the mesh enabled, the gst daemon keeps running even
+		Long: `Link gst on several machines. Run gst mesh enable on each of them; from
+then on, every tunnel links this machine's gst with the gst on its
+server, over the tunnel's SSH connection, so that each sees the other in
+gst mesh peers. Linked machines pass on what they know, so gst mesh nodes
+on any of them shows every machine in the mesh, and a tunnel to
+mesh:<machine> reaches any of them. A server without gst still takes part
+as a machine that its tunnels reach. The server's gst must be 0.2 or later
+in the PATH of its login shell, or set with --remote-gst; --no-mesh keeps
+a tunnel out. With the mesh enabled, the gst daemon keeps running even
 without started tunnels.`,
 	})
 	cmd.AddCommand(a.meshEnableCommand(), a.meshDisableCommand(), a.meshPeersCommand(), a.meshNodesCommand())
@@ -41,8 +43,8 @@ func (a *app) meshEnableCommand() *cobra.Command {
 		Use:   "enable",
 		Short: "Take part in the mesh",
 		Long: `Take part in the mesh: accept peer links from other machines' gst and
-link over tunnels with --mesh. The node name, shown to peers, defaults to
-this machine's host name; --name changes it.`,
+link over every tunnel without --no-mesh. The node name, shown to peers,
+defaults to this machine's host name; --name changes it.`,
 		Example: "  gst mesh enable\n  gst mesh enable --name laptop",
 		Args:    a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -117,7 +119,7 @@ func (a *app) meshDisableCommand() *cobra.Command {
 		Use:   "disable",
 		Short: "Leave the mesh",
 		Long: `Leave the mesh: close every peer link and refuse new ones. Tunnels keep
-running; their --mesh setting takes effect again after gst mesh enable.
+running and link again after gst mesh enable.
 The node keeps its id only while enabled; enabling again creates a new one.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -166,7 +168,7 @@ and retrying, with the reason).`,
 			}
 			fmt.Fprintf(a.stdout, "This machine: %s (%s)\n", peers.Node.Name, shortID(peers.Node.ID))
 			if len(peers.Links) == 0 {
-				fmt.Fprintln(a.stdout, "No peer links. Link over a tunnel with: gst set <tunnel> --mesh")
+				fmt.Fprintln(a.stdout, "No peer links. Each tunnel without --no-mesh links once it runs: gst add <name>")
 				return nil
 			}
 			w := table(a.stdout)
@@ -199,8 +201,7 @@ func (a *app) meshNodesCommand() *cobra.Command {
 		Use:   "nodes",
 		Short: "Show every machine in the mesh",
 		Long: `Show every machine in the mesh as this machine knows it, with the tunnels
-between them. Each gst node announces its tunnels with --mesh to its
-peers, which pass the announcement on, so the view includes machines
+between them. Each gst node announces its tunnels to its peers, which pass the announcement on, so the view includes machines
 several links away and SSH servers without gst. A machine is reachable
 when this machine can get to it through running tunnels, going on past a
 machine only over a peer link.`,
@@ -256,7 +257,7 @@ func writeTopology(out io.Writer, topo wire.Topology) error {
 		return err
 	}
 	if len(topo.Edges) == 0 {
-		fmt.Fprintln(out, "\nNo tunnels in the mesh. Add one with: gst set <tunnel> --mesh")
+		fmt.Fprintln(out, "\nNo tunnels in the mesh. Add one with: gst add <name>")
 		return nil
 	}
 	edges := slices.Clone(topo.Edges)
@@ -285,7 +286,7 @@ through whichever gst links lead there, for example as an ssh
 ProxyCommand. <machine> is a name or id from gst mesh nodes. A bare port
 means localhost on that machine, a host:port is resolved there, and an
 absolute path is a Unix socket there. The machine needs no gst when a
-gst node has a tunnel with --mesh to it.`,
+gst node has a tunnel to it.`,
 		Example: `  gst connect devcn 5432
   ssh -o ProxyCommand='gst connect %n 22' devcn`,
 		Args: a.args(2, 2),

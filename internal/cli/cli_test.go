@@ -708,16 +708,19 @@ func TestMesh(t *testing.T) {
 		t.Fatalf("mesh nodes --json: %s", out)
 	}
 
-	e.mustGst("add", "myhost", "--mesh", "--remote-gst", "/opt/gst/bin/gst")
-	if tn := e.tunnel("myhost"); !tn.Mesh || tn.RemoteGst != "/opt/gst/bin/gst" {
+	e.mustGst("add", "myhost", "--remote-gst", "/opt/gst/bin/gst")
+	if tn := e.tunnel("myhost"); tn.NoMesh || tn.RemoteGst != "/opt/gst/bin/gst" {
 		t.Fatalf("mesh settings not saved: %+v", tn)
 	}
-	if out := e.mustGst("show", "myhost"); !strings.Contains(out, "on, remote gst /opt/gst/bin/gst") {
+	if out := e.mustGst("show", "myhost"); !strings.Contains(out, "while the mesh is enabled; remote gst /opt/gst/bin/gst") {
 		t.Fatalf("show lacks mesh settings: %q", out)
 	}
-	e.mustGst("set", "myhost", "--mesh=false", "--remote-gst", "")
-	if tn := e.tunnel("myhost"); tn.Mesh || tn.RemoteGst != "" {
+	e.mustGst("set", "myhost", "--no-mesh", "--remote-gst", "")
+	if tn := e.tunnel("myhost"); !tn.NoMesh || tn.RemoteGst != "" {
 		t.Fatalf("mesh settings not cleared: %+v", tn)
+	}
+	if out := e.mustGst("show", "myhost"); !strings.Contains(out, "off (--no-mesh)") {
+		t.Fatalf("show lacks --no-mesh: %q", out)
 	}
 
 	e.mustGst("stop", "myhost")
@@ -741,7 +744,7 @@ func TestDefaultNodeName(t *testing.T) {
 
 func TestMeshConnectAndTunnels(t *testing.T) {
 	e := newEnv(t)
-	if stderr := e.expectCode(exitFailure, "add", "db-mesh", "devcn", "--via", "mesh", "-L", "15432:localhost:5432"); !strings.Contains(stderr, "gst mesh enable") {
+	if stderr := e.expectCode(exitFailure, "add", "db-mesh", "mesh:devcn", "-L", "15432:localhost:5432"); !strings.Contains(stderr, "gst mesh enable") {
 		t.Fatalf("via mesh without the mesh: %q", stderr)
 	}
 	e.mustGst("mesh", "enable", "--name", "mini")
@@ -765,16 +768,18 @@ func TestMeshConnectAndTunnels(t *testing.T) {
 	}
 
 	// A tunnel through the mesh has no SSH settings and only -L and -D.
-	e.mustGst("add", "db-mesh", "devcn", "--via", "mesh", "-L", "15432:localhost:5432", "-D", "1080")
-	if tn := e.tunnel("db-mesh"); tn.Via != config.ViaMesh || tn.Destination != "devcn" || len(tn.Forwards) != 2 {
+	e.mustGst("add", "db-mesh", "mesh:devcn", "-L", "15432:localhost:5432", "-D", "1080")
+	if tn := e.tunnel("db-mesh"); tn.Destination != "mesh:devcn" || len(tn.Forwards) != 2 {
 		t.Fatalf("tunnel %+v", tn)
 	}
 	if !e.back.running["db-mesh"] {
 		t.Fatal("the tunnel through the mesh did not start")
 	}
-	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "mesh", "-R", "2222:localhost:22")
-	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "mesh", "--mesh")
-	e.expectCode(exitUsage, "add", "bad", "devcn", "--via", "ssh")
+	e.expectCode(exitUsage, "add", "bad", "mesh:devcn", "-R", "2222:localhost:22")
+	e.expectCode(exitUsage, "add", "bad", "mesh:devcn", "--no-mesh")
+	e.expectCode(exitUsage, "add", "bad", "mesh:devcn", "--identity", "/tmp/key")
+	e.expectCode(exitUsage, "add", "bad", "mesh:")
+	e.expectCode(exitUsage, "add", "bad", "mesh:Bad_Name")
 	e.expectCode(exitUsage, "forward", "add", "db-mesh", "-R", "2222:localhost:22")
 	if out := e.mustGst("show", "db-mesh"); !strings.Contains(out, "connects through the gst mesh from devcn") || strings.Contains(out, "Cleanup") {
 		t.Fatalf("show: %s", out)
@@ -792,7 +797,7 @@ func TestMeshConnectAndTunnels(t *testing.T) {
 	if out := e.mustGst("check", "db-mesh"); !strings.Contains(out, "mini → m3 → devcn") {
 		t.Fatalf("check: %s", out)
 	}
-	e.mustGst("set", "db-mesh", "--destination", "far")
+	e.mustGst("set", "db-mesh", "--destination", "mesh:far")
 	if code, out, _ := e.gst("check", "db-mesh"); code != exitFailure || !strings.Contains(out, "no route to far") {
 		t.Fatalf("check exited %d: %s", code, out)
 	}

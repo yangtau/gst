@@ -17,11 +17,11 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// Tunnel is one of this machine's tunnels with mesh on. The daemon that
-// runs it reports its state and its SSH connection; the node announces it
-// as an edge of this node's record, keeps a peer link with the gst on its
-// server while it is connected, and relays over it to a server without
-// gst.
+// Tunnel is one of this machine's SSH tunnels in the mesh. The daemon that
+// runs it reports its state and its SSH connection; while the mesh is
+// enabled, the node announces it as an edge of this node's record, keeps
+// a peer link with the gst on its server while it is connected, and
+// relays over it to a server without gst.
 type Tunnel struct {
 	n           *Node
 	name        string
@@ -36,7 +36,7 @@ type Tunnel struct {
 	link    *link       // the latest peer link, kept when it ends for its last peer
 }
 
-// AddTunnel adds a tunnel with mesh on, in state connecting, until Remove.
+// AddTunnel adds a tunnel, in state connecting, until Remove.
 // remoteGst is the server's gst command; tunnelLog receives the tunnel's
 // log, which omits why links fail, as the reasons may quote the server;
 // gst mesh peers shows them.
@@ -75,9 +75,10 @@ func (t *Tunnel) SetState(state string) {
 }
 
 // Connected serves the tunnel's SSH connection to its server, whose
-// verified host key is hostKey, until ctx is done: it keeps a peer link
-// with the gst on the server, retrying after failures, and relays over
-// client. It fits tunnel.Options.Attach.
+// verified host key is hostKey, until ctx is done: while the mesh is
+// enabled, it keeps a peer link with the gst on the server, retrying after
+// failures less and less often, and relays over client. It fits
+// tunnel.Options.Attach.
 func (t *Tunnel) Connected(ctx context.Context, client *ssh.Client, hostKey ssh.PublicKey) {
 	t.connected(ctx, client, ssh.FingerprintSHA256(hostKey), func() (io.ReadWriteCloser, error) {
 		return startBridge(client, t.remoteGst)
@@ -102,29 +103,34 @@ func (t *Tunnel) connected(ctx context.Context, client *ssh.Client, hostKey stri
 	}()
 
 	lastErr := ""
+	wait := n.retry
 	for {
-		l.set(wire.LinkConnecting, wire.NodeInfo{}, "")
 		var err error = errDisabled
 		if n.Enabled() {
+			l.set(wire.LinkConnecting, wire.NodeInfo{}, "")
 			err = t.linkOnce(ctx, l, bridge, func() {
 				t.log.Print("peer link up")
-				lastErr = ""
+				lastErr, wait = "", n.retry
 			})
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		// Log once per reason rather than at every retry.
-		if err.Error() != lastErr {
-			t.log.Print("peer link down")
-			lastErr = err.Error()
+			if ctx.Err() != nil {
+				return
+			}
+			// Log once per reason rather than at every retry.
+			if err.Error() != lastErr {
+				t.log.Print("peer link down")
+				lastErr = err.Error()
+			}
 		}
 		l.set(wire.LinkDown, wire.NodeInfo{}, err.Error())
 		n.Update()
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(n.retry):
+		case <-time.After(wait):
+		}
+		// A server without gst fails every time; try it less often.
+		if err != errDisabled {
+			wait = min(2*wait, maxRetry)
 		}
 	}
 }

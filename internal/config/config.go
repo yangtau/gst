@@ -45,6 +45,11 @@ type Mesh struct {
 // resolved with "ssh -G" each time the tunnel starts, so the user's ssh
 // configuration supplies host, port, user, identities, known_hosts files,
 // and timeouts. The optional fields override what ssh resolves.
+//
+// A destination of mesh:<machine> instead names a machine of the gst mesh:
+// the tunnel has no SSH connection of its own, and its forwards connect
+// through the mesh from that machine. Such a tunnel has only local and
+// dynamic forwards and, of the SSH settings, only the connect timeout.
 type Tunnel struct {
 	Destination              string    `json:"destination"`
 	IdentityFile             string    `json:"identity_file,omitempty"`
@@ -56,20 +61,22 @@ type Tunnel struct {
 	Forwards                 []Forward `json:"forwards"`
 	// Stopped tunnels stay configured, but the daemon does not run them.
 	Stopped bool `json:"stopped,omitempty"`
-	// Mesh links this machine's gst with the server's over the tunnel.
-	Mesh bool `json:"mesh,omitempty"`
+	// NoMesh keeps the tunnel from linking this machine's gst with the
+	// server's while the mesh is enabled.
+	NoMesh bool `json:"no_mesh,omitempty"`
 	// RemoteGst is the server's gst command for the peer link; "gst" in
 	// the login shell's PATH when empty.
 	RemoteGst string `json:"remote_gst,omitempty"`
-	// Via is ViaMesh for a tunnel through the gst mesh: Destination names
-	// a machine of the mesh instead of an SSH server, and the forwards
-	// connect through the mesh from that machine. Such a tunnel has only
-	// local and dynamic forwards and no SSH settings.
-	Via string `json:"via,omitempty"`
 }
 
-// ViaMesh is Tunnel.Via for a tunnel through the gst mesh.
-const ViaMesh = "mesh"
+// MeshPrefix starts the destination of a tunnel through the gst mesh.
+const MeshPrefix = "mesh:"
+
+// MeshMachine returns the machine of a tunnel through the gst mesh: a node
+// name, id, or id prefix as gst mesh nodes shows them.
+func (t *Tunnel) MeshMachine() (machine string, ok bool) {
+	return strings.CutPrefix(t.Destination, MeshPrefix)
+}
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
 // when XDG_CONFIG_HOME is unset, on every platform.
@@ -289,7 +296,7 @@ func (t *Tunnel) Validate() error {
 	if strings.ContainsFunc(t.RemoteGst, func(r rune) bool { return unicode.IsControl(r) }) {
 		return errors.New("invalid remote gst command")
 	}
-	if err := t.validateVia(); err != nil {
+	if err := t.validateMeshMachine(); err != nil {
 		return err
 	}
 	if !isUnsetOrSeconds(t.ConnectTimeoutSeconds) || !isUnsetOrSeconds(t.KeepaliveIntervalSeconds) ||
@@ -299,16 +306,17 @@ func (t *Tunnel) Validate() error {
 	return validateForwards(t.Forwards)
 }
 
-func (t *Tunnel) validateVia() error {
-	switch t.Via {
-	case "":
+func (t *Tunnel) validateMeshMachine() error {
+	machine, ok := t.MeshMachine()
+	if !ok {
 		return nil
-	case ViaMesh:
-	default:
-		return fmt.Errorf("unsupported via %q", t.Via)
 	}
-	if t.Mesh || t.RemoteGst != "" || t.CleanupListeners {
-		return errors.New("a tunnel through the mesh cannot have the SSH settings --mesh, --remote-gst, or --cleanup-listeners")
+	if !namePattern.MatchString(machine) {
+		return errors.New("invalid destination: mesh:<machine> needs a machine of gst mesh nodes")
+	}
+	if t.IdentityFile != "" || t.KnownHostsFile != "" || t.KeepaliveIntervalSeconds != 0 || t.KeepaliveCountMax != 0 ||
+		t.CleanupListeners || t.NoMesh || t.RemoteGst != "" {
+		return errors.New("a tunnel through the mesh has no SSH connection; of the SSH settings it takes only --connect-timeout")
 	}
 	for i, f := range t.Forwards {
 		if f.Direction == Remote {

@@ -26,9 +26,8 @@ type tunnelView struct {
 	KeepaliveIntervalSeconds int64         `json:"keepalive_interval_seconds,omitempty"`
 	KeepaliveCountMax        int64         `json:"keepalive_count_max,omitempty"`
 	CleanupListeners         bool          `json:"cleanup_listeners"`
-	Mesh                     bool          `json:"mesh"`
+	NoMesh                   bool          `json:"no_mesh"`
 	RemoteGst                string        `json:"remote_gst,omitempty"`
-	Via                      string        `json:"via,omitempty"`
 	Forwards                 []forwardView `json:"forwards"`
 	Resolved                 *resolved     `json:"resolved,omitempty"`
 	ResolveError             string        `json:"resolve_error,omitempty"`
@@ -78,9 +77,8 @@ func newTunnelView(name string, t *config.Tunnel, status, lastErr string) tunnel
 		KeepaliveIntervalSeconds: t.KeepaliveIntervalSeconds,
 		KeepaliveCountMax:        t.KeepaliveCountMax,
 		CleanupListeners:         t.CleanupListeners,
-		Mesh:                     t.Mesh,
+		NoMesh:                   t.NoMesh,
 		RemoteGst:                t.RemoteGst,
-		Via:                      t.Via,
 		Forwards:                 forwardViews(t.Forwards),
 	}
 }
@@ -107,8 +105,9 @@ func (v tunnelView) write(out io.Writer) error {
 		row("Status", v.Status)
 	}
 	row("Destination", v.Destination)
-	if v.Via == config.ViaMesh {
-		row("Server", "none; connects through the gst mesh from "+v.Destination)
+	machine, through := strings.CutPrefix(v.Destination, config.MeshPrefix)
+	if through {
+		row("Server", "none; connects through the gst mesh from "+machine)
 	} else if r := v.Resolved; r != nil {
 		row("Server", r.User+"@"+r.Server)
 		row("Identities", strings.Join(r.IdentityFiles, ", "))
@@ -118,18 +117,18 @@ func (v tunnelView) write(out io.Writer) error {
 	} else {
 		row("Server", "unresolved: "+v.ResolveError)
 	}
-	if v.Via == "" {
+	if !through {
 		cleanup := "off"
 		if v.CleanupListeners {
 			cleanup = "on"
 		}
 		row("Cleanup listeners", cleanup)
-		mesh := "off"
-		if v.Mesh {
-			mesh = "on"
-			if v.RemoteGst != "" {
-				mesh += ", remote gst " + v.RemoteGst
-			}
+		mesh := "links with the server's gst while the mesh is enabled"
+		if v.RemoteGst != "" {
+			mesh += "; remote gst " + v.RemoteGst
+		}
+		if v.NoMesh {
+			mesh = "off (--no-mesh)"
 		}
 		row("Mesh", mesh)
 	}

@@ -46,10 +46,14 @@ func linkTunnel(ctx context.Context, client, server *Node, name, hostKey string)
 }
 
 // outLink returns n's link over tunnel, if any.
+// outLink returns the state of a tunnel's link, which Peers leaves out
+// while the mesh is disabled.
 func outLink(n *Node, tunnel string) (wire.PeerLink, bool) {
-	for _, l := range n.Peers().Links {
-		if l.Direction == wire.LinkOut && l.Tunnel == tunnel {
-			return l, true
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for l := range n.links {
+		if s := l.state(); s.Direction == wire.LinkOut && s.Tunnel == tunnel {
+			return s, true
 		}
 	}
 	return wire.PeerLink{}, false
@@ -111,6 +115,13 @@ func TestLinkRefusals(t *testing.T) {
 			l, _ := outLink(tt.client, "srv")
 			return l.State == wire.LinkDown && strings.Contains(l.Error, tt.want)
 		})
+	}
+	// A machine without the mesh tries no link and lists none.
+	client, server := newNode(""), newNode("m3")
+	linkTunnel(ctx, client, server, "srv", "")
+	time.Sleep(100 * time.Millisecond)
+	if len(client.Peers().Links) != 0 || len(server.Peers().Links) != 0 {
+		t.Fatalf("links without the mesh: %+v, %+v", client.Peers().Links, server.Peers().Links)
 	}
 }
 

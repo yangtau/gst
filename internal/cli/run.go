@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/tunnel"
 )
 
@@ -35,7 +34,7 @@ func (a *app) runCommand() *cobra.Command {
 				log.Printf("no tunnel named %s", args[0])
 				return &exitError{exitUsage}
 			}
-			if t.Via == config.ViaMesh {
+			if _, through := t.MeshMachine(); through {
 				log.Print("a tunnel through the mesh runs only in the gst daemon")
 				return &exitError{exitUsage}
 			}
