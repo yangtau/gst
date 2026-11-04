@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -144,5 +145,28 @@ func TestLaunchd(t *testing.T) {
 	printsLeft = 1
 	if err := l.Uninstall(); err != nil || fileExists(plistPath) {
 		t.Fatalf("agent remains after uninstall: %v", err)
+	}
+}
+
+func TestSocket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	got, err := Socket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".local", "state", "gst", "gst.sock")
+	if runtime.GOOS == "darwin" {
+		want = filepath.Join(home, "Library", "Application Support", "gst", "gst.sock")
+	} else {
+		state := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", state)
+		if got, err := Socket(); err != nil || got != filepath.Join(state, "gst", "gst.sock") {
+			t.Fatalf("with XDG_STATE_HOME: %q, %v", got, err)
+		}
+	}
+	if got != want {
+		t.Fatalf("Socket() = %q, want %q", got, want)
 	}
 }

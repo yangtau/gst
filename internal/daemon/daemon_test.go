@@ -89,7 +89,6 @@ type machine struct {
 	d       *Daemon
 	cfgPath string
 	socket  string
-	logDir  string
 	log     *syncBuffer
 
 	mu        sync.Mutex
@@ -116,15 +115,14 @@ func newMachine(t *testing.T, w *world, name string, bare bool, retry time.Durat
 	t.Helper()
 	dir := filepath.Join(w.dir, name)
 	m := &machine{t: t, w: w, name: name, cfgPath: filepath.Join(dir, "config.json"), socket: filepath.Join(dir, "run", "gst.sock"),
-		logDir: filepath.Join(dir, "logs"), log: &syncBuffer{}}
+		log: &syncBuffer{}}
 	if !bare {
 		m.update(func(f *config.File) {
 			f.Node = &config.Node{ID: nid(name), Name: name}
-			f.Proxy = config.ProxyOff
 		})
 	}
 	m.d = New(Config{
-		ConfigPath: m.cfgPath, Socket: m.socket, LogDir: m.logDir, Software: "gst test", Build: "sha256:test",
+		ConfigPath: m.cfgPath, Socket: m.socket, Software: "gst test", Build: "sha256:test",
 		Connect: m.connect, RetryDelay: retry, Log: log.New(m.log, "", 0),
 	})
 	w.mu.Lock()
@@ -458,10 +456,9 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("b links = %+v", links)
 	}
 
-	// Each link has a log.
-	data, err := os.ReadFile(filepath.Join(a.logDir, "bee.log"))
-	if err != nil || !strings.Contains(string(data), "link up") {
-		t.Fatalf("link log = %q, %v", data, err)
+	// The link logs into the daemon's log, with its name.
+	if log := a.log.String(); !strings.Contains(log, "link bee: up") {
+		t.Fatalf("daemon log = %q, want link bee: up", log)
 	}
 }
 
@@ -561,20 +558,17 @@ func TestLinkLogsLeaveOutRemoteText(t *testing.T) {
 	a := startMachine(t, w, "a")
 	a.apply(func(f *config.File) { f.Links["x"] = &config.Link{Destination: "secret"} })
 	waitFor(t, "link fails", func() bool { l, _ := a.link("x"); return strings.Contains(l.Error, secret) })
-	a.apply(func(f *config.File) { f.Links["x"].Stopped = true }) // flushes the link's log with its last lines
+	a.apply(func(f *config.File) { delete(f.Links, "x") })
 	a.shutdown()
 
-	linkLog, err := os.ReadFile(filepath.Join(a.logDir, "x.log"))
-	if err != nil {
-		t.Fatal(err)
+	log := a.log.String()
+	if strings.Contains(log, secret) {
+		t.Errorf("daemon log quotes the remote gst:\n%s", log)
 	}
-	for name, text := range map[string]string{"daemon log": a.log.String(), "link log": string(linkLog)} {
-		if strings.Contains(text, secret) {
-			t.Errorf("%s quotes the remote gst:\n%s", name, text)
+	for _, want := range []string{"link x: started", "link x: the remote gst failed; see gst status", "link x: stopped"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("daemon log lacks %q:\n%s", want, log)
 		}
-	}
-	if !strings.Contains(string(linkLog), "see gst link list") {
-		t.Errorf("link log = %q", linkLog)
 	}
 }
 
@@ -606,65 +600,82 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 	st := a.apply(func(f *config.File) {
 		f.Links["x"] = &config.Link{Destination: "b"}
 		f.Links["y"] = &config.Link{Destination: "b"}
-		f.Links["off"] = &config.Link{Destination: "b", Stopped: true}
 	})
-	if len(st.Links) != 3 || st.Links[0].Name != "off" || st.Links[0].State != wire.StateStopped || st.Links[0].Destination != "b" {
-		t.Fatalf("links = %+v; a stopped link must show as stopped", st.Links)
+	if len(st.Links) != 2 || st.Links[0].Name != "x" || st.Links[1].Name != "y" {
+		t.Fatalf("links = %+v", st.Links)
 	}
 	waitFor(t, "both run", func() bool {
 		x, _ := a.link("x")
 		y, _ := a.link("y")
 		return x.State == wire.StateRunning && y.State == wire.StateRunning
 	})
+	since, _ := a.link("x")
 
-	// Stopping or removing a link ends it and leaves the others running.
-	st = a.apply(func(f *config.File) { f.Links["x"].Stopped = true; delete(f.Links, "y") })
-	if len(st.Links) != 2 || st.Links[0].State != wire.StateStopped || st.Links[1].State != wire.StateStopped {
-		t.Fatalf("links = %+v, want off and x stopped", st.Links)
+	// Removing a link ends it and leaves the other running, untouched.
+	st = a.apply(func(f *config.File) { delete(f.Links, "y") })
+	if len(st.Links) != 1 || st.Links[0].Name != "x" {
+		t.Fatalf("links = %+v, want only x", st.Links)
 	}
+	if again, _ := a.link("x"); !again.Since.Equal(since.Since) || again.Reconnects != 0 || again.State != wire.StateRunning {
+		t.Fatalf("removing y restarted x: %+v -> %+v", since, again)
+	}
+	if !strings.Contains(a.log.String(), "link y: stopped") {
+		t.Errorf("daemon log = %q, want link y: stopped", a.log.String())
+	}
+
+	// Removing the last one makes b unreachable.
+	a.apply(func(f *config.File) { delete(f.Links, "x") })
 	waitFor(t, "b is no longer linked to", func() bool { return !a.reaches("b") })
 
-	// Starting a stopped link brings it up; reloading leaves a running one alone.
-	a.apply(func(f *config.File) { f.Links["off"].Stopped = false })
-	waitFor(t, "off runs", func() bool { l, _ := a.link("off"); return l.State == wire.StateRunning })
-	since, _ := a.link("off")
+	// Adding a link brings it up; reloading leaves a running one alone.
+	a.apply(func(f *config.File) { f.Links["z"] = &config.Link{Destination: "b"} })
+	waitFor(t, "z runs", func() bool { l, _ := a.link("z"); return l.State == wire.StateRunning })
+	since, _ = a.link("z")
 	a.apply(func(f *config.File) {})
-	if again, _ := a.link("off"); !again.Since.Equal(since.Since) || again.Reconnects != 0 {
+	if again, _ := a.link("z"); !again.Since.Equal(since.Since) || again.Reconnects != 0 {
 		t.Fatalf("a reload restarted a running link: %+v -> %+v", since, again)
 	}
 }
 
-func TestChangedLinkRestartsOnlyOnRestart(t *testing.T) {
+func TestReloadRestartsChangedLink(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
 	a := startMachine(t, w, "a")
-	a.apply(func(f *config.File) { f.Links["h"] = &config.Link{Destination: "hang"} })
+	a.apply(func(f *config.File) {
+		f.Links["h"] = &config.Link{Destination: "hang"}
+		f.Links["same"] = &config.Link{Destination: "b"}
+	})
 	waitFor(t, "h connects", func() bool { return len(a.attemptsTo("hang")) == 1 })
+	waitFor(t, "same runs", func() bool { l, _ := a.link("same"); return l.State == wire.StateRunning })
+	same, _ := a.link("same")
 
-	a.apply(func(f *config.File) { f.Links["h"].Destination = "b" })
-	if l, _ := a.link("h"); l.State != wire.StateConnecting {
-		t.Fatalf("a changed link restarted on reload: %+v", l)
+	// A changed destination replaces the supervisor: the old attempt is
+	// canceled and the link connects to the new destination.
+	st := a.apply(func(f *config.File) { f.Links["h"].Destination = "b" })
+	if len(st.Links) != 2 {
+		t.Fatalf("links = %+v", st.Links)
+	}
+	waitFor(t, "h runs with the new destination", func() bool {
+		l, _ := a.link("h")
+		return l.State == wire.StateRunning && l.Destination == "b"
+	})
+	if len(a.attemptsTo("hang")) != 1 {
+		t.Errorf("attempts to the old destination = %d, want 1", len(a.attemptsTo("hang")))
 	}
 
-	c, err := Dial(t.Context(), a.socket, "gst test", "sha256:cli")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	st, err := c.Restart(t.Context(), []string{"h", "h"})
-	if err != nil || len(st.Links) != 1 {
-		t.Fatalf("Restart = %+v, %v", st, err)
-	}
-	waitFor(t, "h runs with the new destination", func() bool { l, _ := a.link("h"); return l.State == wire.StateRunning })
+	// A changed remote gst restarts a link too, which connects again.
+	before := len(a.attemptsTo("b"))
+	a.apply(func(f *config.File) { f.Links["h"].RemoteGst = "/opt/gst" })
+	waitFor(t, "h connects again", func() bool { return len(a.attemptsTo("b")) > before })
+	waitFor(t, "h runs again", func() bool { l, _ := a.link("h"); return l.State == wire.StateRunning })
 
-	// Restart names started links only.
-	for _, names := range [][]string{{"nowhere"}, {"h", "nowhere"}} {
-		_, err := c.Restart(t.Context(), names)
-		wantCode(t, err, wire.CodeNotFound)
+	// The links that did not change keep running as they are.
+	if again, _ := a.link("same"); !again.Since.Equal(same.Since) || again.Reconnects != 0 {
+		t.Fatalf("an unrelated link restarted: %+v -> %+v", same, again)
 	}
-	a.apply(func(f *config.File) { f.Links["h"].Stopped = true })
-	_, err = c.Restart(t.Context(), []string{"h"})
-	wantCode(t, err, wire.CodeNotFound)
+	if log := a.log.String(); strings.Count(log, "link h: started") != 3 || strings.Count(log, "link h: stopped") != 2 {
+		t.Errorf("daemon log = %q, want link h started 3 times and stopped twice", log)
+	}
 }
 
 func TestReloadWithBadConfigKeepsServing(t *testing.T) {
@@ -691,7 +702,6 @@ func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 	}
 	a.update(func(f *config.File) {
 		f.Node = &config.Node{ID: nid("a"), Name: "a"}
-		f.Proxy = config.ProxyOff
 		f.Links["h"] = &config.Link{Destination: "hang"}
 	})
 	st, err := c.Reload(t.Context())
@@ -745,9 +755,12 @@ func TestControlClient(t *testing.T) {
 	if st, err = c.Reload(t.Context()); err != nil || len(st.Links) != 2 {
 		t.Fatalf("Reload = %+v, %v", st, err)
 	}
-	if st, err = c.Restart(t.Context(), []string{"bee"}); err != nil || len(st.Links) != 2 {
-		t.Fatalf("Restart = %+v, %v", st, err)
+	p, err := c.Ping(t.Context(), "b")
+	if err != nil || p.Node.ID != nid("b") || p.Node.Name != "b" || p.Via == nil || len(p.Via) != 0 || p.TimeMS <= 0 {
+		t.Fatalf("Ping = %+v, %v", p, err)
 	}
+	_, err = c.Ping(t.Context(), "nowhere")
+	wantCode(t, err, wire.CodeNotFound)
 
 	// Unknown methods fail without ending the connection.
 	wantCode(t, c.call(t.Context(), "no.such", nil, nil), wire.CodeUnsupportedMethod)
@@ -774,7 +787,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	b.apply(func(f *config.File) {
 		f.Proxy = proxy
 		f.Links["back"] = &config.Link{Destination: "a"}
-		f.Links["off"] = &config.Link{Destination: "ssh.example.com", Stopped: true}
+		f.Links["off"] = &config.Link{Destination: "ssh.example.com"}
 		f.Maps = []config.Map{
 			{Listen: occupied.Addr().String(), Machine: "a", Target: "localhost:1"},
 			{Listen: free, Machine: "a", Target: "localhost:2"},
@@ -798,8 +811,8 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 		t.Fatalf("node = %+v, proxy = %+v", st.Node, st.Proxy)
 	}
 	if len(st.Links) != 2 || st.Links[0].Name != "back" || st.Links[0].Destination != "a" || st.Links[0].State != wire.StateRunning ||
-		st.Links[1].Name != "off" || st.Links[1].Destination != "ssh.example.com" || st.Links[1].State != wire.StateStopped {
-		t.Fatalf("links = %+v, want back running and off stopped", st.Links)
+		st.Links[1].Name != "off" || st.Links[1].Destination != "ssh.example.com" || st.Links[1].State == wire.StateRunning {
+		t.Fatalf("links = %+v, want back running and off not", st.Links)
 	}
 	if len(st.Maps) != 2 || st.Maps[0].Machine != "a" || st.Maps[0].Target != "localhost:1" || st.Maps[0].Error == "" ||
 		st.Maps[1].Listen != free || st.Maps[1].Target != "localhost:2" || st.Maps[1].Error != "" {

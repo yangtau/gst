@@ -5,6 +5,7 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -36,14 +37,63 @@ func TestMesh(t *testing.T) {
 		if got := path(topo, bNode); got != "a,b" || !strings.Contains(bNode.Software, "gst") {
 			t.Fatalf("a reaches b by %s as %q", got, bNode.Software)
 		}
-		out := a.mustGst("nodes")
-		if !strings.Contains(out, "this machine") || !strings.Contains(out, "b → c") {
-			t.Fatalf("unexpected gst nodes:\n%s", out)
+		// gst status lists every machine, with the ones in between.
+		out := a.mustGst("status")
+		for _, want := range []string{"online; via b", "gst "} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("gst status lacks %q:\n%s", want, out)
+			}
+		}
+		var names []string
+		for line := range strings.Lines(out) {
+			if f := strings.Fields(line); len(f) > 1 {
+				names = append(names, f[1])
+			}
+		}
+		if strings.Join(names, ",") != "a,b,c" {
+			t.Fatalf("gst status lists %v, want a (this machine) and then b and c:\n%s", names, out)
+		}
+		if strings.Contains(out, "# Problems") || strings.Contains(out, "offline") {
+			t.Fatalf("gst status reports problems in a healthy mesh:\n%s", out)
+		}
+		st := a.meshStatus()
+		if st.Self.Node.Name != "a" || len(st.Self.Links) != 1 || st.Mesh.Self != st.Self.Node.ID || len(st.Mesh.Nodes) != 3 {
+			t.Fatalf("gst status --json: %+v", st)
 		}
 		// The other end learns of a the same way.
 		aNode, topo := c.waitReachable("a")
 		if got := path(topo, aNode); got != "c,b,a" {
 			t.Fatalf("c reaches a by %s, want c,b,a", got)
+		}
+	})
+
+	// gst ping asks a machine to answer through the mesh and names the
+	// machines on the way.
+	t.Run("Ping", func(t *testing.T) {
+		a.waitReachable("c")
+		pong := regexp.MustCompile(`^pong from (\w+) \([0-9a-f]{8}\) (directly|via [\w, ]+) in [0-9]+\.[0-9] ms$`)
+		for _, tc := range []struct{ machine, path string }{{"c", "via b"}, {"b", "directly"}, {"c.gst", "via b"}} {
+			out := a.mustGst("ping", tc.machine, "-c", "1")
+			m := pong.FindStringSubmatch(strings.TrimSpace(out))
+			if m == nil || m[1] != strings.TrimSuffix(tc.machine, ".gst") || m[2] != tc.path {
+				t.Fatalf("gst ping %s: %q, want an answer %s", tc.machine, out, tc.path)
+			}
+		}
+
+		var pings []wire.Ping
+		if err := json.Unmarshal([]byte(a.mustGst("ping", "c", "-c", "1", "--json")), &pings); err != nil {
+			t.Fatal(err)
+		}
+		cNode, _ := find(a.nodes(), "c")
+		if len(pings) != 1 || pings[0].Node.ID != cNode.ID || pings[0].Node.Name != "c" ||
+			len(pings[0].Via) != 1 || pings[0].Via[0].Name != "b" || pings[0].TimeMS <= 0 {
+			t.Fatalf("gst ping c --json: %+v", pings)
+		}
+
+		// Without an answer, the command says so and fails with a hint.
+		code, stdout, stderr := a.gst("ping", "nowhere", "-c", "1")
+		if code != 1 || !strings.Contains(stdout, "no answer:") || !strings.Contains(stderr, "error: nowhere did not answer") || !strings.Contains(stderr, "hint:") {
+			t.Fatalf("gst ping nowhere: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 		}
 	})
 
@@ -105,8 +155,18 @@ func TestMesh(t *testing.T) {
 
 	t.Run("Proxy", func(t *testing.T) {
 		const proxy = "127.0.0.1:1080"
-		out := a.mustGst("proxy")
-		if !strings.Contains(out, proxy) || !strings.Contains(out, "listening") {
+		// The proxy is off until it is turned on.
+		if out := a.mustGst("proxy"); !strings.Contains(out, "The proxy is off") {
+			t.Fatalf("unexpected gst proxy:\n%s", out)
+		}
+		if _, err := a.helper("socks", proxy, "c.gst", "7000", "hello"); err == nil {
+			t.Fatal("a proxy answers although none was turned on")
+		}
+		a.mustGst("proxy", proxy)
+		eventually(t, 10*time.Second, "the proxy did not listen", func() bool {
+			return strings.Contains(a.mustGst("proxy"), "listening")
+		})
+		if out := a.mustGst("proxy"); !strings.Contains(out, proxy) {
 			t.Fatalf("unexpected gst proxy:\n%s", out)
 		}
 
@@ -219,16 +279,15 @@ func TestMesh(t *testing.T) {
 	// gst status shows a machine's own configuration, asked through the
 	// mesh: c's links, proxy, maps, and routes on a, two hops away.
 	t.Run("Status", func(t *testing.T) {
-		status := func(n *node, args ...string) wire.Status {
+		status := func(n *node, machine string) wire.Status {
 			t.Helper()
 			var st wire.Status
-			if err := json.Unmarshal([]byte(n.mustGst(append([]string{"status"}, append(args, "--json")...)...)), &st); err != nil {
+			if err := json.Unmarshal([]byte(n.mustGst("status", machine, "--json")), &st); err != nil {
 				t.Fatal(err)
 			}
 			return st
 		}
-		c.mustGst(append([]string{"link", "add", "spare"}, cb.flags()...)...)
-		c.mustGst("link", "stop", "spare")
+		c.mustGst("link", "add", "spare", cb.deadEnd())
 		c.mustGst("map", "add", "16000", "b:7100")
 		c.mustGst("route", "add", "10.9.0.0/16", "b")
 		c.mustGst("proxy", "127.0.0.1:1090")
@@ -238,7 +297,7 @@ func TestMesh(t *testing.T) {
 			st = status(a, "c")
 			return len(st.Maps) == 1 && st.Maps[0].Error == "" && st.Proxy.Listen == "127.0.0.1:1090" && st.Proxy.Error == ""
 		})
-		if st.Node.Name != "c" || st.Node.ID == status(a).Node.ID {
+		if st.Node.Name != "c" || st.Node.ID == a.meshStatus().Self.Node.ID {
 			t.Fatalf("status of c is for %+v", st.Node)
 		}
 		if m := st.Maps[0]; m.Listen != "127.0.0.1:16000" || m.Machine != "b" || m.Target != "localhost:7100" {
@@ -247,31 +306,36 @@ func TestMesh(t *testing.T) {
 		if want := []wire.Route{{Match: "10.9.0.0/16", Via: "b"}}; len(st.Routes) != 1 || st.Routes[0] != want[0] {
 			t.Fatalf("c's routes = %+v", st.Routes)
 		}
-		if len(st.Links) != 2 || st.Links[0].Name != "spare" || st.Links[0].State != wire.StateStopped || st.Links[0].Destination != cb.destination() ||
+		if len(st.Links) != 2 || st.Links[0].Name != "spare" || st.Links[0].State != wire.StateDown || st.Links[0].Error == "" || st.Links[0].Destination != "dead-"+cb.server.container ||
 			st.Links[1].Name != "tob" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "b" {
 			t.Fatalf("c's links = %+v", st.Links)
 		}
 
 		// a's own status is not c's: its link, proxy, and the map from the
 		// Exit test.
-		own := status(a)
+		own := a.meshStatus().Self
 		if own.Node.Name != "a" || own.Proxy.Listen != "127.0.0.1:1080" || len(own.Routes) != 0 ||
 			len(own.Links) != 1 || own.Links[0].Name != "tob" || len(own.Maps) != 1 || own.Maps[0].Listen != "127.0.0.1:15435" {
 			t.Fatalf("a's status = %+v", own)
 		}
-		for _, args := range [][]string{{"status"}, {"status", "c.gst"}} {
-			out := a.mustGst(args...)
-			for _, want := range []string{"LINK", "tob", "running", "Proxy: 127.0.0.1:"} {
-				if !strings.Contains(out, want) {
-					t.Fatalf("gst %v lacks %q:\n%s", args, want, out)
-				}
+		out := a.mustGst("status", "c.gst")
+		for _, want := range []string{"LINK", "tob", "running", "spare", "down", "Proxy: 127.0.0.1:1090"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("gst status c.gst lacks %q:\n%s", want, out)
 			}
+		}
+		// c's own status lists its failed link as a problem; a's does not.
+		if out := c.mustGst("status"); !strings.Contains(out, "# Problems:") || !strings.Contains(out, "link spare is down") {
+			t.Fatalf("gst status on c:\n%s", out)
+		}
+		if out := a.mustGst("status"); strings.Contains(out, "# Problems") {
+			t.Fatalf("gst status on a:\n%s", out)
 		}
 		// b only accepts links, so it has none of its own.
 		if out := a.mustGst("status", "b"); !strings.Contains(out, "No links.") {
 			t.Fatalf("gst status b:\n%s", out)
 		}
-		if code, _, stderr := a.gst("status", "nowhere"); code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "gst nodes") {
+		if code, _, stderr := a.gst("status", "nowhere"); code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "gst status") {
 			t.Fatalf("gst status nowhere: exit %d, stderr %q", code, stderr)
 		}
 	})

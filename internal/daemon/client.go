@@ -65,12 +65,6 @@ func (c *Client) Reload(ctx context.Context) (s wire.Status, err error) {
 	return
 }
 
-// Restart restarts the named links.
-func (c *Client) Restart(ctx context.Context, names []string) (s wire.Status, err error) {
-	err = c.call(ctx, wire.MethodRestart, wire.RestartParams{Names: names}, &s)
-	return
-}
-
 // Nodes returns the mesh as the daemon knows it.
 func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
 	err = c.call(ctx, wire.MethodNodes, nil, &t)
@@ -80,6 +74,12 @@ func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
 // NodeStatus returns the status of the daemon on a machine of the mesh.
 func (c *Client) NodeStatus(ctx context.Context, node string) (s wire.Status, err error) {
 	err = c.call(ctx, wire.MethodNodeStatus, wire.NodeParams{Node: node}, &s)
+	return
+}
+
+// Ping asks a machine of the mesh to answer through the mesh.
+func (c *Client) Ping(ctx context.Context, node string) (p wire.Ping, err error) {
+	err = c.call(ctx, wire.MethodPing, wire.NodeParams{Node: node}, &p)
 	return
 }
 

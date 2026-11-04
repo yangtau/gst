@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/relay"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
@@ -33,7 +32,6 @@ import (
 type Config struct {
 	ConfigPath string // the gst configuration file
 	Socket     string // control socket path
-	LogDir     string // directory of the links' logs, <name>.log
 	Software   string // reported in Hello and Status, such as "gst 0.3.0"
 	Build      string // identifies the executable; see Build
 
@@ -88,15 +86,12 @@ func New(cfg Config) *Daemon {
 		}
 		return d.Status(), nil
 	})
-	wire.Handle(&d.control, wire.MethodRestart, func(ctx context.Context, p wire.RestartParams) (any, error) {
-		if err := d.Restart(ctx, p.Names); err != nil {
-			return nil, err
-		}
-		return d.Status(), nil
-	})
 	wire.Handle(&d.control, wire.MethodNodeStatus, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		var st wire.Status
 		return st, m.Call(ctx, p.Node, wire.MethodPeerStatus, nil, &st)
+	})
+	wire.Handle(&d.control, wire.MethodPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		return m.Ping(ctx, p.Node)
 	})
 	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
 	return d
@@ -215,7 +210,7 @@ func (d *Daemon) Status() wire.Status {
 	f := d.config.Load()
 	st := wire.Status{
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
-		Node: d.mesh.Self(), Proxy: wire.Listener{Listen: f.ProxyAddress()},
+		Node: d.mesh.Self(), Proxy: wire.Listener{Listen: f.Proxy},
 		Links: []wire.LinkState{}, Maps: []wire.MapState{}, Routes: []wire.Route{},
 	}
 	d.mu.Lock()
@@ -226,11 +221,8 @@ func (d *Daemon) Status() wire.Status {
 	for _, name := range slices.Sorted(maps.Keys(f.Links)) {
 		l := f.Links[name]
 		state := wire.LinkState{Name: name, Destination: l.Destination, State: wire.StateDown}
-		switch s := d.links[name]; {
-		case s != nil:
+		if s := d.links[name]; s != nil {
 			state = s.state()
-		case l.Stopped:
-			state.State = wire.StateStopped
 		}
 		st.Links = append(st.Links, state)
 	}
@@ -248,9 +240,8 @@ func (d *Daemon) Status() wire.Status {
 }
 
 // Reload reads the configuration and applies it: the node's identity,
-// the proxy, the maps, and the routes as they are; the started links that
-// do not run start, and the links that are stopped or gone stop. Links
-// whose configuration changed keep running as they are until Restart.
+// the proxy, the maps, and the routes; new links start, and links that
+// are gone or changed stop, the changed ones to start again.
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
@@ -264,78 +255,23 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	var stop []*supervisor
 	d.mu.Lock()
 	for name, s := range d.links {
-		if l := f.Links[name]; l == nil || l.Stopped {
+		if l := f.Links[name]; l == nil || *l != s.spec {
 			stop = append(stop, s)
 			delete(d.links, name)
 		}
 	}
 	d.mu.Unlock()
 	stopAll(stop)
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for name, l := range f.Links {
-		d.mu.Lock()
-		running := d.links[name] != nil
-		d.mu.Unlock()
-		if !l.Stopped && !running {
-			if err := d.start(name, l); err != nil {
-				return err
-			}
+		if d.links[name] == nil {
+			s := newSupervisor(d, name, *l)
+			d.links[name] = s
+			go s.run()
+			s.logf("started")
 		}
 	}
-	return nil
-}
-
-// Restart restarts the named links with their current configuration.
-// Every name must be a started link.
-func (d *Daemon) Restart(ctx context.Context, names []string) error {
-	d.ops.Lock()
-	defer d.ops.Unlock()
-	f, err := config.Load(d.cfg.ConfigPath)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		if l := f.Links[name]; l == nil || l.Stopped {
-			return wire.Errorf(wire.CodeNotFound, "link %s is not started", name)
-		}
-	}
-	names = slices.Compact(slices.Sorted(slices.Values(names)))
-	var stop []*supervisor
-	d.mu.Lock()
-	for _, name := range names {
-		if old := d.links[name]; old != nil {
-			stop = append(stop, old)
-			delete(d.links, name)
-		}
-	}
-	d.mu.Unlock()
-	stopAll(stop)
-	for _, name := range names {
-		if err := d.start(name, f.Links[name]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// start runs a link until it is stopped, independent of the request that
-// started it.
-func (d *Daemon) start(name string, l *config.Link) error {
-	var logOut *logfile.File
-	if d.cfg.LogDir != "" {
-		if err := os.MkdirAll(d.cfg.LogDir, 0o700); err != nil {
-			return fmt.Errorf("create the log directory: %w", err)
-		}
-		var err error
-		if logOut, err = logfile.Open(filepath.Join(d.cfg.LogDir, name+".log"), nil); err != nil {
-			return fmt.Errorf("open the log of link %s: %w", name, err)
-		}
-	}
-	s := newSupervisor(d, name, *l, logOut)
-	d.mu.Lock()
-	d.links[name] = s
-	d.mu.Unlock()
-	go s.run()
-	d.cfg.Log.Printf("link %s started", name)
 	return nil
 }
 

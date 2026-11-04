@@ -41,7 +41,7 @@ func TestParseLegacy(t *testing.T) {
 		Version: Version,
 		Node:    &Node{ID: nodeID, Name: "laptop"},
 		Links: map[string]*Link{
-			"myhost": {Destination: "user@ssh.example.com", IdentityFile: "/home/me/.ssh/id", KeepaliveIntervalSeconds: 5, RemoteGst: "/opt/gst"},
+			"myhost": {Destination: "user@ssh.example.com", RemoteGst: "/opt/gst"},
 			"bare":   {Destination: "bare-host"},
 		},
 		// Tunnels are processed in name order: bare, myhost, viamesh.

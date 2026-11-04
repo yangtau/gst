@@ -2,7 +2,7 @@
 // authenticates with keys that need no passphrase, accepts only host keys
 // that known_hosts records, probes the server with keepalives, and runs a
 // command on the server. Its errors omit addresses, users, and paths, so
-// that they are safe to log; Diagnose, which is for the user to read,
+// that they are safe to log; Check, which is for the user to read,
 // reports them.
 package sshconn
 

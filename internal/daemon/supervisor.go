@@ -3,13 +3,10 @@ package daemon
 import (
 	"context"
 	"errors"
-	"io"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -22,9 +19,7 @@ const maxRetry = 5 * time.Minute
 type supervisor struct {
 	d       *Daemon
 	name    string
-	spec    config.Link   // the configuration it was started with
-	logOut  *logfile.File // nil when the daemon keeps no link logs
-	log     *log.Logger
+	spec    config.Link // the configuration it was started with
 	ctx     context.Context
 	cancel  context.CancelFunc
 	stopped chan struct{}
@@ -37,24 +32,23 @@ type supervisor struct {
 	peer       *wire.NodeInfo
 }
 
-func newSupervisor(d *Daemon, name string, spec config.Link, logOut *logfile.File) *supervisor {
+func newSupervisor(d *Daemon, name string, spec config.Link) *supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
-	var w io.Writer = io.Discard
-	if logOut != nil {
-		w = logOut
-	}
 	return &supervisor{
 		d:       d,
 		name:    name,
 		spec:    spec,
-		logOut:  logOut,
-		log:     log.New(w, "", log.LstdFlags),
 		ctx:     ctx,
 		cancel:  cancel,
 		stopped: make(chan struct{}),
 		current: wire.StateConnecting,
 		since:   time.Now(),
 	}
+}
+
+// logf writes to the daemon's log about this link.
+func (s *supervisor) logf(format string, args ...any) {
+	s.d.cfg.Log.Printf("link %s: "+format, append([]any{s.name}, args...)...)
 }
 
 func (s *supervisor) set(state, lastErr string, peer *wire.NodeInfo) {
@@ -84,7 +78,7 @@ func (s *supervisor) run() {
 		s.set(wire.StateConnecting, "", nil)
 		err := s.connect(func(peer wire.NodeInfo) {
 			s.set(wire.StateRunning, "", &peer)
-			s.log.Print("link up")
+			s.logf("up")
 			wait = s.d.cfg.RetryDelay
 		})
 		if s.ctx.Err() != nil {
@@ -95,9 +89,9 @@ func (s *supervisor) run() {
 		}
 		var remote *mesh.RemoteError
 		if errors.As(err, &remote) {
-			s.log.Print("the remote gst failed; see gst link list")
+			s.logf("the remote gst failed; see gst status")
 		} else {
-			s.log.Print(err)
+			s.logf("%v", err)
 		}
 		s.set(wire.StateDown, err.Error(), nil)
 		select {
@@ -124,9 +118,5 @@ func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
 func (s *supervisor) stop() {
 	s.cancel()
 	<-s.stopped
-	s.log.Print("link stopped")
-	s.d.cfg.Log.Printf("link %s stopped", s.name)
-	if s.logOut != nil {
-		s.logOut.Close()
-	}
+	s.logf("stopped")
 }

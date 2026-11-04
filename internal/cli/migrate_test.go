@@ -38,12 +38,12 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, legacyConfig)
 
-	code, stdout, stderr := e.gst("link", "list")
+	code, stdout, stderr := e.gst("status", "--json")
 	if code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	for _, w := range []string{
-		"note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst link list and gst map list)\n",
+		"note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst status and gst map list)\n",
 		"note: dropped tunnel myhost: -R 127.0.0.1:2222:localhost:22; recreate it with gst map on the other machine, or with gst route\n",
 		"note: dropped tunnel myhost: -D 127.0.0.1:1081; recreate it with gst map on the other machine, or with gst route\n",
 	} {
@@ -54,7 +54,7 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	if n := strings.Count(stderr, "note: dropped"); n != 2 {
 		t.Errorf("%d notes about dropped forwards, want 2:\n%s", n, stderr)
 	}
-	if !strings.Contains(stdout, "myhost") || strings.Contains(stdout, "viamesh") {
+	if self := decode[meshStatus](t, stdout).Self; len(self.Links) != 1 || self.Links[0].Name != "myhost" {
 		t.Fatalf("the upgrade keeps the SSH tunnels as links and tunnels through the mesh as maps:\n%s", stdout)
 	}
 
@@ -62,7 +62,7 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	if f.Version != config.Version || f.Node == nil || f.Node.ID != legacyID || f.Node.Name != "laptop" {
 		t.Fatalf("file %+v node %+v", f, f.Node)
 	}
-	if l := f.Links["myhost"]; l == nil || l.Destination != "myhost" || l.KeepaliveIntervalSeconds != 30 || len(f.Links) != 1 {
+	if l := f.Links["myhost"]; l == nil || *l != (config.Link{Destination: "myhost"}) || len(f.Links) != 1 {
 		t.Fatalf("links %+v", f.Links)
 	}
 	wantMaps := []config.Map{
@@ -72,7 +72,7 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	if !slices.Equal(f.Maps, wantMaps) {
 		t.Fatalf("maps\n got %+v\nwant %+v", f.Maps, wantMaps)
 	}
-	if !slices.Equal(e.back.calls, []string{"sync"}) || !e.back.installed {
+	if len(e.back.calls) == 0 || e.back.calls[0] != "sync" || !e.back.installed {
 		t.Fatalf("the upgraded configuration was not applied: calls %v", e.back.calls)
 	}
 }
@@ -91,7 +91,7 @@ func TestMigrationHappensOnce(t *testing.T) {
 	}
 
 	e.resetCalls()
-	for _, args := range [][]string{{"link", "list"}, {"map", "list", "--json"}, {"nodes"}, {"proxy"}, {"route", "list"}} {
+	for _, args := range [][]string{{"status"}, {"status", "--json"}, {"map", "list", "--json"}, {"proxy"}, {"route", "list"}} {
 		_, _, stderr := e.gst(args...)
 		if strings.Contains(stderr, "note:") {
 			t.Errorf("gst %v: stderr %q", args, stderr)
@@ -117,7 +117,7 @@ func TestMigrationLeavesCurrentConfigAlone(t *testing.T) {
 	e := newEnv(t)
 	current := `{"version":3,"links":{},"maps":[],"routes":[]}` + "\n"
 	write(t, e.config, current)
-	_, _, stderr := e.gst("link", "list")
+	_, _, stderr := e.gst("map", "list")
 	if stderr != "" {
 		t.Fatalf("stderr %q", stderr)
 	}
@@ -147,7 +147,7 @@ func TestMigrationFailureToApply(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, legacyConfig)
 	e.back.syncErr = os.ErrPermission
-	e.expectError(exitFailure, []string{"link", "list"}, "error: apply the upgraded configuration: ", "hint: retry with `gst up`\n")
+	e.expectError(exitFailure, []string{"map", "list"}, "error: apply the upgraded configuration: ", "hint: retry with `gst up`\n")
 	// The file is upgraded all the same, so the daemon is applied by gst up.
 	if e.load().Version != config.Version {
 		t.Fatal("the configuration was not upgraded")

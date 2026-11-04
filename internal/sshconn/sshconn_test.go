@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -264,22 +265,6 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-func TestDiagnoseOffline(t *testing.T) {
-	s := startServer(t)
-	steps := Diagnose(context.Background(), s.opts, false, "gst version")
-	if len(steps) != 2 || !steps[0].OK || !steps[1].OK || steps[0].Name != "identity" || steps[1].Name != "known_hosts" {
-		t.Fatalf("steps = %+v", steps)
-	}
-	if !strings.Contains(steps[0].Detail, s.opts.IdentityFiles[0]) || !strings.Contains(steps[1].Detail, s.opts.Server) {
-		t.Errorf("details omit the path or server: %+v", steps)
-	}
-	select {
-	case <-s.probes:
-		t.Error("offline Diagnose contacted the server")
-	default:
-	}
-}
-
 // encryptedPEM is a passphrase-protected key; encrypting is slow on purpose,
 // so it is done once.
 var encryptedPEM = sync.OnceValue(func() string {
@@ -298,64 +283,49 @@ func encryptedKey(t *testing.T) string {
 	return path
 }
 
-func TestDiagnose(t *testing.T) {
+func TestCheck(t *testing.T) {
 	tests := []struct {
-		name     string
-		change   func(t *testing.T, s *testServer)
-		probe    string
-		steps    []string // names of the steps that run; the last one fails unless failStep is empty
-		failStep string
-		detail   string // expected in the last step's detail
-		hint     string // expected in the last step's hint
+		name    string
+		change  func(t *testing.T, s *testServer)
+		problem string // expected in the problem; empty when the check passes
+		hint    string
 	}{
-		{name: "no probe", steps: []string{"identity", "known_hosts", "connect", "login"}, detail: "logged in as remote-user"},
-		{name: "probe succeeds", probe: "gst version", steps: []string{"identity", "known_hosts", "connect", "login", "remote gst"}, detail: "gst 0.3.0"},
+		{name: "usable"},
 		{
-			name: "probe fails", probe: "gst-missing", failStep: "remote gst",
-			steps:  []string{"identity", "known_hosts", "connect", "login", "remote gst"},
-			detail: "gst-missing failed: ", hint: "--remote-gst",
-		},
-		{
-			name: "skips unusable identities", probe: "gst version",
+			name: "skips unusable identities",
 			change: func(t *testing.T, s *testServer) {
 				s.opts.IdentityFiles = append([]string{encryptedKey(t), "/missing/key"}, s.opts.IdentityFiles...)
 			},
-			steps: []string{"identity", "known_hosts", "connect", "login", "remote gst"}, detail: "gst 0.3.0",
 		},
 		{
-			name: "only an encrypted identity", failStep: "identity", steps: []string{"identity"},
-			change: func(t *testing.T, s *testServer) { s.opts.IdentityFiles = []string{encryptedKey(t)} },
-			detail: "passphrase-protected", hint: "ssh-keygen",
+			name:    "missing identity",
+			change:  func(t *testing.T, s *testServer) { s.opts.IdentityFiles = []string{"/missing/key"} },
+			problem: "/missing/key (missing)", hint: "ssh-keygen",
 		},
 		{
-			name: "unknown host", failStep: "known_hosts", steps: []string{"identity", "known_hosts"},
-			change: func(t *testing.T, s *testServer) { writeFile(t, s.opts.KnownHostsFiles[0], "") },
-			detail: "no host key", hint: "ssh -p ",
+			name:    "several missing identities",
+			change:  func(t *testing.T, s *testServer) { s.opts.IdentityFiles = []string{"/missing/a", "/missing/b"} },
+			problem: "none of the identity files exist: /missing/a, /missing/b", hint: "ssh-keygen",
 		},
 		{
-			name: "unreachable", failStep: "connect", steps: []string{"identity", "known_hosts", "connect"},
-			change: func(t *testing.T, s *testServer) {
-				addr := freeAddr(t)
-				writeFile(t, s.opts.KnownHostsFiles[0], knownhosts.Line([]string{addr}, s.hostKey.PublicKey())+"\n")
-				s.opts.Server = addr
-			},
-			hint: "sshd listens on",
+			name:    "only an encrypted identity",
+			change:  func(t *testing.T, s *testServer) { s.opts.IdentityFiles = []string{encryptedKey(t)} },
+			problem: "passphrase-protected", hint: "ssh-copy-id",
 		},
 		{
-			name: "changed host key", failStep: "login", steps: []string{"identity", "known_hosts", "connect", "login"},
-			change: func(t *testing.T, s *testServer) {
-				other, _ := newKey(t)
-				writeFile(t, s.opts.KnownHostsFiles[0], knownhosts.Line([]string{s.opts.Server}, other.PublicKey())+"\n")
-			},
-			hint: "ssh-keygen -R [127.0.0.1]:",
+			name:    "missing known_hosts",
+			change:  func(t *testing.T, s *testServer) { os.Remove(s.opts.KnownHostsFiles[0]) },
+			problem: "none of the known_hosts files exist", hint: "ssh -p ",
 		},
 		{
-			name: "unauthorized identity", failStep: "login", steps: []string{"identity", "known_hosts", "connect", "login"},
-			change: func(t *testing.T, s *testServer) {
-				_, private := newKey(t)
-				writeFile(t, s.opts.IdentityFiles[0], string(private))
-			},
-			detail: "unable to authenticate", hint: "ssh-copy-id",
+			name:    "malformed known_hosts",
+			change:  func(t *testing.T, s *testServer) { writeFile(t, s.opts.KnownHostsFiles[0], "malformed") },
+			problem: "known_hosts", hint: "ssh -p ",
+		},
+		{
+			name:    "server not in known_hosts",
+			change:  func(t *testing.T, s *testServer) { writeFile(t, s.opts.KnownHostsFiles[0], "") },
+			problem: "no host key for " + "127.0.0.1:", hint: "ssh -p ",
 		},
 	}
 	for _, tt := range tests {
@@ -364,38 +334,43 @@ func TestDiagnose(t *testing.T) {
 			if tt.change != nil {
 				tt.change(t, s)
 			}
-			steps := Diagnose(context.Background(), s.opts, true, tt.probe)
-			var names []string
-			for _, step := range steps {
-				names = append(names, step.Name)
-			}
-			if strings.Join(names, ",") != strings.Join(tt.steps, ",") {
-				t.Fatalf("steps = %v, want %v\n%+v", names, tt.steps, steps)
-			}
-			for _, step := range steps[:len(steps)-1] {
-				if !step.OK {
-					t.Errorf("step %s failed before the last: %+v", step.Name, step)
+			err := Check(s.opts)
+			if tt.problem == "" {
+				if err != nil {
+					t.Fatalf("Check = %v", err)
+				}
+			} else {
+				var ce *CheckError
+				if !errors.As(err, &ce) {
+					t.Fatalf("Check = %v, want a *CheckError", err)
+				}
+				if !strings.Contains(ce.Problem, tt.problem) || !strings.Contains(ce.Hint, tt.hint) {
+					t.Errorf("Check = %+v, want problem %q and hint %q", ce, tt.problem, tt.hint)
+				}
+				if ce.Error() != ce.Problem {
+					t.Errorf("Error() = %q, want the problem %q", ce.Error(), ce.Problem)
 				}
 			}
-			last := steps[len(steps)-1]
-			if last.OK != (tt.failStep == "") || tt.failStep != "" && last.Name != tt.failStep {
-				t.Fatalf("last step = %+v, failStep %q", last, tt.failStep)
-			}
-			if !strings.Contains(last.Detail, tt.detail) || !strings.Contains(last.Hint, tt.hint) {
-				t.Errorf("last step = %+v, want detail %q and hint %q", last, tt.detail, tt.hint)
-			}
-			if !last.OK && last.Hint == "" {
-				t.Errorf("failed step %s has no hint", last.Name)
+			select {
+			case <-s.probes:
+				t.Error("Check contacted the server")
+			default:
 			}
 		})
 	}
 }
 
-func TestDiagnoseProbeFailureQuotesServer(t *testing.T) {
+func TestCheckHintFollowsServerPort(t *testing.T) {
 	s := startServer(t)
-	steps := Diagnose(context.Background(), s.opts, true, "gst-missing")
-	last := steps[len(steps)-1]
-	if want := "sh: gst-missing: command not found"; !strings.Contains(last.Detail, want) {
-		t.Fatalf("detail = %q, want the server's first line %q", last.Detail, want)
+	s.opts.IdentityFiles = []string{"/missing/key"}
+	s.opts.Server = "ssh.example.com:22"
+	s.opts.User = "me"
+	var ce *CheckError
+	if err := Check(s.opts); !errors.As(err, &ce) || !strings.Contains(ce.Hint, "ssh-copy-id -i ~/.ssh/gst_ed25519 me@ssh.example.com`") {
+		t.Fatalf("Check = %v, want a hint that logs in as me@ssh.example.com", err)
+	}
+	s.opts.Server = "ssh.example.com:2200"
+	if err := Check(s.opts); !errors.As(err, &ce) || !strings.Contains(ce.Hint, "-p 2200 me@ssh.example.com") {
+		t.Fatalf("Check = %v, want a hint with the port", err)
 	}
 }

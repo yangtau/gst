@@ -4,13 +4,15 @@ import "time"
 
 // Methods of control connections.
 const (
-	MethodStatus  = "daemon.status" // no params; returns Status
-	MethodReload  = "daemon.reload" // no params; returns Status after syncing with the configuration
-	MethodRestart = "link.restart"  // RestartParams; returns Status
-	MethodNodes   = "mesh.nodes"    // no params; returns Topology
+	MethodStatus = "daemon.status" // no params; returns Status
+	MethodReload = "daemon.reload" // no params; returns Status after syncing with the configuration
+	MethodNodes  = "mesh.nodes"    // no params; returns Topology
 	// MethodNodeStatus ("mesh.status") takes NodeParams and returns the
 	// Status of that machine's daemon, asked through the mesh.
 	MethodNodeStatus = "mesh.status"
+	// MethodPing ("mesh.ping") takes NodeParams, calls node.info on that
+	// machine through the mesh, and returns Ping.
+	MethodPing = "mesh.ping"
 	// MethodConnect ("mesh.connect") takes ConnectParams; on success the
 	// control connection carries the bytes of a connection to the target.
 	MethodConnect = "mesh.connect"
@@ -18,7 +20,6 @@ const (
 
 // Link states reported by the daemon.
 const (
-	StateStopped    = "stopped"    // configured but stopped
 	StateConnecting = "connecting" // connecting over SSH or starting the peer session
 	StateRunning    = "running"    // the peer session is up
 	StateDown       = "down"       // failed; waiting to retry
@@ -76,9 +77,13 @@ type NodeParams struct {
 	Node string `json:"node"`
 }
 
-// RestartParams names the links to restart.
-type RestartParams struct {
-	Names []string `json:"names"`
+// Ping is a machine's answer through the mesh: the machine, the machines
+// in between, in order, and how long the answer took, in milliseconds,
+// which includes setting up the relay at each machine on the way.
+type Ping struct {
+	Node   NodeInfo   `json:"node"`
+	Via    []NodeInfo `json:"via"`
+	TimeMS float64    `json:"time_ms"`
 }
 
 // ConnectParams name a machine of the mesh, as the user refers to it, and

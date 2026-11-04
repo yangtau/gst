@@ -57,12 +57,6 @@ function showAlert(...texts) {
   a.hidden = a.childNodes.length === 0;
 }
 
-function showNotice(text) {
-  const n = $("notice");
-  n.textContent = text || "";
-  n.hidden = !text;
-}
-
 // Machines that share a name are told apart by their id prefix.
 function displayNames(nodes) {
   const count = {};
@@ -74,76 +68,26 @@ function displayNames(nodes) {
 
 // ---- links ----
 
-let busy = false;
-let noticeTimer;
-let alertSticky = 0; // until then, the alert shows an action's error
-const ACTIONS = { start: ["Start", "Starting"], stop: ["Stop", "Stopping"], restart: ["Restart", "Restarting"] };
-
-// actions returns the buttons that apply to a link, as gst link start,
-// stop, and restart do.
-function actions(l) {
-  const names = l.status === "stopped" ? ["start"] : ["restart", "stop"];
-  const box = el("span", { class: "actions" });
-  for (const action of names) {
-    const b = el("button", { type: "button", class: action === "stop" ? "quiet" : "" }, ACTIONS[action][0]);
-    b.disabled = busy;
-    b.addEventListener("click", () => act(l.name, action));
-    box.append(b);
-  }
-  return box;
-}
-
-async function act(name, action) {
-  if (busy) return;
-  busy = true;
-  clearTimeout(noticeTimer);
-  for (const b of document.querySelectorAll(".actions button")) b.disabled = true;
-  showNotice(`${ACTIONS[action][1]} ${name}…`);
-  try {
-    const res = await fetch(`api/links/${encodeURIComponent(name)}/${action}`, {
-      method: "POST",
-      headers: { Authorization: "Bearer " + token },
-    });
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    if (res.ok) {
-      showNotice(body.message || "Done.");
-      noticeTimer = setTimeout(() => showNotice(""), 6000);
-    } else {
-      showNotice("");
-      showAlert((body.error || res.statusText) + (body.hint ? ` — ${body.hint}` : ""));
-      alertSticky = Date.now() + 8000;
-    }
-  } catch (err) {
-    showNotice("");
-    showAlert(String(err.message || err));
-    alertSticky = Date.now() + 8000;
-  } finally {
-    busy = false;
-    refresh();
-  }
-}
-
-function renderLinks(links, isSelf) {
+function renderLinks(links) {
   show("links", links.map((l) => {
-    const status = [pill(l.status)];
-    if (l.error && l.status !== "running") status.push(el("span", { class: "err" }, l.error));
+    const status = [pill(l.state)];
+    if (l.error && l.state !== "running") status.push(el("span", { class: "err" }, l.error));
     const peer = l.peer && l.peer.id
       ? [l.peer.name, el("span", { class: "sub mono" }, shortID(l.peer.id))]
       : [el("span", { class: "sub" }, "-")];
-    const row = [el("strong", null, l.name), status, l.destination, peer];
-    if (isSelf) row.push(actions(l));
-    return row;
+    return [el("strong", null, l.name), status, l.destination, peer];
   }));
 }
 
 // ---- machines ----
 
-// routeText is how this machine reaches n: the machines along its path
-// after this one.
+// routeText says whether n is online, as gst status does, and the
+// machines that connections to it pass through.
 function routeText(n, topo, names) {
   if (n.id === topo.self) return "this machine";
-  if (!n.reachable || !n.path || n.path.length < 2) return "unreachable";
-  return n.path.slice(1).map((id) => names[id] || shortID(id)).join(" → ");
+  if (!n.reachable || !n.path || n.path.length < 2) return "offline";
+  if (n.path.length === 2) return "online";
+  return "online via " + n.path.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ");
 }
 
 function renderNodes(topo, names) {
@@ -156,7 +100,7 @@ function renderNodes(topo, names) {
       el("td", null, el("span", { class: "mono" }, shortID(n.id))),
       el("td", null, n.software || "-"),
       el("td", null, pill(n.exit ? "yes" : "no", n.exit ? "yes" : "off")),
-      el("td", null, n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "unreachable")));
+      el("td", null, n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "offline")));
     row.addEventListener("click", () => select(n.id));
     return row;
   }));
@@ -247,7 +191,7 @@ function renderGraph(topo, names) {
     if (!n.reachable) classes.push("unreachable");
     const kind = n.id === topo.self ? "this machine" : shortID(n.id) + (n.exit ? " · exit" : "");
     const g = svg("g", { class: classes.join(" "), transform: `translate(${p.x},${p.y})` },
-      svg("title", null, `${names[n.id]}\n${n.id}${n.software ? "\n" + n.software : ""}${n.reachable ? "" : "\nunreachable"}`),
+      svg("title", null, `${names[n.id]}\n${n.id}${n.software ? "\n" + n.software : ""}${n.reachable ? "" : "\noffline"}`),
       svg("rect", { class: "box", width: W, height: H, rx: 8 }),
       svg("text", { class: "name", x: 12, y: 19 }, truncate(names[n.id], 18)),
       svg("text", { class: "kind", x: 12, y: 35 }, kind));
@@ -269,28 +213,17 @@ function truncate(s, n) {
 
 // ---- machine detail ----
 
-// A machine's detail has one shape whether it comes from /api/state (this
-// machine, which is shown even when its daemon is not running) or from
-// /api/nodes/{id} (another machine, as its daemon reports it).
+// A machine's detail is its status, as its daemon reports it: this
+// machine's comes with /api/state, another's from /api/nodes/{id}.
 
 function listenState(listen, error) {
   return !listen ? "off" : error ? "failed" : "listening";
 }
 
-function detailFromState(state) {
-  const p = state.proxy;
-  return {
-    proxy: { listen: p.address, state: !p.address ? "off" : p.status === "failed" ? "failed" : p.status === "listening" ? "listening" : "not running", error: p.error },
-    links: state.links,
-    maps: state.maps.map((m) => ({ listen: m.listen, machine: m.machine, target: m.target, state: m.status === "listening" ? "listening" : m.status === "failed" ? "failed" : "not running", error: m.error })),
-    routes: state.routes || [],
-  };
-}
-
 function detailFromStatus(st) {
   return {
     proxy: { listen: st.proxy.listen, state: listenState(st.proxy.listen, st.proxy.error), error: st.proxy.error },
-    links: (st.links || []).map((l) => ({ name: l.name, destination: l.destination, status: l.state, error: l.error, peer: l.peer })),
+    links: st.links || [],
     maps: (st.maps || []).map((m) => ({ listen: m.listen, machine: m.machine, target: m.target, state: listenState(m.listen, m.error), error: m.error })),
     routes: st.routes || [],
   };
@@ -307,10 +240,8 @@ function renderProxy(proxy, isSelf) {
   const children = [el("code", null, proxy.listen), " "];
   if (proxy.state === "failed") {
     children.push(pill("failed", "down"), " ", el("span", { class: "err-inline" }, proxy.error || ""));
-  } else if (proxy.state === "listening") {
-    children.push(pill("listening", "running"));
   } else {
-    children.push(pill("gst is not running", "down"));
+    children.push(pill("listening", "running"));
   }
   state.replaceChildren(...children);
   if (!isSelf) return;
@@ -359,7 +290,7 @@ function renderDetail(state, names) {
   detail.classList.toggle("self", isSelf);
 
   const view = nodeView && nodeView.id === selected ? nodeView : null;
-  const status = isSelf ? null : view && view.status;
+  const status = isSelf ? state.status : view && view.status;
   const node = status && status.node && status.node.id ? status.node : info;
   $("m-name").textContent = node ? (names && names[node.id]) || node.name : "this machine";
   $("m-id").textContent = node ? shortID(node.id) : "";
@@ -374,7 +305,8 @@ function renderDetail(state, names) {
   let d = null;
   let problem = "";
   if (isSelf) {
-    d = detailFromState(state);
+    if (state.status) d = detailFromStatus(state.status);
+    else problem = state.down ? "gst is down on this machine; run gst up." : "The gst daemon is not running; run gst up.";
   } else if (!view) {
     problem = "Loading…";
   } else if (view.error) {
@@ -383,11 +315,11 @@ function renderDetail(state, names) {
     d = detailFromStatus(view.status);
   }
   $("m-problem").textContent = problem;
-  $("m-problem").className = view && view.error ? "problem err-inline" : "problem muted";
+  $("m-problem").className = (isSelf ? !d : view && view.error) ? "problem err-inline" : "problem muted";
   $("m-problem").hidden = !problem;
   $("m-body").hidden = !d;
   if (!d) return;
-  renderLinks(d.links, isSelf);
+  renderLinks(d.links);
   renderProxy(d.proxy, isSelf);
   renderMaps(d.maps);
   renderRoutes(d.routes, topo);
@@ -440,7 +372,7 @@ async function refreshNode() {
   const id = selected;
   const known = state.topology.nodes.find((n) => n.id === id);
   if (known && !known.reachable) {
-    const msg = "Unreachable: no running link leads to this machine from here.";
+    const msg = "Offline: no running link leads to this machine from here.";
     if (!nodeView || nodeView.id !== id || nodeView.error !== msg) {
       nodeView = { id, error: msg };
       draw(state);
@@ -489,7 +421,7 @@ function render(state) {
   exit.textContent = self && self.exit ? "exit" : "not an exit";
 
   const daemon = $("daemon");
-  if (state.daemon) {
+  if (state.status) {
     daemon.className = "pill running";
     daemon.textContent = "daemon running";
   } else {
@@ -498,7 +430,7 @@ function render(state) {
   }
   $("updated").textContent = `${state.software} · updated ${new Date().toLocaleTimeString()}`;
 
-  if (Date.now() > alertSticky) showAlert(...(state.errors || []));
+  showAlert(...(state.errors || []));
 
   draw(state);
   if (!nodeInflight && !nodeTimer) refreshNode();

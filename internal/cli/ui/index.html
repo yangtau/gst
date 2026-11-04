@@ -15,14 +15,13 @@
 </header>
 <main>
   <div id="alert" class="alert" role="alert" hidden></div>
-  <p id="notice" class="notice" role="status" hidden></p>
 
   <section id="nodes-section" hidden>
     <h2>Machines</h2>
     <p class="muted small">As this machine knows the mesh. Lines are running links, labeled with their name on the machine that runs them. Select a machine to see its links, proxy, maps, and routes below.</p>
     <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh graph"></svg></div>
     <div class="table-wrap spaced"><table id="nodes">
-      <thead><tr><th>Name</th><th>ID</th><th>Software</th><th>Exit</th><th>Route</th></tr></thead>
+      <thead><tr><th>Name</th><th>ID</th><th>Software</th><th>Exit</th><th>Status</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -42,7 +41,7 @@
       <div class="block">
         <h3>Links</h3>
         <div class="table-wrap"><table id="links">
-          <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th><th class="self-only"><span class="sr">Actions</span></th></tr></thead>
+          <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <p id="links-empty" class="muted" hidden>No links.<span class="self-only"> Add one with <code>gst link add &lt;name&gt; [destination]</code>.</span></p>

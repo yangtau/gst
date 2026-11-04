@@ -33,7 +33,7 @@ func (m Map) validate() error {
 func ParseMachine(ref string) (string, error) {
 	machine := strings.TrimSuffix(strings.ToLower(ref), ".gst")
 	if !namePattern.MatchString(machine) {
-		return "", errors.New("invalid machine " + quote(ref) + ": use a name or id from gst nodes")
+		return "", errors.New("invalid machine " + quote(ref) + ": use a name or id from gst status")
 	}
 	return machine, nil
 }

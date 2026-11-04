@@ -16,12 +16,13 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	p := startPair(t)
 	client, server := p.client, p.server
 	server.startEcho(3000)
-	client.mustGst(append([]string{"link", "add", "srv"}, p.flags()...)...)
+	client.mustGst("link", "add", "srv", p.destination())
 	client.mustGst("map", "add", "15432", "srv:3000")
 	client.waitLink("srv", "running")
 	before := client.daemonPID()
 
-	client.mustGst("link", "restart", "srv")
+	// gst up makes the daemon apply the configuration, and nothing else.
+	client.mustGst("up")
 	if pid := client.daemonPID(); pid != before {
 		t.Fatalf("daemon %s replaced by %s without an upgrade", before, pid)
 	}
@@ -31,7 +32,7 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	if _, err := client.exec("root", "sh", "-c", `cp /usr/local/bin/gst /usr/local/bin/gst.new && printf x >>/usr/local/bin/gst.new && mv /usr/local/bin/gst.new /usr/local/bin/gst`); err != nil {
 		t.Fatal(err)
 	}
-	client.mustGst("link", "restart", "--all")
+	client.mustGst("up")
 	if pid := client.daemonPID(); pid == before || pid == "" {
 		t.Fatalf("daemon %s not restarted after the upgrade (now %q)", before, pid)
 	}
@@ -47,7 +48,7 @@ func TestDownAndUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst(append([]string{"link", "add", "srv"}, p.flags()...)...)
+	client.mustGst("link", "add", "srv", p.destination())
 	client.waitLink("srv", "running")
 	if server.daemonPID() == "" {
 		t.Fatal("the link did not start the server's daemon")
@@ -88,8 +89,9 @@ func TestDownAndUp(t *testing.T) {
 	// Down on the client stops its links and its proxy.
 	client.mustGst("down")
 	eventually(t, 10*time.Second, "the client's daemon still runs", func() bool { return client.daemonPID() == "" })
-	if status := client.links()["srv"].Status; status != "down" {
-		t.Fatalf("link is %s while gst is down", status)
+	code, _, stderr := client.gst("status")
+	if code != 1 || !strings.Contains(stderr, "the gst daemon does not answer") || !strings.Contains(stderr, "gst up") {
+		t.Fatalf("gst status while gst is down: exit %d, stderr %q", code, stderr)
 	}
 	client.mustGst("up")
 	client.waitLink("srv", "running")

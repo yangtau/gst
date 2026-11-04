@@ -35,6 +35,10 @@ type node struct {
 const (
 	nodeUser = "tunnel"
 	nodeHome = "/home/" + nodeUser
+	// nodeSSHConfig is the ssh configuration of the gst user. The tests
+	// point GST_SSH_CONFIG at it, so that "ssh -G" resolves the links'
+	// destinations from the Host blocks that trust adds.
+	nodeSSHConfig = nodeHome + "/.gst-it-ssh-config"
 )
 
 func startNode(t *testing.T) *node {
@@ -83,6 +87,7 @@ func startNode(t *testing.T) *node {
 			t.Fatal(err)
 		}
 	}
+	n.writeFile(nodeSSHConfig, nil)
 	return n
 }
 
@@ -160,12 +165,12 @@ func (n *node) helper(args ...string) (string, error) {
 	return n.exec(nodeUser, append([]string{"gst-it"}, args...)...)
 }
 
-// gst runs gst as the gst user, ignoring any ssh configuration, and
-// returns its exit code, stdout, and stderr.
+// gst runs gst as the gst user, with the test ssh configuration in place
+// of any other, and returns its exit code, stdout, and stderr.
 func (n *node) gst(args ...string) (int, string, string) {
 	n.t.Helper()
 	cmd := exec.Command(containerRuntime, append([]string{"exec", "-u", nodeUser, n.container,
-		"env", "HOME=" + nodeHome, "GST_SSH_CONFIG=/dev/null", "gst"}, args...)...)
+		"env", "HOME=" + nodeHome, "GST_SSH_CONFIG=" + nodeSSHConfig, "gst"}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -186,7 +191,8 @@ func (n *node) mustGst(args ...string) string {
 }
 
 // pair is a client node whose gst user can log in to the "tunnel" user of
-// a server node with an identity and known_hosts file on the client.
+// a server node: the client's ssh configuration has a Host block for the
+// server, named by its container, with an identity and known_hosts file.
 type pair struct {
 	client, server       *node
 	identity, knownHosts string // paths on the client
@@ -208,15 +214,44 @@ func trust(t *testing.T, client, server *node) *pair {
 	p.client.writeFile(p.identity, private)
 	p.client.mustSh(`printf '%s\n' "$1" >>"$2"`, knownhosts.Line([]string{p.server.addr(22)}, p.server.hostKey), p.knownHosts)
 	p.server.mustSh(`umask 077 && mkdir -p ~/.ssh && printf '%s' "$1" >>~/.ssh/authorized_keys`, string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	// Fast keepalives let a dropped connection show quickly.
+	p.client.mustSh(`cat >>"$1"`+" <<EOF\n"+`Host $2
+  HostName $3
+  Port 22
+  User `+nodeUser+`
+  IdentityFile $4
+  IdentitiesOnly yes
+  UserKnownHostsFile $5
+  ConnectTimeout 10
+  ServerAliveInterval 1
+  ServerAliveCountMax 2
+EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
 	return p
 }
 
-func (p *pair) destination() string { return "ssh://tunnel@" + p.server.addr(22) }
+// destination is the ssh destination of the server in the client's ssh
+// configuration, for gst link add.
+func (p *pair) destination() string { return p.server.container }
 
-// flags selects the server for gst link add, with fast keepalives.
-func (p *pair) flags() []string {
-	return []string{p.destination(), "--identity", p.identity, "--known-hosts", p.knownHosts,
-		"--keepalive-interval", "1s", "--keepalive-count", "2", "--connect-timeout", "10s"}
+// deadEnd adds a destination to the client's ssh configuration that
+// passes gst link add's checks, because known_hosts records the server's
+// key on that port, but where nothing listens: a link to it stays down.
+// It returns the destination.
+func (p *pair) deadEnd() string {
+	p.client.t.Helper()
+	const port = "2222"
+	alias := "dead-" + p.server.container
+	p.client.mustSh(`printf '%s\n' "$1" >>"$2"`, knownhosts.Line([]string{net.JoinHostPort(p.server.ip, port)}, p.server.hostKey), p.knownHosts)
+	p.client.mustSh(`cat >>"$1"`+" <<EOF\n"+`Host $2
+  HostName $3
+  Port `+port+`
+  User `+nodeUser+`
+  IdentityFile $4
+  IdentitiesOnly yes
+  UserKnownHostsFile $5
+  ConnectTimeout 10
+EOF`, nodeSSHConfig, alias, p.server.ip, p.identity, p.knownHosts)
+	return alias
 }
 
 // startEcho starts an echo server on 127.0.0.1:port; see gst-it.
@@ -247,7 +282,7 @@ func (n *node) daemonPID() string {
 }
 
 func (n *node) dumpLogs() {
-	out, _ := n.sh(`for f in ~/.systemctl-shim/*.log ~/.local/state/gst/logs/*.log; do [ -f "$f" ] && echo "== $f" && cat "$f"; done`)
+	out, _ := n.sh(`for f in ~/.systemctl-shim/*.log; do [ -f "$f" ] && echo "== $f" && cat "$f"; done`)
 	n.t.Logf("logs of %s:\n%s", n.container, out)
 }
 
@@ -269,52 +304,51 @@ func (n *node) killDaemon() {
 	eventually(n.t, 10*time.Second, "the daemon did not die", func() bool { return n.daemonPID() == "" })
 }
 
-// linkInfo is a link as gst link list --json prints it.
-type linkInfo struct {
-	Name              string         `json:"name"`
-	Status            string         `json:"status"`
-	Error             string         `json:"error"`
-	Peer              *wire.NodeInfo `json:"peer"`
-	KeepaliveInterval int64          `json:"keepalive_interval_seconds"`
-	RemoteGst         string         `json:"remote_gst"`
+// meshStatus is what gst status --json prints.
+type meshStatus struct {
+	Self wire.Status   `json:"self"`
+	Mesh wire.Topology `json:"mesh"`
 }
 
-func (n *node) links() map[string]linkInfo {
+func (n *node) meshStatus() meshStatus {
 	n.t.Helper()
-	var list []linkInfo
-	if err := json.Unmarshal([]byte(n.mustGst("link", "list", "--json")), &list); err != nil {
+	var st meshStatus
+	if err := json.Unmarshal([]byte(n.mustGst("status", "--json")), &st); err != nil {
 		n.t.Fatal(err)
 	}
-	m := map[string]linkInfo{}
-	for _, l := range list {
+	return st
+}
+
+// links returns the links of n's machine by name, as gst status reports them.
+func (n *node) links() map[string]wire.LinkState {
+	n.t.Helper()
+	m := map[string]wire.LinkState{}
+	for _, l := range n.meshStatus().Self.Links {
 		m[l.Name] = l
 	}
 	return m
 }
 
-// waitLink waits until link name has status and returns it.
-func (n *node) waitLink(name, status string) linkInfo {
+// waitLink waits until link name is in state and returns it.
+func (n *node) waitLink(name, state string) wire.LinkState {
 	n.t.Helper()
-	var last linkInfo
+	var last wire.LinkState
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		if last = n.links()[name]; last.Status == status {
+		if last = n.links()[name]; last.State == state {
 			return last
 		}
 		if time.Now().After(deadline) {
-			n.t.Fatalf("link %s of %s is %q (%s), want %q", name, n.container, last.Status, last.Error, status)
+			n.t.Fatalf("link %s of %s is %q (%s), want %q", name, n.container, last.State, last.Error, state)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
+// nodes returns the mesh as n's machine knows it.
 func (n *node) nodes() wire.Topology {
 	n.t.Helper()
-	var topo wire.Topology
-	if err := json.Unmarshal([]byte(n.mustGst("nodes", "--json")), &topo); err != nil {
-		n.t.Fatal(err)
-	}
-	return topo
+	return n.meshStatus().Mesh
 }
 
 // find returns the node of topo with the given name.
@@ -401,8 +435,8 @@ func start3(t *testing.T) (a, b, c *node, ab, cb *pair) {
 	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
 		n.mustGst("name", name)
 	}
-	a.mustGst(append([]string{"link", "add", "tob"}, ab.flags()...)...)
-	c.mustGst(append([]string{"link", "add", "tob"}, cb.flags()...)...)
+	a.mustGst("link", "add", "tob", ab.destination())
+	c.mustGst("link", "add", "tob", cb.destination())
 	a.waitReachable("c")
 	c.waitReachable("a")
 	return

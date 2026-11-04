@@ -96,7 +96,7 @@ func (d *Daemon) listen(f *config.File) {
 	defer d.mu.Unlock()
 	ctx := d.serveCtx
 	var closing []*listener
-	if p := d.proxy; p != nil && (p.listen != f.ProxyAddress() || p.err != nil) {
+	if p := d.proxy; p != nil && (p.listen != f.Proxy || p.err != nil) {
 		closing = append(closing, p)
 		d.proxy = nil
 	}
@@ -117,9 +117,9 @@ func (d *Daemon) listen(f *config.File) {
 		wg.Go(l.close)
 	}
 	wg.Wait()
-	if d.proxy == nil && f.ProxyAddress() != "" {
+	if d.proxy == nil && f.Proxy != "" {
 		srv := &proxy.Server{Dial: d.dialProxy}
-		d.proxy = open(ctx, f.ProxyAddress(), func(ctx context.Context, ln net.Listener) { srv.Serve(ctx, ln) })
+		d.proxy = open(ctx, f.Proxy, func(ctx context.Context, ln net.Listener) { srv.Serve(ctx, ln) })
 	}
 	for addr, m := range want {
 		if d.maps[addr] == nil {

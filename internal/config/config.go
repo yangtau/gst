@@ -13,13 +13,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 	"unicode"
 )
 
@@ -27,20 +25,13 @@ import (
 // tunnels and their forwards with links, maps, and routes.
 const Version = 3
 
-// The proxy's listen address when the file sets none, and the setting
-// that turns the proxy off.
-const (
-	DefaultProxy = "127.0.0.1:1080"
-	ProxyOff     = "off"
-)
-
 // File is the configuration file.
 type File struct {
 	Version int   `json:"version"`
 	Node    *Node `json:"node,omitempty"` // set by Update
 	// Down keeps the daemon from running until gst up.
 	Down   bool             `json:"down,omitempty"`
-	Proxy  string           `json:"proxy,omitempty"` // listen address, DefaultProxy when empty, or ProxyOff
+	Proxy  string           `json:"proxy,omitempty"` // listen address; off when empty
 	Links  map[string]*Link `json:"links"`
 	Maps   []Map            `json:"maps"`
 	Routes Routes           `json:"routes"`
@@ -58,31 +49,12 @@ type Node struct {
 // Link is an SSH connection to another machine's gst. Destination is
 // resolved with "ssh -G" each time the link connects, so the user's ssh
 // configuration supplies host, port, user, identities, known_hosts files,
-// and timeouts. The optional fields override what ssh resolves.
+// and timeouts.
 type Link struct {
-	Destination              string `json:"destination"`
-	IdentityFile             string `json:"identity_file,omitempty"`
-	KnownHostsFile           string `json:"known_hosts_file,omitempty"`
-	ConnectTimeoutSeconds    int64  `json:"connect_timeout_seconds,omitempty"`
-	KeepaliveIntervalSeconds int64  `json:"keepalive_interval_seconds,omitempty"`
-	KeepaliveCountMax        int64  `json:"keepalive_count_max,omitempty"`
+	Destination string `json:"destination"`
 	// RemoteGst is the server's gst command; "gst" in the login shell's
 	// PATH when empty.
 	RemoteGst string `json:"remote_gst,omitempty"`
-	// Stopped links stay configured, but the daemon does not run them.
-	Stopped bool `json:"stopped,omitempty"`
-}
-
-// ProxyAddress returns the proxy's listen address, or "" when the proxy
-// is off.
-func (f *File) ProxyAddress() string {
-	switch f.Proxy {
-	case "":
-		return DefaultProxy
-	case ProxyOff:
-		return ""
-	}
-	return f.Proxy
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
@@ -184,7 +156,7 @@ func (f *File) validate() error {
 	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil) {
 		return errors.New("invalid node id or name")
 	}
-	if _, ok := parseListenAddress(f.ProxyAddress()); !ok && f.Proxy != ProxyOff {
+	if _, ok := parseListenAddress(f.Proxy); !ok && f.Proxy != "" {
 		return errors.New("invalid proxy address")
 	}
 	for name, l := range f.Links {
@@ -202,7 +174,7 @@ func (f *File) validate() error {
 		if err := m.validate(); err != nil {
 			return fmt.Errorf("map %d: %w", i+1, err)
 		}
-		if m.Listen == f.ProxyAddress() {
+		if m.Listen == f.Proxy {
 			return fmt.Errorf("map %d listens on the proxy address", i+1)
 		}
 		for _, earlier := range f.Maps[:i] {
@@ -386,37 +358,15 @@ func ValidateDestination(destination string) error {
 	return nil
 }
 
-// Validate checks a link. Paths must be absolute; durations and counts
-// are either zero (unset) or positive and representable.
+// Validate checks a link.
 func (l *Link) Validate() error {
 	if err := ValidateDestination(l.Destination); err != nil {
 		return err
 	}
-	for _, path := range []string{l.IdentityFile, l.KnownHostsFile} {
-		if path != "" && (!filepath.IsAbs(path) || strings.ContainsRune(path, 0)) {
-			return errors.New("identity and known_hosts paths must be absolute")
-		}
-	}
 	if strings.ContainsFunc(l.RemoteGst, unicode.IsControl) {
 		return errors.New("invalid remote gst command")
 	}
-	if !isUnsetOrSeconds(l.ConnectTimeoutSeconds) || !isUnsetOrSeconds(l.KeepaliveIntervalSeconds) ||
-		l.KeepaliveCountMax < 0 || l.KeepaliveCountMax > MaxKeepaliveCount {
-		return errors.New("invalid timeout or keepalive settings")
-	}
 	return nil
-}
-
-// MaxKeepaliveCount bounds keepalive_count_max so that the keepalive
-// timeout, interval × count, always fits in a time.Duration.
-const MaxKeepaliveCount = 1000
-
-// MaxSeconds is the largest number of seconds accepted for a duration
-// setting; together with MaxKeepaliveCount it keeps every product in range.
-const MaxSeconds = math.MaxInt64 / int64(time.Second) / MaxKeepaliveCount
-
-func isUnsetOrSeconds(n int64) bool {
-	return n >= 0 && n <= MaxSeconds
 }
 
 // AbsPath expands a leading "~" or "~/" to the home directory and makes

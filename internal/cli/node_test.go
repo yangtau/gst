@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -33,69 +32,6 @@ func meshTopology() wire.Topology {
 			{From: devcn, To: far, Link: "far"},
 		},
 	}
-}
-
-func TestNodesTable(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "devcn")
-	e.back.topology = meshTopology()
-
-	out := e.mustGst("nodes")
-	nodes, edges, _ := strings.Cut(out, "\n\n")
-	want := [][]string{
-		{"NAME", "ID", "SOFTWARE", "EXIT", "ROUTE"},
-		{"laptop", "aaaa1111", "gst", "0.3.0", "no", "this", "machine"},
-		{"devcn", "bbbb2222", "gst", "0.3.0", "yes", "devcn"},
-		{"far", "cccc3333", "-", "no", "devcn", "→", "far"},
-		{"dup", "(dddd4444)", "dddd4444", "gst", "0.3.0", "no", "devcn", "→", "dup", "(dddd4444)"},
-		{"dup", "(eeee5555)", "eeee5555", "gst", "0.3.0", "no", "unreachable"},
-	}
-	if got := rows(nodes); !reflect.DeepEqual(got, want) {
-		t.Fatalf("nodes\n got %q\nwant %q\noutput:\n%s", got, want, out)
-	}
-	// Edges are sorted by the name of the machine they start from, then by link.
-	wantEdges := [][]string{
-		{"FROM", "LINK", "TO"},
-		{"devcn", "d1", "dup", "(dddd4444)"},
-		{"devcn", "far", "far"},
-		{"laptop", "devcn", "devcn"},
-	}
-	if got := rows(edges); !reflect.DeepEqual(got, wantEdges) {
-		t.Fatalf("edges\n got %q\nwant %q\noutput:\n%s", got, wantEdges, out)
-	}
-}
-
-func TestNodesWithoutLinks(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("up")
-	self := nodeID("aaaa1111")
-	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop", Reachable: true, Path: []string{self}}}}
-	out := e.mustGst("nodes")
-	contains(t, out, "this machine", "No links in the mesh. Add one with: gst link add <name> [destination]\n")
-	if strings.Contains(out, "FROM") {
-		t.Fatalf("an empty edge table was printed: %s", out)
-	}
-}
-
-func TestNodesJSON(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("up")
-	e.back.topology = meshTopology()
-	got := decode[wire.Topology](t, e.mustGst("nodes", "--json"))
-	if !reflect.DeepEqual(got, e.back.topology) {
-		t.Fatalf("got %+v\nwant %+v", got, e.back.topology)
-	}
-	contains(t, e.mustGst("nodes", "--json"), `"self": "aaaa1111`, `"reachable": true`, `"link": "devcn"`)
-}
-
-func TestNodesWithoutDaemon(t *testing.T) {
-	e := newEnv(t)
-	for _, args := range [][]string{{"nodes"}, {"nodes", "--json"}} {
-		e.expectError(exitFailure, args, "error: the gst daemon does not answer: no daemon\n", "hint: start it with `gst up`\n")
-	}
-	e.mustGst("up")
-	e.back.nodesErr = errors.New("timed out")
-	e.expectError(exitFailure, []string{"nodes"}, "error: the gst daemon does not answer: timed out\n", "hint: start it with `gst up`\n")
 }
 
 // --- connect ---

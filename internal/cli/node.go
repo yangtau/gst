@@ -1,15 +1,12 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -17,96 +14,6 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
-
-// noDaemon explains err from a daemon that does not answer.
-func noDaemon(err error) error {
-	return withHint(fmt.Errorf("the gst daemon does not answer: %w", err), "start it with `gst up`")
-}
-
-func (a *app) nodesCommand() *cobra.Command {
-	var asJSON bool
-	cmd := &cobra.Command{
-		Use:   "nodes",
-		Short: "Show every machine in the mesh",
-		Long: `Show every machine in the mesh as this machine knows it, and the links
-between them. Linked machines pass on what they know, so the list
-includes machines several links away. ROUTE is the way connections to a
-machine take from here. A machine is named by its name, its id or an id
-prefix of at least 4 characters, or the name of a link to it, optionally
-followed by .gst. gst status <machine> shows what a machine runs.`,
-		Args: a.args(0, 0),
-		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			b, err := a.backend()
-			if err != nil {
-				return err
-			}
-			topo, err := b.Nodes(cmd.Context())
-			if err != nil {
-				return noDaemon(err)
-			}
-			if asJSON {
-				return writeJSON(a.stdout, topo)
-			}
-			return writeTopology(a.stdout, topo)
-		}),
-	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	return cmd
-}
-
-// writeTopology prints the machines and then the links between them.
-// Machines that share a name are told apart by their ids.
-func writeTopology(out io.Writer, topo wire.Topology) error {
-	count := map[string]int{}
-	for _, n := range topo.Nodes {
-		count[n.Name]++
-	}
-	names := map[string]string{}
-	for _, n := range topo.Nodes {
-		names[n.ID] = n.Name
-		if count[n.Name] > 1 {
-			names[n.ID] += " (" + shortID(n.ID) + ")"
-		}
-	}
-	w := table(out)
-	fmt.Fprintln(w, "NAME\tID\tSOFTWARE\tEXIT\tROUTE")
-	for _, n := range topo.Nodes {
-		exit := "no"
-		if n.Exit {
-			exit = "yes"
-		}
-		route := "unreachable"
-		switch {
-		case n.ID == topo.Self:
-			route = "this machine"
-		case n.Reachable && len(n.Path) > 1:
-			hops := make([]string, len(n.Path)-1)
-			for i, id := range n.Path[1:] {
-				hops[i] = names[id]
-			}
-			route = strings.Join(hops, " → ")
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", names[n.ID], shortID(n.ID), cmp.Or(n.Software, "-"), exit, route)
-	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	if len(topo.Edges) == 0 {
-		fmt.Fprintln(out, "\nNo links in the mesh. Add one with: gst link add <name> [destination]")
-		return nil
-	}
-	edges := slices.Clone(topo.Edges)
-	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
-		return cmp.Or(cmp.Compare(names[a.From], names[b.From]), cmp.Compare(a.Link, b.Link))
-	})
-	fmt.Fprintln(out)
-	w = table(out)
-	fmt.Fprintln(w, "FROM\tLINK\tTO")
-	for _, e := range edges {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", names[e.From], e.Link, names[e.To])
-	}
-	return w.Flush()
-}
 
 func (a *app) connectCommand() *cobra.Command {
 	return &cobra.Command{
@@ -314,12 +221,12 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 			if err := a.sync(cmd.Context()); err != nil {
 				return err
 			}
-			paths, err := service.DefaultPaths()
+			socket, err := service.Socket()
 			if err != nil {
 				return err
 			}
 			var d net.Dialer
-			conn, err := d.DialContext(cmd.Context(), "unix", paths.Socket)
+			conn, err := d.DialContext(cmd.Context(), "unix", socket)
 			if err != nil {
 				return errors.New("the gst daemon does not answer on this machine")
 			}

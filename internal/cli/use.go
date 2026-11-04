@@ -17,20 +17,20 @@ func (a *app) proxyCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "proxy [address | off]",
-		Short: "Show or change the proxy that reaches the mesh",
-		Long: `Show the proxy and how to use it, or change its address. The gst daemon
-serves a SOCKS5 and HTTP proxy on one port, 127.0.0.1:1080 unless
-changed. Through it, <machine>.gst reaches a machine of the mesh, the
-hosts that routes match go out through their exits, and other hosts are
-connected to directly.`,
+		Short: "Show, turn on, or turn off the proxy that reaches the mesh",
+		Long: `Show the proxy and how to use it, turn it on at an address, or turn it
+off. The gst daemon serves a SOCKS5 and HTTP proxy on one port; it is off
+until you give it an address. Through it, <machine>.gst reaches a
+machine of the mesh, the hosts that routes match go out through their
+exits, and other hosts are connected to directly.`,
 		Example: `  gst proxy
-  gst proxy 127.0.0.1:1081
+  gst proxy 127.0.0.1:1080
   gst proxy off`,
 		Args: a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
-				address := config.ProxyOff
-				if args[0] != config.ProxyOff {
+				address := ""
+				if args[0] != "off" {
 					var err error
 					if address, err = config.ParseListen(args[0]); err != nil {
 						return &usageError{err}
@@ -41,9 +41,6 @@ connected to directly.`,
 				}
 				err := a.update(func(f *config.File) error {
 					f.Proxy = address
-					if address == config.DefaultProxy {
-						f.Proxy = ""
-					}
 					for _, m := range f.Maps {
 						if m.Listen == address {
 							return withHint(fmt.Errorf("a map listens on %s", address), "remove it with `gst map remove "+address+"`, or choose another address")
@@ -96,7 +93,7 @@ type proxyView struct {
 // newProxyView returns f's proxy with its state in st, the daemon's
 // status, which is nil when no daemon answers.
 func newProxyView(f *config.File, st *wire.Status) proxyView {
-	v := proxyView{Address: f.ProxyAddress()}
+	v := proxyView{Address: f.Proxy}
 	if v.Address == "" {
 		return v
 	}
@@ -196,7 +193,7 @@ own needs the machine to be an exit.`,
 				return &usageError{err}
 			}
 			err = a.update(func(f *config.File) error {
-				if listen == f.ProxyAddress() {
+				if listen == f.Proxy {
 					return withHint(fmt.Errorf("the proxy listens on %s", listen), "choose another address, or move the proxy with `gst proxy <address>`")
 				}
 				for _, m := range f.Maps {

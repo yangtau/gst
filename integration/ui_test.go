@@ -48,14 +48,14 @@ func (u *uiServer) request(method, path string, withToken bool) (string, string)
 	return code, body
 }
 
-// gst ui serves the machine's state and link actions to holders of the
-// token it prints.
+// gst ui serves the machine's state to holders of the token it prints, and
+// changes nothing.
 func TestUI(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client := p.client
 	client.mustGst("name", "cli")
-	client.mustGst(append([]string{"link", "add", "srv"}, p.flags()...)...)
+	client.mustGst("link", "add", "srv", p.destination())
 	client.waitLink("srv", "running")
 	ui := client.startUI()
 
@@ -64,36 +64,24 @@ func TestUI(t *testing.T) {
 	}
 	code, body := ui.request("GET", "api/state", true)
 	var state struct {
-		Daemon   bool           `json:"daemon"`
-		Links    []linkInfo     `json:"links"`
+		Status   *wire.Status   `json:"status"`
 		Topology *wire.Topology `json:"topology"`
 	}
 	if code != "200" || json.Unmarshal([]byte(body), &state) != nil {
 		t.Fatalf("state: %s %q", code, body)
 	}
-	if !state.Daemon || len(state.Links) != 1 || state.Links[0].Name != "srv" || state.Links[0].Status != "running" || state.Topology == nil || len(state.Topology.Nodes) != 2 {
+	if state.Status == nil || len(state.Status.Links) != 1 || state.Status.Links[0].Name != "srv" || state.Status.Links[0].State != wire.StateRunning ||
+		state.Topology == nil || len(state.Topology.Nodes) != 2 {
 		t.Fatalf("gst ui shows %+v", state)
 	}
 
-	// Actions are the link commands.
-	if code, _ := ui.request("POST", "api/links/srv/restart", false); code != "401" {
-		t.Fatalf("restart without the token: %s", code)
+	// The page cannot act on links: the actions it once had are gone.
+	for _, action := range []string{"restart", "stop", "start"} {
+		if code, _ := ui.request("POST", "api/links/srv/"+action, true); code == "200" {
+			t.Fatalf("%s from gst ui: %s", action, code)
+		}
 	}
-	if code, body := ui.request("POST", "api/links/srv/restart", true); code != "200" || !strings.Contains(body, "Restarted link srv") {
-		t.Fatalf("restart from gst ui: %s %q", code, body)
-	}
-	client.waitLink("srv", "running")
-	if code, body := ui.request("POST", "api/links/srv/stop", true); code != "200" || !strings.Contains(body, "Stopped link srv") {
-		t.Fatalf("stop from gst ui: %s %q", code, body)
-	}
-	if status := client.links()["srv"].Status; status != "stopped" {
-		t.Fatalf("link is %s after stop from gst ui", status)
-	}
-	if code, body := ui.request("POST", "api/links/srv/start", true); code != "200" || !strings.Contains(body, "Started link srv") {
-		t.Fatalf("start from gst ui: %s %q", code, body)
-	}
-	client.waitLink("srv", "running")
-	if code, _ := ui.request("POST", "api/links/nowhere/restart", true); code != "409" {
-		t.Fatalf("restart of an unknown link: %s", code)
+	if state := client.links()["srv"].State; state != wire.StateRunning {
+		t.Fatalf("link is %s after the actions", state)
 	}
 }

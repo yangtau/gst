@@ -24,7 +24,7 @@ func (a *app) migrate(cmd *cobra.Command) error {
 		return nil
 	}
 	if f, err := a.load(); err == nil && len(f.Links)+len(f.Maps)+len(notes) > 0 {
-		fmt.Fprintln(a.stderr, "note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst link list and gst map list)")
+		fmt.Fprintln(a.stderr, "note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst status and gst map list)")
 	}
 	for _, note := range notes {
 		fmt.Fprintf(a.stderr, "note: dropped %s; recreate it with gst map on the other machine, or with gst route\n", note)

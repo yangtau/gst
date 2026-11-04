@@ -1,169 +1,63 @@
 package sshconn
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
-	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// Step is the outcome of one diagnostic check.
-type Step struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail"`
-	Hint   string `json:"hint,omitempty"`
+// CheckError is a problem that Check found, with what the user can do
+// about it.
+type CheckError struct {
+	Problem string
+	Hint    string
 }
 
-// Diagnose checks the identities and known_hosts entries and, if online,
-// the connection, the login, and then, unless probe is empty, that the
-// command probe runs on the server, stopping at the first failure. Unlike
-// Dial, it reports paths, addresses, and server errors, because it is
-// meant for the user to read.
-func Diagnose(ctx context.Context, opts Options, online bool, probe string) []Step {
-	var steps []Step
-	add := func(s Step) bool {
-		steps = append(steps, s)
-		return s.OK
+func (e *CheckError) Error() string { return e.Problem }
+
+// Check checks, without connecting, that an identity is usable and that
+// known_hosts records the server. Unlike Dial, it reports paths and
+// addresses, because it is meant for the user to read.
+func Check(opts Options) error {
+	if err := checkIdentities(opts); err != nil {
+		return err
 	}
-	if !add(checkIdentities(opts)) || !add(checkKnownHosts(opts)) || !online {
-		return steps
-	}
-	conn, step := checkConnect(ctx, opts)
-	if !add(step) {
-		return steps
-	}
-	client, step := checkLogin(opts, conn)
-	if !add(step) || probe == "" {
-		return steps
-	}
-	defer client.Close()
-	add(checkProbe(client, probe))
-	return steps
+	return checkKnownHosts(opts)
 }
 
-func checkIdentities(opts Options) Step {
-	step := Step{Name: "identity"}
-	var usable, skipped []string
+func checkIdentities(opts Options) error {
+	var skipped []string
 	for _, id := range loadIdentities(opts.IdentityFiles) {
 		switch {
 		case id.signer != nil:
-			usable = append(usable, id.path)
+			return nil
 		case id.problem != "missing" || len(opts.IdentityFiles) == 1:
 			skipped = append(skipped, id.path+" ("+id.problem+")")
 		}
 	}
-	step.OK = len(usable) > 0
-	switch {
-	case step.OK:
-		step.Detail = "using " + strings.Join(usable, ", ")
-		if len(skipped) > 0 {
-			step.Detail += "; skipped " + strings.Join(skipped, ", ")
-		}
-	case len(skipped) > 0:
-		step.Detail = "no usable key among " + strings.Join(skipped, ", ")
-	default:
-		step.Detail = "none of the identity files exist: " + strings.Join(opts.IdentityFiles, ", ")
+	problem := "none of the identity files exist: " + strings.Join(opts.IdentityFiles, ", ")
+	if len(skipped) > 0 {
+		problem = "no usable identity among " + strings.Join(skipped, ", ")
 	}
-	if !step.OK {
-		step.Hint = "gst needs a private key without a passphrase. Create one with " +
-			"`ssh-keygen -t ed25519 -N '' -f ~/.ssh/gst_ed25519`, authorize it on the server with " +
-			"`ssh-copy-id -i ~/.ssh/gst_ed25519 " + loginTarget(opts) + "`, and select it with --identity ~/.ssh/gst_ed25519"
-	}
-	return step
+	return &CheckError{problem, "gst needs a private key without a passphrase. Create one with " +
+		"`ssh-keygen -t ed25519 -N '' -f ~/.ssh/gst_ed25519`, authorize it on the server with " +
+		"`ssh-copy-id -i ~/.ssh/gst_ed25519 " + loginTarget(opts) + "`, and name it with IdentityFile in ~/.ssh/config"}
 }
 
-func checkKnownHosts(opts Options) Step {
-	step := Step{Name: "known_hosts"}
+func checkKnownHosts(opts Options) error {
 	callback, files, err := loadKnownHosts(opts.KnownHostsFiles)
+	var problem string
 	switch {
 	case files == nil:
-		step.Detail = "none of the known_hosts files exist: " + strings.Join(opts.KnownHostsFiles, ", ")
+		problem = "none of the known_hosts files exist: " + strings.Join(opts.KnownHostsFiles, ", ")
 	case err != nil:
-		step.Detail = err.Error()
+		problem = err.Error()
 	case len(knownHostKeyAlgorithms(callback, opts.Server)) == 0:
-		step.Detail = "no host key for " + opts.Server + " in " + strings.Join(files, ", ")
+		problem = "no host key for " + opts.Server + " in " + strings.Join(files, ", ")
 	default:
-		step.OK = true
-		step.Detail = "host key for " + opts.Server + " found in " + strings.Join(files, ", ")
+		return nil
 	}
-	if !step.OK {
-		step.Hint = "verify the server's host key and record it by connecting once with `ssh " + loginTarget(opts) + "`"
-	}
-	return step
-}
-
-func checkConnect(ctx context.Context, opts Options) (net.Conn, Step) {
-	step := Step{Name: "connect"}
-	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", opts.Server)
-	if err != nil {
-		step.Detail = err.Error()
-		step.Hint = "check that the server is reachable and sshd listens on " + opts.Server
-		return nil, step
-	}
-	step.OK = true
-	step.Detail = "reached " + opts.Server
-	return conn, step
-}
-
-// checkLogin logs in over conn and returns the client when it can.
-func checkLogin(opts Options, conn net.Conn) (*ssh.Client, Step) {
-	step := Step{Name: "login"}
-	clientConfig, err := newClientConfig(opts)
-	if err != nil {
-		conn.Close()
-		step.Detail = err.Error()
-		return nil, step
-	}
-	conn.SetDeadline(time.Now().Add(opts.ConnectTimeout))
-	sshConn, channels, requests, err := ssh.NewClientConn(conn, opts.Server, clientConfig)
-	if err != nil {
-		conn.Close()
-		step.Detail = err.Error()
-		var keyErr *knownhosts.KeyError
-		switch {
-		case errors.As(err, &keyErr) && len(keyErr.Want) > 0:
-			step.Hint = "the server's host key differs from the one in known_hosts. If it changed on purpose, remove the old entry with `ssh-keygen -R " + knownHostsName(opts.Server) + "` and connect once with `ssh " + loginTarget(opts) + "`"
-		case strings.Contains(err.Error(), "unable to authenticate"):
-			step.Hint = "authorize the identity on the server, for example with `ssh-copy-id " + loginTarget(opts) + "`"
-		}
-		return nil, step
-	}
-	conn.SetDeadline(time.Time{})
-	step.OK = true
-	step.Detail = "logged in as " + opts.User
-	return ssh.NewClient(sshConn, channels, requests), step
-}
-
-// checkProbe runs probe on the server and reports the first line of its
-// output.
-func checkProbe(client *ssh.Client, probe string) Step {
-	step := Step{Name: "remote gst"}
-	session, err := client.NewSession()
-	if err != nil {
-		step.Detail = err.Error()
-		return step
-	}
-	defer session.Close()
-	out, err := session.CombinedOutput(probe)
-	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	if err != nil {
-		step.Detail = fmt.Sprintf("%s failed: %v", probe, err)
-		if first != "" {
-			step.Detail += ": " + first
-		}
-		step.Hint = "install gst 0.3 or later on the server, in the PATH of its login shell, or give its path with --remote-gst"
-		return step
-	}
-	step.OK = true
-	step.Detail = first
-	return step
+	return &CheckError{problem, "verify the server's host key and record it by connecting once with `ssh " + loginTarget(opts) + "`"}
 }
 
 // loginTarget formats the server for ssh and ssh-copy-id command lines.
@@ -173,13 +67,4 @@ func loginTarget(opts Options) string {
 		return opts.User + "@" + host
 	}
 	return fmt.Sprintf("-p %s %s@%s", port, opts.User, host)
-}
-
-// knownHostsName is how known_hosts names the server.
-func knownHostsName(server string) string {
-	host, port, _ := net.SplitHostPort(server)
-	if port == "22" {
-		return host
-	}
-	return "[" + host + "]:" + port
 }

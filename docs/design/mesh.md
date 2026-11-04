@@ -6,9 +6,9 @@ gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon�
 
 | 概念 | 是什么 | 命令 |
 | --- | --- | --- |
-| **node**（机器） | 一台运行 gst 的机器，以 128 位随机 id 标识，名字只用于显示和寻址 | `gst name`、`gst nodes` |
+| **node**（机器） | 一台运行 gst 的机器，以 128 位随机 id 标识，名字只用于显示和寻址 | `gst name`、`gst status` |
 | **link** | 本机到另一台 gst 机器的 SSH 连接，承载两边 daemon 之间的 peer 会话 | `gst link …` |
-| **proxy** | 本机 daemon 提供的 SOCKS5 / HTTP 代理入口，`<machine>.gst` 与路由规则命中的连接走 mesh | `gst proxy` |
+| **proxy** | 本机 daemon 提供的 SOCKS5 / HTTP 代理入口（默认关闭，`gst proxy <address>` 开启），`<machine>.gst` 与路由规则命中的连接走 mesh | `gst proxy` |
 | **map** | 本机的一个监听端口或 Unix socket，连接转到某台机器上的端口或 socket，给不支持代理的程序用 | `gst map …` |
 | **route** | 出口规则：某些域名、网段或全部流量经某台机器出去 | `gst route …` |
 | **exit** | 允许别的机器经本机连接本机以外的地址 | `gst exit` |
@@ -28,7 +28,7 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 - **up / down**：`gst down` 在配置里写 `down: true`，停止 daemon 并删除服务；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它并启动 daemon。除 down 外，daemon 总在运行（即使没有 link），因为它要提供 proxy、map，并接受别人的 link。
 - **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 内任何节点都可以请求任何节点连接**它自己机器上的**地址（loopback 与 Unix socket）。连接本机以外的地址（局域网、互联网）需要该节点开启 exit：`gst exit on`。这条规则由执行连接的最后一跳检查。mesh 里的机器都属于同一个用户、彼此完全信任：能连本机 loopback 与 Unix socket，就能用上面的任何服务（sshd、本机 gst 的 proxy 与 control socket），所以 exit 是防止流量意外从某台机器出去的默认策略，不是机器之间的安全边界。
 - **只有 TCP**：中转的是字节流。目标是 TCP `host:port` 或 Unix socket 路径。
-- **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志、`gst link logs`）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
+- **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
 ## 单进程 daemon
 
@@ -40,11 +40,10 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
   | 配置 | `$XDG_CONFIG_HOME/gst/config.json`（默认 `~/.config/gst/config.json`） | 同左 |
   | 状态目录 | `$XDG_STATE_HOME/gst`（默认 `~/.local/state/gst`） | `~/Library/Application Support/gst` |
   | control socket | `<状态目录>/gst.sock` | 同左 |
-  | link 日志 | `<状态目录>/logs/<name>.log` | `~/Library/Logs/gst/<name>.log` |
   | daemon 日志 | journald（`journalctl --user -u gst`） | `~/Library/Logs/gst-daemon.log` |
 
 - daemon 通过 `<socket>.lock` 上的 flock 保证单实例。
-- 配置文件是唯一事实来源。CLI 修改配置后调用 `daemon.reload`：daemon 更新 node 身份与 exit，启动新的 link、停止已停止或已删除的 link（配置改变的 link 不重启，需 `link.restart`），按配置重开 proxy 与 map 的监听，替换路由表。
+- 配置文件是唯一事实来源。CLI 修改配置后调用 `daemon.reload`：daemon 更新 node 身份与 exit，启动新的 link、停止已删除的 link、重启配置改变的 link，按配置重开 proxy 与 map 的监听，替换路由表。
 - CLI 每次同步时比较 daemon 的 build（可执行文件的 SHA-256），不同就重启服务，让升级生效。
 
 ## 配置文件
@@ -55,7 +54,7 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
   "node": {"id": "9db2b03b…（32 位十六进制）", "name": "m3", "exit": false},
   "proxy": "127.0.0.1:1080",
   "links": {
-    "devcn": {"destination": "devcn", "remote_gst": "", "stopped": false}
+    "devcn": {"destination": "devcn", "remote_gst": ""}
   },
   "maps": [
     {"listen": "127.0.0.1:15432", "machine": "devcn", "target": "localhost:5432"},
@@ -69,8 +68,8 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 }
 ```
 
-- `proxy` 为空时取默认 `127.0.0.1:1080`。
-- link 的字段：`destination`（ssh destination，每次连接用 `ssh -G` 解析）、`identity_file`、`known_hosts_file`、`connect_timeout_seconds`、`keepalive_interval_seconds`、`keepalive_count_max`（覆盖 ssh 配置）、`remote_gst`（服务器上的 gst 命令，默认 `gst`）、`stopped`。
+- `proxy` 是代理的监听地址，为空（默认）表示关闭。
+- link 的字段：`destination`（ssh destination，每次连接用 `ssh -G` 解析；地址、用户、私钥、known_hosts、超时和保活都来自 ssh 配置，link 不另设）、`remote_gst`（服务器上的 gst 命令，默认 `gst`）。要修改 link，删除后重新添加。
 - map 的 `listen` 是 `IP:port` 或绝对 socket 路径；`target` 是 `host:port` 或绝对 socket 路径，相对 `machine`。
 - route 的 `match`：`default`；域名（匹配自身及所有子域名）；IP 或 CIDR（只匹配 IP 字面量，本机不为了匹配去解析域名）。多条命中时取最具体的：域名按长度，CIDR 按前缀长度，`default` 最后。
 - **迁移**：读到版本 2 的配置时，`mesh` 变为 `node`；每个 SSH tunnel 变为同名 link；其 `-L` forward 变为 map（`machine` 为该 tunnel 名）；`mesh:<machine>` tunnel 的 `-L` 变为指向该 machine 的 map；`-R`、`-D` 被丢弃，CLI 在 stderr 列出被丢弃的 forward。版本 0、1 按版本 2 处理（gst 0.1 的服务不再清理）。
@@ -153,14 +152,14 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
-| `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`proxy`（`listen` 与错误；代理关闭时 `listen` 为空）、`links`（配置中的每条 link，含已停止的：name、`destination`、state、since、error、reconnects、对端 `peer`；按名字排序）、`maps`（按配置顺序：listen 与错误、`machine`、`target`）、`routes`（按配置顺序：`match`、`via`） |
+| `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`proxy`（`listen` 与错误；代理关闭时 `listen` 为空）、`links`（配置中的每条 link：name、`destination`、state、since、error、reconnects、对端 `peer`；按名字排序）、`maps`（按配置顺序：listen 与错误、`machine`、`target`）、`routes`（按配置顺序：`match`、`via`） |
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
-| `link.restart` | `{"names": [...]}` | 重启后的 `Status` |
 | `mesh.nodes` | 无 | `Topology` |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
+| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 mesh 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（直连时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping` 每秒调用一次 |
 | `mesh.connect` | `{"node": <machine>, "target": {"network": "tcp"\|"unix", "address": …}}` | 成功后该连接变为到目标的原始字节流 |
 
-link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）、`stopped`（配置中已停止，daemon 不运行它）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
+link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
 
 ### peer 方法
 
@@ -200,13 +199,12 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - 发起方根据自己的 `Topology` 计算最短路径（源路由），最多 16 个节点。`relay.open` 的 `path` 以被调方开头，每个节点检查 `path[0]` 是自己，然后：
   - 只剩自己：连接 `target`。目标不是本机地址（Unix socket、`localhost`、loopback IP）且本节点没有开启 exit 时返回 `forbidden`；
   - 否则在与 `path[1]` 的 peer 会话上开新流，把 `path[1:]` 交给它。
-  - 目标的 `network` 为 `gst`（`address` 必须为空，否则 `invalid_params`）：路径末端的节点不连接任何地址，而是在该流上继续处理 peer 方法，一个接一个，直到发起方关闭流。它不是连接地址，不受 exit 规则限制；发起方用它调用任意节点的 peer 方法（`mesh.status` 即经此向目标节点调用 `node.status`；调用自己时在进程内完成）。
+  - 目标的 `network` 为 `gst`（`address` 必须为空，否则 `invalid_params`）：路径末端的节点不连接任何地址，而是在该流上继续处理 peer 方法，一个接一个，直到发起方关闭流。它不是连接地址，不受 exit 规则限制；发起方用它调用任意节点的 peer 方法（`mesh.status` 即经此向目标节点调用 `node.status`，`mesh.ping` 经此调用 `node.info`；调用自己时在进程内完成）。
 - 失败时错误沿路径原样传回发起方。
 
 ## Web UI
 
 - `gst ui` 是前台进程，只监听 `127.0.0.1`（`--port`，默认任意空闲端口），启动时生成随机 token，打印 `http://127.0.0.1:<port>/#<token>` 并打开浏览器（`--no-open` 跳过）。daemon 只有 control socket 这一个控制入口，退出后不留监听。
 - 页面（`internal/cli/ui`，go:embed）以 `Authorization: Bearer <token>` 请求 `GET /api/state`；`Host` 不是 localhost 或回环地址时返回 403；响应带严格的 CSP 等安全头。页面用 DOM 文本节点渲染所有字段。
-- `/api/state` 返回本机 node、proxy、links、maps、routes、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。
+- `/api/state` 返回本机 node、proxy、links、maps、routes、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。页面只读：不能启动、停止或重启 link；daemon 不运行时，页面说明这一点。机器表的 Status 列显示 online、offline 或 online via …。
 - `GET /api/nodes/{node}`（同样需要 token）返回 mesh 中任一机器的 `Status`，即 `mesh.status` 的结果，`{node}` 是机器的称呼（名称、id、id 前缀或 link 名）；出错时返回 502 和错误信息。页面选中某台机器时请求它。
-- `POST /api/links/{name}/{start|stop|restart}` 执行与 `gst link start|stop|restart <name>` 相同的代码。

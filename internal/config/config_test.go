@@ -12,19 +12,6 @@ import (
 
 const nodeID = "0123456789abcdef0123456789abcdef"
 
-func TestProxyAddress(t *testing.T) {
-	for proxy, want := range map[string]string{
-		"":             DefaultProxy,
-		ProxyOff:       "",
-		"0.0.0.0:8080": "0.0.0.0:8080",
-		"[::1]:8080":   "[::1]:8080",
-	} {
-		if got := (&File{Proxy: proxy}).ProxyAddress(); got != want {
-			t.Errorf("Proxy %q: ProxyAddress() = %q, want %q", proxy, got, want)
-		}
-	}
-}
-
 func TestParseValidation(t *testing.T) {
 	const ok = `"version": 3`
 	tests := []struct {
@@ -36,27 +23,27 @@ func TestParseValidation(t *testing.T) {
 		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop", "exit": true}`, ""},
 		{"node bad id", ok + `, "node": {"id": "xyz", "name": "laptop"}`, "invalid node"},
 		{"node bad name", ok + `, "node": {"id": "` + nodeID + `", "name": "Laptop"}`, "invalid node"},
-		{"proxy default", ok, ""},
-		{"proxy off", ok + `, "proxy": "off"`, ""},
+		{"proxy off by default", ok, ""},
+		{"proxy empty", ok + `, "proxy": ""`, ""},
+		{"proxy word off", ok + `, "proxy": "off"`, "invalid proxy"},
 		{"proxy custom", ok + `, "proxy": "0.0.0.0:8080"`, ""},
 		{"proxy hostname", ok + `, "proxy": "localhost:8080"`, "invalid proxy"},
 		{"proxy no port", ok + `, "proxy": "127.0.0.1"`, "invalid proxy"},
-		{"link", ok + `, "links": {"myhost": {"destination": "user@myhost", "identity_file": "/k", "keepalive_count_max": 3}}`, ""},
+		{"link", ok + `, "links": {"myhost": {"destination": "user@myhost", "remote_gst": "/opt/gst"}}`, ""},
+		{"link removed field", ok + `, "links": {"myhost": {"destination": "myhost", "identity_file": "/k"}}`, "unknown field"},
+		{"link control in remote gst", ok + `, "links": {"myhost": {"destination": "myhost", "remote_gst": "a\nb"}}`, "remote gst"},
 		{"link bad name", ok + `, "links": {"My_Host": {"destination": "myhost"}}`, "invalid name"},
 		{"link null", ok + `, "links": {"myhost": null}`, "null"},
 		{"link option destination", ok + `, "links": {"myhost": {"destination": "-oProxyCommand=x"}}`, "link myhost"},
-		{"link relative identity", ok + `, "links": {"myhost": {"destination": "myhost", "identity_file": "k"}}`, "absolute"},
-		{"link negative timeout", ok + `, "links": {"myhost": {"destination": "myhost", "connect_timeout_seconds": -1}}`, "timeout"},
-		{"link huge keepalive", ok + `, "links": {"myhost": {"destination": "myhost", "keepalive_count_max": 1001}}`, "keepalive"},
 		{"map", ok + `, "maps": [{"listen": "127.0.0.1:5432", "machine": "devbox", "target": "db.internal:5432"}, {"listen": "/run/a.sock", "machine": "devbox", "target": "/run/b.sock"}]`, ""},
 		{"map listen hostname", ok + `, "maps": [{"listen": "localhost:5432", "machine": "devbox", "target": "db:1"}]`, "map 1"},
 		{"map bad machine", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "Dev.Box", "target": "db:1"}]`, "map 1: invalid machine"},
 		{"map bad target", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "devbox", "target": "db"}]`, "invalid target"},
 		{"map duplicate listen", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "a", "target": "db:1"}, {"listen": "127.0.0.1:1", "machine": "b", "target": "db:2"}]`, "map 2: duplicate listen"},
-		{"map listens on proxy", ok + `, "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, "proxy address"},
+		{"map listens on proxy", ok + `, "proxy": "127.0.0.1:1080", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, "proxy address"},
 		{"map on custom proxy", ok + `, "proxy": "127.0.0.1:9", "maps": [{"listen": "127.0.0.1:9", "machine": "a", "target": "db:1"}]`, "proxy address"},
-		{"map on old default with custom proxy", ok + `, "proxy": "127.0.0.1:9", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
-		{"map on default with proxy off", ok + `, "proxy": "off", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
+		{"map on 1080 with custom proxy", ok + `, "proxy": "127.0.0.1:9", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
+		{"map on 1080 with proxy off", ok + `, "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
 		{"routes", ok + `, "routes": [{"match": "default", "via": "gw"}, {"match": "example.com", "via": "gw"}, {"match": "10.0.0.0/8", "via": "gw"}, {"match": "192.0.2.1", "via": "gw"}]`, ""},
 		{"route unmasked", ok + `, "routes": [{"match": "10.1.0.0/8", "via": "gw"}]`, "route 1: invalid match"},
 		{"route uppercase", ok + `, "routes": [{"match": "Example.com", "via": "gw"}]`, "invalid match"},
@@ -112,7 +99,7 @@ func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 func TestUpdateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gst", "config.json")
 	err := Update(path, func(f *File) error {
-		f.Proxy = "off"
+		f.Proxy = "127.0.0.1:1081"
 		f.Links["myhost"] = &Link{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}
 		f.Maps = append(f.Maps, Map{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"})
 		f.Routes = append(f.Routes, Route{Match: "default", Via: "myhost"})
@@ -136,7 +123,7 @@ func TestUpdateRoundTrip(t *testing.T) {
 		t.Fatalf("Update did not ensure a node identity: %+v", f.Node)
 	}
 	want := &File{
-		Version: Version, Node: f.Node, Proxy: "off",
+		Version: Version, Node: f.Node, Proxy: "127.0.0.1:1081",
 		Links:  map[string]*Link{"myhost": {Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
 		Maps:   []Map{{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"}},
 		Routes: Routes{{Match: "default", Via: "myhost"}},

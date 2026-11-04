@@ -42,7 +42,7 @@ func (a *app) daemonRunCommand() *cobra.Command {
 			if err != nil {
 				return fail(err)
 			}
-			paths, err := service.DefaultPaths()
+			socket, err := service.Socket()
 			if err != nil {
 				return fail(err)
 			}
@@ -56,8 +56,7 @@ func (a *app) daemonRunCommand() *cobra.Command {
 			}
 			d := daemon.New(daemon.Config{
 				ConfigPath: configPath,
-				Socket:     paths.Socket,
-				LogDir:     paths.LogDir,
+				Socket:     socket,
 				Software:   software,
 				Build:      build,
 				Connect:    a.connectLink,

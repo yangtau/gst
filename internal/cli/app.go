@@ -158,14 +158,6 @@ func (a *app) update(fn func(*config.File) error) error {
 	return config.Update(path, fn)
 }
 
-func lookup(f *config.File, name string) (*config.Link, error) {
-	l := f.Links[name]
-	if l == nil {
-		return nil, namesHint(f, fmt.Errorf("no link named %s", name))
-	}
-	return l, nil
-}
-
 // namesHint adds f's link names to err.
 func namesHint(f *config.File, err error) error {
 	if len(f.Links) == 0 {
@@ -189,14 +181,6 @@ func (a *app) backend() (backend, error) {
 	return a.back, nil
 }
 
-// Link statuses, as gst link list and show print them.
-const (
-	statusStopped    = "stopped"
-	statusConnecting = wire.StateConnecting
-	statusRunning    = wire.StateRunning
-	statusDown       = wire.StateDown
-)
-
 // status returns what the daemon reports, or nil when no daemon answers.
 func (a *app) status(ctx context.Context) *wire.Status {
 	b, err := a.backend()
@@ -209,58 +193,22 @@ func (a *app) status(ctx context.Context) *wire.Status {
 	return nil
 }
 
-// linkStatus returns the status of link name, configured as l, and its
-// state as the daemon reports it, which is zero for a link that the daemon
-// does not run. A started link that the daemon does not run is down.
-func linkStatus(name string, l *config.Link, st *wire.Status) (string, wire.LinkState) {
-	if l.Stopped {
-		return statusStopped, wire.LinkState{}
-	}
-	if st != nil {
-		for _, s := range st.Links {
-			if s.Name == name {
-				return s.State, s
-			}
-		}
-	}
-	return statusDown, wire.LinkState{}
-}
-
-// options resolves l's destination with ssh and applies l's overrides.
+// options resolves l's destination with ssh.
 func (a *app) options(ctx context.Context, l *config.Link) (sshconn.Options, error) {
 	host, err := a.resolve(ctx, l.Destination)
 	if err != nil {
 		return sshconn.Options{}, err
 	}
-	opts := sshconn.Options{
-		Server:          host.Address(),
-		User:            host.User,
-		IdentityFiles:   host.IdentityFiles,
-		KnownHostsFiles: host.KnownHostsFiles,
-	}
-	if l.IdentityFile != "" {
-		opts.IdentityFiles = []string{l.IdentityFile}
-	}
-	if l.KnownHostsFile != "" {
-		opts.KnownHostsFiles = []string{l.KnownHostsFile}
-	}
-	maxDuration := time.Duration(config.MaxSeconds) * time.Second
-	opts.ConnectTimeout = min(firstPositive(seconds(l.ConnectTimeoutSeconds), host.ConnectTimeout, defaultConnectTimeout), maxDuration)
-	opts.KeepaliveInterval = min(firstPositive(seconds(l.KeepaliveIntervalSeconds), host.ServerAliveInterval, defaultKeepaliveInterval), maxDuration)
-	count := min(firstPositive(l.KeepaliveCountMax, int64(host.ServerAliveCountMax), defaultKeepaliveCount), config.MaxKeepaliveCount)
-	opts.KeepaliveTimeout = opts.KeepaliveInterval * time.Duration(count)
-	return opts, nil
-}
-
-func seconds(n int64) time.Duration { return time.Duration(n) * time.Second }
-
-func firstPositive[T time.Duration | int64](values ...T) T {
-	for _, v := range values {
-		if v > 0 {
-			return v
-		}
-	}
-	return 0
+	interval := cmp.Or(host.ServerAliveInterval, defaultKeepaliveInterval)
+	return sshconn.Options{
+		Server:            host.Address(),
+		User:              host.User,
+		IdentityFiles:     host.IdentityFiles,
+		KnownHostsFiles:   host.KnownHostsFiles,
+		ConnectTimeout:    cmp.Or(host.ConnectTimeout, defaultConnectTimeout),
+		KeepaliveInterval: interval,
+		KeepaliveTimeout:  interval * time.Duration(cmp.Or(host.ServerAliveCountMax, defaultKeepaliveCount)),
+	}, nil
 }
 
 // preflight checks offline that link l can connect: its destination
@@ -270,10 +218,12 @@ func (a *app) preflight(ctx context.Context, l *config.Link) error {
 	if err != nil {
 		return withHint(err, "check the destination and your ssh configuration with `ssh -G "+l.Destination+"`")
 	}
-	for _, step := range sshconn.Diagnose(ctx, opts, false, "") {
-		if !step.OK {
-			return withHint(fmt.Errorf("%s: %s", step.Name, step.Detail), step.Hint)
+	if err := sshconn.Check(opts); err != nil {
+		var problem *sshconn.CheckError
+		if errors.As(err, &problem) {
+			return withHint(err, problem.Hint)
 		}
+		return err
 	}
 	return nil
 }
@@ -366,39 +316,4 @@ func (a *app) sync(ctx context.Context) error {
 		}
 		return b.Sync(ctx, command)
 	})
-}
-
-// restart restarts started links with their current configuration.
-func (a *app) restart(ctx context.Context, names []string) error {
-	if err := a.sync(ctx); err != nil {
-		return err
-	}
-	b, err := a.backend()
-	if err != nil {
-		return err
-	}
-	return b.Restart(ctx, names)
-}
-
-// applyChange restarts a started link so that a configuration change
-// takes effect, and tells the user what happened.
-func (a *app) applyChange(ctx context.Context, name string, noRestart bool) error {
-	f, err := a.load()
-	if err != nil {
-		return err
-	}
-	switch l := f.Links[name]; {
-	case l == nil:
-		return nil
-	case l.Stopped:
-		fmt.Fprintf(a.stdout, "Link %s is stopped; the change applies when you start it.\n", name)
-	case noRestart:
-		fmt.Fprintf(a.stdout, "Restart the link to apply the change: gst link restart %s\n", name)
-	default:
-		if err := a.restart(ctx, []string{name}); err != nil {
-			return withHint(fmt.Errorf("restart link %s: %w", name, err), "retry with `gst link restart "+name+"`")
-		}
-		fmt.Fprintf(a.stdout, "Restarted link %s.\n", name)
-	}
-	return nil
 }

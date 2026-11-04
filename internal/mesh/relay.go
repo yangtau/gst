@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ func (n *Node) Dial(ctx context.Context, ref, network, address string) (net.Conn
 		return nil, err
 	}
 	if !dest.Reachable {
-		return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: no running links lead there; see gst nodes", dest.Name)
+		return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: no running links lead there; see gst status", dest.Name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, relayTimeout)
 	defer cancel()
@@ -68,7 +69,7 @@ func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net
 	}
 	session := n.sessionTo(path[1])
 	if session == nil {
-		return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see gst nodes", self.Name)
+		return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see gst status", self.Name)
 	}
 	conn, err := call(ctx, session, wire.MethodRelayOpen, wire.RelayParams{Path: path[1:], Target: target}, nil)
 	if err != nil {
@@ -111,6 +112,30 @@ func (n *Node) Call(ctx context.Context, ref, method string, params, result any)
 		return err
 	}
 	return nil
+}
+
+// Ping calls node.info on the machine that ref names, along the mesh,
+// and reports the machines on the way and the time the answer took.
+func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
+	topo := n.Topology()
+	dest, err := FindNode(topo, ref)
+	if err != nil {
+		return wire.Ping{}, err
+	}
+	start := time.Now()
+	var p wire.Ping
+	if err := n.Call(ctx, dest.ID, wire.MethodNodeInfo, nil, &p.Node); err != nil {
+		return wire.Ping{}, err
+	}
+	p.TimeMS = float64(time.Since(start).Microseconds()) / 1000
+	p.Via = []wire.NodeInfo{}
+	for _, id := range dest.Path[1:max(1, len(dest.Path)-1)] {
+		if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
+			t := topo.Nodes[i]
+			p.Via = append(p.Via, wire.NodeInfo{ID: t.ID, Name: t.Name, Software: t.Software, Exit: t.Exit})
+		}
+	}
+	return p, nil
 }
 
 // onThisMachine reports whether target is an address on the machine that
@@ -237,7 +262,7 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 		for i, node := range found {
 			ids[i] = node.ID[:min(8, len(node.ID))]
 		}
-		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from gst nodes", ref, strings.Join(ids, ", "))
+		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from gst status", ref, strings.Join(ids, ", "))
 	}
-	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the mesh; see gst nodes", ref)
+	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the mesh; see gst status", ref)
 }

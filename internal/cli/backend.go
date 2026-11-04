@@ -5,11 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/daemon"
@@ -25,8 +20,6 @@ type backend interface {
 	// a daemon that runs another gst, and tells the daemon to reload the
 	// configuration; with none, it removes the service.
 	Sync(ctx context.Context, command []string) error
-	// Restart restarts started links in a daemon that Sync brought up.
-	Restart(ctx context.Context, names []string) error
 	// Status returns what the daemon reports, and false when no daemon
 	// answers.
 	Status(ctx context.Context) (wire.Status, bool)
@@ -35,13 +28,11 @@ type backend interface {
 	// NodeStatus returns the status of the daemon on a machine of the
 	// mesh, asked through the mesh.
 	NodeStatus(ctx context.Context, node string) (wire.Status, error)
+	// Ping asks a machine of the mesh to answer through the mesh.
+	Ping(ctx context.Context, node string) (wire.Ping, error)
 	// Connect connects to target on a machine of the mesh through the
 	// daemon.
 	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
-	// Logs writes the last lines of a link's log to w and then, if
-	// follow is set, new lines until ctx is done.
-	Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error
-	RemoveLogs(name string) error
 }
 
 const software = "gst " + version
@@ -49,7 +40,7 @@ const software = "gst " + version
 // daemonBackend is the real backend.
 type daemonBackend struct {
 	manager service.Manager
-	paths   service.Paths
+	socket  string
 	build   func() (string, error)
 }
 
@@ -58,11 +49,11 @@ func newDaemonBackend(notes io.Writer, executable func() (string, error)) (backe
 	if err != nil {
 		return nil, err
 	}
-	paths, err := service.DefaultPaths()
+	socket, err := service.Socket()
 	if err != nil {
 		return nil, err
 	}
-	return &daemonBackend{manager: m, paths: paths, build: func() (string, error) {
+	return &daemonBackend{manager: m, socket: socket, build: func() (string, error) {
 		exe, err := executable()
 		if err != nil {
 			return "", err
@@ -122,7 +113,7 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	for {
-		c, err := daemon.DialWait(ctx, b.paths.Socket, software, build)
+		c, err := daemon.DialWait(ctx, b.socket, software, build)
 		switch {
 		case err == nil && (build == "" || c.Daemon.Build == build):
 			return c, nil
@@ -139,16 +130,6 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 	}
 }
 
-func (b *daemonBackend) Restart(ctx context.Context, names []string) error {
-	c, err := b.connect(ctx, "")
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	_, err = c.Restart(ctx, names)
-	return err
-}
-
 // queryTimeout bounds a question to a running daemon.
 const queryTimeout = 5 * time.Second
 
@@ -157,7 +138,7 @@ const queryTimeout = 5 * time.Second
 func (b *daemonBackend) query(ctx context.Context, fn func(ctx context.Context, c *daemon.Client) error) error {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
-	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	c, err := daemon.Dial(ctx, b.socket, software, "")
 	if err != nil {
 		return err
 	}
@@ -181,16 +162,34 @@ func (b *daemonBackend) Nodes(ctx context.Context) (topo wire.Topology, err erro
 	return topo, err
 }
 
-func (b *daemonBackend) NodeStatus(ctx context.Context, node string) (st wire.Status, err error) {
-	// The mesh bounds the relay; the query timeout would cut it short.
+// meshQuery runs fn on a connection to a running daemon for a question
+// through the mesh, which bounds the relay itself; the query timeout
+// would cut it short.
+func (b *daemonBackend) meshQuery(ctx context.Context, fn func(ctx context.Context, c *daemon.Client) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	c, err := daemon.Dial(ctx, b.socket, software, "")
 	if err != nil {
-		return st, err
+		return err
 	}
 	defer c.Close()
-	return c.NodeStatus(ctx, node)
+	return fn(ctx, c)
+}
+
+func (b *daemonBackend) NodeStatus(ctx context.Context, node string) (st wire.Status, err error) {
+	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
+		st, err = c.NodeStatus(ctx, node)
+		return err
+	})
+	return st, err
+}
+
+func (b *daemonBackend) Ping(ctx context.Context, node string) (p wire.Ping, err error) {
+	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
+		p, err = c.Ping(ctx, node)
+		return err
+	})
+	return p, err
 }
 
 // Connect connects through the mesh. The connection is set up within
@@ -199,7 +198,7 @@ func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Ta
 	const connectTimeout = 40 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	c, err := daemon.Dial(ctx, b.paths.Socket, software, "")
+	c, err := daemon.Dial(ctx, b.socket, software, "")
 	if err != nil {
 		return nil, fmt.Errorf("the gst daemon does not answer: %w", err)
 	}
@@ -209,36 +208,4 @@ func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Ta
 		return nil, err
 	}
 	return conn, nil
-}
-
-func (b *daemonBackend) logPath(name string) string {
-	return filepath.Join(b.paths.LogDir, name+".log")
-}
-
-func (b *daemonBackend) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
-	path := b.logPath(name)
-	if _, err := os.Stat(path); err != nil && !follow {
-		_, err := fmt.Fprintf(w, "No log for link %s yet.\n", name)
-		return err
-	}
-	args := []string{"-n", strconv.Itoa(lines)}
-	if follow {
-		args = append(args, "-F")
-	}
-	cmd := exec.CommandContext(ctx, "tail", append(args, path)...)
-	cmd.Stdout = w
-	cmd.Stderr = w
-	if err := cmd.Run(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("tail: %w", err)
-	}
-	return nil
-}
-
-func (b *daemonBackend) RemoveLogs(name string) error {
-	for _, path := range []string{b.logPath(name), b.logPath(name) + ".1"} {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
 }

@@ -27,32 +27,22 @@ type Manager interface {
 	LogHint() string
 }
 
-// Paths are where the daemon keeps its files on this platform.
-type Paths struct {
-	Socket string // control socket
-	LogDir string // link logs, <name>.log
-}
-
-// DefaultPaths returns the paths for this platform: on Linux, under
-// $XDG_STATE_HOME/gst (~/.local/state/gst); on macOS, the socket under
-// ~/Library/Application Support/gst and the logs in ~/Library/Logs/gst.
-func DefaultPaths() (Paths, error) {
+// Socket returns where the daemon's control socket is on this platform:
+// on Linux, $XDG_STATE_HOME/gst/gst.sock (~/.local/state/gst/gst.sock);
+// on macOS, ~/Library/Application Support/gst/gst.sock.
+func Socket() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return Paths{}, fmt.Errorf("home directory lookup failed: %w", err)
+		return "", fmt.Errorf("home directory lookup failed: %w", err)
 	}
 	if runtime.GOOS == "darwin" {
-		return Paths{
-			Socket: filepath.Join(home, "Library", "Application Support", "gst", "gst.sock"),
-			LogDir: filepath.Join(home, "Library", "Logs", "gst"),
-		}, nil
+		return filepath.Join(home, "Library", "Application Support", "gst", "gst.sock"), nil
 	}
 	state := os.Getenv("XDG_STATE_HOME")
 	if state == "" {
 		state = filepath.Join(home, ".local", "state")
 	}
-	dir := filepath.Join(state, "gst")
-	return Paths{Socket: filepath.Join(dir, "gst.sock"), LogDir: filepath.Join(dir, "logs")}, nil
+	return filepath.Join(state, "gst", "gst.sock"), nil
 }
 
 // New returns the manager for this platform. Advice for the user, such as

@@ -66,14 +66,6 @@ func (c *uiClient) state() uiState {
 	return decode[uiState](c.t, c.rawState())
 }
 
-func (c *uiClient) post(path, auth string) (int, uiResult) {
-	c.t.Helper()
-	res := c.do("POST", path, auth)
-	var r uiResult
-	json.NewDecoder(res.Body).Decode(&r)
-	return res.StatusCode, r
-}
-
 func TestUIServesPageAndSecurityHeaders(t *testing.T) {
 	e := newEnv(t)
 	c := newUIClient(t, e)
@@ -95,7 +87,7 @@ func TestUIServesPageAndSecurityHeaders(t *testing.T) {
 
 	// Every response, errors included, carries the security headers.
 	// (The file server drops Cache-Control from its own 404s.)
-	for _, res := range []*http.Response{res, c.do("GET", "/api/state", ""), c.do("POST", "/api/links/a/stop", "")} {
+	for _, res := range []*http.Response{res, c.do("GET", "/api/state", ""), c.do("POST", "/api/state", "")} {
 		h := res.Header
 		if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'none'") {
 			t.Errorf("%s: Content-Security-Policy %q", res.Request.URL.Path, csp)
@@ -120,12 +112,6 @@ func TestUIRequiresToken(t *testing.T) {
 		if res := c.do("GET", "/api/state", auth); res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("state with %q: %s", auth, res.Status)
 		}
-		if code, _ := c.post("/api/links/web/stop", auth); code != http.StatusUnauthorized {
-			t.Errorf("stop with %q: %d", auth, code)
-		}
-	}
-	if e.link("web").Stopped {
-		t.Fatal("a request without the token stopped the link")
 	}
 	if res := c.do("GET", "/api/state", "Bearer secret"); res.StatusCode != http.StatusOK {
 		t.Fatalf("state with the token: %s", res.Status)
@@ -134,12 +120,25 @@ func TestUIRequiresToken(t *testing.T) {
 	if res := c.do("GET", "/api/state?token=secret", ""); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("token in the query: %s", res.Status)
 	}
-	// State is read-only and actions are POST-only.
-	if res := c.do("POST", "/api/state", "Bearer secret"); res.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST /api/state: %s", res.Status)
+}
+
+func TestUIIsReadOnly(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("link", "add", "web", "myhost")
+	c := newUIClient(t, e)
+	e.resetCalls()
+	for _, path := range []string{"/api/state", "/api/nodes/devcn", "/api/links/web/stop", "/api/links/web/restart", "/api/links/web/start"} {
+		for _, method := range []string{"POST", "PUT", "DELETE"} {
+			if res := c.do(method, path, "Bearer secret"); res.StatusCode == http.StatusOK {
+				t.Errorf("%s %s: %s", method, path, res.Status)
+			}
+		}
 	}
-	if res := c.do("GET", "/api/links/web/stop", "Bearer secret"); res.StatusCode == http.StatusOK || e.link("web").Stopped {
-		t.Errorf("GET of an action: %s", res.Status)
+	if res := c.do("GET", "/api/links/web/stop", "Bearer secret"); res.StatusCode != http.StatusNotFound {
+		t.Errorf("GET of the removed link action: %s", res.Status)
+	}
+	if e.link("web") == nil || len(e.back.calls) != 0 {
+		t.Fatalf("the page changed something: link %+v, calls %v", e.link("web"), e.back.calls)
 	}
 }
 
@@ -163,10 +162,7 @@ func TestUIRejectsOtherHosts(t *testing.T) {
 		"localhost.evil.example.com:8370": http.StatusForbidden,
 		"":                                http.StatusForbidden,
 	} {
-		targets := []struct{ method, path string }{{"GET", "/"}, {"GET", "/api/state"}}
-		if want == http.StatusForbidden {
-			targets = append(targets, struct{ method, path string }{"POST", "/api/links/web/stop"})
-		}
+		targets := []struct{ method, path string }{{"GET", "/"}, {"GET", "/api/state"}, {"GET", "/api/nodes/devcn"}}
 		for _, target := range targets {
 			req := httptest.NewRequest(target.method, target.path, nil)
 			req.Host = host
@@ -182,10 +178,6 @@ func TestUIRejectsOtherHosts(t *testing.T) {
 			}
 		}
 	}
-	// A rebound page is refused before anything runs.
-	if e.link("web").Stopped {
-		t.Fatal("a request for another host stopped the link")
-	}
 }
 
 func TestUIStateShape(t *testing.T) {
@@ -193,7 +185,6 @@ func TestUIStateShape(t *testing.T) {
 	e.mustGst("name", "laptop")
 	e.mustGst("link", "add", "web", "myhost")
 	e.mustGst("link", "add", "db")
-	e.mustGst("link", "stop", "db")
 	e.mustGst("proxy", "1081")
 	e.mustGst("map", "add", "15432", "devcn:5432")
 	e.mustGst("route", "add", "corp.example.com", "devcn")
@@ -205,34 +196,37 @@ func TestUIStateShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(c.rawState()), &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"software", "daemon", "down", "node", "proxy", "links", "maps", "routes", "topology"} {
+	for _, key := range []string{"software", "down", "node", "status", "topology"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("state lacks %q: %s", key, c.rawState())
 		}
 	}
-	if _, ok := raw["errors"]; ok {
-		t.Errorf("state has errors: %s", raw["errors"])
+	for _, key := range []string{"errors", "daemon", "proxy", "links", "maps", "routes"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("state has %q at the top level: %s", key, raw[key])
+		}
 	}
 
 	s := c.state()
-	if s.Software != software || !s.Daemon || s.Down {
+	if s.Software != software || s.Down {
 		t.Fatalf("state %+v", s)
 	}
 	if s.Node == nil || s.Node.Name != "laptop" || !config.ValidNodeID(s.Node.ID) {
 		t.Fatalf("node %+v", s.Node)
 	}
-	if s.Proxy != (proxyView{Address: "127.0.0.1:1081", Status: statusListening}) {
-		t.Fatalf("proxy %+v", s.Proxy)
+	if s.Status == nil {
+		t.Fatal("state has no status")
 	}
-	if len(s.Links) != 2 || s.Links[0].Name != "db" || s.Links[0].Status != statusStopped ||
-		s.Links[1].Name != "web" || s.Links[1].Status != statusRunning || s.Links[1].Peer == nil || s.Links[1].Peer.Name != "web" || s.Links[1].Destination != "myhost" {
-		t.Fatalf("links %+v", s.Links)
+	st := s.Status
+	if st.Proxy != (wire.Listener{Listen: "127.0.0.1:1081"}) {
+		t.Fatalf("proxy %+v", st.Proxy)
 	}
-	if !slices.Equal(s.Maps, []mapView{{Map: config.Map{Listen: "127.0.0.1:15432", Machine: "devcn", Target: "localhost:5432"}, Status: statusListening}}) {
-		t.Fatalf("maps %+v", s.Maps)
+	if len(st.Links) != 2 || st.Links[0].Name != "db" || st.Links[0].State != wire.StateRunning ||
+		st.Links[1].Name != "web" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "web" {
+		t.Fatalf("links %+v", st.Links)
 	}
-	if !slices.Equal(s.Routes, config.Routes{{Match: "corp.example.com", Via: "devcn"}}) {
-		t.Fatalf("routes %+v", s.Routes)
+	if len(st.Maps) != 1 || st.Maps[0].Listen != "127.0.0.1:15432" || st.Maps[0].Machine != "devcn" || st.Maps[0].Target != "localhost:5432" || st.Maps[0].Error != "" {
+		t.Fatalf("maps %+v", st.Maps)
 	}
 	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Edges) != 3 {
 		t.Fatalf("topology %+v", s.Topology)
@@ -243,14 +237,14 @@ func TestUIStateShape(t *testing.T) {
 	e.back.listenErrors["127.0.0.1:15432"] = "address already in use"
 	e.mustGst("exit", "on")
 	s = c.state()
-	if web := s.Links[1]; web.Status != statusDown || web.Error != "SSH connection closed" || web.Peer != nil {
+	if web := s.Status.Links[1]; web.State != wire.StateDown || web.Error != "SSH connection closed" || web.Peer != nil {
 		t.Fatalf("web %+v", web)
 	}
-	if m := s.Maps[0]; m.Status != statusFailed || m.Error != "address already in use" {
+	if m := s.Status.Maps[0]; m.Error != "address already in use" {
 		t.Fatalf("map %+v", m)
 	}
-	if !s.Node.Exit {
-		t.Fatalf("node %+v", s.Node)
+	if !s.Node.Exit || !s.Status.Node.Exit {
+		t.Fatalf("node %+v, status node %+v", s.Node, s.Status.Node)
 	}
 }
 
@@ -258,31 +252,26 @@ func TestUIStateWithoutDaemonOrConfig(t *testing.T) {
 	e := newEnv(t)
 	c := newUIClient(t, e)
 
-	// A new machine has no node, links, maps, or routes; the lists are empty, not null.
+	// A new machine has no node, status, or topology.
 	body := c.rawState()
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"links", "maps", "routes"} {
-		if string(raw[key]) != "[]" {
-			t.Errorf("%s = %s, want []", key, raw[key])
-		}
-	}
-	for _, key := range []string{"node", "topology"} {
+	for _, key := range []string{"node", "status", "topology", "errors"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("state has %s: %s", key, body)
 		}
 	}
-	if s := c.state(); s.Daemon || s.Down || s.Topology != nil || s.Proxy.Status != statusNotRun || s.Proxy.Address != "127.0.0.1:1080" {
+	if s := c.state(); s.Down || s.Status != nil || s.Topology != nil || s.Software != software {
 		t.Fatalf("state %+v", s)
 	}
 
-	// Links of a machine whose daemon does not answer are down, and there is no topology.
+	// A machine whose daemon does not answer has its node, but no status or topology.
 	e.mustGst("link", "add", "web", "myhost")
 	e.mustGst("down")
 	s := c.state()
-	if s.Daemon || !s.Down || s.Topology != nil || s.Node == nil || len(s.Links) != 1 || s.Links[0].Status != statusDown {
+	if !s.Down || s.Status != nil || s.Topology != nil || s.Node == nil {
 		t.Fatalf("state %+v", s)
 	}
 }
@@ -293,7 +282,7 @@ func TestUIStateReportsMeshErrors(t *testing.T) {
 	e.back.nodesErr = errors.New("timed out")
 	c := newUIClient(t, e)
 	s := c.state()
-	if !s.Daemon || s.Topology != nil || !slices.Equal(s.Errors, []string{"mesh nodes: timed out"}) {
+	if s.Status == nil || s.Topology != nil || !slices.Equal(s.Errors, []string{"mesh nodes: timed out"}) {
 		t.Fatalf("state %+v", s)
 	}
 }
@@ -306,113 +295,6 @@ func TestUIStateWithBrokenConfig(t *testing.T) {
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusInternalServerError || !strings.Contains(string(body), "invalid JSON") {
 		t.Fatalf("state: %s %q", res.Status, body)
-	}
-}
-
-func TestUIActions(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-	e.mustGst("link", "add", "db")
-	e.mustGst("link", "stop", "db")
-	c := newUIClient(t, e)
-
-	if code, r := c.post("/api/links/web/stop", "Bearer secret"); code != http.StatusOK || r.Message != "Stopped link web." || r.Error != "" {
-		t.Fatalf("stop: %d %+v", code, r)
-	}
-	if !e.link("web").Stopped {
-		t.Fatal("web still runs")
-	}
-	if s := c.state(); s.Links[1].Status != statusStopped {
-		t.Fatalf("state after stop: %+v", s.Links)
-	}
-	if code, r := c.post("/api/links/db/start", "Bearer secret"); code != http.StatusOK || r.Message != "Started link db." {
-		t.Fatalf("start: %d %+v", code, r)
-	}
-	if e.link("db").Stopped {
-		t.Fatal("db is stopped")
-	}
-	e.resetCalls()
-	if code, r := c.post("/api/links/db/restart", "Bearer secret"); code != http.StatusOK || r.Message != "Restarted link db." || !slices.Equal(e.back.calls, []string{"sync", "restart db"}) {
-		t.Fatalf("restart: %d %+v %v", code, r, e.back.calls)
-	}
-	// Starting a started link and stopping a stopped one are not errors.
-	if code, r := c.post("/api/links/db/start", "Bearer secret"); code != http.StatusOK || r.Message != "Link db is already started." {
-		t.Fatalf("start again: %d %+v", code, r)
-	}
-	if code, r := c.post("/api/links/web/stop", "Bearer secret"); code != http.StatusOK || r.Message != "Link web is already stopped." {
-		t.Fatalf("stop again: %d %+v", code, r)
-	}
-}
-
-func TestUIActionErrors(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-	e.mustGst("link", "stop", "web")
-	c := newUIClient(t, e)
-
-	code, r := c.post("/api/links/web/restart", "Bearer secret")
-	if code != http.StatusConflict || r.Error != "link web is stopped" || r.Hint != "start it with `gst link start web`" {
-		t.Fatalf("restart a stopped link: %d %+v", code, r)
-	}
-	code, r = c.post("/api/links/nope/start", "Bearer secret")
-	if code != http.StatusConflict || r.Error != "no link named nope" || !strings.Contains(r.Hint, "links: web") {
-		t.Fatalf("start a missing link: %d %+v", code, r)
-	}
-	for _, action := range []string{"remove", "delete", "START", "", "stop%20web"} {
-		code, r := c.post("/api/links/web/"+action, "Bearer secret")
-		if action == "" {
-			// No action is no route.
-			if code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
-				t.Errorf("empty action: %d", code)
-			}
-			continue
-		}
-		if code != http.StatusNotFound || !strings.Contains(r.Error, "unknown action") {
-			t.Errorf("action %q: %d %+v", action, code, r)
-		}
-	}
-
-	// A link that cannot connect is not started.
-	delete(e.hosts, "myhost")
-	code, r = c.post("/api/links/web/start", "Bearer secret")
-	if code != http.StatusConflict || !strings.Contains(r.Error, "start web:") || r.Hint == "" {
-		t.Fatalf("start a link that cannot connect: %d %+v", code, r)
-	}
-	if !e.link("web").Stopped {
-		t.Fatal("web was started")
-	}
-
-	// A failing daemon is reported with the command's wording.
-	e.hosts["myhost"] = e.hosts["db"]
-	e.back.syncErr = errors.New("service manager unavailable")
-	code, r = c.post("/api/links/web/start", "Bearer secret")
-	if code != http.StatusConflict || !strings.Contains(r.Error, "service manager unavailable") {
-		t.Fatalf("start with a failing daemon: %d %+v", code, r)
-	}
-}
-
-func TestUIActionsOneAtATime(t *testing.T) {
-	e := newEnv(t)
-	names := []string{"a", "b", "c", "d", "e"}
-	for _, name := range names {
-		e.mustGst("link", "add", name, "myhost")
-	}
-	c := newUIClient(t, e)
-	var wg sync.WaitGroup
-	for _, name := range names {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if code, r := c.post("/api/links/"+name+"/stop", "Bearer secret"); code != http.StatusOK {
-				t.Errorf("stop %s: %d %+v", name, code, r)
-			}
-		}()
-	}
-	wg.Wait()
-	for _, name := range names {
-		if !e.link(name).Stopped {
-			t.Errorf("%s still runs", name)
-		}
 	}
 }
 
@@ -491,7 +373,7 @@ func TestUICommandServes(t *testing.T) {
 	var s uiState
 	err = json.NewDecoder(res.Body).Decode(&s)
 	res.Body.Close()
-	if err != nil || res.StatusCode != http.StatusOK || len(s.Links) != 1 {
+	if err != nil || res.StatusCode != http.StatusOK || s.Status == nil || len(s.Status.Links) != 1 {
 		t.Fatalf("state: %s %+v %v", res.Status, s, err)
 	}
 	// The token printed is the only one that works.

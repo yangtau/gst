@@ -12,7 +12,8 @@ import (
 
 // A version 2 configuration is converted by the first command: the tunnel
 // becomes a link, its -L forward a map, and its -R forward is dropped with
-// a note.
+// a note. The tunnel's own ssh settings are dropped: the destination, an
+// alias of the ssh configuration, supplies them.
 func TestMigrateVersion2Config(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
@@ -38,9 +39,9 @@ func TestMigrateVersion2Config(t *testing.T) {
 }`, p.destination(), p.identity, p.knownHosts)
 	client.mustSh(`mkdir -p ~/.config/gst && printf '%s' "$1" >~/.config/gst/config.json`, legacy)
 
-	code, _, stderr := client.gst("link", "list")
+	code, _, stderr := client.gst("status")
 	if code != 0 {
-		t.Fatalf("gst link list exited %d: %s", code, stderr)
+		t.Fatalf("gst status exited %d: %s", code, stderr)
 	}
 	if !strings.Contains(stderr, "gst 0.3 replaced tunnels with links") || !strings.Contains(stderr, "dropped tunnel srv: -R 0.0.0.0:2222:127.0.0.1:3000") {
 		t.Fatalf("unexpected notes:\n%s", stderr)
@@ -70,7 +71,7 @@ func TestMigrateVersion2Config(t *testing.T) {
 	if cfg := client.mustSh(`cat ~/.config/gst/config.json`); !strings.Contains(cfg, `"version": 3`) {
 		t.Fatalf("configuration not converted:\n%s", cfg)
 	}
-	if _, _, stderr := client.gst("link", "list"); strings.Contains(stderr, "note:") {
+	if _, _, stderr := client.gst("status"); strings.Contains(stderr, "note:") {
 		t.Fatalf("notes repeated:\n%s", stderr)
 	}
 }

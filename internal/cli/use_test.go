@@ -11,22 +11,40 @@ import (
 
 // --- proxy ---
 
-func TestProxyShowsDefault(t *testing.T) {
+func TestProxyIsOffByDefault(t *testing.T) {
 	e := newEnv(t)
 	out := e.mustGst("proxy")
-	contains(t, out,
-		"Proxy: 127.0.0.1:1080 (gst is not running; start it with gst up)\n",
-		"ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080")
+	if want := "The proxy is off. Turn it on with: gst proxy 127.0.0.1:1080\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
 	if len(e.back.calls) != 0 {
 		t.Fatalf("showing the proxy reached the daemon: %v", e.back.calls)
 	}
+	if v := decode[proxyView](t, e.mustGst("proxy", "--json")); v != (proxyView{}) {
+		t.Fatalf("view %+v", v)
+	}
 
+	// Turning it on is explicit, and then it shows how to use it.
 	e.mustGst("up")
+	if e.load().Proxy != "" {
+		t.Fatalf("gst up turned the proxy on: %q", e.load().Proxy)
+	}
+	out = e.mustGst("proxy", "127.0.0.1:1080")
+	contains(t, out,
+		"Proxy: 127.0.0.1:1080 (listening)\n",
+		"ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080")
+	if got := e.load().Proxy; got != "127.0.0.1:1080" {
+		t.Fatalf("saved %q", got)
+	}
 	contains(t, e.mustGst("proxy"), "Proxy: 127.0.0.1:1080 (listening)\n")
 	v := decode[proxyView](t, e.mustGst("proxy", "--json"))
 	if v != (proxyView{Address: "127.0.0.1:1080", Status: statusListening}) {
 		t.Fatalf("view %+v", v)
 	}
+
+	// Without a daemon, the saved proxy is not running.
+	e.back.installed = false
+	contains(t, e.mustGst("proxy"), "Proxy: 127.0.0.1:1080 (gst is not running; start it with gst up)\n")
 }
 
 func TestProxySet(t *testing.T) {
@@ -43,10 +61,10 @@ func TestProxySet(t *testing.T) {
 		t.Fatalf("calls %v", e.back.calls)
 	}
 
-	// The default address is not stored.
+	// localhost is the loopback address.
 	e.mustGst("proxy", "localhost:1080")
-	if got := e.load().Proxy; got != "" {
-		t.Fatalf("saved %q for the default address", got)
+	if got := e.load().Proxy; got != "127.0.0.1:1080" {
+		t.Fatalf("saved %q for localhost", got)
 	}
 
 	// All interfaces are reachable through loopback.
@@ -62,12 +80,13 @@ func TestProxySet(t *testing.T) {
 func TestProxyOff(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
+	e.mustGst("proxy", "1081")
 	e.resetCalls()
 	out := e.mustGst("proxy", "off")
 	if want := "The proxy is off. Turn it on with: gst proxy 127.0.0.1:1080\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	if e.load().Proxy != config.ProxyOff || !slices.Equal(e.back.calls, []string{"sync"}) {
+	if e.load().Proxy != "" || !slices.Equal(e.back.calls, []string{"sync"}) {
 		t.Fatalf("proxy %q, calls %v", e.load().Proxy, e.back.calls)
 	}
 	if out := e.mustGst("proxy"); !strings.Contains(out, "The proxy is off.") {
@@ -76,11 +95,15 @@ func TestProxyOff(t *testing.T) {
 	if v := decode[proxyView](t, e.mustGst("proxy", "--json")); v != (proxyView{}) {
 		t.Fatalf("view %+v", v)
 	}
-	// A map may then use the default proxy address.
+	if st, _ := e.back.Status(t.Context()); st.Proxy.Listen != "" {
+		t.Fatalf("the daemon still listens on %q", st.Proxy.Listen)
+	}
+	// A map may then use the address, and the proxy may not.
 	e.mustGst("map", "add", "1080", "devcn:80")
+	e.expectCode(exitFailure, "proxy", "1080")
 	e.mustGst("map", "rm", "1080")
 	e.mustGst("proxy", "127.0.0.1:1080")
-	if e.load().Proxy != "" {
+	if e.load().Proxy != "127.0.0.1:1080" {
 		t.Fatalf("proxy %q", e.load().Proxy)
 	}
 }
@@ -205,6 +228,9 @@ func TestMapAddRejects(t *testing.T) {
 
 func TestMapConflictsWithProxy(t *testing.T) {
 	e := newEnv(t)
+	e.mustGst("map", "add", "1082", "devcn:80") // no proxy yet: the address is free
+	e.mustGst("map", "rm", "1082")
+	e.mustGst("proxy", "1080")
 	e.expectError(exitFailure, []string{"map", "add", "1080", "devcn:80"},
 		"error: the proxy listens on 127.0.0.1:1080\n", "hint: choose another address, or move the proxy with `gst proxy <address>`\n")
 	e.mustGst("proxy", "1081")
@@ -379,7 +405,7 @@ func TestRouteAddNotesAboutTheMachine(t *testing.T) {
 		t.Fatalf("not an exit: code %d, stderr %q", code, stderr)
 	}
 	code, _, stderr = e.gst("route", "add", "default", "ghost")
-	if code != exitOK || stderr != "note: no machine \"ghost\" in the mesh; see gst nodes\n" {
+	if code != exitOK || stderr != "note: no machine \"ghost\" in the mesh; see gst status\n" {
 		t.Fatalf("unknown: code %d, stderr %q", code, stderr)
 	}
 	// The route is kept in each case.

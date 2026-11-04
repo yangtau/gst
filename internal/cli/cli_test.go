@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -35,15 +36,14 @@ type fakeBackend struct {
 	command   []string // the last daemon command
 	calls     []string
 
-	syncErr    error
-	restartErr error
-	nodesErr   error
+	syncErr  error
+	nodesErr error
 
 	linkStates   map[string]wire.LinkState // replaces the state of a running link
 	nodeStatus   func(node string) (wire.Status, error)
+	ping         func(node string) (wire.Ping, error)
 	listenErrors map[string]string // listen address -> why it does not listen
 	topology     wire.Topology
-	logOutput    string
 	sent         bytes.Buffer // what gst connect sent
 }
 
@@ -76,11 +76,6 @@ func (f *fakeBackend) Sync(_ context.Context, command []string) error {
 	return nil
 }
 
-func (f *fakeBackend) Restart(_ context.Context, names []string) error {
-	f.calls = append(f.calls, "restart "+strings.Join(names, " "))
-	return f.restartErr
-}
-
 // peerOf is the node that a running link to name reaches.
 func peerOf(name string) wire.NodeInfo {
 	return wire.NodeInfo{
@@ -106,9 +101,6 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 		return wire.Listener{Listen: listen, Error: f.listenErrors[listen]}
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Links)) {
-		if cfg.Links[name].Stopped {
-			continue
-		}
 		peer := peerOf(name)
 		state := wire.LinkState{Name: name, State: wire.StateRunning, Peer: &peer}
 		if s, ok := f.linkStates[name]; ok {
@@ -116,8 +108,8 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 		}
 		st.Links = append(st.Links, state)
 	}
-	if address := cfg.ProxyAddress(); address != "" {
-		st.Proxy = listener(address)
+	if cfg.Proxy != "" {
+		st.Proxy = listener(cfg.Proxy)
 	}
 	for _, m := range cfg.Maps {
 		st.Maps = append(st.Maps, wire.MapState{Listener: listener(m.Listen), Machine: m.Machine, Target: m.Target})
@@ -137,6 +129,14 @@ func (f *fakeBackend) NodeStatus(ctx context.Context, node string) (wire.Status,
 	return st, nil
 }
 
+func (f *fakeBackend) Ping(_ context.Context, node string) (wire.Ping, error) {
+	f.calls = append(f.calls, "ping "+node)
+	if f.ping != nil {
+		return f.ping(node)
+	}
+	return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+}
+
 func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {
 	f.calls = append(f.calls, "nodes")
 	if !f.installed {
@@ -151,17 +151,6 @@ func (f *fakeBackend) Connect(_ context.Context, node string, target wire.Target
 		return nil, errors.New(`no machine "nowhere" in the mesh`)
 	}
 	return &fakeConn{reply: strings.NewReader("hello from " + node), sent: &f.sent, done: make(chan struct{})}, nil
-}
-
-func (f *fakeBackend) Logs(_ context.Context, name string, lines int, follow bool, w io.Writer) error {
-	f.calls = append(f.calls, fmt.Sprintf("logs %s %d %v", name, lines, follow))
-	_, err := io.WriteString(w, f.logOutput)
-	return err
-}
-
-func (f *fakeBackend) RemoveLogs(name string) error {
-	f.calls = append(f.calls, "remove-logs "+name)
-	return nil
 }
 
 type testEnv struct {
@@ -332,7 +321,7 @@ func TestExitCodesAndErrorContract(t *testing.T) {
 	e.mustGst("link", "add", "db")
 
 	t.Run("unknown link is a failure with a hint", func(t *testing.T) {
-		code, stdout, stderr := e.gst("link", "show", "nope")
+		code, stdout, stderr := e.gst("link", "remove", "nope")
 		if code != exitFailure || stdout != "" {
 			t.Fatalf("code %d, stdout %q", code, stdout)
 		}
@@ -343,14 +332,15 @@ func TestExitCodesAndErrorContract(t *testing.T) {
 
 	t.Run("usage errors print usage and exit 2", func(t *testing.T) {
 		for args, want := range map[string][]string{
-			"link show":     {"error: missing argument <name>\n", "usage: gst link show <name>", "hint: links: db, myhost\n", "Run 'gst link show --help'"},
-			"link remove":   {"error: missing argument <name>\n", "usage: gst link remove <name>...", "hint: links: db, myhost\n"},
-			"link start":    {"error: missing argument <name> or --all\n", "hint: links: db, myhost\n"},
-			"link list x":   {`error: unexpected argument "x"`, "usage: gst link list"},
-			"nodes x":       {`error: unexpected argument "x"`, "usage: gst nodes"},
-			"link lst":      {`unknown command "lst" for "gst link"`, `did you mean "set" or "list"?`, "usage: gst link <command>\n"},
+			"link remove":   {"error: missing argument <name>\n", "usage: gst link remove <name>...", "hint: links: db, myhost\n", "Run 'gst link remove --help'"},
+			"link ad":       {`unknown command "ad" for "gst link"`, `did you mean "add"?`, "usage: gst link <command>\n"},
+			"link list":     {`unknown command "list" for "gst link"`, "usage: gst link <command>\n"},
+			"link show x":   {`unknown command "show" for "gst link"`},
+			"nodes":         {`unknown command "nodes"`, "usage: gst <command>\n"},
 			"lnk":           {`unknown command "lnk"`, "usage: gst <command>\n"},
 			"frobnicate":    {`unknown command "frobnicate"`, "Run 'gst --help'"},
+			"status a b":    {`error: unexpected argument "b"`, "usage: gst status [machine]"},
+			"ping":          {"error: missing argument <machine>\n", "usage: gst ping <machine>"},
 			"map add 1":     {"error: missing argument <machine>:<target>\n", "usage: gst map add <listen> <machine>:<target>"},
 			"route add x":   {"error: missing argument <machine>\n", "usage: gst route add <match> <machine>"},
 			"link --nope":   {"error: unknown flag: --nope\n", "usage: gst link"},
@@ -371,18 +361,14 @@ func TestExitCodesAndErrorContract(t *testing.T) {
 
 	t.Run("a group alone prints its help", func(t *testing.T) {
 		out := e.mustGst("link")
-		contains(t, out, "Usage:\n  gst link <command>\n", "Available Commands:")
+		contains(t, out, "Usage:\n  gst link <command>\n", "Available Commands:", "add", "remove")
+		for _, gone := range []string{"set", "start", "stop", "restart", "list", "show", "logs", "check"} {
+			if regexp.MustCompile(`(?m)^  ` + gone + `\b`).MatchString(out) {
+				t.Errorf("gst link lists the removed command %s:\n%s", gone, out)
+			}
+		}
 		contains(t, e.mustGst("map"), "Usage:\n  gst map <command>\n")
 		contains(t, e.mustGst("route"), "Usage:\n  gst route <command>\n")
-	})
-
-	t.Run("a failed check exits 1 without a message", func(t *testing.T) {
-		delete(e.hosts, "db")
-		defer func() { e.hosts["db"] = e.hosts["myhost"] }()
-		code, _, stderr := e.gst("link", "check", "db")
-		if code != exitFailure || stderr != "" {
-			t.Fatalf("code %d, stderr %q", code, stderr)
-		}
 	})
 }
 
@@ -390,19 +376,14 @@ func TestEveryCommandNamesItsMissingArguments(t *testing.T) {
 	e := newEnv(t)
 	for args, want := range map[string]string{
 		"link add":         "<name>",
-		"link set":         "<name>",
 		"link remove":      "<name>",
-		"link show":        "<name>",
-		"link logs":        "<name>",
-		"link check":       "<name>",
+		"link rm":          "<name>",
 		"connect":          "<machine>",
+		"ping":             "<machine>",
 		"map add":          "<listen>",
 		"map remove":       "<listen>",
 		"route add":        "<match>",
 		"route remove":     "<match>",
-		"link start":       "<name> or --all",
-		"link stop":        "<name> or --all",
-		"link restart":     "<name> or --all",
 		"map add 15432":    "<machine>:<target>",
 		"route add corp.x": "<machine>",
 	} {
@@ -434,33 +415,23 @@ func TestConfigFromEnvironment(t *testing.T) {
 func TestInvalidConfigIsReported(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, "{not json")
-	stderr := e.expectCode(exitFailure, "link", "list")
+	stderr := e.expectCode(exitFailure, "map", "list")
 	if !strings.HasPrefix(stderr, "error: config ") || !strings.Contains(stderr, "invalid JSON") {
 		t.Fatalf("stderr %q", stderr)
 	}
 	write(t, e.config, `{"version":3,"surprise":true}`)
-	e.expectCode(exitFailure, "nodes")
+	e.expectCode(exitFailure, "status")
 }
 
 // --- link add ---
 
 func TestLinkAdd(t *testing.T) {
 	e := newEnv(t)
-	out := e.mustGst("link", "add", "myhost",
-		"--keepalive-interval", "30s", "--connect-timeout", "20s", "--keepalive-count", "5",
-		"--identity", e.identity, "--known-hosts", e.known, "--remote-gst", "~/bin/gst")
-	if want := "Added link myhost; it connects in the background. See it with: gst link list\n"; out != want {
+	out := e.mustGst("link", "add", "myhost", "--remote-gst", "~/bin/gst")
+	if want := "Added link myhost; it connects in the background. See it with: gst status\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	want := &config.Link{
-		Destination:              "myhost",
-		IdentityFile:             e.identity,
-		KnownHostsFile:           e.known,
-		ConnectTimeoutSeconds:    20,
-		KeepaliveIntervalSeconds: 30,
-		KeepaliveCountMax:        5,
-		RemoteGst:                "~/bin/gst",
-	}
+	want := &config.Link{Destination: "myhost", RemoteGst: "~/bin/gst"}
 	if got := e.link("myhost"); got == nil || *got != *want {
 		t.Fatalf("saved %+v, want %+v", got, want)
 	}
@@ -475,7 +446,7 @@ func TestLinkAdd(t *testing.T) {
 	}
 
 	e.mustGst("link", "add", "home", "db")
-	if got := e.link("home"); got.Destination != "db" || got.Stopped {
+	if got := e.link("home"); got.Destination != "db" || got.RemoteGst != "" {
 		t.Fatalf("explicit destination not saved: %+v", got)
 	}
 	e.hosts["ssh://deploy@ssh.example.com:2200"] = e.hosts["myhost"]
@@ -489,10 +460,20 @@ func TestLinkAddDuplicate(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("link", "add", "myhost")
 	e.resetCalls()
-	e.expectError(exitFailure, []string{"link", "add", "myhost", "--keepalive-interval", "5s"},
-		"error: link myhost already exists\n", "hint: change it with `gst link set myhost`, or remove it with `gst link remove myhost`\n")
-	if len(e.back.calls) != 0 || e.link("myhost").KeepaliveIntervalSeconds != 0 {
+	e.expectError(exitFailure, []string{"link", "add", "myhost", "db", "--remote-gst", "/opt/gst"},
+		"error: link myhost already exists\n", "hint: to change it, remove it with `gst link remove myhost` and add it again\n")
+	if len(e.back.calls) != 0 || *e.link("myhost") != (config.Link{Destination: "myhost"}) {
 		t.Fatalf("a duplicate changed state: %v %+v", e.back.calls, e.link("myhost"))
+	}
+
+	// To change a link, remove it and add it again.
+	e.mustGst("link", "remove", "myhost")
+	e.mustGst("link", "add", "myhost", "db", "--remote-gst", "/opt/gst")
+	if got := e.link("myhost"); *got != (config.Link{Destination: "db", RemoteGst: "/opt/gst"}) {
+		t.Fatalf("saved %+v", got)
+	}
+	if want := []string{"sync", "sync"}; !slices.Equal(e.back.calls, want) {
+		t.Fatalf("calls %v, want %v", e.back.calls, want)
 	}
 }
 
@@ -506,11 +487,13 @@ func TestLinkAddRejects(t *testing.T) {
 		{"link", "add", strings.Repeat("a", 33)},
 		{"link", "add", "myhost", "--", "-oProxyCommand=x"},
 		{"link", "add", "myhost", "a", "b"},
-		{"link", "add", "myhost", "--connect-timeout", "1500ms"},
-		{"link", "add", "myhost", "--keepalive-interval", "-5s"},
-		{"link", "add", "myhost", "--keepalive-count", "-1"},
-		{"link", "add", "myhost", "--keepalive-count", "100000"},
 		{"link", "add", "myhost", "--no-such-flag"},
+		// Settings that the ssh configuration owns are not flags.
+		{"link", "add", "myhost", "--identity", "/k"},
+		{"link", "add", "myhost", "--known-hosts", "/k"},
+		{"link", "add", "myhost", "--connect-timeout", "5s"},
+		{"link", "add", "myhost", "--keepalive-interval", "5s"},
+		{"link", "add", "myhost", "--keepalive-count", "2"},
 		{"link", "add", "myhost", "--no-restart"},
 	} {
 		if stderr := e.expectCode(exitUsage, args...); !strings.Contains(stderr, "--help") || !strings.Contains(stderr, "usage: gst link add") {
@@ -524,14 +507,35 @@ func TestLinkAddRejects(t *testing.T) {
 
 func TestLinkAddPreflightFailures(t *testing.T) {
 	e := newEnv(t)
+	noKey := e.hosts["myhost"]
+	noKey.IdentityFiles = []string{"/missing/key"}
+	e.hosts["nokey"] = noKey
+	noKnown := e.hosts["myhost"]
+	noKnown.KnownHostsFiles = []string{"/missing/known_hosts"}
+	e.hosts["noknown"] = noKnown
+	locked := e.hosts["myhost"]
+	locked.IdentityFiles = []string{filepath.Join(t.TempDir(), "locked")}
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(private, "", []byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, locked.IdentityFiles[0], string(pem.EncodeToMemory(block)))
+	e.hosts["locked"] = locked
+
 	for _, tc := range []struct {
 		args []string
 		want []string
 	}{
-		{[]string{"link", "add", "unknown"}, []string{"error: known_hosts: ", "hint:"}},
+		{[]string{"link", "add", "unknown"}, []string{"error: no host key for unknown.example.com:22", "hint: verify the server's host key and record it by connecting once with `ssh "}},
+		{[]string{"link", "add", "noknown"}, []string{"error: none of the known_hosts files exist: /missing/known_hosts\n", "hint: verify the server's host key"}},
 		{[]string{"link", "add", "nowhere"}, []string{"error: ssh -G nowhere: no such host\n", "hint: check the destination and your ssh configuration with `ssh -G nowhere`\n"}},
-		{[]string{"link", "add", "myhost", "--identity", "/missing/key"}, []string{"error: identity: ", "/missing/key", "hint: gst needs a private key without a passphrase"}},
-		{[]string{"link", "add", "myhost", "--known-hosts", "/missing/known_hosts"}, []string{"hint:"}},
+		{[]string{"link", "add", "nokey"}, []string{"error: no usable identity among /missing/key (missing)\n", "hint: gst needs a private key without a passphrase", "ssh-keygen", "ssh-copy-id"}},
+		{[]string{"link", "add", "locked"}, []string{"passphrase-protected", "hint: gst needs a private key without a passphrase"}},
+		{[]string{"link", "add", "web", "nokey"}, []string{"/missing/key", "hint:"}},
 	} {
 		stderr := e.expectCode(exitFailure, tc.args...)
 		for _, w := range tc.want {
@@ -551,97 +555,9 @@ func TestLinkAddKeepsLinkWhenDaemonFails(t *testing.T) {
 	e := newEnv(t)
 	e.back.syncErr = errors.New("service manager unavailable")
 	e.expectError(exitFailure, []string{"link", "add", "myhost"},
-		"error: link myhost was added but did not start: service manager unavailable\n", "hint: retry with `gst link start myhost`\n")
+		"error: link myhost was added but did not start: service manager unavailable\n", "hint: retry with `gst up`\n")
 	if e.link("myhost") == nil {
 		t.Fatal("the link was not saved")
-	}
-}
-
-// --- link set ---
-
-func TestLinkSetChangesOnlyGivenFlags(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost", "--identity", e.identity, "--remote-gst", "~/bin/gst", "--keepalive-interval", "30s")
-	e.resetCalls()
-
-	out := e.mustGst("link", "set", "myhost", "--keepalive-count", "4")
-	contains(t, out, "Updated link myhost.\n", "Restarted link myhost.\n")
-	want := config.Link{Destination: "myhost", IdentityFile: e.identity, RemoteGst: "~/bin/gst", KeepaliveIntervalSeconds: 30, KeepaliveCountMax: 4}
-	if got := e.link("myhost"); *got != want {
-		t.Fatalf("saved %+v, want %+v", *got, want)
-	}
-	if !slices.Equal(e.back.calls, []string{"sync", "restart myhost"}) {
-		t.Fatalf("a running link must be restarted once: %v", e.back.calls)
-	}
-
-	// Empty and zero values go back to the defaults.
-	e.mustGst("link", "set", "myhost", "--identity", "", "--remote-gst", "", "--keepalive-interval", "0s", "--keepalive-count", "0")
-	if got := e.link("myhost"); *got != (config.Link{Destination: "myhost"}) {
-		t.Fatalf("defaults not restored: %+v", *got)
-	}
-
-	e.mustGst("link", "set", "myhost", "--destination", "db")
-	if got := e.link("myhost").Destination; got != "db" {
-		t.Fatalf("destination %q", got)
-	}
-}
-
-func TestLinkSetRestartModes(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.mustGst("link", "add", "db")
-
-	e.resetCalls()
-	out := e.mustGst("link", "set", "myhost", "--connect-timeout", "9s", "--no-restart")
-	contains(t, out, "Updated link myhost.\n", "Restart the link to apply the change: gst link restart myhost\n")
-	if len(e.back.calls) != 0 {
-		t.Fatalf("--no-restart reached the daemon: %v", e.back.calls)
-	}
-
-	e.mustGst("link", "stop", "db")
-	e.resetCalls()
-	out = e.mustGst("link", "set", "db", "--connect-timeout", "9s")
-	contains(t, out, "Updated link db.\n", "Link db is stopped; the change applies when you start it.\n")
-	if len(e.back.calls) != 0 || e.link("db").ConnectTimeoutSeconds != 9 {
-		t.Fatalf("a stopped link: calls %v, %+v", e.back.calls, e.link("db"))
-	}
-
-	e.back.restartErr = errors.New("daemon busy")
-	e.expectError(exitFailure, []string{"link", "set", "myhost", "--connect-timeout", "10s"},
-		"error: restart link myhost: daemon busy\n", "hint: retry with `gst link restart myhost`\n")
-}
-
-func TestLinkSetUnchanged(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost", "--keepalive-interval", "30s")
-	e.resetCalls()
-	out := e.mustGst("link", "set", "myhost", "--keepalive-interval", "30s")
-	if want := "Link myhost already has these settings; nothing changed.\n"; out != want {
-		t.Fatalf("output %q, want %q", out, want)
-	}
-	if len(e.back.calls) != 0 {
-		t.Fatalf("an unchanged link reached the daemon: %v", e.back.calls)
-	}
-	e.mustGst("link", "set", "myhost", "--destination", "myhost", "--remote-gst", "")
-	if len(e.back.calls) != 0 {
-		t.Fatalf("an unchanged link reached the daemon: %v", e.back.calls)
-	}
-}
-
-func TestLinkSetErrors(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.expectError(exitUsage, []string{"link", "set", "myhost"}, "error: nothing to change; give at least one setting flag\n", "usage: gst link set <name>")
-	e.expectError(exitUsage, []string{"link", "set"}, "error: missing argument <name>\n", "hint: links: myhost\n")
-	e.expectError(exitUsage, []string{"link", "set", "myhost", "--connect-timeout", "1500ms"}, "whole number of seconds")
-	e.expectError(exitUsage, []string{"link", "set", "myhost", "--destination", "-oProxyCommand=x"}, "usage: gst link set")
-	e.expectError(exitFailure, []string{"link", "set", "nope", "--keepalive-count", "2"}, "error: no link named nope\n", "hint: links: myhost\n")
-
-	before := *e.link("myhost")
-	e.expectError(exitFailure, []string{"link", "set", "myhost", "--destination", "unknown"}, "error: known_hosts: ", "hint:")
-	e.expectError(exitFailure, []string{"link", "set", "myhost", "--identity", "/missing/key"}, "error: identity: ")
-	if got := *e.link("myhost"); got != before {
-		t.Fatalf("a failed set changed the link: %+v", got)
 	}
 }
 
@@ -667,7 +583,7 @@ func TestLinkRemove(t *testing.T) {
 	if got := e.load().Links; len(got) != 1 || got["home"] == nil {
 		t.Fatalf("links left: %+v", got)
 	}
-	if want := []string{"sync", "remove-logs myhost", "remove-logs db"}; !slices.Equal(e.back.calls, want) {
+	if want := []string{"sync"}; !slices.Equal(e.back.calls, want) {
 		t.Fatalf("calls %v, want %v", e.back.calls, want)
 	}
 
@@ -689,311 +605,6 @@ func TestLinkRemoveDaemonFailure(t *testing.T) {
 	}
 }
 
-// --- link start, stop, restart ---
-
-func TestLinkStopStart(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.mustGst("link", "add", "db")
-
-	if out := e.mustGst("link", "start", "myhost"); out != "Link myhost is already started.\n" {
-		t.Fatalf("output %q", out)
-	}
-	if out := e.mustGst("link", "stop", "myhost"); out != "Stopped link myhost.\n" {
-		t.Fatalf("output %q", out)
-	}
-	if !e.link("myhost").Stopped || e.link("db").Stopped {
-		t.Fatalf("stopped: myhost %v, db %v", e.link("myhost").Stopped, e.link("db").Stopped)
-	}
-	if out := e.mustGst("link", "stop", "myhost"); out != "Link myhost is already stopped.\n" {
-		t.Fatalf("output %q", out)
-	}
-	e.resetCalls()
-	if out := e.mustGst("link", "start", "myhost"); out != "Started link myhost.\n" {
-		t.Fatalf("output %q", out)
-	}
-	if e.link("myhost").Stopped || !slices.Equal(e.back.calls, []string{"sync"}) {
-		t.Fatalf("start: stopped %v, calls %v", e.link("myhost").Stopped, e.back.calls)
-	}
-
-	// Several names, in order and without repeats.
-	out := e.mustGst("link", "stop", "myhost", "db", "myhost")
-	if want := "Stopped link db.\nStopped link myhost.\n"; out != want {
-		t.Fatalf("output %q, want %q", out, want)
-	}
-}
-
-func TestLinkAllSkipsSilently(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.mustGst("link", "add", "db")
-	e.mustGst("link", "stop", "myhost")
-
-	e.resetCalls()
-	if out := e.mustGst("link", "restart", "--all"); out != "Restarted link db.\n" {
-		t.Fatalf("restart --all output %q", out)
-	}
-	if want := []string{"sync", "restart db"}; !slices.Equal(e.back.calls, want) {
-		t.Fatalf("restart --all must only restart started links: %v", e.back.calls)
-	}
-	if out := e.mustGst("link", "start", "--all"); out != "Started link myhost.\n" {
-		t.Fatalf("start --all output %q", out)
-	}
-	if out := e.mustGst("link", "start", "--all"); out != "" {
-		t.Fatalf("start --all with nothing to start printed %q", out)
-	}
-	if out := e.mustGst("link", "stop", "--all"); out != "Stopped link db.\nStopped link myhost.\n" {
-		t.Fatalf("stop --all output %q", out)
-	}
-	if out := e.mustGst("link", "stop", "--all"); out != "" {
-		t.Fatalf("stop --all with nothing to stop printed %q", out)
-	}
-	if out := e.mustGst("link", "restart", "--all"); out != "" {
-		t.Fatalf("restart --all with nothing to restart printed %q", out)
-	}
-}
-
-func TestLinkActionErrors(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.mustGst("link", "add", "db")
-	e.mustGst("link", "stop", "myhost")
-
-	e.expectError(exitUsage, []string{"link", "start", "myhost", "--all"}, "error: give link names or --all, not both\n")
-	e.expectError(exitUsage, []string{"link", "start"}, "error: missing argument <name> or --all\n", "hint: links: db, myhost\n")
-	e.expectError(exitFailure, []string{"link", "stop", "db", "nope"}, "error: no link named nope\n")
-	if e.link("db").Stopped {
-		t.Fatal("db was stopped although a name was unknown")
-	}
-	e.expectError(exitFailure, []string{"link", "restart", "myhost"},
-		"error: link myhost is stopped\n", "hint: start it with `gst link start myhost`\n")
-
-	// Starting and restarting check that the link can connect.
-	delete(e.hosts, "myhost")
-	e.expectError(exitFailure, []string{"link", "start", "myhost"}, "error: start myhost: ssh -G myhost: no such host\n", "hint: check the destination")
-	if !e.link("myhost").Stopped {
-		t.Fatal("a link that cannot connect was started")
-	}
-	delete(e.hosts, "db")
-	e.resetCalls()
-	e.expectError(exitFailure, []string{"link", "restart", "db"}, "error: restart db: ssh -G db: no such host\n")
-	if len(e.back.calls) != 0 {
-		t.Fatalf("a restart that failed the check reached the daemon: %v", e.back.calls)
-	}
-}
-
-func TestLinkRestartReportsDaemonFailure(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "myhost")
-	e.back.restartErr = errors.New("daemon busy")
-	e.expectError(exitFailure, []string{"link", "restart", "myhost"}, "error: restart: daemon busy\n")
-}
-
-// --- link list and show ---
-
-func TestLinkList(t *testing.T) {
-	e := newEnv(t)
-	if out := e.mustGst("link", "list"); out != "No links. Add one with: gst link add <name> [destination]\n" {
-		t.Fatalf("output %q", out)
-	}
-	if out := e.mustGst("link", "list", "--json"); strings.TrimSpace(out) != "[]" {
-		t.Fatalf("empty JSON %q", out)
-	}
-
-	e.mustGst("link", "add", "web", "myhost")
-	e.mustGst("link", "add", "db")
-	e.mustGst("link", "add", "cache", "devcn")
-	e.mustGst("link", "add", "old", "db")
-	e.mustGst("link", "stop", "db")
-	e.back.linkStates["cache"] = wire.LinkState{Name: "cache", State: wire.StateDown, Error: "SSH keepalive timed out"}
-	e.back.linkStates["old"] = wire.LinkState{Name: "old", State: wire.StateConnecting}
-
-	rs := rows(e.mustGst("link", "list"))
-	web := peerOf("web")
-	want := [][]string{
-		{"NAME", "STATUS", "DESTINATION", "PEER"},
-		{"cache", "down", "(last", "error:", "SSH", "keepalive", "timed", "out)", "devcn", "-"},
-		{"db", "stopped", "db", "-"},
-		{"old", "connecting", "db", "-"},
-		{"web", "running", "myhost", "web", "(" + web.ID[:8] + ")"},
-	}
-	if fmt.Sprint(rs) != fmt.Sprint(want) {
-		t.Fatalf("list\n got %q\nwant %q", rs, want)
-	}
-	if out := e.mustGst("link", "ls"); !strings.HasPrefix(out, "NAME") {
-		t.Fatalf("ls alias: %q", out)
-	}
-
-	views := decode[[]linkView](t, e.mustGst("link", "list", "--json"))
-	if len(views) != 4 {
-		t.Fatalf("views %+v", views)
-	}
-	cache, db, oldLink, webView := views[0], views[1], views[2], views[3]
-	if cache.Name != "cache" || cache.Status != statusDown || cache.Error != "SSH keepalive timed out" || cache.Peer != nil || cache.Destination != "devcn" {
-		t.Fatalf("cache %+v", cache)
-	}
-	if db.Status != statusStopped || oldLink.Status != statusConnecting {
-		t.Fatalf("db %+v, old %+v", db, oldLink)
-	}
-	if webView.Status != statusRunning || webView.Peer == nil || *webView.Peer != web || webView.Resolved != nil {
-		t.Fatalf("web %+v", webView)
-	}
-	raw := e.mustGst("link", "list", "--json")
-	contains(t, raw, `"name": "web"`, `"status": "running"`, `"peer": {`, `"destination": "myhost"`)
-
-	// Without a daemon, started links are down and stopped ones stay stopped.
-	e.back.installed = false
-	views = decode[[]linkView](t, e.mustGst("link", "list", "--json"))
-	for _, v := range views {
-		wantStatus := statusDown
-		if v.Name == "db" {
-			wantStatus = statusStopped
-		}
-		if v.Status != wantStatus || v.Peer != nil || v.Error != "" {
-			t.Errorf("without a daemon: %+v, want %s", v, wantStatus)
-		}
-	}
-}
-
-func TestLinkShow(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost", "--remote-gst", "/opt/gst", "--keepalive-interval", "20s", "--keepalive-count", "2")
-
-	out := e.mustGst("link", "show", "web")
-	web := peerOf("web")
-	for _, w := range []string{
-		"Link:", "web\n",
-		"Status:", "running\n",
-		"Peer:", "web (" + web.ID[:8] + ")\n",
-		"Destination:", "myhost\n",
-		"Server:", "tunnel@ssh.example.com:22\n",
-		"Identities:", e.identity,
-		"Known hosts:", e.known,
-		"Connect timeout:", "15s\n",
-		"Keepalive:", "every 20s, give up after 40s without a reply\n",
-		"Remote gst:", "/opt/gst\n",
-	} {
-		if !strings.Contains(out, w) {
-			t.Errorf("show lacks %q:\n%s", w, out)
-		}
-	}
-
-	v := decode[linkView](t, e.mustGst("link", "show", "web", "--json"))
-	if v.Resolved == nil || v.Resolved.Server != "ssh.example.com:22" || v.Resolved.User != "tunnel" ||
-		v.Resolved.KeepaliveIntervalSeconds != 20 || v.Resolved.KeepaliveTimeoutSeconds != 40 || v.Resolved.ConnectTimeoutSeconds != 15 ||
-		v.RemoteGst != "/opt/gst" || v.ResolveError != "" {
-		t.Fatalf("view %+v resolved %+v", v, v.Resolved)
-	}
-
-	// A link follows the ssh config, and shows when that fails.
-	delete(e.hosts, "myhost")
-	out = e.mustGst("link", "show", "web")
-	contains(t, out, "unresolved: ssh -G myhost: no such host")
-	v = decode[linkView](t, e.mustGst("link", "show", "web", "--json"))
-	if v.Resolved != nil || v.ResolveError != "ssh -G myhost: no such host" {
-		t.Fatalf("view %+v", v)
-	}
-
-	e.back.linkStates["web"] = wire.LinkState{Name: "web", State: wire.StateDown, Error: "SSH connection closed"}
-	contains(t, e.mustGst("link", "show", "web"), "down (last error: SSH connection closed)")
-
-	e.expectCode(exitFailure, "link", "show", "nope")
-}
-
-func TestLinkShowDefaultsRemoteGst(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-	if out := rows(e.mustGst("link", "show", "web")); !slices.ContainsFunc(out, func(r []string) bool { return fmt.Sprint(r) == "[Remote gst: gst]" }) {
-		t.Fatalf("show does not default the remote gst to gst: %q", out)
-	}
-}
-
-// --- link logs ---
-
-func TestLinkLogs(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-	e.back.logOutput = "2026-01-01 connected\n"
-	e.resetCalls()
-	if out := e.mustGst("link", "logs", "web"); out != e.back.logOutput {
-		t.Fatalf("output %q", out)
-	}
-	e.mustGst("link", "logs", "web", "-n", "5", "-f")
-	if want := []string{"logs web 50 false", "logs web 5 true"}; !slices.Equal(e.back.calls, want) {
-		t.Fatalf("calls %v, want %v", e.back.calls, want)
-	}
-	e.expectError(exitUsage, []string{"link", "logs", "web", "-n", "0"}, "error: --lines must be at least 1\n")
-	e.expectError(exitFailure, []string{"link", "logs", "nope"}, "error: no link named nope\n", "hint: links: web\n")
-	e.expectError(exitUsage, []string{"link", "logs"}, "error: missing argument <name>\n", "hint: links: web\n")
-}
-
-// --- link check ---
-
-func TestLinkCheckFailures(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-
-	t.Run("ssh config", func(t *testing.T) {
-		delete(e.hosts, "myhost")
-		code, stdout, stderr := e.gst("link", "check", "web")
-		if code != exitFailure || stderr != "" {
-			t.Fatalf("code %d, stderr %q", code, stderr)
-		}
-		contains(t, stdout, "FAIL  ssh config  ssh -G myhost: no such host", "hint: check the destination and your ssh configuration with `ssh -G myhost`")
-		if strings.Contains(stdout, "ok") {
-			t.Fatalf("later steps ran: %s", stdout)
-		}
-
-		code, stdout, _ = e.gst("link", "check", "web", "--json")
-		if code != exitFailure {
-			t.Fatalf("code %d", code)
-		}
-		res := decode[struct {
-			OK    bool `json:"ok"`
-			Steps []struct {
-				Name   string `json:"name"`
-				OK     bool   `json:"ok"`
-				Detail string `json:"detail"`
-				Hint   string `json:"hint"`
-			} `json:"steps"`
-		}](t, stdout)
-		if res.OK || len(res.Steps) != 1 || res.Steps[0].Name != "ssh config" || res.Steps[0].OK || res.Steps[0].Hint == "" {
-			t.Fatalf("result %+v", res)
-		}
-	})
-
-	t.Run("identity", func(t *testing.T) {
-		host := e.hosts["db"]
-		host.IdentityFiles = []string{"/missing/id"}
-		e.hosts["myhost"] = host
-		code, stdout, _ := e.gst("link", "check", "web")
-		if code != exitFailure {
-			t.Fatalf("code %d", code)
-		}
-		contains(t, stdout, "ok    ssh config  myhost resolves to", "FAIL  identity", "hint: gst needs a private key without a passphrase")
-		if strings.Contains(stdout, "known_hosts") || strings.Contains(stdout, "reached") {
-			t.Fatalf("checks went on after a failure: %s", stdout)
-		}
-	})
-
-	t.Run("known hosts", func(t *testing.T) {
-		e.hosts["myhost"] = e.hosts["unknown"]
-		code, stdout, _ := e.gst("link", "check", "web")
-		if code != exitFailure {
-			t.Fatalf("code %d", code)
-		}
-		contains(t, stdout, "ok    ssh config", "ok    identity", "FAIL  known_hosts", "hint:")
-		if strings.Contains(stdout, "reached") {
-			t.Fatalf("connected despite an unknown host: %s", stdout)
-		}
-	})
-
-	t.Run("unknown link", func(t *testing.T) {
-		e.expectError(exitFailure, []string{"link", "check", "nope"}, "error: no link named nope\n")
-		e.expectError(exitUsage, []string{"link", "check"}, "error: missing argument <name>\n")
-	})
-}
-
 func TestConnectMissingTargetNamesArgument(t *testing.T) {
 	e := newEnv(t)
 	e.expectError(exitUsage, []string{"connect", "devcn"}, "error: missing argument <port | host:port | socket>\n")
@@ -1003,7 +614,7 @@ func TestCompletesLinkNames(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("link", "add", "myhost")
 	e.mustGst("link", "add", "db")
-	out := e.mustGst("__complete", "link", "show", "")
+	out := e.mustGst("__complete", "link", "remove", "")
 	if got := strings.Fields(out); !slices.Equal(got[:2], []string{"db", "myhost"}) {
 		t.Fatalf("completions %q", out)
 	}

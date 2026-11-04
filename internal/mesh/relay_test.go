@@ -463,3 +463,63 @@ func TestOpenGstTarget(t *testing.T) {
 		t.Fatal("a is an exit; the test needs a node that is not")
 	}
 }
+
+func TestPing(t *testing.T) {
+	a, _, _, _, _ := chain(t)
+
+	for _, tt := range []struct {
+		name, ref string
+		node      string
+		via       []string
+	}{
+		{"itself", "a", "a", nil},
+		{"a neighbor", "b.gst", "b", nil},
+		{"two hops away", "c", "c", []string{"b"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := a.Ping(t.Context(), tt.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Node.ID != nid(tt.node) || p.Node.Name != tt.node {
+				t.Errorf("node = %+v, want %s", p.Node, tt.node)
+			}
+			if p.Via == nil || len(p.Via) != len(tt.via) {
+				t.Fatalf("via = %+v, want %v", p.Via, tt.via)
+			}
+			for i, name := range tt.via {
+				if p.Via[i].ID != nid(name) || p.Via[i].Name != name {
+					t.Errorf("via[%d] = %+v, want %s", i, p.Via[i], name)
+				}
+			}
+			if p.TimeMS <= 0 {
+				t.Errorf("TimeMS = %v, want a positive time", p.TimeMS)
+			}
+		})
+	}
+}
+
+func TestPingErrors(t *testing.T) {
+	a, _, _, _, bc := chain(t)
+	a.merge([]wire.Record{rec("far")})
+	waitFor(t, "far is known", func() bool { _, ok := findTopo(a.Topology(), nid("far")); return ok })
+
+	for _, tt := range []struct{ name, ref, code string }{
+		{"unknown machine", "nowhere", wire.CodeNotFound},
+		{"unreachable machine", "far", wire.CodeNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := a.Ping(t.Context(), tt.ref)
+			wantCode(t, err, tt.code)
+			if !strings.Contains(err.Error(), "gst status") {
+				t.Errorf("error %q does not point to gst status", err)
+			}
+		})
+	}
+
+	bc.cut()
+	waitFor(t, "c is offline", func() bool { return !reaches(a, "c", "a", "b", "c") })
+	if _, err := a.Ping(t.Context(), "c"); err == nil {
+		t.Fatal("Ping reached a machine without a running link")
+	}
+}

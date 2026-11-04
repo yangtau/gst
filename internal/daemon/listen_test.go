@@ -52,7 +52,7 @@ func TestProxyListener(t *testing.T) {
 		t.Fatalf("after the move: %+v, p1 listens %v", st.Proxy, listens(p1))
 	}
 	// "off" stops it.
-	st = a.apply(func(f *config.File) { f.Proxy = config.ProxyOff })
+	st = a.apply(func(f *config.File) { f.Proxy = "" })
 	if st.Proxy.Listen != "" || listens(p2) {
 		t.Fatalf("after off: %+v, p2 listens %v", st.Proxy, listens(p2))
 	}
