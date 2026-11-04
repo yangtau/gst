@@ -209,8 +209,12 @@ func (c *bridgeConn) Close() error {
 	return nil
 }
 
-// failure is what the remote gst wrote to its standard error.
-func (c *bridgeConn) failure() string { return c.stderr.String() }
+// failure is the first line that the remote gst wrote to its standard
+// error, which carries the error; usage and hints follow it.
+func (c *bridgeConn) failure() string {
+	line, _, _ := strings.Cut(c.stderr.String(), "\n")
+	return line
+}
 
 // limitedBuffer keeps the first max bytes written to it.
 type limitedBuffer struct {
