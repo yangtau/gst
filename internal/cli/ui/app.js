@@ -76,11 +76,17 @@ function statusOf(id) {
   return (answer && answer.status) || null;
 }
 
+// linkText shows a link as the machines at its ends, as gst status does,
+// with the link's own name when it differs from the machine it leads to.
+function linkText(from, to, name) {
+  return !to || to === name ? `${from}->${name}` : `${from}->${to} (${name})`;
+}
+
 // problems names what does not work on a machine, as gst status does.
 function problems(st) {
   if (!st) return [];
   const found = [];
-  for (const l of st.links || []) if (l.state !== "running") found.push(`link ${l.name} is ${l.state}`);
+  for (const l of st.links || []) if (l.state !== "running") found.push(`link ${linkText(st.node.name, l.peer && l.peer.name, l.name)} is ${l.state}`);
   if (st.proxy && st.proxy.error) found.push(`proxy ${st.proxy.listen} failed`);
   for (const m of st.maps || []) if (m.error) found.push(`map ${m.listen} failed`);
   return found;
@@ -128,10 +134,10 @@ const linkMark = (l) => mark({ running: "ok", connecting: "wait" }[l.state] || "
 const listenMark = (l) => (l.error ? mark("bad", "failed") : mark("ok", "listening"));
 
 // jump names a machine and selects it when clicked, if the mesh knows it.
-function jump(ref, cls) {
+function jump(ref, cls, text) {
   const n = findMachine(ref);
-  if (!n) return el("span", { class: "cell " + (cls || "") }, ref);
-  const b = el("button", { type: "button", class: "jump cell " + (cls || ""), title: `Show ${n.name}` }, ref);
+  if (!n) return el("span", { class: "cell " + (cls || "") }, text || ref);
+  const b = el("button", { type: "button", class: "jump cell " + (cls || ""), title: `Show ${n.name}` }, text || ref);
   b.addEventListener("click", () => select(n.id));
   return el("span", { class: "cell" }, b);
 }
@@ -170,9 +176,10 @@ function linksGroup(st, isSelf) {
       : el("span", { class: "row-end " + (l.state === "down" ? "bad" : "warn") }, l.state);
     return el("li", { class: "row" },
       linkMark(l),
-      el("span", { class: "cell row-name" }, l.name),
-      el("span", { class: "cell mono sub", title: l.destination }, l.destination),
-      l.peer && l.peer.id ? jump(l.peer.name) : el("span", { class: "cell faint" }, "no peer yet"),
+      l.peer && l.peer.id
+        ? jump(l.peer.name, "row-name", linkText(st.node.name, l.peer.name, l.name))
+        : el("span", { class: "cell row-name" }, linkText(st.node.name, "", l.name)),
+      el("span", { class: "cell mono sub row-wide", title: l.destination }, l.destination),
       end,
       !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
   });
@@ -188,8 +195,7 @@ function linkedFromGroup(id, names) {
   if (edges.length === 0) return null;
   const rows = edges.map((e) => el("li", { class: "row" },
     mark("ok", "running"),
-    jump(names[e.from] || shortID(e.from), "row-name"),
-    el("span", { class: "cell mono sub" }, e.link)));
+    jump(names[e.from] || shortID(e.from), "row-name", linkText(names[e.from] || shortID(e.from), names[e.to], e.link))));
   return group("Linked from", count(edges.length), rows);
 }
 
@@ -377,7 +383,7 @@ function drawRing(nodes, names) {
     const p = away(a, 9), q = away(b, 12);
     const on = e.from === selected || e.to === selected ? " on" : "";
     links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
-      svg("title", null, `${names[e.from]} to ${names[e.to]}, link ${e.link}`)));
+      svg("title", null, linkText(names[e.from], names[e.to], e.link))));
     // The arrowhead, along the line's last stretch.
     const angle = Math.atan2(q.y - c.y, q.x - c.x);
     const at = (d, turn) => `${q.x + d * Math.cos(angle + turn)},${q.y + d * Math.sin(angle + turn)}`;

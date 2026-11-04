@@ -55,10 +55,10 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 		want [][]string
 	}{
 		{"links", links, [][]string{
-			{"LINK", "STATUS", "DESTINATION", "PEER"},
-			{"bastion", "running", "bastion.example.com", "bastion", "(" + shortID(peerOf("bastion").ID) + ")"},
-			{"flaky", "down", "(last", "error:", "connection", "refused)", "myhost", "-"},
-			{"off", "connecting", "db", "-"},
+			{"LINK", "STATUS", "DESTINATION"},
+			{"devcn->bastion", "running", "bastion.example.com"},
+			{"devcn->flaky", "down", "(last", "error:", "connection", "refused)", "myhost"},
+			{"devcn->off", "connecting", "db"},
 		}},
 		{"maps", maps, [][]string{
 			{"MAP", "TARGET", "STATUS"},
@@ -176,7 +176,7 @@ func TestStatusAllListsTheLinks(t *testing.T) {
 	e.back.topology = meshTopology()
 
 	got := lines(e.mustGst("status", "--all"))
-	want := []string{"", "FROM LINK TO", "devcn d1 dup (dddd4444)", "devcn far far", "laptop devcn devcn"}
+	want := []string{"", "LINK", "devcn->dup (dddd4444) (d1)", "devcn->far", "laptop->devcn"}
 	if len(got) != 5+len(want) || !slices.Equal(got[5:], want) {
 		t.Fatalf("status --all\n got %q\nwant 5 machines and %q", got, want)
 	}
@@ -240,6 +240,7 @@ func TestStatusWithoutLinks(t *testing.T) {
 
 func TestStatusListsProblems(t *testing.T) {
 	e := newEnv(t)
+	e.mustGst("name", "laptop")
 	e.mustGst("add", "web", "myhost")
 	e.mustGst("add", "db")
 	e.mustGst("add", "cache", "devcn")
@@ -261,8 +262,8 @@ func TestStatusListsProblems(t *testing.T) {
 		t.Errorf("%d lines before the problems, want 5 machines:\n%s", n, machines)
 	}
 	want := []string{
-		"#   - link db is connecting",
-		"#   - link web is down (last error: SSH keepalive timed out)",
+		"#   - link laptop->db is connecting",
+		"#   - link laptop->web is down (last error: SSH keepalive timed out)",
 		"#   - proxy 127.0.0.1:1081 failed: address already in use",
 		"#   - map 127.0.0.1:15432 failed: permission denied",
 	}

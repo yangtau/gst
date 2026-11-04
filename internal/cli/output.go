@@ -17,12 +17,24 @@ func linkStateText(l wire.LinkState) string {
 	return l.State
 }
 
-// peerText names the node at the other end of a running link.
-func peerText(peer *wire.NodeInfo) string {
-	if peer == nil {
-		return "-"
+// linkText shows a link as the machines at its ends, such as m3->devsg,
+// and adds the link's own name, which gst remove takes, when it differs
+// from the machine it leads to.
+func linkText(from, to, name string) string {
+	if to == "" || to == name {
+		return from + "->" + name
 	}
-	return peer.Name + " (" + shortID(peer.ID) + ")"
+	return from + "->" + to + " (" + name + ")"
+}
+
+// stateLinkText is linkText for a link of the machine that from names; the
+// machine at the other end is known while the link runs.
+func stateLinkText(from string, l wire.LinkState) string {
+	to := ""
+	if l.Peer != nil {
+		to = l.Peer.Name
+	}
+	return linkText(from, to, l.Name)
 }
 
 func shortID(id string) string { return id[:min(8, len(id))] }

@@ -96,7 +96,7 @@ func TestLinkDownIsAProblem(t *testing.T) {
 		t.Fatalf("a down link has no error: %+v", link)
 	}
 	out := client.mustGst("status")
-	if !strings.Contains(out, "# Problems:") || !strings.Contains(out, "link dead is down") {
+	if !strings.Contains(out, "# Problems:") || !strings.Contains(out, "->dead is down") {
 		t.Fatalf("gst status does not list the link as a problem:\n%s", out)
 	}
 }
@@ -132,7 +132,7 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 		t.Fatalf("the error does not mention gst: %q", link.Error)
 	}
 	out := client.mustGst("status")
-	if !strings.Contains(out, "# Problems:") || !strings.Contains(out, "link srv is down") || !strings.Contains(out, "gst") {
+	if !strings.Contains(out, "# Problems:") || !strings.Contains(out, "->srv is down") || !strings.Contains(out, "gst") {
 		t.Fatalf("gst status does not list the failed remote gst:\n%s", out)
 	}
 

@@ -125,20 +125,15 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
 			return cmp.Or(cmp.Compare(names[a.From], names[b.From]), cmp.Compare(a.Link, b.Link))
 		})
-		fmt.Fprintln(out)
-		w := table(out)
-		fmt.Fprintln(w, "FROM\tLINK\tTO")
+		fmt.Fprintln(out, "\nLINK")
 		for _, e := range edges {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", names[e.From], e.Link, names[e.To])
-		}
-		if err := w.Flush(); err != nil {
-			return err
+			fmt.Fprintln(out, linkText(names[e.From], names[e.To], e.Link))
 		}
 	}
 	var problems []string
 	for _, l := range st.Links {
 		if l.State != wire.StateRunning {
-			problems = append(problems, "link "+l.Name+" is "+linkStateText(l))
+			problems = append(problems, "link "+stateLinkText(st.Node.Name, l)+" is "+linkStateText(l))
 		}
 	}
 	if st.Proxy.Error != "" {
@@ -194,9 +189,9 @@ func writeStatus(out io.Writer, st wire.Status) error {
 		fmt.Fprintln(out, "No links.")
 	} else {
 		w := table(out)
-		fmt.Fprintln(w, "LINK\tSTATUS\tDESTINATION\tPEER")
+		fmt.Fprintln(w, "LINK\tSTATUS\tDESTINATION")
 		for _, l := range st.Links {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", l.Name, linkStateText(l), l.Destination, peerText(l.Peer))
+			fmt.Fprintf(w, "%s\t%s\t%s\n", stateLinkText(st.Node.Name, l), linkStateText(l), l.Destination)
 		}
 		if err := w.Flush(); err != nil {
 			return err

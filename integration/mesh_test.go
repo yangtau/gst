@@ -44,7 +44,7 @@ func TestMesh(t *testing.T) {
 				t.Fatalf("gst status lacks %q:\n%s", want, out)
 			}
 		}
-		if all := a.mustGst("status", "--all"); !strings.Contains(all, "FROM") || !strings.Contains(all, "LINK") {
+		if all := a.mustGst("status", "--all"); !strings.Contains(all, "LINK") || !strings.Contains(all, "->") {
 			t.Fatalf("gst status --all lacks the links:\n%s", all)
 		}
 		var names []string
@@ -328,7 +328,7 @@ func TestMesh(t *testing.T) {
 			}
 		}
 		// c's own status lists its failed link as a problem; a's does not.
-		if out := c.mustGst("status"); !strings.Contains(out, "# Problems:") || !strings.Contains(out, "link spare is down") {
+		if out := c.mustGst("status"); !strings.Contains(out, "# Problems:") || !strings.Contains(out, "->spare is down") {
 			t.Fatalf("gst status on c:\n%s", out)
 		}
 		if out := a.mustGst("status"); strings.Contains(out, "# Problems") {

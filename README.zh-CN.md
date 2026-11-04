@@ -216,7 +216,7 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `gst remove <name>...`（`rm`） | 停止并删除 link |
 | `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态；然后是本机的问题 |
 | `gst status --all` | 同时列出所有机器之间运行着的 link |
-| `gst status <machine>` | 显示某台机器的 link（含状态、目标和对端）、代理、map 和 route，经由 mesh 查询 |
+| `gst status <machine>` | 显示某台机器的 link（含状态和目标）、代理、map 和 route，经由 mesh 查询 |
 | `gst ping <machine> [-c N]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时 |
 
 `destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。`--remote-gst <command>` 指定对方机器上的 gst 命令，用于 gst 不在其登录 shell 的 `PATH` 中的情况，例如 `~/.nix-profile/bin/gst`。SSH 连接的其他内容都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。要修改 link，先删除再重新添加。`gst add` 会先检查是否有可用的无口令私钥，以及 known_hosts 里是否有该服务器的记录，不通过时不保存。
@@ -230,7 +230,7 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `online; via devcn` | 到它的连接经过所列的机器 |
 | `offline` | 没有运行中的 link 通向它 |
 
-exit 的状态后面带 `; exit`。`# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。
+exit 的状态后面带 `; exit`。link 显示为两端的机器，如 `m3->devsg`；link 名字和它通向的机器不同时，后面会带上 `gst remove` 用的名字，如 `m3->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。
 
 `gst ping` 的输出例如 `pong from devsg (1a2b3c4d) via devcn in 41.3 ms`。耗时包括途经的每台机器上建立连接的时间。没有收到应答时退出码为 1。
 

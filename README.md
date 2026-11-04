@@ -216,7 +216,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst remove <name>...` (`rm`) | Stop links and delete them |
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state; then this machine's problems |
 | `gst status --all` | Also list the running links between all the machines |
-| `gst status <machine>` | Show a machine's links (with state, destination, and peer), proxy, maps, and routes, asked through the mesh |
+| `gst status <machine>` | Show a machine's links (with state and destination), proxy, maps, and routes, asked through the mesh |
 | `gst ping <machine> [-c N]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer |
 
 `destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. `--remote-gst <command>` names the gst command on the machine, when gst is not in the `PATH` of its login shell, such as `~/.nix-profile/bin/gst`. Everything else about the SSH connection comes from your ssh configuration (see [ssh configuration](#ssh-configuration)). To change a link, remove it and add it again. `gst add` checks first that a usable key without a passphrase exists and that known_hosts records the server, and saves nothing if not.
@@ -230,7 +230,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `online; via devcn` | Connections to it pass through the machines named |
 | `offline` | No running links lead to it |
 
-`; exit` follows the state of an exit. A `# Problems:` section lists this machine's links that are not running and its proxy or maps that failed. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
+`; exit` follows the state of an exit. Links show as the machines at their ends, such as `m3->devsg`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `m3->prod (db)`. A `# Problems:` section lists this machine's links that are not running and its proxy or maps that failed. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
 
 `gst ping` prints, for example, `pong from devsg (1a2b3c4d) via devcn in 41.3 ms`. The time includes setting up the connection through each machine on the way. It exits with status 1 if no answer came.
 
