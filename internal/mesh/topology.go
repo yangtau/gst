@@ -70,9 +70,7 @@ func (n *Node) publish(force bool) {
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
-		if l.name != "" {
-			edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
-		}
+		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
 	}
 	slices.SortFunc(edges, func(a, b wire.Edge) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer)) })
 	return edges
@@ -129,7 +127,7 @@ func valid(r wire.Record) bool {
 		return false
 	}
 	for _, e := range r.Links {
-		if !config.ValidNodeID(e.Peer) || config.ValidateName(e.Name) != nil {
+		if !config.ValidNodeID(e.Peer) || e.Name != "" && config.ValidateName(e.Name) != nil {
 			return false
 		}
 	}
@@ -257,22 +255,11 @@ func batch(recs []wire.Record) [][]wire.Record {
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
 	self := n.info
-	linked := map[string]bool{}
-	for l := range n.links {
-		linked[l.peer.ID] = true
-	}
 	recs := make([]wire.Record, 0, len(n.records))
 	for id, r := range n.records {
-		if id == self.ID {
-			continue
+		if id != self.ID {
+			recs = append(recs, r)
 		}
-		if !linked[id] {
-			// This node knows its own links best: a link to it that is
-			// gone can stay in the other node's record until that record
-			// expires, as the other node cannot reach it to say so.
-			r.Links = slices.DeleteFunc(slices.Clone(r.Links), func(e wire.Edge) bool { return e.Peer == self.ID })
-		}
-		recs = append(recs, r)
 	}
 	recs = append(recs, wire.Record{Node: self, Links: n.edges()})
 	n.mu.Unlock()
@@ -292,12 +279,25 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Exit: r.Node.Exit, Expires: r.Expires}
 		}
 	}
-	edges := []wire.TopoEdge{}
-	for _, r := range recs {
-		if r.Node.ID != self && !r.Expires.After(now) {
-			continue
-		}
+	// A link counts only while the nodes at both ends list it: the node
+	// at an end that lost it may be unable to tell the others, until its
+	// record expires, but the node at the other end can.
+	live := slices.DeleteFunc(slices.Clone(recs), func(r wire.Record) bool { return r.Node.ID != self && !r.Expires.After(now) })
+	peers := map[string]map[string]bool{}
+	for _, r := range live {
+		peers[r.Node.ID] = map[string]bool{}
 		for _, e := range r.Links {
+			peers[r.Node.ID][e.Peer] = true
+		}
+	}
+	edges := []wire.TopoEdge{}
+	for _, r := range live {
+		for _, e := range r.Links {
+			if e.Name == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
+				// Accepted links show as the opening node's; a link
+				// that the other end no longer lists is gone.
+				continue
+			}
 			if nodes[e.Peer] == nil {
 				// Its record has not arrived yet.
 				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}

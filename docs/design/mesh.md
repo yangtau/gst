@@ -197,10 +197,10 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 }
 ```
 
-- 每个节点只发布自己的记录，`links` 是它发起的、处于 running 的 link。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`；若收到自己旧进程发布的更大 `seq`，立即以更大的 `seq` 重新发布。
+- 每个节点只发布自己的记录，`links` 是它处于 running 的 link：自己发起的带 `name`，接受的 `name` 为空。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`；若收到自己旧进程发布的更大 `seq`，立即以更大的 `seq` 重新发布。
 - 节点信息或 link 变化时立即重新发布；收到更大 `seq` 的记录就替换，并经各条 `topology.sync` 流推送给其他 peer（洪泛）。
 - 记录有效期 30 分钟，节点每 10 分钟刷新。每个节点最多保留 1024 条记录，每条记录最多 1024 条 link。
-- `Topology` 由查看方计算：`nodes`（id、name、software、exit、reachable、`path`：从本节点出发的最短路径上的节点 id）与 `edges`（from、to、link 名）。link 是双向的，路径可以沿任一方向经过。
+- `Topology` 由查看方计算：`nodes`（id、name、software、exit、reachable、`path`：从本节点出发的最短路径上的节点 id）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link。link 是双向的，路径可以沿任一方向经过。
 
 ### 中转
 

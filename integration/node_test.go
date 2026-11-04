@@ -3,26 +3,22 @@
 package integration
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // node is a container that runs both sshd and gst. gst runs as the
@@ -217,37 +213,10 @@ func trust(t *testing.T, client, server *node) *pair {
 
 func (p *pair) destination() string { return "ssh://tunnel@" + p.server.addr(22) }
 
-// flags selects the server for gst add, with fast keepalives.
+// flags selects the server for gst link add, with fast keepalives.
 func (p *pair) flags() []string {
 	return []string{p.destination(), "--identity", p.identity, "--known-hosts", p.knownHosts,
 		"--keepalive-interval", "1s", "--keepalive-count", "2", "--connect-timeout", "10s"}
-}
-
-// config returns a tunnel to the server with a one-second keepalive
-// interval and a two-second keepalive timeout.
-func (p *pair) config(cleanup bool, forwards ...config.Forward) config.Tunnel {
-	return config.Tunnel{
-		Destination:              p.destination(),
-		IdentityFile:             p.identity,
-		KnownHostsFile:           p.knownHosts,
-		ConnectTimeoutSeconds:    10,
-		KeepaliveIntervalSeconds: 1,
-		KeepaliveCountMax:        2,
-		CleanupListeners:         cleanup,
-		Forwards:                 forwards,
-	}
-}
-
-// secrets are what tunnel logs must never contain.
-func (p *pair) secrets() []string {
-	return []string{p.server.ip, p.identity, p.knownHosts}
-}
-
-// serve answers every connection to 127.0.0.1:port with reply.
-func (n *node) serve(port int, reply string) {
-	n.t.Helper()
-	n.mustSh(`setsid sh -c 'while :; do printf "%s" "$1" | nc -N -l 127.0.0.1 "$2"; done' sh "$1" "$2" </dev/null >/dev/null 2>&1 &`, reply, fmt.Sprint(port))
-	n.waitListening(port)
 }
 
 // startEcho starts an echo server on 127.0.0.1:port; see gst-it.
@@ -265,58 +234,10 @@ func (n *node) waitListening(port int) {
 	})
 }
 
-// fetch connects to 127.0.0.1:port and returns what it answers.
-func (n *node) fetch(port int) (string, error) {
-	return n.sh(`nc -N -w 5 127.0.0.1 "$1" </dev/null`, fmt.Sprint(port))
-}
-
-// eventuallyFetches waits until 127.0.0.1:port answers want.
-func (n *node) eventuallyFetches(port int, want string) {
-	n.t.Helper()
-	eventually(n.t, 20*time.Second, fmt.Sprintf("port %d did not answer %q", port, want), func() bool {
-		got, err := n.fetch(port)
-		return err == nil && got == want
-	})
-}
-
 // roundtrip sends payloads to echo servers through addrs; see gst-it.
 func (n *node) roundtrip(args ...string) error {
 	_, err := n.helper(append([]string{"roundtrip"}, args...)...)
 	return err
-}
-
-type nodeTunnel struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Error  string `json:"error"`
-}
-
-func (n *node) tunnels() map[string]nodeTunnel {
-	n.t.Helper()
-	var list []nodeTunnel
-	if err := json.Unmarshal([]byte(n.mustGst("list", "--json")), &list); err != nil {
-		n.t.Fatal(err)
-	}
-	m := map[string]nodeTunnel{}
-	for _, v := range list {
-		m[v.Name] = v
-	}
-	return m
-}
-
-func (n *node) waitStatus(name, status string) {
-	n.t.Helper()
-	var last nodeTunnel
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if last = n.tunnels()[name]; last.Status == status {
-			return
-		}
-		if time.Now().After(deadline) {
-			n.t.Fatalf("tunnel %s is %s (%s), want %s", name, last.Status, last.Error, status)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
 }
 
 // daemonPID returns the PID of the gst daemon, or "" when none runs.
@@ -330,35 +251,6 @@ func (n *node) dumpLogs() {
 	n.t.Logf("logs of %s:\n%s", n.container, out)
 }
 
-// startListener occupies a port with a plain TCP listener owned by user.
-func (n *node) startListener(user string, port int) {
-	n.t.Helper()
-	if _, err := n.exec(user, "sh", "-c", `nc -lk "$1" </dev/null >/dev/null 2>&1 &`, "sh", fmt.Sprint(port)); err != nil {
-		n.t.Fatal(err)
-	}
-	eventually(n.t, 5*time.Second, "listener did not start", func() bool {
-		return slices.Contains(n.listenerOwners(port), user)
-	})
-}
-
-// listenerOwners returns the users owning processes that listen on port.
-func (n *node) listenerOwners(port int) []string {
-	out, _ := n.exec("root", "lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-F", "L")
-	var owners []string
-	for line := range strings.Lines(out) {
-		if user, ok := strings.CutPrefix(strings.TrimSpace(line), "L"); ok && !slices.Contains(owners, user) {
-			owners = append(owners, user)
-		}
-	}
-	return owners
-}
-
-// hasProcess reports whether user runs a process named name.
-func (n *node) hasProcess(user, name string) bool {
-	_, err := n.exec("root", "pgrep", "-u", user, "-x", name)
-	return err == nil
-}
-
 // signalSessions sends sig to the sshd processes serving the "tunnel" user,
 // leaving the listening sshd alone.
 func (n *node) signalSessions(sig string) {
@@ -368,153 +260,150 @@ func (n *node) signalSessions(sig string) {
 	}
 }
 
-// kill stops the whole container abruptly.
-func (n *node) kill() {
+// killDaemon kills the gst daemon abruptly, as a crash would.
+func (n *node) killDaemon() {
 	n.t.Helper()
-	if _, err := runtime("kill", n.container); err != nil {
+	if _, err := n.exec("root", "pkill", "-KILL", "-u", nodeUser, "-f", "gst daemon"); err != nil {
 		n.t.Fatal(err)
 	}
+	eventually(n.t, 10*time.Second, "the daemon did not die", func() bool { return n.daemonPID() == "" })
 }
 
-// tunnelProcess is "gst run" in the foreground on a node, with its log
-// output collected.
-type tunnelProcess struct {
-	n        *node
-	pidFile  string
-	cmd      *exec.Cmd
-	ready    chan struct{} // closed when "tunnel ready" is logged
-	exited   chan struct{} // closed after the process exits
-	exitCode int
-
-	mu     sync.Mutex
-	output strings.Builder
+// linkInfo is a link as gst link list --json prints it.
+type linkInfo struct {
+	Name              string         `json:"name"`
+	Status            string         `json:"status"`
+	Error             string         `json:"error"`
+	Peer              *wire.NodeInfo `json:"peer"`
+	KeepaliveInterval int64          `json:"keepalive_interval_seconds"`
+	RemoteGst         string         `json:"remote_gst"`
 }
 
-var tunnelRuns struct {
-	sync.Mutex
-	n int
-}
-
-// startTunnel runs the tunnel on n in the foreground with "gst run",
-// ignoring any ssh configuration.
-func (n *node) startTunnel(tunnel config.Tunnel) *tunnelProcess {
+func (n *node) links() map[string]linkInfo {
 	n.t.Helper()
-	data, err := json.Marshal(config.File{Tunnels: map[string]*config.Tunnel{"it": &tunnel}})
-	if err != nil {
+	var list []linkInfo
+	if err := json.Unmarshal([]byte(n.mustGst("link", "list", "--json")), &list); err != nil {
 		n.t.Fatal(err)
 	}
-	tunnelRuns.Lock()
-	tunnelRuns.n++
-	dir := fmt.Sprintf("%s/run-%d", nodeHome, tunnelRuns.n)
-	tunnelRuns.Unlock()
-	n.mustSh(`mkdir -p "$1"`, dir)
-	n.writeFile(dir+"/config.json", data)
+	m := map[string]linkInfo{}
+	for _, l := range list {
+		m[l.Name] = l
+	}
+	return m
+}
 
-	p := &tunnelProcess{
-		n:       n,
-		pidFile: dir + "/pid",
-		cmd: exec.Command(containerRuntime, "exec", "-u", nodeUser, n.container, "env", "HOME="+nodeHome, "GST_SSH_CONFIG=/dev/null",
-			"sh", "-c", `echo $$ >"$1/pid" && exec gst --config "$1/config.json" run it`, "sh", dir),
-		ready:  make(chan struct{}),
-		exited: make(chan struct{}),
+// waitLink waits until link name has status and returns it.
+func (n *node) waitLink(name, status string) linkInfo {
+	n.t.Helper()
+	var last linkInfo
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if last = n.links()[name]; last.Status == status {
+			return last
+		}
+		if time.Now().After(deadline) {
+			n.t.Fatalf("link %s of %s is %q (%s), want %q", name, n.container, last.Status, last.Error, status)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	stderr, err := p.cmd.StderrPipe()
-	if err != nil {
+}
+
+func (n *node) nodes() wire.Topology {
+	n.t.Helper()
+	var topo wire.Topology
+	if err := json.Unmarshal([]byte(n.mustGst("nodes", "--json")), &topo); err != nil {
 		n.t.Fatal(err)
 	}
-	if err := p.cmd.Start(); err != nil {
-		n.t.Fatal(err)
+	return topo
+}
+
+// find returns the node of topo with the given name.
+func find(topo wire.Topology, name string) (wire.TopoNode, bool) {
+	for _, n := range topo.Nodes {
+		if n.Name == name {
+			return n, true
+		}
 	}
-	go p.collect(stderr)
-	n.t.Cleanup(func() {
-		if p.running() {
-			n.exec("root", "sh", "-c", `kill -KILL "$(cat "$1")"`, "sh", p.pidFile)
-			select {
-			case <-p.exited:
-			case <-time.After(10 * time.Second):
-				p.cmd.Process.Kill()
-				<-p.exited
+	return wire.TopoNode{}, false
+}
+
+// self returns the node of topo that is its own machine.
+func self(topo wire.Topology) wire.TopoNode {
+	for _, n := range topo.Nodes {
+		if n.ID == topo.Self {
+			return n
+		}
+	}
+	return wire.TopoNode{}
+}
+
+// path names the machines on the way to node, from n's machine.
+func path(topo wire.Topology, node wire.TopoNode) string {
+	names := make([]string, len(node.Path))
+	for i, id := range node.Path {
+		for _, v := range topo.Nodes {
+			if v.ID == id {
+				names[i] = v.Name
 			}
 		}
-		if n.t.Failed() {
-			n.t.Logf("tunnel log:\n%s", p.logs())
+	}
+	return strings.Join(names, ",")
+}
+
+// waitReachable waits until n can reach the machine called name, and
+// returns it with the topology that shows it.
+func (n *node) waitReachable(name string) (wire.TopoNode, wire.Topology) {
+	n.t.Helper()
+	var topo wire.Topology
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		topo = n.nodes()
+		if v, ok := find(topo, name); ok && v.Reachable {
+			return v, topo
 		}
+		if time.Now().After(deadline) {
+			n.t.Fatalf("%s cannot reach %s; nodes: %+v", n.container, name, topo.Nodes)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// waitUnreachable waits until n cannot reach the machine called name.
+func (n *node) waitUnreachable(name string) {
+	n.t.Helper()
+	eventually(n.t, 60*time.Second, n.container+" still reaches "+name, func() bool {
+		v, ok := find(n.nodes(), name)
+		return !ok || !v.Reachable
 	})
-	return p
 }
 
-func (p *tunnelProcess) collect(stderr io.Reader) {
-	var readyOnce sync.Once
-	scanner := bufio.NewScanner(stderr)
-	for scanner.Scan() {
-		line := scanner.Text()
-		p.mu.Lock()
-		p.output.WriteString(line + "\n")
-		p.mu.Unlock()
-		if strings.HasSuffix(line, "tunnel ready") {
-			readyOnce.Do(func() { close(p.ready) })
+// startEchoOn starts an echo server on addr, a host:port or a socket path.
+func (n *node) startEchoOn(addr string) {
+	n.t.Helper()
+	n.mustSh(`setsid gst-it echo-server "$1" </dev/null >/dev/null 2>&1 &`, addr)
+	eventually(n.t, 5*time.Second, "echo server on "+addr+" did not start", func() bool {
+		if strings.HasPrefix(addr, "/") {
+			_, err := n.sh(`test -S "$1"`, addr)
+			return err == nil
 		}
-	}
-	p.cmd.Wait()
-	p.exitCode = p.cmd.ProcessState.ExitCode()
-	close(p.exited)
+		host, port, _ := net.SplitHostPort(addr)
+		_, err := n.sh(`nc -z "$1" "$2"`, host, port)
+		return err == nil
+	})
 }
 
-func (p *tunnelProcess) logs() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.output.String()
-}
-
-// assertPrivateLog fails if the log contains any of secrets.
-func (p *tunnelProcess) assertPrivateLog(t *testing.T, secrets ...string) {
+// start3 starts three nodes named a, b, and c, where a and c link to b.
+// It waits until a and c reach each other through b.
+func start3(t *testing.T) (a, b, c *node, ab, cb *pair) {
 	t.Helper()
-	logs := p.logs()
-	for _, secret := range secrets {
-		if strings.Contains(logs, secret) {
-			t.Errorf("log reveals %q", secret)
-		}
+	a, b, c = startNode(t), startNode(t), startNode(t)
+	ab, cb = trust(t, a, b), trust(t, c, b)
+	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
+		n.mustGst("name", name)
 	}
-}
-
-func (p *tunnelProcess) waitReady(t *testing.T) {
-	t.Helper()
-	select {
-	case <-p.ready:
-	case <-p.exited:
-		t.Fatalf("tunnel exited with code %d before becoming ready", p.exitCode)
-	case <-time.After(20 * time.Second):
-		t.Fatal("tunnel did not become ready")
-	}
-}
-
-// waitExit waits up to limit for the process to exit and returns its exit
-// code and how long the wait took.
-func (p *tunnelProcess) waitExit(t *testing.T, limit time.Duration) (int, time.Duration) {
-	t.Helper()
-	start := time.Now()
-	select {
-	case <-p.exited:
-		return p.exitCode, time.Since(start)
-	case <-time.After(limit):
-		t.Fatalf("tunnel still running after %v", limit)
-		panic("unreachable")
-	}
-}
-
-func (p *tunnelProcess) running() bool {
-	select {
-	case <-p.exited:
-		return false
-	default:
-		return true
-	}
-}
-
-// signal sends a signal such as "TERM" or "STOP" to gst in its container.
-func (p *tunnelProcess) signal(t *testing.T, sig string) {
-	t.Helper()
-	if _, err := p.n.exec("root", "sh", "-c", `kill -"$1" "$(cat "$2")"`, "sh", sig, p.pidFile); err != nil {
-		t.Fatal(err)
-	}
+	a.mustGst(append([]string{"link", "add", "tob"}, ab.flags()...)...)
+	c.mustGst(append([]string{"link", "add", "tob"}, cb.flags()...)...)
+	a.waitReachable("c")
+	c.waitReachable("a")
+	return
 }

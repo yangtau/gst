@@ -22,6 +22,25 @@ func rec(name string, peers ...string) wire.Record {
 	return r
 }
 
+// accepted adds to recs the links that their nodes accepted, as each node
+// lists in its own record.
+func accepted(recs []wire.Record) []wire.Record {
+	out := slices.Clone(recs)
+	for i := range out {
+		out[i].Links = slices.Clone(out[i].Links)
+	}
+	for _, r := range recs {
+		for _, e := range r.Links {
+			for i := range out {
+				if out[i].Node.ID == e.Peer {
+					out[i].Links = append(out[i].Links, wire.Edge{Peer: r.Node.ID})
+				}
+			}
+		}
+	}
+	return out
+}
+
 func ids(names ...string) []string {
 	out := make([]string, len(names))
 	for i, n := range names {
@@ -84,7 +103,7 @@ func TestBuildTopology(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			topo := buildTopology(nid(tt.self), tt.recs, now)
+			topo := buildTopology(nid(tt.self), accepted(tt.recs), now)
 			if topo.Self != nid(tt.self) {
 				t.Fatalf("self = %s", topo.Self)
 			}
@@ -128,10 +147,23 @@ func TestBuildTopologyIgnoresExpiredRecordsInAnyOrder(t *testing.T) {
 	}
 }
 
+// A link that the node at its other end no longer lists is gone, though
+// the opening node's record, which cannot reach the others, still lists it.
+func TestBuildTopologyNeedsBothEnds(t *testing.T) {
+	topo := buildTopology(nid("b"), []wire.Record{rec("a", "b"), rec("b")}, now)
+	if len(topo.Edges) != 0 || topo.Nodes[1].Reachable {
+		t.Fatalf("topology = %+v, want a unreachable", topo)
+	}
+	topo = buildTopology(nid("b"), accepted([]wire.Record{rec("a", "b"), rec("b")}), now)
+	if len(topo.Edges) != 1 || !topo.Nodes[1].Reachable {
+		t.Fatalf("topology = %+v, want a reachable", topo)
+	}
+}
+
 func TestBuildTopologySortsAndCarriesNodeInfo(t *testing.T) {
 	r := rec("zed")
 	r.Node.Exit = true
-	topo := buildTopology(nid("zed"), []wire.Record{rec("bob", "alice"), rec("alice"), r}, now)
+	topo := buildTopology(nid("zed"), accepted([]wire.Record{rec("bob", "alice"), rec("alice"), r}), now)
 	var names []string
 	for _, n := range topo.Nodes {
 		names = append(names, n.Name)
