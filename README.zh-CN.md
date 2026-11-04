@@ -2,14 +2,11 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）让 SSH 端口转发在后台持续运行：登录后自动启动，断线后自动重连。它按你的 `~/.ssh/config` 连接服务器，转发的写法与 `ssh -R` / `ssh -L` / `ssh -D` 相同。支持 Linux 和 macOS。
+`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，但只工作在第 4 层：只中转 TCP 连接和 Unix socket，不需要 root，直接使用你已有的 SSH 登录。支持 Linux 和 macOS。
 
-- **tunnel**：一个有名字的 SSH 连接，例如 `myhost`。
-- **forward**：tunnel 上的一条端口转发。
-  - `-R [bind_address:]port[:host:hostport]`：在服务器上监听，由本机连接 `host:hostport`。省略目标即为反向 SOCKS5 代理，由本机连接客户端请求的地址。
-  - `-L [bind_address:]port:host:hostport`：在本机监听，由服务器连接 `host:hostport`。
-  - `-D [bind_address:]port`：在本机监听一个 SOCKS5 代理，由服务器连接客户端请求的地址。
-  - 固定目标的 `-R` 和 `-L` 的任意一端都可以用 Unix socket 路径代替端口或 `host:hostport`。SOCKS 代理只支持 TCP 监听，不支持 Unix socket。
+- 每台机器都运行 gst（link 的两端都需要 0.3 或更高版本）和一个小的后台 daemon。
+- **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `mini` 和 `devcn` 的 link 时，`mini` 经由 `laptop` 就能到达 `devcn`，不需要 `devcn` 的任何凭据。
+- 到达一台机器的方式有：`gst connect`（也可以作为 ssh 的 `ProxyCommand`）；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；或者一个通向它的本地端口或 Unix socket（map）。
 
 ## 安装
 
@@ -31,246 +28,331 @@ nix run . -- --help
 nix profile add .         # 从本地项目安装
 ```
 
-Nix 包附带 Bash、Zsh 和 Fish 的补全脚本。
+Nix 包附带 Bash、Zsh 和 Fish 的补全脚本；其他方式安装时用 `gst completion bash|zsh|fish` 生成。
 
-运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.2.0`。
+运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.3.0`。
 
-后台 daemon 会记住 gst 的路径。升级或移动 gst 后，执行 `gst restart --all`，用新的 gst 重启 daemon；任何启动、停止、重启或修改 tunnel 的命令也会这样做。
+mesh 中的每台机器都要安装 gst，并确保 gst 在 ssh 在该机器上启动的登录 shell 的 `PATH` 中（不在时见 `--remote-gst`）。后台 daemon 会记住 gst 的路径。升级或移动 gst 后，执行 `gst up`，用新的 gst 重启 daemon；任何修改配置的命令也会这样做。
 
 ## 使用前准备
 
-gst 在后台运行，不能输入口令，也不能确认未知的主机密钥，所以需要：
+gst 在后台运行，不能输入口令，也不能确认未知的主机密钥。对于你要连接的每台机器，需要：
 
-1. **一个没有口令的私钥**，并已授权到服务器上。建议单独创建一个：
+1. **一个没有口令的私钥**，并已授权到那台机器上。建议单独创建一个：
 
    ```bash
    ssh-keygen -t ed25519 -N '' -f ~/.ssh/gst_ed25519
-   ssh-copy-id -i ~/.ssh/gst_ed25519 user@server.example.com
+   ssh-copy-id -i ~/.ssh/gst_ed25519 user@devcn.example.com
    ```
 
 2. **`~/.ssh/config` 里的 Host**，例如：
 
    ```
-   Host myhost
-     HostName server.example.com
+   Host devcn
+     HostName ssh.example.com
      User user
      IdentityFile ~/.ssh/gst_ed25519
    ```
 
-3. **known_hosts 里有服务器的主机密钥**：先用 `ssh myhost` 连接一次，核对并接受主机密钥。
+   也可以不写这一项，直接把目标地址交给 `gst link add`，例如 `user@ssh.example.com`。
+
+3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devcn` 连接一次，核对并接受主机密钥。
+
+4. **那台机器上有 gst 0.3 或更高版本。** 它不需要自己的 link、配置或正在运行的 daemon：被连接就够了，gst 会在第一次 link 时在那里启动。
+
+这些只对创建 link 的机器有要求；被连接的机器只需要 gst 和能执行命令的 sshd（gst 使用登录会话而不是端口转发，所以 sshd 的 `AllowTcpForwarding` 不影响它）。对每个会话都强制执行固定命令的服务器无法被连接。
 
 ## 快速开始
 
+在 `laptop` 上连接 `devcn` 和 `mini`：
+
 ```bash
-# 添加 tunnel 并在后台启动：在服务器的 2222 端口访问本机的 SSH
-gst add myhost -R 2222:localhost:22
-
-# 再加一条 forward：在本机的 15432 端口访问服务器上的数据库
-gst forward add myhost -L 15432:127.0.0.1:5432
-
-gst list           # 查看所有 tunnel 及状态
-gst check myhost   # 逐步诊断连接问题
-gst logs myhost -f # 查看日志
-gst stop myhost    # 停止，保留配置
-gst start myhost   # 重新启动
-gst remove myhost  # 停止并删除
+gst link add devcn        # ~/.ssh/config 中的 "devcn"
+gst link add mini
+gst link list             # NAME STATUS DESTINATION PEER；等到状态变为 "running"
+gst nodes                 # mesh 中的所有机器，以及如何到达它们
 ```
 
-每个命令都可以用 `--help` 查看说明和示例。在终端中，帮助的标题加粗，命令名和选项名显示为青色。管道或重定向输出保持纯文本；设置 `NO_COLOR=1` 或 `TERM=dumb` 也可以关闭终端中的配色。`gst completion bash|zsh|fish` 生成 shell 补全脚本。
+`gst nodes` 的输出类似：
+
+```
+NAME    ID        SOFTWARE   EXIT  ROUTE
+laptop  4f1c9a27  gst 0.3.0  no    this machine
+devcn   9db2b03b  gst 0.3.0  no    devcn
+mini    c07e5d11  gst 0.3.0  no    mini
+
+FROM    LINK   TO
+laptop  devcn  devcn
+laptop  mini   mini
+```
+
+到达一台机器的几种方式：
+
+```bash
+# 一个使用标准输入输出的连接：只给端口时表示 devcn 的 localhost
+gst connect devcn 22
+
+# 经由 mesh ssh，使用你自己在 devcn 上的登录：加入 ~/.ssh/config，然后执行 "ssh devcn.gst"
+#   Host *.gst
+#     ProxyCommand gst connect %h %p
+
+# 代理：127.0.0.1:1080 上的 SOCKS5 和 HTTP，devcn.gst 就是 devcn
+gst proxy                 # 显示用法
+export ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
+curl http://devcn.gst:8080/   # devcn 的 8080 端口
+# 浏览器：使用自动代理配置 URL http://127.0.0.1:1080/proxy.pac
+
+# map：本机 15432 端口通向 devcn 的 5432 端口
+gst map add 15432 devcn:5432
+psql -h 127.0.0.1 -p 15432
+
+# 两端也都可以是 Unix socket
+gst map add 18082 devcn:/run/user/1000/app.sock
+gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
+```
+
+`mini` 现在看到的是同一个 mesh：在 `mini` 上运行 `gst nodes` 会列出 `laptop` 和 `devcn`，`gst connect devcn 22` 经由 `laptop` 连接。
+
+每个命令都可以用 `--help` 查看说明。在终端中，帮助的标题加粗，命令名和选项名显示为青色。管道或重定向输出保持纯文本；设置 `NO_COLOR=1` 或 `TERM=dumb` 也可以关闭终端中的配色。
+
+## 概念
+
+| 概念 | 是什么 | 命令 |
+| --- | --- | --- |
+| **node** | 一台运行 gst 的机器。有随机的 128 位 id 和名字（默认取主机名） | `gst name`、`gst nodes` |
+| **link** | 从本机到另一台 gst 机器的 SSH 连接，在后台保持；两边的 daemon 经由它加入对方的 mesh | `gst link …` |
+| **proxy** | 本机 daemon 提供的 SOCKS5 和 HTTP 代理：`<machine>.gst` 和路由命中的主机走 mesh | `gst proxy` |
+| **map** | 本机的一个端口或 Unix socket，其连接转到某台机器的端口或 socket；给不能使用代理的程序用 | `gst map …` |
+| **route** | 一条规则：把代理中到某些主机的连接经由另一台机器发出 | `gst route …` |
+| **exit** | 允许其他机器经由本机连接本机以外的地址 | `gst exit` |
+
+### node 和 link
+
+- node 的名字用于显示和寻址，不要求唯一；id 是唯一的。用 `gst name laptop` 修改名字。名字和 link 名一样，由 1-32 个小写字母、数字或 `-` 组成。
+- link 是双向的：流量可以沿任一方向通过，所以 `devcn` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst link add devcn`），在对端报告自己的名字之前，它也是对端机器的名字。
+- 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst nodes` 都能看到整个 mesh；退出网络的机器会在 30 分钟内消失。路径只能经由运行中的 link 越过一台机器。
+
+### 机器寻址
+
+所有命令和代理都用 `<machine>` 指定机器。它按以下顺序解析，某一步只有在恰好匹配一台机器时才生效：
+
+1. 去掉末尾的 `.gst`。
+2. node id。
+3. node 名字。
+4. link 名，表示该 link 另一端的机器。mesh 中任何机器的 link 都算，所以 `devcn` 在哪里都能用，不论它是 `laptop` 上的 link 名还是 `devcn` 自己的名字。
+5. 至少 4 位的 id 前缀。
+
+名字重复时，`gst nodes` 用 id 区分这些机器；此时请使用 id 或 id 前缀。
+
+### 代理
+
+daemon 在同一个端口上提供 SOCKS5 和 HTTP，默认是 `127.0.0.1:1080`。每个连接的去向：
+
+1. 到 `<machine>.gst` 的端口 `p`：连接该机器的 `localhost:p`。
+2. 主机命中某条 route：经由该 route 的机器连接，域名由那台机器自己解析，它必须是 exit。
+3. 否则：由本机直接连接。
+
+```bash
+gst proxy                 # 显示地址和用法
+gst proxy 127.0.0.1:1081  # 修改（TCP 地址：端口或 bind:port）
+gst proxy off             # 关闭
+```
+
+- SOCKS5 支持无认证的 `CONNECT`；域名原样交给路由，等同 `socks5h://`。不支持 UDP、`BIND` 和 SOCKS4，所以 UDP DNS 查询和 QUIC 无法通过。
+- HTTP 支持 `CONNECT host:port` 和普通的 `GET http://host/...` 请求。
+- `http://127.0.0.1:1080/proxy.pac` 是自动代理配置文件，只把 `.gst` 主机和路由命中的主机交给代理，其余直连。IPv4 网段规则只对 IP 地址生效；IPv6 网段不进入该文件。
+- 能访问代理地址的人都能使用代理。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
+- 不支持代理的程序，可以使用 map，或用 tun2socks 等工具把它们的 TCP 流量导入代理；gst 不创建 TUN 设备，也不配置路由。
+
+### map
+
+```bash
+gst map add <listen> <machine>:<target>
+```
+
+- `<listen>` 是端口（监听 `127.0.0.1`）、`address:port`（`0.0.0.0:8080` 或 `*:8080` 监听所有网卡；IPv6 地址加方括号），或 Unix socket 路径——可以是相对路径或以 `~` 开头，gst 会保存为绝对路径。
+- `<target>` 是端口（该机器的 `localhost`）、`host:port`，或该机器上的 socket 绝对路径。路径中不能有 `:`。
+- gst 创建的 socket 只有你自己能访问（权限 `0600`）。开始监听前，gst 会替换没有进程在接受连接的 socket 文件（例如崩溃后留下的）；不会替换其他文件或正在使用的 socket。
+- 不论机器是否可达，map 都会保持监听；没有路径时只有对应的连接失败。`gst map list` 显示每个监听是否正常。
+
+### route
+
+```bash
+gst route add corp.example.com devcn   # 该域名及其所有子域名
+gst route add 10.20.0.0/16 devcn       # 一个 IP 网段（或单个 IP）
+gst route add default devsg           # 其余所有主机
+```
+
+- route 作用于代理中的连接。最具体的规则优先：域名和网段越长越优先，`default` 最后。添加匹配项相同的 route 会替换原有的。
+- 域名规则按名字匹配。IP 和网段规则只匹配 IP 地址：gst 不会为了选择路由而解析域名，所以 `curl http://intranet.example.com/` 不会命中 `10.20.0.0/16`，即使该域名解析到这个网段内。
+- `via` 机器必须是 exit。`gst route add` 发现 mesh 中它还不是 exit 时会给出提示。
+- 没有 route 命中的主机由本机连接。
+
+### exit
+
+默认情况下，一台机器替其他机器只连接它自己上的地址：`localhost`、loopback 地址和 Unix socket。只有 exit 还会连接其他地址，例如它所在的局域网或互联网。在要作为 exit 的机器上执行 `gst exit on` 开启（`gst exit off` 关闭，`gst exit` 查看）。无论经过哪条路径，这条规则都由发起最后一跳连接的机器检查。
+
+### 信任
+
+mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通过自己的 socket 接受它。mesh 中任何一台机器都可以请求任何一台机器连接**它自己的** `localhost` 端口和 Unix socket（本地数据库、Docker socket、ssh-agent）。exit 的范围更大：任何机器都可以连接 exit 所能到达的任何地方。只连接你信任的机器，只在需要的机器上开启 exit。`gst down` 让本机退出 mesh。
+
+## 取代 ssh 转发
+
+没有 `-L`、`-R`、`-D`；mesh 覆盖了同样的场景，而且监听的一端可以是任意一台机器。
+
+| ssh | gst |
+| --- | --- |
+| `ssh -L 15432:127.0.0.1:5432 devcn` | `gst map add 15432 devcn:5432` |
+| `ssh -L 15432:db.example.com:5432 devcn` | `gst map add 15432 devcn:db.example.com:5432`，并在 devcn 上执行 `gst exit on` |
+| `ssh -L ~/db.sock:/run/postgresql/.s.PGSQL.5432 devcn` | `gst map add ~/db.sock devcn:/run/postgresql/.s.PGSQL.5432` |
+| `ssh -R 2222:localhost:22 devcn` | 在 devcn 上：`gst map add 2222 laptop:22` |
+| `ssh -R /home/user/agent.sock:$SSH_AUTH_SOCK devcn` | 在 devcn 上：`gst map add /home/user/agent.sock laptop:"$SSH_AUTH_SOCK"`（绝对路径） |
+| `ssh -D 1080 devcn` | `gst route add default devcn`（也可以只路由部分域名或网段），并在 devcn 上执行 `gst exit on`；代理本来就在 `127.0.0.1:1080` |
+| 反向代理：devcn 上的程序使用 laptop 的网络 | 在 devcn 上：`gst route add default laptop`，并在 laptop 上执行 `gst exit on` |
+
+devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台机器都能经由 mesh 到达其他所有机器，所以 `laptop` 不需要自己的监听或开放端口。崩溃后服务器上不会留下失效的 `-R` 端口或 socket 文件，`GatewayPorts` 也不适用。
 
 ## 命令
 
+命令的分组与 `gst --help` 一致。机器名和 link 名见[概念](#概念)。
+
+### 构建 mesh
+
 | 命令 | 作用 |
 | --- | --- |
-| `gst add <name> [destination] [-R spec]... [-L spec]... [-D port]...` | 添加 tunnel 并在后台启动 |
-| `gst set <name> [flags]` | 修改目标地址或连接设置 |
-| `gst forward add <tunnel> (-R spec \| -L spec \| -D [bind:]port)...` | 添加 forward |
-| `gst forward remove <tunnel> (-R \| -L \| -D [bind:]port\|socket)...` | 删除 forward |
-| `gst forward list <tunnel>` | 列出 forward |
-| `gst remove <name>...` | 停止并删除 tunnel |
-| `gst start\|stop\|restart <name>... \| --all` | 启动、停止、重启 |
-| `gst list` | 列出 tunnel 及状态 |
-| `gst show <name>` | 查看 tunnel 的设置和 ssh 解析结果 |
-| `gst logs <name> [-f] [-n N]` | 查看日志 |
-| `gst check <name>` | 诊断：ssh 配置、私钥、known_hosts、网络、登录 |
-| `gst ui [--port N] [--no-open]` | 在浏览器中查看 tunnel、peer link 和 mesh 拓扑图，并可启动、停止、重启 tunnel |
-| `gst mesh enable [--name name]` / `gst mesh disable` | 重新加入（或改名）、退出由多台机器组成的 mesh |
-| `gst mesh peers` | 列出 peer link |
-| `gst mesh nodes` | 显示 mesh 中的所有机器以及它们之间的 tunnel |
-| `gst add <name> mesh:<machine> [-L spec]... [-D port]...` | 添加一条经由其他机器到达 mesh 中某台机器的 tunnel |
-| `gst connect <machine> <port>` | 把标准输入输出连到 mesh 中某台机器的端口，可用作 `ProxyCommand` |
-| `gst version` | 查看已安装的版本 |
+| `gst link add <name> [destination] [settings]` | 添加 link 并在后台启动 |
+| `gst link set <name> [--destination d] [settings] [--no-restart]` | 修改 link 的目标地址或设置；运行中的 link 会重启以生效 |
+| `gst link remove <name>...`（`rm`） | 停止并删除 link，连同日志 |
+| `gst link start\|stop\|restart <name>... \| --all` | 启动、停止（保留配置）、重启 link |
+| `gst link list`（`ls`） | 列出 link 及状态：NAME、STATUS、DESTINATION、PEER |
+| `gst link show <name>` | 查看 link 的设置和 ssh 对目标地址的解析结果 |
+| `gst link logs <name> [-f] [-n N]` | 查看日志 |
+| `gst link check <name>` | 逐步诊断：ssh 配置、私钥、known_hosts、网络、登录、对方机器上的 gst |
+| `gst nodes` | 显示本机所知道的 mesh 中所有机器：NAME、ID、SOFTWARE、EXIT、ROUTE（连接途经的机器），然后是机器之间的 link |
 
-修改运行中 tunnel 的 forward 或设置后，gst 会自动重启它；加 `--no-restart` 可以跳过。设置没有变化时什么也不做。
+`destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。link 的设置会覆盖你的 ssh 配置（见 [ssh 配置](#ssh-配置)）：
 
-## 常见用法
+| 参数 | 含义 |
+| --- | --- |
+| `--identity <file>` | 没有口令的私钥文件 |
+| `--known-hosts <file>` | known_hosts 文件 |
+| `--connect-timeout <duration>` | 连接和登录的超时，须为整数秒，例如 `20s` |
+| `--keepalive-interval <duration>` | 保活探测的间隔，须为整数秒 |
+| `--keepalive-count <n>` | 探测连续这么多个间隔无响应后放弃 |
+| `--remote-gst <command>` | gst 不在对方机器登录 shell 的 `PATH` 中时，对方机器上的 gst 命令，例如 `~/.nix-profile/bin/gst` |
 
-```bash
-# 目标地址不在 ssh 配置里时，直接写出来
-gst add db admin@db.example.com -L 15432:127.0.0.1:5432
-gst add web ssh://deploy@203.0.113.7:2200 -R 8080:localhost:3000
+`gst link set` 中，`''` 或 `0` 表示恢复默认（`gst link set devcn --identity ''`）。设置没有变化时什么也不做；`--no-restart` 只保存修改，不重启运行中的 link。
 
-# Unix socket：在本机 socket 上访问服务器的 PostgreSQL socket，
-# 在服务器的 socket 上访问本机的 ssh-agent
-gst forward add myhost -L ~/.gst/db.sock:/run/postgresql/.s.PGSQL.5432
-gst forward add myhost -R /home/user/agent.sock:"$SSH_AUTH_SOCK" --no-restart
-gst set myhost --cleanup-listeners
+link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）、`stopped`。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。
 
-# 在本机 1080 端口开一个 SOCKS5 代理，连接从服务器发出
-gst forward add myhost -D 1080
-curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com
+### 到达机器
 
-# 在服务器的 1080 端口开一个反向 SOCKS5 代理，连接从本机发出
-gst forward add myhost -R 1080
-# 在服务器上执行 curl，通过代理访问；域名由本机解析
-ssh myhost 'curl --proxy socks5h://127.0.0.1:1080 https://intranet.example.com'
+| 命令 | 作用 |
+| --- | --- |
+| `gst connect <machine> <port \| host:port \| socket>` | 把标准输入输出连到某台机器的端口或 socket，例如用作 `ProxyCommand` |
+| `gst proxy [address \| off]` | 查看或修改代理 |
+| `gst map add <listen> <machine>:<target>` | 把本机的端口或 socket 映射到某台机器 |
+| `gst map remove <listen>...`（`rm`） | 删除 map |
+| `gst map list`（`ls`） | 列出 map 及是否在监听 |
+| `gst route add <match> <machine>` | 把到匹配主机的连接经由某台机器发出 |
+| `gst route remove <match>...`（`rm`） | 删除 route |
+| `gst route list`（`ls`） | 列出 route |
 
-# 在服务器的所有网卡上监听
-gst forward add web -R '*:8080:localhost:3000'
+`<match>` 是 `default`、域名、IP 地址或 CIDR 网段。不属于该机器自己的 `host:port` 需要该机器是 exit。
 
-# 删除 forward：只需要方向和监听地址
-gst forward remove myhost -R 2222
+### 本机
 
-# 覆盖 ssh 配置的设置；'' 或 0 表示恢复默认
-gst set myhost --keepalive-interval 30s --keepalive-count 5
-gst set myhost --identity ''
+| 命令 | 作用 |
+| --- | --- |
+| `gst name [name]` | 查看或修改本机的名字，并显示它的 id |
+| `gst exit [on \| off]` | 查看或修改本机是否为 exit |
+| `gst up` | 现在运行 daemon，并在登录时自动运行 |
+| `gst down` | 停止 daemon 并不再启动；其他机器无法连接本机 |
+| `gst ui [--port N] [--no-open]` | 在浏览器中查看 mesh |
+| `gst version` | 查看 gst 版本 |
 
-# 开关远端端口清理（见下文）
-gst set myhost --cleanup-listeners
-gst set myhost --cleanup-listeners=false
-```
-
-## forward 的写法
-
-- 省略 `bind_address` 时只监听 loopback（`127.0.0.1`）；`*` 或空的 `bind_address`（如 `:8080:localhost:3000`）监听所有网卡；IPv6 地址加方括号。
-- `-R [bind_address:]port[:host:hostport]` 的目标可选：省略时为反向 SOCKS5，提供时保持原有的固定目标转发行为。`-L` 必须有目标，`-D` 不接受目标。
-- 固定目标的 `host` 由连接它的一方解析：`-L` 中的 `127.0.0.1` 指服务器自己，`-R` 中的 `localhost` 指本机。
-- 服务器上的实际监听范围还受 sshd 的 `GatewayPorts` 控制。监听所有网卡时，记得用防火墙限制访问来源。
-- sshd 的 `AllowTcpForwarding` 需要允许所用的方向：两个方向都用时设为 `yes`，只用 `-R` 时可以是 `remote`，只用 `-L` 和 `-D` 时可以是 `local`。
-
-## Unix socket
-
-- 与 ssh 一样，含 `/` 的字段是 Unix socket 路径：`-L /tmp/db.sock:127.0.0.1:5432`、`-L 15432:/run/postgresql/.s.PGSQL.5432`、`-R /home/user/agent.sock:/tmp/agent.sock`。路径中不能有 `:`。
-- 本机路径可以是相对路径或以 `~` 开头，gst 会保存为绝对路径；服务器上的路径必须是绝对路径。
-- gst 在本机创建的 socket 只有你自己能访问（权限 `0600`）。开始监听前，gst 会替换没有进程在接受连接的 socket 文件（例如崩溃后留下的）；不会替换其他文件或正在使用的 socket。
-- 服务器 sshd 的 `AllowStreamLocalForwarding` 需要允许所用的方向，默认允许。
-- **sshd 会把服务器上的 `-R` socket 文件留下**，即使 tunnel 正常停止也是如此，而且不会在已存在的文件上监听。如果不做以下任一项，`-R` socket forward 从第一次重启或重连起就会报 `listener start failed`：在服务器的 sshd 配置中设置 `StreamLocalBindUnlink yes`，或开启 `--cleanup-listeners`（见[排查问题](#排查问题)）。
-
-## SOCKS 代理（`-D` 和不带目标的 `-R`）
-
-- `-D` 在本机监听，由 SSH 服务器发起连接；不带目标的 `-R` 在 SSH 服务器上监听，由运行 gst 的本机发起连接。两者都只支持 TCP 监听，不支持动态 Unix socket。
-- 两者都与 `ssh -D` 一样，支持无认证的 SOCKS5 `CONNECT`。不支持 UDP（`UDP ASSOCIATE`）、`BIND` 和 SOCKS4，所以 UDP DNS 查询、QUIC 等 UDP 流量无法通过代理。
-- 域名在哪里解析取决于客户端。使用 `socks5h://` 时，curl 发送域名：`-D` 由 SSH 服务器解析，不带目标的 `-R` 由运行 gst 的本机解析，因此只在相应一侧网络中才能解析的域名也能访问。使用 `socks5://` 时，curl 在自身运行的机器上解析域名，只发送 IP 地址。
-- 能访问监听地址的人都能使用代理，访问发起连接一侧可达的网络——反向 SOCKS 会开放对本机所在网络的访问。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
-- 不支持代理的程序，可以用 tun2socks 等工具把 TUN 设备上的 TCP 流量导入代理；gst 不创建 TUN 设备，也不配置路由。这些程序的 DNS 查询仍在程序运行的机器上解析，除非另外配置 DNS。
+所有命令都接受 `--config <file>`。`list`、`show`、`check`、`nodes`、`proxy`、`map list`、`route list` 支持 `--json`。
 
 ## ssh 配置
 
-`destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 tunnel 名。每次启动 tunnel 时，gst 都会用 `ssh -G` 重新读取 ssh 配置，所以修改 `~/.ssh/config` 后执行 `gst restart <name>` 即可生效。
+每次 link 连接时，gst 都会用 `ssh -G` 重新解析它的目标地址，所以修改 `~/.ssh/config` 后执行 `gst link restart <name>` 即可生效。
 
 | ssh 配置 | 用途 | gst 的覆盖参数 | 都未设置时 |
 | --- | --- | --- | --- |
-| `HostName`、`Port`、`User` | 服务器地址和登录用户 | `gst set --destination` | ssh 的默认值 |
+| `HostName`、`Port`、`User` | 地址和登录用户 | `gst link set --destination` | ssh 的默认值 |
 | `IdentityFile` | 私钥，依次尝试，跳过不存在或有口令的 | `--identity` | ssh 的默认私钥列表 |
 | `UserKnownHostsFile`、`GlobalKnownHostsFile` | 主机密钥校验 | `--known-hosts` | ssh 的默认文件 |
 | `ConnectTimeout` | 连接和登录超时 | `--connect-timeout` | 15 秒 |
 | `ServerAliveInterval` | 保活间隔 | `--keepalive-interval` | 15 秒 |
 | `ServerAliveCountMax` | 连续多少个间隔无响应后断开重连 | `--keepalive-count` | 3 |
 
+优先级：gst 参数，然后是 ssh 配置，最后是默认值。
+
 限制：
 
 - 只使用没有口令的私钥，不使用 ssh-agent。
 - 严格校验 known_hosts，不接受未知主机。
-- 不支持 `ProxyJump`、`ProxyCommand`、`HostKeyAlias`。
+- link 不支持 `ProxyJump`、`ProxyCommand`、`HostKeyAlias`。要到达另一台机器背后的机器，请在两者上都运行 gst，经由前面的那台建立 link。
 
 ## 后台运行
 
-- 所有启动的 tunnel 都由一个后台进程（gst daemon）运行。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。启动第一个 tunnel 时 gst 安装它，没有任何已启动的 tunnel 时删除它，不需要手动管理。
+- 每个用户有一个后台进程，即 gst daemon，运行所有已启动的 link、代理和 map，并接受其他机器的 link。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。第一次修改配置时，或者另一台机器第一次连接本机时，gst 会安装它，不需要手动管理。`gst down` 停止它并删除服务，`gst up` 恢复。
 - gst 命令通过只有你能访问的 socket 与 daemon 通信：Linux 上是 `~/.local/state/gst/gst.sock`（设置了 `$XDG_STATE_HOME` 时在其下），macOS 上是 `~/Library/Application Support/gst/gst.sock`。
-- tunnel 失败后 5 秒自动重连，没有次数限制。daemon 本身退出后，服务会在 5 秒后重启它。
-- `gst list` 中的状态：`running` 已连接且所有 forward 都在监听；`connecting` 正在连接；`down` 失败后正在等待重连，用 `gst logs` 和 `gst check` 排查；`stopped` 已停止。对未在运行的 tunnel，`gst show` 和 `gst list --json` 会给出最近一次错误。
-- 每个 tunnel 有自己的日志：Linux 上在 `~/.local/state/gst/logs/<name>.log`，macOS 上在 `~/Library/Logs/gst/<name>.log`。超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 tunnel 的日志最多约 2 MiB；`gst remove` 会删除它们。为保护隐私，日志不记录服务器地址、用户、密钥路径和转发地址，forward 按编号记录（如 `forward 2`），编号与 `gst forward list` 一致。
-- daemon 自身的日志：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。
-- 从 gst 0.1 升级：0.1 中每个 tunnel 是单独的服务（`gst-<name>.service`、`local.gst.<name>`）。升级后第一个读取配置的 gst 命令会把有服务的 tunnel 交给 daemon 运行并删除这些服务，其余 tunnel 标记为已停止。
-- Linux 上，要让 tunnel 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，tunnel 在登录后启动、注销后停止。
-
-## 连接多台机器（mesh）
-
-多台机器上的 gst 会自动互相连接，不需要任何设置：有 tunnel 的机器自动加入 mesh，每条 tunnel 都会通过它的 SSH 连接，把本机的 gst 和服务器上的 gst 连起来；服务器上的 gst 在第一次被连接时也自动加入。双方都能在 `gst mesh peers` 中看到对方。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst mesh nodes` 都能看到整个网络：laptop 有到 `mini` 和 `devcn` 的 tunnel 时，在 mini 上运行 `gst mesh nodes` 也能看到 laptop 和 devcn，mini 也能经由 laptop 连接 devcn。
-
-```bash
-gst mesh peers                  # 本机的 link
-gst mesh nodes                  # 所有机器以及它们之间的 tunnel
-gst mesh enable --name laptop   # 可选：修改显示的节点名（默认取主机名）
-```
-
-- 建立 link 需要服务器上有 gst 0.2 或更高版本。gst 通过 SSH 在登录 shell 中执行 `gst peer-bridge`；如果该 shell 的 `PATH` 里找不到 gst，用 `--remote-gst` 指定路径，例如 `gst set myhost --remote-gst ~/.nix-profile/bin/gst`。没有 gst 或执行了 `gst mesh disable` 的服务器仍会作为 tunnel 能到达的机器出现在 mesh 中；它的 link 保持 `down`，重试间隔逐渐拉长，最长 5 分钟一次。
-- `gst set <name> --no-mesh` 让这条 tunnel 不在服务器上运行 gst，例如服务器对每个会话都执行强制命令时；`--no-mesh=false` 恢复。
-- 加入 mesh 后，即使没有启动任何 tunnel，daemon 也会保持运行，以便接受连接。
-- link 的状态为 `connecting`、`up` 或 `down`。`gst mesh peers` 会显示 link 断开的原因。link 失败不影响 tunnel 的 forward。
-- `gst mesh nodes` 中，gst 节点显示节点名，没有 gst 的 SSH 服务器显示连向它的 tunnel 名。服务器上的 gst 之后加入 mesh 时，它会显示为该 gst 节点。从本机经由运行中的 tunnel 能到达的机器标记为可达；要继续经过某台机器往下走，需要与它的 peer link 处于 up 状态。退出网络的机器会在 30 分钟内消失。
-- peer 之间相互信任：link 以你的用户身份登录服务器，服务器的 daemon 只通过自己的 socket 接受它。因此你 tunnel 连到的任何一台运行 gst 的服务器，都能经由 mesh 反向访问你的机器所能到达的地方；对不完全可信的服务器使用 `--no-mesh`，或在本机执行 `gst mesh disable`。
-- `gst mesh disable` 让本机退出 mesh：关闭所有 link，不再自动加入，没有启动的 tunnel 时 daemon 也会停止。`gst mesh enable` 重新加入，并生成新的节点 id。
-
-### 经由 mesh 连接
-
-目标为 `mesh:<machine>` 的 tunnel 经由与目标相连的机器到达 `gst mesh nodes` 中的某台机器，本机不需要登录它：由路径上最后一台 gst 发起连接；目标机器没有 gst 时，用那台 gst 自己到它的 tunnel。`localhost` 等目标地址都是相对目标机器而言。`gst connect` 对单个连接做同样的事，使用标准输入输出。
-
-```bash
-# 在 mini 上：本机 15432 端口经由 laptop 连到 devcn 的 5432 端口
-gst add devcn-db mesh:devcn -L 15432:localhost:5432
-gst check devcn-db          # 显示路径：mini → laptop → devcn
-
-# 一个从 devcn 发出连接的 SOCKS5 代理
-gst add devcn-proxy mesh:devcn -D 1080
-
-# 经由 mesh ssh 到 devcn，使用你自己在 devcn 上的登录凭据
-ssh -o ProxyCommand='gst connect %n 22' devcn
-```
-
-- `<machine>` 是 `gst mesh nodes` 中的名字；重名时用 id。`gst connect` 只给端口时表示该机器的 localhost，也可以给 `host:port` 或 Unix socket 的绝对路径。
-- 这类 tunnel 只能有 `-L` 和 `-D` forward；SSH 设置中只有 `--connect-timeout` 适用。只要处于启动状态就会运行，不管 mesh 当前是否有可达路径；每个连接按当时最短的路径建立，没有路径时只有该连接失败。`gst check` 会显示路径。
-- 路径只能经由 up 状态的 peer link 越过一台机器；最后一段可以是任何运行中、没有设置 `--no-mesh` 的 tunnel，服务器上没有 gst 也可以。
-- mesh 中的每个 gst 都可以代表其他节点，连接它所在机器及其 tunnel 能到达的任何地方；只让你信任的机器加入。
+- daemon 本身退出后，服务会在 5 秒后重启它。
+- 每个 link 有自己的日志：Linux 上在 `~/.local/state/gst/logs/<name>.log`，macOS 上在 `~/Library/Logs/gst/<name>.log`，用 `gst link logs` 查看。超过 1 MiB 时 gst 会把它改名为 `<name>.log.1`（覆盖更早的一份），所以每个 link 的日志最多约 2 MiB；`gst link remove` 会删除它们。daemon 自身的日志：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。
+- 为保护隐私，日志不记录服务器地址、用户、密钥路径和目标地址，也不记录对方 gst 返回的错误。这些只出现在交互式输出中：`gst link list`、`gst link check`、`gst nodes` 和 `gst ui`。
+- Linux 上，要让 link 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，gst 在登录后启动、注销后停止。
+- 服务运行的是 `gst daemon`，link 经 SSH 在对方机器上运行 `gst peer-bridge`；这两个都不是需要你自己执行的命令。
 
 ### 网页
 
-`gst ui` 在浏览器页面中显示本机的 tunnel、peer link 和 mesh 拓扑图，每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面上的按钮可以启动、停止、重启本机的 tunnel，效果与 `gst start`、`stop`、`restart` 相同；其他修改仍使用上面的命令。
+`gst ui` 在浏览器页面中显示本机的 link、代理、map 和 route，以及 mesh 的拓扑图，每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面上的按钮可以启动、停止、重启本机的 link，效果与 `gst link start`、`stop`、`restart` 相同；其他修改仍使用上面的命令。
 
 ```bash
 gst ui
-# 在没有浏览器的服务器上：指定端口并转发出来
+# 在没有浏览器的机器上：指定端口并转发出来
 gst ui --port 8370 --no-open
-ssh -L 8370:localhost:8370 myhost   # 然后在本机打开打印出的地址
+ssh -L 8370:localhost:8370 devcn   # 然后在你自己的机器上打开打印出的地址
 ```
 
-- 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。
-- 拓扑图按与本机的距离排列机器。蓝色箭头是 peer link 为 up 的 tunnel，灰色是运行中的 tunnel，红色虚线是未运行的 tunnel；箭头从运行 tunnel 的机器指向它的服务器。本机无法到达的机器显示为淡色。
+地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。
+
+## 从 0.2 升级
+
+gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动转换：第一个读取 0.2 配置的 gst 命令会改写它，不需要你做任何事。
+
+- 每个 tunnel 变成同名的 link；目标为 `mesh:<machine>` 的 tunnel 没有对应的 link。
+- 每个 `-L` forward 变成指向该 tunnel 所连机器的 map（`mesh:` tunnel 则指向其中的 `<machine>`）。如果它的目标不在那台机器上，请在那里执行 `gst exit on`。
+- `-R` 和 `-D` forward 会被丢弃，并逐条在 stderr 列出，例如 `note: dropped tunnel myhost: -R 2222:localhost:22; recreate it with gst map on the other machine, or with gst route`。按[取代 ssh 转发](#取代-ssh-转发)重建：`-R` 在对方机器上建 map，`-D` 用代理加 route。
+- 其他机器也需要 gst 0.3。gst 协议现在是版本 2，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.3 or later`。请升级你连接的每一台机器。
+- `gst mesh …`、`gst add`、`gst list` 等 0.2 的命令都已移除，见[命令](#命令)。升级后重启 daemon 用 `gst up`，不再是 `gst restart --all`。
 
 ## 排查问题
 
-先运行 `gst check <name>`，它会逐项检查并对失败项给出建议。`add`、`set`、`start`、`restart` 也会先检查私钥和 known_hosts，不通过时不保存、不启动。
+先运行 `gst link check <name>`，它会逐项检查并对失败项给出建议。`link add`、`link set`、`link start`、`link restart` 也会先检查私钥和 known_hosts，不通过时不保存、不启动。link 为 `down` 时，`gst link list` 会显示最近一次错误。
 
 | 现象 | 处理 |
 | --- | --- |
 | `no usable key`、私钥 `passphrase-protected` | 按[使用前准备](#使用前准备)创建无口令私钥，并用 `--identity` 或 ssh 配置的 `IdentityFile` 指定 |
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
-| 主机密钥不匹配 | 确认服务器密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
-| `-R` 端口被占用（`listener start failed`） | 通常是上一次连接在服务器上残留的会话，见下文 |
-| `-R` socket 在重启后报 `listener start failed` | 上一次会话的 socket 文件还留在服务器上；在 sshd 中设置 `StreamLocalBindUnlink yes`，或开启 `--cleanup-listeners` |
-| macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后运行 `gst restart <name>`。终端获得授权不一定代表后台服务也获得授权 |
-
-**服务器端口被残留会话占用。** 网络中断后，旧的 SSH 会话可能还占着服务器上的 `-R` 端口。建议在服务器的 sshd 配置中设置 `ClientAliveInterval 15` 和 `ClientAliveCountMax 3`，让 sshd 及时回收失联的会话。
-
-也可以开启 `--cleanup-listeners`：每次连接后、开始监听前，gst 会在服务器上终止属于登录用户、占用这些 `-R` 端口和 socket 的进程，并删除属于登录用户、没有进程监听的 socket 文件。被终止的**不限于 SSH 进程**，所以只能用于专属于这个 tunnel 的端口和 socket。Linux 上残留的 sshd 会话进程无法用这种方式清理。服务器需要在 `PATH` 中提供 `bash`、`lsof`、`ps`、`id`；Linux 上还需要可读的 `/proc/net/tcp` 和 `/proc/net/unix`，其他系统需要 `netstat`。
+| 主机密钥不匹配 | 确认该机器的密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
+| link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：`gst link set devcn --remote-gst ~/.nix-profile/bin/gst` |
+| link 为 `down`，错误是 `gst is down on this machine; run gst up there` | 在对方机器上执行 `gst up` |
+| `speaks an older gst protocol; upgrade gst there to 0.3 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.3） |
+| `... is not an exit, so it connects only to addresses on its own machine` | 目标不在你途经的那台机器上。在那里执行 `gst exit on`，或改为连接它自己的 `localhost` |
+| `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst nodes`（机器为 `unreachable` 或缺失）和 `gst link list` |
+| 代理或 map 报 `cannot listen on ...` | 地址被其他程序占用：用 `gst proxy <address>` 或 `gst map` 换一个地址，或释放它，然后执行 `gst up` |
+| `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
+| 机器名匹配到多台机器 | 使用 `gst nodes` 中的 id 或 id 前缀 |
+| macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后运行 `gst link restart <name>`。终端获得授权不一定代表后台服务也获得授权 |
 
 ## 在脚本和 agent 中使用
 
-- 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。
-- 退出码：`0` 成功，`1` 执行失败（包括 `check` 未通过），`2` 参数无效。
-- `list`、`show`、`check`、`forward list`、`mesh peers`、`mesh nodes` 支持 `--json`。
-- 所有命令都不需要交互输入。重复添加完全相同的 forward 不会改动任何东西；监听地址相同但 forward 不同则报错。`-L` 和 `-D` 都在本机监听，所以不能共用同一个地址。固定目标和动态（SOCKS）`-R` 都在服务器上监听，同样不能共用监听地址。
+- 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。不是错误的提示以 `note:` 开头。
+- 退出码：`0` 成功，`1` 执行失败（包括 `link check` 未通过），`2` 参数无效。
+- `link list`、`link show`、`link check`、`nodes`、`proxy`、`map list`、`route list` 的 `--json` 字段是稳定的。
+- 所有命令都不需要交互输入。添加匹配项相同的 route 会替换原有的；为已映射的地址再添加 map 会报错。代理和 map 不能共用同一个监听地址。
 
 ## 配置文件
 
-tunnel 保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`）。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以在另一个配置文件中启动或修改 tunnel，会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。反向 SOCKS 不需要改变配置文件结构：它保存为目标为空的 `remote` forward。
+配置保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`），包括本机的 node（id、名字、exit）、代理地址、link、map 和 route。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以修改另一个配置文件会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。

@@ -30,78 +30,65 @@ function svg(tag, attrs, ...children) {
 }
 
 function pill(text, cls) {
-  return el("span", { class: "pill " + (cls || text) }, text);
+  return el("span", { class: "pill " + (cls || text.replace(/ /g, "-")) }, text);
 }
 
 function shortID(id) {
-  return id.includes(":") ? id : id.slice(0, 8);
+  return id.slice(0, 8);
 }
 
-function since(t) {
-  const d = new Date(t);
-  if (isNaN(d) || d.getFullYear() < 2000) return "";
-  const s = Math.round((Date.now() - d) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return Math.floor(s / 60) + "m ago";
-  if (s < 86400) return Math.floor(s / 3600) + "h ago";
-  return d.toLocaleString();
+function fill(table, rows) {
+  table.tBodies[0].replaceChildren(...rows.map((cells) => el("tr", null, ...cells.map((c) => el("td", null, ...[].concat(c))))));
 }
 
-function fill(tbody, rows) {
-  tbody.replaceChildren(...rows.map((cells) => el("tr", null, ...cells.map((c) => el("td", null, ...[].concat(c))))));
+// show fills a table, or hides it for the empty-state paragraph.
+function show(name, rows) {
+  fill($(name), rows);
+  $(name).closest(".table-wrap").hidden = rows.length === 0;
+  $(name + "-empty").hidden = rows.length !== 0;
 }
 
-function showAlert(text) {
+function showAlert(...texts) {
   const a = $("alert");
-  a.textContent = text || "";
-  a.hidden = !text;
+  a.replaceChildren(...texts.filter(Boolean).map((t) => el("p", null, t)));
+  a.hidden = a.childNodes.length === 0;
 }
 
-// Display names: gst nodes that share a name get their id prefix.
+function showNotice(text) {
+  const n = $("notice");
+  n.textContent = text || "";
+  n.hidden = !text;
+}
+
+// Machines that share a name are told apart by their id prefix.
 function displayNames(nodes) {
   const count = {};
-  for (const n of nodes) if (n.gst) count[n.name] = (count[n.name] || 0) + 1;
+  for (const n of nodes) count[n.name] = (count[n.name] || 0) + 1;
   const names = {};
-  for (const n of nodes) names[n.id] = n.gst && count[n.name] > 1 ? `${n.name} (${shortID(n.id)})` : n.name;
+  for (const n of nodes) names[n.id] = count[n.name] > 1 ? `${n.name} (${shortID(n.id)})` : n.name;
   return names;
 }
 
-function edgeClass(e) {
-  if (e.linked) return "linked";
-  return e.state === "running" ? "running" : "down";
-}
+// ---- links ----
 
-function renderTunnels(tunnels) {
-  fill($("tunnels").tBodies[0], tunnels.map((t) => {
-    const status = [pill(t.status)];
-    if (t.error && t.status !== "running") status.push(el("span", { class: "err" }, t.error));
-    const dest = [t.destination];
-    if (t.destination.startsWith("mesh:")) dest.push(el("span", { class: "sub" }, "through the mesh"));
-    else if (t.no_mesh) dest.push(el("span", { class: "sub" }, "no mesh"));
-    const fwds = t.forwards.length ? t.forwards.map((f) => el("span", { class: "fwd" }, f.spec)) : [el("span", { class: "sub" }, "none")];
-    return [el("strong", null, t.name), status, dest, fwds, actions(t)];
-  }));
-  $("tunnels").hidden = tunnels.length === 0;
-  $("tunnels-empty").hidden = tunnels.length !== 0;
-}
+let busy = false;
+let noticeTimer;
+let alertSticky = 0; // until then, the alert shows an action's error
+const ACTIONS = { start: ["Start", "Starting"], stop: ["Stop", "Stopping"], restart: ["Restart", "Restarting"] };
 
-// actions returns the buttons that change a tunnel, as gst start, stop,
-// and restart do.
-function actions(t) {
-  const names = t.status === "stopped" ? ["start"] : ["restart", "stop"];
+// actions returns the buttons that apply to a link, as gst link start,
+// stop, and restart do.
+function actions(l) {
+  const names = l.status === "stopped" ? ["start"] : ["restart", "stop"];
   const box = el("span", { class: "actions" });
   for (const action of names) {
     const b = el("button", { type: "button", class: action === "stop" ? "quiet" : "" }, ACTIONS[action][0]);
     b.disabled = busy;
-    b.addEventListener("click", () => act(t.name, action));
+    b.addEventListener("click", () => act(l.name, action));
     box.append(b);
   }
   return box;
 }
-
-let busy = false;
-let noticeTimer;
-const ACTIONS = { start: ["Start", "Starting"], stop: ["Stop", "Stopping"], restart: ["Restart", "Restarting"] };
 
 async function act(name, action) {
   if (busy) return;
@@ -110,7 +97,7 @@ async function act(name, action) {
   for (const b of document.querySelectorAll(".actions button")) b.disabled = true;
   showNotice(`${ACTIONS[action][1]} ${name}…`);
   try {
-    const res = await fetch(`api/tunnels/${encodeURIComponent(name)}/${action}`, {
+    const res = await fetch(`api/links/${encodeURIComponent(name)}/${action}`, {
       method: "POST",
       headers: { Authorization: "Bearer " + token },
     });
@@ -126,58 +113,58 @@ async function act(name, action) {
   } catch (err) {
     showNotice("");
     showAlert(String(err.message || err));
+    alertSticky = Date.now() + 8000;
   } finally {
     busy = false;
     refresh();
   }
 }
 
-function showNotice(text) {
-  const n = $("notice");
-  n.textContent = text || "";
-  n.hidden = !text;
+function renderLinks(links) {
+  show("links", links.map((l) => {
+    const status = [pill(l.status)];
+    if (l.error && l.status !== "running") status.push(el("span", { class: "err" }, l.error));
+    const peer = l.peer && l.peer.id
+      ? [l.peer.name, el("span", { class: "sub mono" }, shortID(l.peer.id))]
+      : [el("span", { class: "sub" }, "-")];
+    return [el("strong", null, l.name), status, l.destination, peer, actions(l)];
+  }));
 }
 
-function renderPeers(peers) {
-  fill($("peers").tBodies[0], peers.map((l) => {
-    const state = [pill(l.state)];
-    if (l.error) state.push(el("span", { class: "err" }, l.error));
-    const peer = l.peer && l.peer.id ? [l.peer.name, el("span", { class: "sub mono" }, shortID(l.peer.id))] : ["-"];
-    return [l.direction, l.tunnel || "-", state, peer, since(l.since)];
-  }));
-  $("peers").hidden = peers.length === 0;
-  $("peers-empty").hidden = peers.length !== 0;
+// ---- machines ----
+
+// routeText is how this machine reaches n: the machines along its path
+// after this one.
+function routeText(n, topo, names) {
+  if (n.id === topo.self) return "this machine";
+  if (!n.reachable || !n.path || n.path.length < 2) return "unreachable";
+  return n.path.slice(1).map((id) => names[id] || shortID(id)).join(" → ");
 }
 
 function renderNodes(topo, names) {
-  const rows = topo.nodes.map((n) => {
-    const name = [el("strong", null, names[n.id])];
-    if (n.id === topo.self) name.push(el("span", { class: "sub" }, "this machine"));
-    return [
-      name,
-      n.gst ? "gst" : "SSH server",
-      n.id.startsWith("tunnel:") ? el("span", { class: "sub" }, "not connected yet") : el("span", { class: "mono" }, shortID(n.id)),
-      pill(n.reachable ? "yes" : "no"),
-      n.software || "-",
-    ];
-  });
-  fill($("nodes").tBodies[0], rows);
+  const nodes = [...topo.nodes].sort((a, b) => (a.id === topo.self ? -1 : b.id === topo.self ? 1 : names[a.id].localeCompare(names[b.id])));
+  fill($("nodes"), nodes.map((n) => [
+    el("strong", null, names[n.id]),
+    el("span", { class: "mono" }, shortID(n.id)),
+    n.software || "-",
+    pill(n.exit ? "yes" : "no", n.exit ? "yes" : "off"),
+    n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "unreachable"),
+  ]));
 }
 
-// The map places each machine in a column by its distance from this one,
-// following tunnels in either direction; machines without a path to it
-// come last.
-function renderMap(topo, names) {
+// The graph puts each machine in a column by its distance from this one,
+// following links in either direction; machines without a path to it come
+// last. Links are straight lines labeled with their names.
+function renderGraph(topo, names) {
   const map = $("map");
-  const W = 150, H = 46, COL = 240, ROW = 74, PAD = 24;
+  const W = 150, H = 44, COL = 230, ROW = 70, PAD = 24;
 
   const adj = {};
   for (const n of topo.nodes) adj[n.id] = [];
-  for (const e of topo.edges) {
-    if (adj[e.from] && adj[e.to]) {
-      adj[e.from].push(e.to);
-      adj[e.to].push(e.from);
-    }
+  const edges = topo.edges.filter((e) => adj[e.from] && adj[e.to] && e.from !== e.to);
+  for (const e of edges) {
+    adj[e.from].push(e.to);
+    adj[e.to].push(e.from);
   }
   const layer = { [topo.self]: 0 };
   const queue = [topo.self];
@@ -196,82 +183,69 @@ function renderMap(topo, names) {
     const l = n.id in layer ? layer[n.id] : maxLayer + 1;
     (columns[l] ||= []).push(n);
   }
-  const pos = {};
   const rows = Math.max(1, ...columns.filter(Boolean).map((c) => c.length));
-  const height = PAD * 2 + rows * ROW - (ROW - H);
-  columns.forEach((col, l) => {
-    if (!col) return;
+  const height = PAD * 2 + (rows - 1) * ROW + H;
+  const pos = {};
+  let x = PAD;
+  for (const col of columns) {
+    if (!col) continue;
     col.sort((a, b) => names[a.id].localeCompare(names[b.id]));
     const top = PAD + ((rows - col.length) * ROW) / 2;
-    col.forEach((n, i) => (pos[n.id] = { x: PAD + l * COL, y: top + i * ROW }));
-  });
-  const width = PAD * 2 + (columns.length - 1) * COL + W + 60;
-
-  const defs = svg("defs");
-  for (const cls of ["linked", "running", "down"]) {
-    defs.append(svg("marker", { id: "arrow-" + cls, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
-      svg("path", { d: "M0,0 L10,5 L0,10 z", class: "arrow-" + cls })));
+    col.forEach((n, i) => (pos[n.id] = { x, y: top + i * ROW }));
+    x += COL;
   }
+  const width = x - COL + W + PAD;
 
-  // Each edge leaves and enters a node at its own point along the node's
-  // side, ordered by where the other end is, so that arrows do not meet.
-  const edges = topo.edges.filter((e) => pos[e.from] && pos[e.to] && e.from !== e.to);
-  const ports = {};
-  const port = (id, side, edge, other) => (ports[id + side] ||= []).push({ edge, other });
-  const sideOf = (a, b, out) => (a.x === b.x ? "R" : (a.x < b.x) === out ? "R" : "L");
-  for (const e of edges) {
-    const a = pos[e.from], b = pos[e.to];
-    port(e.from, sideOf(a, b, true), e, b);
-    port(e.to, sideOf(b, a, true), e, a);
-  }
-  const at = {};
-  for (const [key, list] of Object.entries(ports)) {
-    list.sort((p, q) => p.other.y - q.other.y || p.other.x - q.other.x);
-    list.forEach((p, i) => {
-      const id = key.slice(0, -1), side = key.slice(-1), n = pos[id];
-      at[(p.edge.from === id ? "from" : "to") + "\0" + edges.indexOf(p.edge)] = {
-        x: side === "R" ? n.x + W : n.x,
-        y: n.y + (H * (i + 1)) / (list.length + 1),
-        dir: side === "R" ? 1 : -1,
-      };
-    });
-  }
+  const defs = svg("defs", null,
+    svg("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" },
+      svg("path", { d: "M0,0 L10,5 L0,10 z", class: "arrow" })));
 
+  // clip returns where the line from the center of box a towards b leaves a.
+  const clip = (a, b) => {
+    const cx = a.x + W / 2, cy = a.y + H / 2;
+    const dx = b.x + W / 2 - cx, dy = b.y + H / 2 - cy;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    const s = Math.min(dx ? W / 2 / Math.abs(dx) : Infinity, dy ? H / 2 / Math.abs(dy) : Infinity);
+    return { x: cx + dx * s, y: cy + dy * s };
+  };
+
+  // Several links between the same two machines are bent apart.
+  const seen = {};
   const edgeLayer = svg("g");
   const labelLayer = svg("g");
-  edges.forEach((e, i) => {
-    const p = at["from\0" + i], q = at["to\0" + i];
-    const x2 = q.x + q.dir * 2;
-    const reach = Math.max(40, Math.abs(x2 - p.x) / 2);
-    const d = `M${p.x},${p.y} C${p.x + p.dir * reach},${p.y} ${x2 + q.dir * reach},${q.y} ${x2},${q.y}`;
-    // The curve's midpoint, for the label.
-    const mx = (p.x + x2) / 2 + ((p.dir + q.dir) * reach * 3) / 8;
-    const my = (p.y + q.y) / 2;
-    const cls = edgeClass(e);
-    const title = `${names[e.from]} → ${names[e.to]}: tunnel ${e.tunnel} to ${e.destination}, ${e.state}${e.linked ? ", peer link up" : ""}`;
-    edgeLayer.append(svg("path", { d, class: "edge " + cls, "marker-end": `url(#arrow-${cls})` }, svg("title", null, title)));
-    labelLayer.append(svg("text", { x: mx, y: my - 4, "text-anchor": "middle", class: "edge-label" }, e.tunnel));
-  });
+  for (const e of edges) {
+    const key = [e.from, e.to].sort().join("\0");
+    const k = (seen[key] = (seen[key] || 0) + 1) - 1;
+    const a = pos[e.from], b = pos[e.to];
+    let p = clip(a, b), q = clip(b, a);
+    const len = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+    const bend = (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 26 * (e.from < e.to ? 1 : -1);
+    const mx = (p.x + q.x) / 2 + (-(q.y - p.y) / len) * bend;
+    const my = (p.y + q.y) / 2 + ((q.x - p.x) / len) * bend;
+    edgeLayer.append(svg("path", { d: `M${p.x},${p.y} Q${mx},${my} ${q.x},${q.y}`, class: "edge", "marker-end": "url(#arrow)" },
+      svg("title", null, `${names[e.from]} → ${names[e.to]}: link ${e.link}`)));
+    // The curve's midpoint is halfway to the control point.
+    labelLayer.append(svg("text", { x: (p.x + q.x) / 4 + mx / 2, y: (p.y + q.y) / 4 + my / 2 - 4, "text-anchor": "middle", class: "edge-label" }, e.link));
+  }
 
   const nodeLayer = svg("g");
   for (const n of topo.nodes) {
     const p = pos[n.id];
-    const classes = ["node", n.gst ? "gst" : "ssh"];
+    const classes = ["node"];
     if (n.id === topo.self) classes.push("self");
     if (!n.reachable) classes.push("unreachable");
-    const kind = n.id === topo.self ? "this machine" : n.gst ? "gst " + shortID(n.id) : "SSH server";
-    const title = `${names[n.id]}\n${n.gst ? "gst node " + n.id : "SSH server without gst"}\n${n.reachable ? "reachable" : "unreachable"}${n.software ? "\n" + n.software : ""}`;
+    const kind = n.id === topo.self ? "this machine" : shortID(n.id) + (n.exit ? " · exit" : "");
     nodeLayer.append(svg("g", { class: classes.join(" "), transform: `translate(${p.x},${p.y})` },
-      svg("title", null, title),
+      svg("title", null, `${names[n.id]}\n${n.id}${n.software ? "\n" + n.software : ""}${n.reachable ? "" : "\nunreachable"}`),
       svg("rect", { class: "box", width: W, height: H, rx: 8 }),
-      svg("text", { class: "name", x: 12, y: 20 }, truncate(names[n.id], 18)),
-      svg("text", { class: "kind", x: 12, y: 36 }, kind)));
+      svg("text", { class: "name", x: 12, y: 19 }, truncate(names[n.id], 18)),
+      svg("text", { class: "kind", x: 12, y: 35 }, kind)));
   }
 
   map.setAttribute("viewBox", `0 0 ${width} ${height}`);
   map.style.maxWidth = width + "px";
-  // On narrow screens the map scrolls rather than shrinking past legibility.
-  map.style.minWidth = Math.min(width, 560) + "px";
+  // On narrow screens the graph scrolls rather than shrinking past legibility.
+  map.style.minWidth = Math.min(width, 520) + "px";
   map.replaceChildren(defs, edgeLayer, nodeLayer, labelLayer);
 }
 
@@ -279,38 +253,99 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+// ---- proxy, maps, routes ----
+
+function renderProxy(proxy) {
+  const state = $("proxy-state");
+  const usage = $("proxy-usage");
+  if (!proxy.address) {
+    state.replaceChildren(pill("off"), " ", el("span", { class: "muted" }, "Turn it on with "), el("code", null, "gst proxy 127.0.0.1:1080"));
+    usage.hidden = true;
+    return;
+  }
+  const children = [el("code", null, proxy.address), " "];
+  if (proxy.status === "failed") {
+    children.push(pill("failed", "down"), " ", el("span", { class: "err-inline" }, proxy.error || ""));
+  } else if (proxy.status === "listening") {
+    children.push(pill("listening", "running"));
+  } else {
+    children.push(pill("gst is not running", "down"));
+  }
+  state.replaceChildren(...children);
+
+  // The usage lines name an address that clients can connect to.
+  const i = proxy.address.lastIndexOf(":");
+  let host = proxy.address.slice(0, i), port = proxy.address.slice(i + 1);
+  if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
+  const addr = `${host}:${port}`;
+  $("use-env").textContent = `ALL_PROXY=socks5h://${addr}`;
+  $("use-pac").textContent = `http://${addr}/proxy.pac`;
+  $("use-ssh").textContent = "Host *.gst\n  ProxyCommand gst connect %h %p";
+  usage.hidden = false;
+}
+
+function renderMaps(maps) {
+  show("maps", maps.map((m) => {
+    const status = [pill(m.status === "listening" ? "listening" : m.status === "failed" ? "failed" : "not running", m.status === "listening" ? "running" : "down")];
+    if (m.error) status.push(el("span", { class: "err" }, m.error));
+    return [el("span", { class: "mono" }, m.listen), el("span", { class: "mono" }, `${m.machine}:${m.target}`), status];
+  }));
+}
+
+// viaNote says what the mesh shows about the machine a route goes through.
+function viaNote(via, topo) {
+  if (!topo) return null;
+  const found = topo.nodes.filter((n) => n.name === via || n.id.startsWith(via));
+  if (found.length === 0) return "not in the mesh";
+  if (!found.some((n) => n.exit)) return "not an exit";
+  return null;
+}
+
+function renderRoutes(routes, topo) {
+  show("routes", routes.map((r) => {
+    const note = viaNote(r.via, topo);
+    return [el("span", { class: "mono" }, r.match), [r.via, note ? el("span", { class: "err" }, note) : null]];
+  }));
+}
+
+// ---- page ----
+
 function render(state) {
-  document.title = state.node ? `gst · ${state.node.name}` : "gst";
-  $("node").textContent = state.node ? `${state.node.name} · ${shortID(state.node.id)}` : "this machine";
+  const self = state.node;
+  document.title = self ? `gst · ${self.name}` : "gst";
+  $("node").textContent = self ? `${self.name} · ${shortID(self.id)}` : "this machine";
+  const exit = $("exit");
+  exit.hidden = !self;
+  exit.className = "pill " + (self && self.exit ? "yes" : "off");
+  exit.textContent = self && self.exit ? "exit" : "not an exit";
+
   const daemon = $("daemon");
-  daemon.className = "pill " + (state.daemon ? "running" : "down");
-  daemon.textContent = state.daemon ? "daemon running" : "daemon not running";
-  $("updated").textContent = state.software + " · updated " + new Date().toLocaleTimeString();
+  if (state.daemon) {
+    daemon.className = "pill running";
+    daemon.textContent = "daemon running";
+  } else {
+    daemon.className = "pill down";
+    daemon.textContent = (state.down ? "down" : "daemon not running") + " — run gst up";
+  }
+  $("updated").textContent = `${state.software} · updated ${new Date().toLocaleTimeString()}`;
 
-  const notes = [];
-  if (!state.daemon && state.tunnels.some((t) => t.status !== "stopped")) notes.push("The gst daemon does not answer; started tunnels show as down. Start it with gst start or gst mesh enable.");
-  for (const e of state.errors || []) notes.push(e);
-  if (Date.now() > alertSticky) showAlert(notes.join(" "));
+  if (Date.now() > alertSticky) showAlert(...(state.errors || []));
 
-  renderTunnels(state.tunnels);
-
-  const meshOn = !!state.node;
-  $("mesh-off").hidden = meshOn;
-  $("peers-section").hidden = !meshOn;
-  renderPeers(state.peers);
+  renderLinks(state.links);
   const topo = state.topology;
-  const showTopo = meshOn && topo && topo.nodes.length > 0;
-  $("mesh-section").hidden = !showTopo;
+  const showTopo = !!topo && topo.nodes.length > 0;
   $("nodes-section").hidden = !showTopo;
   if (showTopo) {
     const names = displayNames(topo.nodes);
-    renderMap(topo, names);
+    renderGraph(topo, names);
     renderNodes(topo, names);
   }
+  renderProxy(state.proxy);
+  renderMaps(state.maps);
+  renderRoutes(state.routes, topo);
 }
 
 let timer;
-let alertSticky = 0; // until then, the alert shows an action's error
 
 async function refresh() {
   clearTimeout(timer);

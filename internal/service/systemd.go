@@ -62,7 +62,7 @@ func (s *systemd) noteLinger() {
 	}
 	out, err := s.run("loginctl", "show-user", u.Username, "--property=Linger", "--value")
 	if err == nil && strings.TrimSpace(out) == "no" {
-		fmt.Fprintf(s.notes, "note: lingering is off for %s, so tunnels stop when you log out. Keep them running with: loginctl enable-linger %s\n", u.Username, u.Username)
+		fmt.Fprintf(s.notes, "note: lingering is off for %s, so gst stops when you log out. Keep it running with: loginctl enable-linger %s\n", u.Username, u.Username)
 	}
 }
 

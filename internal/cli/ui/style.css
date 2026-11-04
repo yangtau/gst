@@ -62,6 +62,8 @@ section > p { margin: 0 0 10px; }
   margin: 20px 0 0; padding: 10px 14px; border-radius: 8px;
   border: 1px solid var(--bad); color: var(--bad); background: var(--surface);
 }
+.alert p { margin: 0; }
+.alert p + p { margin-top: 4px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -69,7 +71,7 @@ section > p { margin: 0 0 10px; }
   background: var(--surface); font-size: 12px; white-space: nowrap;
 }
 .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--off); }
-.pill.running::before, .pill.up::before, .pill.yes::before { background: var(--ok); }
+.pill.running::before, .pill.yes::before { background: var(--ok); }
 .pill.connecting::before { background: var(--warn); }
 .pill.down::before, .pill.no::before { background: var(--bad); }
 
@@ -80,36 +82,35 @@ th { font-size: 12px; font-weight: 600; color: var(--muted); }
 tr:last-child td { border-bottom: none; }
 td .sub { display: block; color: var(--muted); font-size: 12.5px; }
 td .err { display: block; color: var(--bad); font-size: 12.5px; }
-.fwd { display: block; font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.err-inline { color: var(--bad); }
+.table-wrap.spaced { margin-top: 12px; }
+[hidden] { display: none !important; }
+
+.usage { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 10px 0 0; }
+.usage dt { color: var(--muted); }
+.usage dd { margin: 0; min-width: 0; }
+.usage code, .usage pre {
+  display: block; margin: 0; padding: 4px 10px; border-radius: 6px; overflow-x: auto;
+  background: var(--surface); border: 1px solid var(--border); font: 12.5px var(--mono);
+}
 
 .map-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px; overflow-x: auto; }
 #map { display: block; margin: 0 auto; width: 100%; height: auto; }
-#map .edge { fill: none; stroke-width: 1.6; }
-#map .edge.linked { stroke: var(--accent); stroke-width: 2.4; }
-#map .edge.running { stroke: var(--muted); }
-#map .edge.down { stroke: var(--bad); stroke-dasharray: 5 4; }
+#map .edge { fill: none; stroke: var(--accent); stroke-width: 2; }
 #map .edge-label { font: 11px var(--mono); fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
 #map .box { fill: var(--node); stroke: var(--border); stroke-width: 1.2; }
 #map .self .box { fill: var(--node-self); stroke: var(--accent); }
-#map .ssh .box { stroke-dasharray: 4 3; }
 #map .unreachable { opacity: .45; }
 #map .name { font-size: 13px; font-weight: 600; fill: var(--text); }
 #map .kind { font: 11px var(--mono); fill: var(--muted); }
-#map .arrow-linked { fill: var(--accent); }
-#map .arrow-running { fill: var(--muted); }
-#map .arrow-down { fill: var(--bad); }
+#map .arrow { fill: var(--accent); }
 
-.legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.ln { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--muted); }
-.ln.linked { border-top: 3px solid var(--accent); }
-.ln.down { border-top: 2px dashed var(--bad); }
-.dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1px solid var(--muted); background: var(--node); }
-.dot.dim { opacity: .45; }
 
 @media (max-width: 640px) {
   .bar, main { padding-left: 16px; padding-right: 16px; }
   th, td { padding: 7px 10px; }
+  .usage { grid-template-columns: 1fr; gap: 2px; }
+  .usage dd { margin-bottom: 8px; }
 }
 
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -118,7 +119,7 @@ td .err { display: block; color: var(--bad); font-size: 12.5px; }
   border: 1px solid var(--border); background: var(--surface);
 }
 .actions { display: inline-flex; gap: 6px; justify-content: flex-end; width: 100%; }
-#tunnels td:last-child { text-align: right; }
+#links td:last-child { text-align: right; }
 button {
   font: inherit; font-size: 12.5px; padding: 3px 11px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--accent); background: var(--accent); color: #fff;

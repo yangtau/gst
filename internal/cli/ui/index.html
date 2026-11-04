@@ -10,54 +10,60 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="logo">gst</span><span id="node" class="node"></span></div>
+  <div class="brand"><span class="logo">gst</span><span id="node" class="node"></span><span id="exit" class="pill"></span></div>
   <div class="meta"><span id="daemon" class="pill"></span><span id="updated" class="muted"></span></div>
 </header>
 <main>
-  <p id="alert" class="alert" hidden></p>
+  <div id="alert" class="alert" role="alert" hidden></div>
   <p id="notice" class="notice" role="status" hidden></p>
 
-  <section id="mesh-section" hidden>
-    <h2>Mesh</h2>
-    <p class="muted small">As this machine knows it. Arrows point from the machine that runs a tunnel to its server.</p>
-    <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh map"></svg></div>
-    <div class="legend small muted">
-      <span><i class="ln linked"></i>peer link up</span>
-      <span><i class="ln running"></i>tunnel running</span>
-      <span><i class="ln down"></i>tunnel not running</span>
-      <span><i class="dot dim"></i>unreachable</span>
-    </div>
-  </section>
-
   <section>
-    <h2>Tunnels</h2>
-    <div class="table-wrap"><table id="tunnels">
-      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Forwards</th><th><span class="sr">Actions</span></th></tr></thead>
+    <h2>Links</h2>
+    <div class="table-wrap"><table id="links">
+      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th><th><span class="sr">Actions</span></th></tr></thead>
       <tbody></tbody>
     </table></div>
-    <p id="tunnels-empty" class="muted" hidden>No tunnels. Add one with <code>gst add &lt;name&gt; [destination]</code>.</p>
-  </section>
-
-  <section id="peers-section" hidden>
-    <h2>Peer links</h2>
-    <div class="table-wrap"><table id="peers">
-      <thead><tr><th>Direction</th><th>Tunnel</th><th>State</th><th>Peer</th><th>Since</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <p id="peers-empty" class="muted" hidden>No peer links. Each tunnel links once it runs; add one with <code>gst add</code>.</p>
+    <p id="links-empty" class="muted" hidden>No links. Add one with <code>gst link add &lt;name&gt; [destination]</code>.</p>
   </section>
 
   <section id="nodes-section" hidden>
     <h2>Machines</h2>
-    <div class="table-wrap"><table id="nodes">
-      <thead><tr><th>Name</th><th>Kind</th><th>ID</th><th>Reachable</th><th>Software</th></tr></thead>
+    <p class="muted small">As this machine knows the mesh. Lines are running links, labeled with their name on the machine that runs them.</p>
+    <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh graph"></svg></div>
+    <div class="table-wrap spaced"><table id="nodes">
+      <thead><tr><th>Name</th><th>ID</th><th>Software</th><th>Exit</th><th>Route</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
 
-  <section id="mesh-off" hidden>
-    <h2>Mesh</h2>
-    <p class="muted">The mesh is not enabled on this machine. Enable it with <code>gst mesh enable</code>.</p>
+  <section>
+    <h2>Proxy</h2>
+    <p id="proxy-state"></p>
+    <div id="proxy-usage" hidden>
+      <dl class="usage">
+        <dt>Shell</dt><dd><code id="use-env"></code></dd>
+        <dt>Browser PAC</dt><dd><code id="use-pac"></code></dd>
+        <dt>ssh config</dt><dd><pre id="use-ssh"></pre></dd>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <h2>Maps</h2>
+    <div class="table-wrap"><table id="maps">
+      <thead><tr><th>Listen</th><th>Machine : target</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p id="maps-empty" class="muted" hidden>No maps. Add one with <code>gst map add &lt;listen&gt; &lt;machine&gt;:&lt;target&gt;</code>.</p>
+  </section>
+
+  <section>
+    <h2>Routes</h2>
+    <div class="table-wrap"><table id="routes">
+      <thead><tr><th>Match</th><th>Via</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p id="routes-empty" class="muted" hidden>No routes. Add one with <code>gst route add &lt;match&gt; &lt;machine&gt;</code>.</p>
   </section>
 </main>
 </body>

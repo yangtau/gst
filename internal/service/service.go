@@ -68,7 +68,7 @@ func New(notes io.Writer) (Manager, error) {
 	case "darwin":
 		return newLaunchd(home, os.Getuid()), nil
 	default:
-		return nil, fmt.Errorf("background tunnels are not supported on %s", runtime.GOOS)
+		return nil, fmt.Errorf("gst does not run on %s", runtime.GOOS)
 	}
 }
 
