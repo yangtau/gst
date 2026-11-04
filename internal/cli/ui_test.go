@@ -106,7 +106,7 @@ func TestUIServesPageAndSecurityHeaders(t *testing.T) {
 
 func TestUIRequiresToken(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	c := newUIClient(t, e)
 	for _, auth := range []string{"", "Bearer wrong", "Bearer ", "Bearer secret2", "Bearer secre", "secret", "Basic secret", "bearer secret"} {
 		if res := c.do("GET", "/api/state", auth); res.StatusCode != http.StatusUnauthorized {
@@ -124,7 +124,7 @@ func TestUIRequiresToken(t *testing.T) {
 
 func TestUIIsReadOnly(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	c := newUIClient(t, e)
 	e.resetCalls()
 	for _, path := range []string{"/api/state", "/api/nodes/devcn", "/api/links/web/stop", "/api/links/web/restart", "/api/links/web/start"} {
@@ -144,7 +144,7 @@ func TestUIIsReadOnly(t *testing.T) {
 
 func TestUIRejectsOtherHosts(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	h := e.app(io.Discard, io.Discard).uiHandler("secret")
 	for host, want := range map[string]int{
 		"127.0.0.1:8370":                  http.StatusOK,
@@ -183,8 +183,8 @@ func TestUIRejectsOtherHosts(t *testing.T) {
 func TestUIStateShape(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
-	e.mustGst("link", "add", "web", "myhost")
-	e.mustGst("link", "add", "db")
+	e.mustGst("add", "web", "myhost")
+	e.mustGst("add", "db")
 	e.mustGst("proxy", "1081")
 	e.mustGst("map", "add", "15432", "devcn:5432")
 	e.mustGst("route", "add", "corp.example.com", "devcn")
@@ -268,7 +268,7 @@ func TestUIStateWithoutDaemonOrConfig(t *testing.T) {
 	}
 
 	// A machine whose daemon does not answer has its node, but no status or topology.
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	e.mustGst("down")
 	s := c.state()
 	if !s.Down || s.Status != nil || s.Topology != nil || s.Node == nil {
@@ -340,7 +340,7 @@ func (b *syncBuffer) String() string {
 
 func TestUICommandServes(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	var stdout, stderr syncBuffer
 	a := e.app(&stdout, &stderr)
 	var opened []string

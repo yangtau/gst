@@ -177,7 +177,7 @@ function linksGroup(st, isSelf) {
       !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
   });
   return group("Links", count(down ? `${links.length - down} of ${links.length} running` : links.length, down), rows,
-    isSelf && ["Add one with ", el("code", null, "gst link add <name> [destination]")]);
+    isSelf && ["Add one with ", el("code", null, "gst add <name> [destination]")]);
 }
 
 // linkedFrom lists the links that other machines opened to this one,

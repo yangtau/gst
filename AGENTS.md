@@ -19,7 +19,7 @@ gst links a user's machines into a mesh over SSH: one background daemon per user
 - `internal/cli`: cobra commands, output, and the error/hint contract; `gst ui` and its embedded page (`internal/cli/ui`).
 - `internal/config`: config file (locked, atomic writes; links, maps, routes, the proxy, this node), address parsing, and the conversion of version 2 files (`legacy.go`).
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
-- `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst link add`.
+- `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst add`.
 - `internal/daemon`: the daemon, which supervises the links, serves the proxy and the maps, and answers the control socket, and its client.
 - `internal/mesh`: the node: links (`gst peer-bridge` plus yamux), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, and relayed connections (`relay.open`) along source routes, with the exit check at the last hop.
 - `internal/proxy`: the SOCKS5 and HTTP proxy.

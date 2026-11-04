@@ -7,7 +7,7 @@ gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon�
 | 概念 | 是什么 | 命令 |
 | --- | --- | --- |
 | **node**（机器） | 一台运行 gst 的机器，以 128 位随机 id 标识，名字只用于显示和寻址 | `gst name`、`gst status` |
-| **link** | 本机到另一台 gst 机器的 SSH 连接，承载两边 daemon 之间的 peer 会话 | `gst link …` |
+| **link** | 本机到另一台 gst 机器的 SSH 连接，承载两边 daemon 之间的 peer 会话 | `gst add`、`gst remove` |
 | **proxy** | 本机 daemon 提供的 SOCKS5 / HTTP 代理入口（默认关闭，`gst proxy <address>` 开启），`<machine>.gst` 与路由规则命中的连接走 mesh | `gst proxy` |
 | **map** | 本机的一个监听端口或 Unix socket，连接转到某台机器上的端口或 socket，给不支持代理的程序用 | `gst map …` |
 | **route** | 出口规则：某些域名、网段或全部流量经某台机器出去 | `gst route …` |

@@ -44,6 +44,9 @@ func TestMesh(t *testing.T) {
 				t.Fatalf("gst status lacks %q:\n%s", want, out)
 			}
 		}
+		if all := a.mustGst("status", "--all"); !strings.Contains(all, "FROM") || !strings.Contains(all, "LINK") {
+			t.Fatalf("gst status --all lacks the links:\n%s", all)
+		}
 		var names []string
 		for line := range strings.Lines(out) {
 			if f := strings.Fields(line); len(f) > 1 {
@@ -287,7 +290,7 @@ func TestMesh(t *testing.T) {
 			}
 			return st
 		}
-		c.mustGst("link", "add", "spare", cb.deadEnd())
+		c.mustGst("add", "spare", cb.deadEnd())
 		c.mustGst("map", "add", "16000", "b:7100")
 		c.mustGst("route", "add", "10.9.0.0/16", "b")
 		c.mustGst("proxy", "127.0.0.1:1090")

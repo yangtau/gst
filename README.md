@@ -54,7 +54,7 @@ gst runs in the background, where it cannot type a passphrase or confirm an unkn
      IdentityFile ~/.ssh/gst_ed25519
    ```
 
-   Or skip the entry and give the destination to `gst link add`, such as `user@ssh.example.com`. All SSH settings (address, user, key, known_hosts, timeouts) come from `~/.ssh/config`; see [ssh configuration](#ssh-configuration).
+   Or skip the entry and give the destination to `gst add`, such as `user@ssh.example.com`. All SSH settings (address, user, key, known_hosts, timeouts) come from `~/.ssh/config`; see [ssh configuration](#ssh-configuration).
 
 3. **The machine's host key in known_hosts**: connect once with `ssh devcn`, then verify and accept the host key.
 
@@ -67,8 +67,8 @@ Only the machine that creates a link needs these; the machine that is linked to 
 On `laptop`, link to `devcn` and `mini`:
 
 ```bash
-gst link add devcn        # the "devcn" entry of ~/.ssh/config
-gst link add mini
+gst add devcn             # the "devcn" entry of ~/.ssh/config
+gst add mini
 gst status                # every machine in the mesh, one per line
 gst ping devcn            # check that devcn answers through the mesh
 gst status devcn          # devcn's own links, proxy, maps, and routes
@@ -113,7 +113,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | Concept | What it is | Commands |
 | --- | --- | --- |
 | **node** | A machine that runs gst. It has a random 128-bit id and a name (default: the host name) | `gst name`, `gst status` |
-| **link** | An SSH connection from this machine to another gst machine, kept up in the background; the two daemons join each other's mesh over it | `gst link …` |
+| **link** | An SSH connection from this machine to another gst machine, kept up in the background; the two daemons join each other's mesh over it | `gst add`, `gst remove` |
 | **proxy** | A SOCKS5 and HTTP proxy served by this machine's daemon: `<machine>.gst` and the hosts that routes match go through the mesh | `gst proxy` |
 | **map** | A local port or Unix socket whose connections go to a port or socket of a machine; for programs that cannot use a proxy | `gst map …` |
 | **route** | A rule that sends the proxy's connections to some hosts out through another machine | `gst route …` |
@@ -122,7 +122,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 ### Nodes and links
 
 - A node's name is for display and addressing, and need not be unique; its id is unique. Change the name with `gst name laptop`. Names, like link names, are 1-32 lowercase letters, digits, or `-`.
-- A link is bidirectional: traffic can pass through it either way, so `devcn` needs no link of its own to reach `laptop`. A link has a name (`gst link add devcn`), which also names the machine at the other end until it reports its own name.
+- A link is bidirectional: traffic can pass through it either way, so `devcn` needs no link of its own to reach `laptop`. A link has a name (`gst add devcn`), which also names the machine at the other end until it reports its own name.
 - A started link runs in the background, starts at login, and reconnects after failures. Linked machines pass on what they know, so `gst status` on any machine shows the whole mesh; a machine that drops out disappears within 30 minutes. A route goes on past a machine only over running links.
 
 ### Machine addressing
@@ -212,13 +212,14 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 
 | Command | Purpose |
 | --- | --- |
-| `gst link add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
-| `gst link remove <name>...` (`rm`) | Stop links and delete them |
+| `gst add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
+| `gst remove <name>...` (`rm`) | Stop links and delete them |
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state; then this machine's problems |
+| `gst status --all` | Also list the running links between all the machines |
 | `gst status <machine>` | Show a machine's links (with state, destination, and peer), proxy, maps, and routes, asked through the mesh |
 | `gst ping <machine> [-c N]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer |
 
-`destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. `--remote-gst <command>` names the gst command on the machine, when gst is not in the `PATH` of its login shell, such as `~/.nix-profile/bin/gst`. Everything else about the SSH connection comes from your ssh configuration (see [ssh configuration](#ssh-configuration)). To change a link, remove it and add it again. `link add` checks first that a usable key without a passphrase exists and that known_hosts records the server, and saves nothing if not.
+`destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. `--remote-gst <command>` names the gst command on the machine, when gst is not in the `PATH` of its login shell, such as `~/.nix-profile/bin/gst`. Everything else about the SSH connection comes from your ssh configuration (see [ssh configuration](#ssh-configuration)). To change a link, remove it and add it again. `gst add` checks first that a usable key without a passphrase exists and that known_hosts records the server, and saves nothing if not.
 
 `gst status` prints one line per machine, this machine first:
 
@@ -263,7 +264,7 @@ Every command accepts `--config <file>`. `status`, `ping`, `proxy`, `map list`, 
 
 ## ssh configuration
 
-A link has no SSH settings of its own. Every time it connects, gst resolves its destination again with `ssh -G`, so it follows `~/.ssh/config`. After editing the file, run `gst link remove <name>` and `gst link add <name>` again to reconnect now; otherwise the change applies the next time the link connects.
+A link has no SSH settings of its own. Every time it connects, gst resolves its destination again with `ssh -G`, so it follows `~/.ssh/config`. After editing the file, run `gst remove <name>` and `gst add <name>` again to reconnect now; otherwise the change applies the next time the link connects.
 
 | ssh setting | Used for | Default when unset |
 | --- | --- | --- |
@@ -311,18 +312,18 @@ gst 0.3 replaces tunnels and forwards with the mesh model above. Its configurati
 - Each `-L` forward becomes a map to the tunnel's machine (or to `<machine>` for a `mesh:` tunnel). If its target is not on that machine, run `gst exit on` there.
 - `-R` and `-D` forwards are dropped. Each one is listed on stderr, such as `note: dropped tunnel myhost: -R 2222:localhost:22; recreate it with gst map on the other machine, or with gst route`. Recreate a `-R` as a map on the other machine, and a `-D` as the proxy with a route, as in [Replacing ssh forwards](#replacing-ssh-forwards).
 - The other machines need gst 0.3 as well. The gst protocol is now version 2, and gst refuses to talk to an older one: it reports `speaks an older gst protocol; upgrade gst there to 0.3 or later`. Upgrade every machine you link to.
-- `gst mesh …`, `gst add`, `gst list`, and the other 0.2 commands are gone; see [Commands](#commands). `gst up` replaces `gst restart --all` for restarting the daemon after an upgrade.
+- `gst mesh …`, `gst list`, and the other 0.2 commands are gone, and `gst add` now adds a link; see [Commands](#commands). `gst up` replaces `gst restart --all` for restarting the daemon after an upgrade.
 
 ## Troubleshooting
 
-Work from the outside in: `gst status` shows whether the machine is `online` and lists this machine's links that are not running, each with its last error; `gst ping <machine>` checks that the path to it works; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `link add` also checks the key and known_hosts first, and saves nothing if the check fails.
+Work from the outside in: `gst status` shows whether the machine is `online` and lists this machine's links that are not running, each with its last error; `gst ping <machine>` checks that the path to it works; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `gst add` also checks the key and known_hosts first, and saves nothing if the check fails.
 
 | Symptom | Fix |
 | --- | --- |
 | `no usable key`, or a key is `passphrase-protected` | Create a key without a passphrase as in [Before you start](#before-you-start), and name it with `IdentityFile` in `~/.ssh/config` |
 | `no host key for ...` | Connect once with `ssh <host>` to record the host key |
 | Host key mismatch | Once you have confirmed the machine's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
-| A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst link remove devcn`, then `gst link add devcn --remote-gst ~/.nix-profile/bin/gst` |
+| A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devcn`, then `gst add devcn --remote-gst ~/.nix-profile/bin/gst` |
 | A link is `down` with `gst is down on this machine; run gst up there` | Run `gst up` on the other machine |
 | `speaks an older gst protocol; upgrade gst there to 0.3 or later` | Upgrade gst on the machine it names (0.3 on both ends of every link) |
 | `... is not an exit, so it connects only to addresses on its own machine` | The target is not on the machine you are connecting through. Run `gst exit on` there, or aim at its own `localhost` |

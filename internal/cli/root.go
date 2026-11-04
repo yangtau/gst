@@ -33,7 +33,7 @@ one, through the links between them. Reach them by:
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
 report state accept --json.`,
-		Example: `  gst link add devcn                   # link to the ssh config host "devcn"
+		Example: `  gst add devcn                        # link to the ssh config host "devcn"
   gst status                           # every machine in the mesh
   gst map add 15432 devcn:5432         # local port 15432 leads to devcn's 5432
   curl http://devcn.gst:8080/          # with ALL_PROXY from gst proxy`,
@@ -66,7 +66,7 @@ report state accept --json.`,
 			root.AddCommand(cmd)
 		}
 	}
-	addGroup("mesh", a.linkCommand(), a.statusCommand(), a.pingCommand())
+	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
 	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand())
 	addGroup("machine", a.nameCommand(), a.exitCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:         "version",

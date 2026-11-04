@@ -208,7 +208,7 @@ func TestChangesWhileDown(t *testing.T) {
 	e.mustGst("down")
 	e.resetCalls()
 
-	code, stdout, stderr := e.gst("link", "add", "myhost")
+	code, stdout, stderr := e.gst("add", "myhost")
 	if code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}

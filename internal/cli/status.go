@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ type meshStatus struct {
 }
 
 func (a *app) statusCommand() *cobra.Command {
-	var asJSON bool
+	var asJSON, all bool
 	cmd := &cobra.Command{
 		Use:   "status [machine]",
 		Short: "Show the machines of the mesh, or what one machine runs",
@@ -31,13 +32,14 @@ it, one per line: its id, name, and gst, and whether it is online, the
 machines that connections to it pass through, and whether it is an exit.
 Linked machines pass on what they know, so the list includes machines
 several links away. Problems on this machine, such as a link that is
-down, follow the list.
+down, follow the list; with --all, the running links between all the
+machines come first.
 
 With a machine, show its links, proxy, maps, and routes, asked through
 the mesh. A machine is named by its name, its id or an id prefix of at
 least 4 characters, or the name of a link to it, optionally followed by
 .gst.`,
-		Example: "  gst status\n  gst status devcn",
+		Example: "  gst status\n  gst status --all\n  gst status devcn",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			b, err := a.backend()
@@ -45,6 +47,9 @@ least 4 characters, or the name of a link to it, optionally followed by
 				return err
 			}
 			if len(args) == 1 {
+				if all {
+					return usage("--all shows the whole mesh; give no machine")
+				}
 				machine, err := config.ParseMachine(args[0])
 				if err != nil {
 					return &usageError{err}
@@ -69,9 +74,10 @@ least 4 characters, or the name of a link to it, optionally followed by
 			if asJSON {
 				return writeJSON(a.stdout, meshStatus{st, topo})
 			}
-			return writeMesh(a.stdout, st, topo)
+			return writeMesh(a.stdout, st, topo, all)
 		}),
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "also show the running links between all the machines")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -81,9 +87,10 @@ func noDaemon(err error) error {
 	return withHint(fmt.Errorf("the gst daemon does not answer: %w", err), "start it with `gst up`")
 }
 
-// writeMesh prints a line for each machine, this one first, and then the
-// problems of this machine's links and listeners.
-func writeMesh(out io.Writer, st wire.Status, topo wire.Topology) error {
+// writeMesh prints a line for each machine, this one first, with all the
+// running links between them, and then the problems of this machine's
+// links and listeners.
+func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) error {
 	names := displayNames(topo)
 	w := table(out)
 	for _, n := range topo.Nodes {
@@ -111,7 +118,22 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology) error {
 		return err
 	}
 	if len(topo.Nodes) == 1 && len(st.Links) == 0 {
-		fmt.Fprintln(out, "\nNo links yet. Link to another machine with: gst link add <name> [destination]")
+		fmt.Fprintln(out, "\nNo links yet. Link to another machine with: gst add <name> [destination]")
+	}
+	if all && len(topo.Edges) > 0 {
+		edges := slices.Clone(topo.Edges)
+		slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
+			return cmp.Or(cmp.Compare(names[a.From], names[b.From]), cmp.Compare(a.Link, b.Link))
+		})
+		fmt.Fprintln(out)
+		w := table(out)
+		fmt.Fprintln(w, "FROM\tLINK\tTO")
+		for _, e := range edges {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", names[e.From], e.Link, names[e.To])
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
 	}
 	var problems []string
 	for _, l := range st.Links {

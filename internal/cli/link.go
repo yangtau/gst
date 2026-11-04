@@ -8,11 +8,13 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
-func (a *app) linkCommand() *cobra.Command {
-	cmd := asGroup(&cobra.Command{
-		Use:   "link",
-		Short: "Link this machine with other machines over SSH",
-		Long: `A link is an SSH connection from this machine to another machine that
+func (a *app) addCommand() *cobra.Command {
+	var remoteGst string
+	cmd := &cobra.Command{
+		Use:        "add <name> [destination]",
+		SuggestFor: []string{"link"},
+		Short:      "Link this machine with another machine over SSH",
+		Long: `Add a link: an SSH connection from this machine to another machine that
 also runs gst. Over it, the gst daemons of the two machines join each
 other's mesh: each learns every machine that the other knows, and
 connections can pass through it in both directions. A link runs in the
@@ -21,18 +23,7 @@ shows its state.
 
 The other machine needs gst 0.3 or later in the PATH of its login shell,
 or set with --remote-gst. It does not need its own links: being linked
-to is enough.`,
-	})
-	cmd.AddCommand(a.linkAddCommand(), a.linkRemoveCommand())
-	return cmd
-}
-
-func (a *app) linkAddCommand() *cobra.Command {
-	var remoteGst string
-	cmd := &cobra.Command{
-		Use:   "add <name> [destination]",
-		Short: "Add a link and start it",
-		Long: `Add a link and start it in the background.
+to is enough.
 
 <name> uses 1-32 lowercase letters, digits, and '-', and also names the
 machine at the other end until it reports its own name. <destination> is
@@ -46,9 +37,9 @@ not supported.
 Before saving, gst checks that an identity without a passphrase exists
 and that known_hosts records the server; it never accepts unknown host
 keys. To change a link, remove it and add it again.`,
-		Example: `  gst link add devcn                          # the "devcn" entry of ~/.ssh/config
-  gst link add db admin@db.example.com
-  gst link add web ssh://deploy@203.0.113.7:2200 --remote-gst ~/bin/gst`,
+		Example: `  gst add devcn    # the "devcn" entry of ~/.ssh/config
+  gst add db admin@db.example.com
+  gst add web ssh://deploy@203.0.113.7:2200 --remote-gst ~/bin/gst`,
 		Args: a.args(1, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -68,7 +59,7 @@ keys. To change a link, remove it and add it again.`,
 			err := a.update(func(f *config.File) error {
 				if f.Links[name] != nil {
 					return withHint(fmt.Errorf("link %s already exists", name),
-						fmt.Sprintf("to change it, remove it with `gst link remove %s` and add it again", name))
+						fmt.Sprintf("to change it, remove it with `gst remove %s` and add it again", name))
 				}
 				if err := a.preflight(cmd.Context(), l); err != nil {
 					return err
@@ -90,12 +81,12 @@ keys. To change a link, remove it and add it again.`,
 	return cmd
 }
 
-func (a *app) linkRemoveCommand() *cobra.Command {
+func (a *app) removeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "remove <name>...",
 		Aliases:           []string{"rm"},
-		Short:             "Stop links and delete them",
-		Example:           "  gst link remove devcn\n  gst link remove devcn db",
+		Short:             "Remove links to other machines",
+		Example:           "  gst remove devcn\n  gst remove devcn db",
 		Args:              a.args(1, -1),
 		ValidArgsFunction: a.completeLinks,
 		RunE: run(func(cmd *cobra.Command, args []string) error {

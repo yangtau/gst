@@ -54,7 +54,7 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
      IdentityFile ~/.ssh/gst_ed25519
    ```
 
-   也可以不写这一项，直接把目标地址交给 `gst link add`，例如 `user@ssh.example.com`。所有 SSH 设置（地址、用户、私钥、known_hosts、超时）都来自 `~/.ssh/config`，见 [ssh 配置](#ssh-配置)。
+   也可以不写这一项，直接把目标地址交给 `gst add`，例如 `user@ssh.example.com`。所有 SSH 设置（地址、用户、私钥、known_hosts、超时）都来自 `~/.ssh/config`，见 [ssh 配置](#ssh-配置)。
 
 3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devcn` 连接一次，核对并接受主机密钥。
 
@@ -67,8 +67,8 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 在 `laptop` 上连接 `devcn` 和 `mini`：
 
 ```bash
-gst link add devcn        # ~/.ssh/config 中的 "devcn"
-gst link add mini
+gst add devcn             # ~/.ssh/config 中的 "devcn"
+gst add mini
 gst status                # mesh 中的所有机器，每台一行
 gst ping devcn            # 检查 devcn 能否经由 mesh 应答
 gst status devcn          # devcn 自己的 link、代理、map 和 route
@@ -113,7 +113,7 @@ gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
 | 概念 | 是什么 | 命令 |
 | --- | --- | --- |
 | **node** | 一台运行 gst 的机器。有随机的 128 位 id 和名字（默认取主机名） | `gst name`、`gst status` |
-| **link** | 从本机到另一台 gst 机器的 SSH 连接，在后台保持；两边的 daemon 经由它加入对方的 mesh | `gst link …` |
+| **link** | 从本机到另一台 gst 机器的 SSH 连接，在后台保持；两边的 daemon 经由它加入对方的 mesh | `gst add`、`gst remove` |
 | **proxy** | 本机 daemon 提供的 SOCKS5 和 HTTP 代理：`<machine>.gst` 和路由命中的主机走 mesh | `gst proxy` |
 | **map** | 本机的一个端口或 Unix socket，其连接转到某台机器的端口或 socket；给不能使用代理的程序用 | `gst map …` |
 | **route** | 一条规则：把代理中到某些主机的连接经由另一台机器发出 | `gst route …` |
@@ -122,7 +122,7 @@ gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
 ### node 和 link
 
 - node 的名字用于显示和寻址，不要求唯一；id 是唯一的。用 `gst name laptop` 修改名字。名字和 link 名一样，由 1-32 个小写字母、数字或 `-` 组成。
-- link 是双向的：流量可以沿任一方向通过，所以 `devcn` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst link add devcn`），在对端报告自己的名字之前，它也是对端机器的名字。
+- link 是双向的：流量可以沿任一方向通过，所以 `devcn` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst add devcn`），在对端报告自己的名字之前，它也是对端机器的名字。
 - 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst status` 都能看到整个 mesh；退出网络的机器会在 30 分钟内消失。路径只能经由运行中的 link 越过一台机器。
 
 ### 机器寻址
@@ -212,13 +212,14 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 
 | 命令 | 作用 |
 | --- | --- |
-| `gst link add <name> [destination] [--remote-gst cmd]` | 添加 link 并在后台启动 |
-| `gst link remove <name>...`（`rm`） | 停止并删除 link |
+| `gst add <name> [destination] [--remote-gst cmd]` | 添加 link 并在后台启动 |
+| `gst remove <name>...`（`rm`） | 停止并删除 link |
 | `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态；然后是本机的问题 |
+| `gst status --all` | 同时列出所有机器之间运行着的 link |
 | `gst status <machine>` | 显示某台机器的 link（含状态、目标和对端）、代理、map 和 route，经由 mesh 查询 |
 | `gst ping <machine> [-c N]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时 |
 
-`destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。`--remote-gst <command>` 指定对方机器上的 gst 命令，用于 gst 不在其登录 shell 的 `PATH` 中的情况，例如 `~/.nix-profile/bin/gst`。SSH 连接的其他内容都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。要修改 link，先删除再重新添加。`link add` 会先检查是否有可用的无口令私钥，以及 known_hosts 里是否有该服务器的记录，不通过时不保存。
+`destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。`--remote-gst <command>` 指定对方机器上的 gst 命令，用于 gst 不在其登录 shell 的 `PATH` 中的情况，例如 `~/.nix-profile/bin/gst`。SSH 连接的其他内容都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。要修改 link，先删除再重新添加。`gst add` 会先检查是否有可用的无口令私钥，以及 known_hosts 里是否有该服务器的记录，不通过时不保存。
 
 `gst status` 每台机器一行，本机在最前：
 
@@ -263,7 +264,7 @@ exit 的状态后面带 `; exit`。`# Problems:` 部分列出本机未运行的 
 
 ## ssh 配置
 
-link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重新解析它的目标地址，所以 link 跟随 `~/.ssh/config`。修改该文件后，要立刻重连，请执行 `gst link remove <name>` 再重新 `gst link add <name>`；否则修改在 link 下次连接时生效。
+link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重新解析它的目标地址，所以 link 跟随 `~/.ssh/config`。修改该文件后，要立刻重连，请执行 `gst remove <name>` 再重新 `gst add <name>`；否则修改在 link 下次连接时生效。
 
 | ssh 配置 | 用途 | 未设置时 |
 | --- | --- | --- |
@@ -311,18 +312,18 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 - 每个 `-L` forward 变成指向该 tunnel 所连机器的 map（`mesh:` tunnel 则指向其中的 `<machine>`）。如果它的目标不在那台机器上，请在那里执行 `gst exit on`。
 - `-R` 和 `-D` forward 会被丢弃，并逐条在 stderr 列出，例如 `note: dropped tunnel myhost: -R 2222:localhost:22; recreate it with gst map on the other machine, or with gst route`。按[取代 ssh 转发](#取代-ssh-转发)重建：`-R` 在对方机器上建 map，`-D` 用代理加 route。
 - 其他机器也需要 gst 0.3。gst 协议现在是版本 2，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.3 or later`。请升级你连接的每一台机器。
-- `gst mesh …`、`gst add`、`gst list` 等 0.2 的命令都已移除，见[命令](#命令)。升级后重启 daemon 用 `gst up`，不再是 `gst restart --all`。
+- `gst mesh …`、`gst list` 等 0.2 的命令都已移除，`gst add` 现在用来添加 link，见[命令](#命令)。升级后重启 daemon 用 `gst up`，不再是 `gst restart --all`。
 
 ## 排查问题
 
-由外向内排查：`gst status` 显示机器是否 `online`，并列出本机未运行的 link 及其最近一次错误；`gst ping <machine>` 检查到它的路径是否通；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`link add` 也会先检查私钥和 known_hosts，不通过时不保存。
+由外向内排查：`gst status` 显示机器是否 `online`，并列出本机未运行的 link 及其最近一次错误；`gst ping <machine>` 检查到它的路径是否通；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
 
 | 现象 | 处理 |
 | --- | --- |
 | `no usable key`、私钥 `passphrase-protected` | 按[使用前准备](#使用前准备)创建无口令私钥，并在 `~/.ssh/config` 中用 `IdentityFile` 指定 |
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
 | 主机密钥不匹配 | 确认该机器的密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
-| link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst link remove devcn`，再 `gst link add devcn --remote-gst ~/.nix-profile/bin/gst` |
+| link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devcn`，再 `gst add devcn --remote-gst ~/.nix-profile/bin/gst` |
 | link 为 `down`，错误是 `gst is down on this machine; run gst up there` | 在对方机器上执行 `gst up` |
 | `speaks an older gst protocol; upgrade gst there to 0.3 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.3） |
 | `... is not an exit, so it connects only to addresses on its own machine` | 目标不在你途经的那台机器上。在那里执行 `gst exit on`，或改为连接它自己的 `localhost` |

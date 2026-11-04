@@ -230,11 +230,11 @@ EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
 }
 
 // destination is the ssh destination of the server in the client's ssh
-// configuration, for gst link add.
+// configuration, for gst add.
 func (p *pair) destination() string { return p.server.container }
 
 // deadEnd adds a destination to the client's ssh configuration that
-// passes gst link add's checks, because known_hosts records the server's
+// passes gst add's checks, because known_hosts records the server's
 // key on that port, but where nothing listens: a link to it stays down.
 // It returns the destination.
 func (p *pair) deadEnd() string {
@@ -435,8 +435,8 @@ func start3(t *testing.T) (a, b, c *node, ab, cb *pair) {
 	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
 		n.mustGst("name", name)
 	}
-	a.mustGst("link", "add", "tob", ab.destination())
-	c.mustGst("link", "add", "tob", cb.destination())
+	a.mustGst("add", "tob", ab.destination())
+	c.mustGst("add", "tob", cb.destination())
 	a.waitReachable("c")
 	c.waitReachable("a")
 	return

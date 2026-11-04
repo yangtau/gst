@@ -16,7 +16,7 @@ go test -tags integration -count=1 -v .
 
 | 文件 | 用例 | 内容 |
 | --- | --- | --- |
-| `link_test.go` | `TestLinkLifecycle` | `gst link add`：状态变为 running，对端名称正确，peer-bridge 启动了 server 的 daemon，`gst status` 在两端列出对方；daemon 日志以 `link NAME: ` 为前缀记录 link；重复 `add` 失败并提示先 `remove`；杀掉 server 的 daemon 或断开 SSH 会话后先 down 再 running；`remove` |
+| `link_test.go` | `TestLinkLifecycle` | `gst add`：状态变为 running，对端名称正确，peer-bridge 启动了 server 的 daemon，`gst status` 在两端列出对方；daemon 日志以 `link NAME: ` 为前缀记录 link；重复 `add` 失败并提示先 `remove`；杀掉 server 的 daemon 或断开 SSH 会话后先 down 再 running；`remove` |
 | | `TestLinkDownIsAProblem` | 连不上的 link 状态为 down，`gst status` 在 `# Problems:` 中列出 |
 | | `TestLinkRemoteGstMissing` | server 上没有 gst：状态 down 且错误提到 gst，`gst status` 列出该 link 的错误，删除后带 `--remote-gst` 重新添加修复后 running |
 | | `TestLinkRemoveIsSeenByServer` | link 删除后 server 不再认为 client 可达 |

@@ -161,7 +161,7 @@ func (a *app) update(fn func(*config.File) error) error {
 // namesHint adds f's link names to err.
 func namesHint(f *config.File, err error) error {
 	if len(f.Links) == 0 {
-		return withHint(err, "there are no links yet; add one with `gst link add <name>`")
+		return withHint(err, "there are no links yet; add one with `gst add <name>`")
 	}
 	return withHint(err, "links: "+strings.Join(sortedNames(f), ", "))
 }

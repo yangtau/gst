@@ -146,7 +146,7 @@ func lines(out string) []string {
 
 func TestStatusListsTheMachines(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "devcn")
+	e.mustGst("add", "devcn")
 	e.back.topology = meshTopology()
 	e.resetCalls()
 
@@ -167,6 +167,21 @@ func TestStatusListsTheMachines(t *testing.T) {
 	}
 	if strings.Contains(out, "# Problems") || strings.Contains(out, "No links yet") {
 		t.Fatalf("a healthy mesh reports no problems or missing links:\n%s", out)
+	}
+}
+
+func TestStatusAllListsTheLinks(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("add", "devcn")
+	e.back.topology = meshTopology()
+
+	got := lines(e.mustGst("status", "--all"))
+	want := []string{"", "FROM LINK TO", "devcn d1 dup (dddd4444)", "devcn far far", "laptop devcn devcn"}
+	if len(got) != 5+len(want) || !slices.Equal(got[5:], want) {
+		t.Fatalf("status --all\n got %q\nwant 5 machines and %q", got, want)
+	}
+	if code, _, stderr := e.gst("status", "--all", "devcn"); code != exitUsage || !strings.Contains(stderr, "--all") {
+		t.Fatalf("--all with a machine: exit %d, stderr %q", code, stderr)
 	}
 }
 
@@ -211,13 +226,13 @@ func TestStatusWithoutLinks(t *testing.T) {
 	self := nodeID("aaaa1111")
 	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop", Reachable: true, Path: []string{self}}}}
 	out := e.mustGst("status")
-	want := []string{"aaaa1111 laptop - -", "", "No links yet. Link to another machine with: gst link add <name> [destination]"}
+	want := []string{"aaaa1111 laptop - -", "", "No links yet. Link to another machine with: gst add <name> [destination]"}
 	if got := lines(out); !slices.Equal(got, want) {
 		t.Fatalf("status\n got %q\nwant %q", got, want)
 	}
 
 	// A link that has not found anything yet is not "no links yet".
-	e.mustGst("link", "add", "devcn")
+	e.mustGst("add", "devcn")
 	if out := e.mustGst("status"); strings.Contains(out, "No links yet") {
 		t.Fatalf("a configured link was ignored:\n%s", out)
 	}
@@ -225,9 +240,9 @@ func TestStatusWithoutLinks(t *testing.T) {
 
 func TestStatusListsProblems(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "add", "web", "myhost")
-	e.mustGst("link", "add", "db")
-	e.mustGst("link", "add", "cache", "devcn")
+	e.mustGst("add", "web", "myhost")
+	e.mustGst("add", "db")
+	e.mustGst("add", "cache", "devcn")
 	e.mustGst("proxy", "1081")
 	e.mustGst("map", "add", "15432", "devcn:5432")
 	e.mustGst("map", "add", "15433", "devcn:5433")
@@ -263,7 +278,7 @@ func TestStatusListsProblems(t *testing.T) {
 func TestStatusJSON(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
-	e.mustGst("link", "add", "web", "myhost")
+	e.mustGst("add", "web", "myhost")
 	e.mustGst("map", "add", "15432", "devcn:5432")
 	e.back.listenErrors["127.0.0.1:15432"] = "address in use"
 	e.back.topology = meshTopology()

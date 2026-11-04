@@ -132,7 +132,7 @@ func TestMigrationLeavesCurrentConfigAlone(t *testing.T) {
 func TestMigrationSkipsCommandsWithoutConfiguration(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, legacyConfig)
-	for _, args := range [][]string{{"version"}, {"--help"}, {"help", "link"}, {"link", "--help"}} {
+	for _, args := range [][]string{{"version"}, {"--help"}, {"help", "add"}, {"add", "--help"}} {
 		e.mustGst(args...)
 	}
 	if got, _ := os.ReadFile(e.config); string(got) != legacyConfig {

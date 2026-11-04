@@ -55,7 +55,7 @@ func TestUI(t *testing.T) {
 	p := startPair(t)
 	client := p.client
 	client.mustGst("name", "cli")
-	client.mustGst("link", "add", "srv", p.destination())
+	client.mustGst("add", "srv", p.destination())
 	client.waitLink("srv", "running")
 	ui := client.startUI()
 

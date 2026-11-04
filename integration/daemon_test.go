@@ -16,7 +16,7 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	p := startPair(t)
 	client, server := p.client, p.server
 	server.startEcho(3000)
-	client.mustGst("link", "add", "srv", p.destination())
+	client.mustGst("add", "srv", p.destination())
 	client.mustGst("map", "add", "15432", "srv:3000")
 	client.waitLink("srv", "running")
 	before := client.daemonPID()
@@ -48,7 +48,7 @@ func TestDownAndUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst("link", "add", "srv", p.destination())
+	client.mustGst("add", "srv", p.destination())
 	client.waitLink("srv", "running")
 	if server.daemonPID() == "" {
 		t.Fatal("the link did not start the server's daemon")

@@ -20,7 +20,7 @@ func TestLinkLifecycle(t *testing.T) {
 		t.Fatal("the server runs a daemon before the link")
 	}
 
-	out := client.mustGst("link", "add", "srv", p.destination())
+	out := client.mustGst("add", "srv", p.destination())
 	if !strings.Contains(out, "Added link srv") || !strings.Contains(out, "gst status") {
 		t.Fatalf("unexpected output %q", out)
 	}
@@ -55,15 +55,15 @@ func TestLinkLifecycle(t *testing.T) {
 
 	// A link is not changed in place: adding it again fails with a hint,
 	// and removing it first makes room.
-	code, _, stderr := client.gst("link", "add", "srv", p.destination())
-	if code != 1 || !strings.Contains(stderr, "already exists") || !strings.Contains(stderr, "gst link remove srv") {
+	code, _, stderr := client.gst("add", "srv", p.destination())
+	if code != 1 || !strings.Contains(stderr, "already exists") || !strings.Contains(stderr, "gst remove srv") {
 		t.Fatalf("adding an existing link: exit %d, stderr %q", code, stderr)
 	}
-	client.mustGst("link", "remove", "srv")
+	client.mustGst("remove", "srv")
 	if _, ok := client.links()["srv"]; ok {
 		t.Fatal("link remains after remove")
 	}
-	client.mustGst("link", "add", "srv", p.destination(), "--remote-gst", "gst")
+	client.mustGst("add", "srv", p.destination(), "--remote-gst", "gst")
 	client.waitLink("srv", "running")
 
 	// The link reconnects after the server's daemon dies.
@@ -79,7 +79,7 @@ func TestLinkLifecycle(t *testing.T) {
 	client.waitLink("srv", "down")
 	client.waitLink("srv", "running")
 
-	client.mustGst("link", "remove", "srv")
+	client.mustGst("remove", "srv")
 	if _, ok := client.links()["srv"]; ok {
 		t.Fatal("link remains after remove")
 	}
@@ -90,7 +90,7 @@ func TestLinkDownIsAProblem(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client := p.client
-	client.mustGst("link", "add", "dead", p.deadEnd())
+	client.mustGst("add", "dead", p.deadEnd())
 	link := client.waitLink("dead", "down")
 	if link.Error == "" {
 		t.Fatalf("a down link has no error: %+v", link)
@@ -108,10 +108,10 @@ func TestLinkRemoveIsSeenByServer(t *testing.T) {
 	p := startPair(t)
 	client, server := p.client, p.server
 	client.mustGst("name", "cli")
-	client.mustGst("link", "add", "srv", p.destination())
+	client.mustGst("add", "srv", p.destination())
 	client.waitLink("srv", "running")
 	server.waitReachable("cli")
-	client.mustGst("link", "remove", "srv")
+	client.mustGst("remove", "srv")
 	server.waitUnreachable("cli")
 }
 
@@ -126,7 +126,7 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client.mustGst("link", "add", "srv", p.destination(), "--remote-gst", "/opt/nonexistent/gst")
+	client.mustGst("add", "srv", p.destination(), "--remote-gst", "/opt/nonexistent/gst")
 	link := client.waitLink("srv", "down")
 	if !strings.Contains(link.Error, "gst") {
 		t.Fatalf("the error does not mention gst: %q", link.Error)
@@ -136,8 +136,8 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 		t.Fatalf("gst status does not list the failed remote gst:\n%s", out)
 	}
 
-	client.mustGst("link", "remove", "srv")
-	client.mustGst("link", "add", "srv", p.destination(), "--remote-gst", "/opt/gst")
+	client.mustGst("remove", "srv")
+	client.mustGst("add", "srv", p.destination(), "--remote-gst", "/opt/gst")
 	client.waitLink("srv", "running")
 	if out := client.mustGst("status"); strings.Contains(out, "# Problems") {
 		t.Fatalf("gst status lists problems after the fix:\n%s", out)
