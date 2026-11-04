@@ -18,6 +18,8 @@ func TestDaemonLifecycle(t *testing.T) {
 	server.serve(3000, "pong")
 	dest := p.flags()
 
+	// Without the mesh, the daemon runs only for started tunnels.
+	client.mustGst("mesh", "disable")
 	client.mustGst(append([]string{"add", "srv"}, append(dest, "-L", "15432:127.0.0.1:3000")...)...)
 	client.waitStatus("srv", "running")
 	client.eventuallyFetches(15432, "pong")

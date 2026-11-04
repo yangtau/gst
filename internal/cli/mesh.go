@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,16 +23,16 @@ func (a *app) meshCommand() *cobra.Command {
 	cmd := asGroup(&cobra.Command{
 		Use:   "mesh",
 		Short: "Link gst on several machines",
-		Long: `Link gst on several machines. Run gst mesh enable on each of them; from
-then on, every tunnel links this machine's gst with the gst on its
-server, over the tunnel's SSH connection, so that each sees the other in
-gst mesh peers. Linked machines pass on what they know, so gst mesh nodes
+		Long: `Link gst on several machines, without any setup: a machine with a tunnel
+joins the mesh, every tunnel links this machine's gst with the gst on its
+server over the tunnel's SSH connection, and the server's gst joins when
+it is first linked to. Each then sees the other in gst mesh peers. Linked machines pass on what they know, so gst mesh nodes
 on any of them shows every machine in the mesh, and a tunnel to
 mesh:<machine> reaches any of them. A server without gst still takes part
 as a machine that its tunnels reach. The server's gst must be 0.2 or later
 in the PATH of its login shell, or set with --remote-gst; --no-mesh keeps
-a tunnel out. With the mesh enabled, the gst daemon keeps running even
-without started tunnels.`,
+a tunnel out, and gst mesh disable takes this machine out. In the mesh,
+the gst daemon keeps running even without started tunnels.`,
 	})
 	cmd.AddCommand(a.meshEnableCommand(), a.meshDisableCommand(), a.meshPeersCommand(), a.meshNodesCommand())
 	return cmd
@@ -41,10 +42,12 @@ func (a *app) meshEnableCommand() *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
 		Use:   "enable",
-		Short: "Take part in the mesh",
-		Long: `Take part in the mesh: accept peer links from other machines' gst and
-link over every tunnel without --no-mesh. The node name, shown to peers,
-defaults to this machine's host name; --name changes it.`,
+		Short: "Join the mesh again, or rename this machine in it",
+		Long: `Join the mesh: accept peer links from other machines' gst and link over
+every tunnel without --no-mesh. A machine joins by itself once it has a
+tunnel or a peer links to it, so this is needed only after gst mesh
+disable or to change the node name, shown to peers, which defaults to
+this machine's host name.`,
 		Example: "  gst mesh enable\n  gst mesh enable --name laptop",
 		Args:    a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -55,8 +58,9 @@ defaults to this machine's host name; --name changes it.`,
 			}
 			var m config.Mesh
 			err := a.update(func(f *config.File) error {
+				f.NoMesh = false
 				if f.Mesh == nil {
-					f.Mesh = &config.Mesh{ID: config.NewMeshID(), Name: defaultNodeName()}
+					f.Mesh = &config.Mesh{ID: config.NewMeshID(), Name: config.DefaultNodeName()}
 				}
 				if cmd.Flags().Changed("name") {
 					f.Mesh.Name = name
@@ -79,54 +83,49 @@ defaults to this machine's host name; --name changes it.`,
 }
 
 // meshBackend returns the backend for a command that needs the mesh, or
-// an error when the mesh is not enabled.
-func (a *app) meshBackend() (backend, error) {
+// an error when the mesh is disabled. A machine that has not joined the
+// mesh yet joins it now.
+func (a *app) meshBackend(ctx context.Context) (backend, error) {
 	f, err := a.load()
 	if err != nil {
 		return nil, err
 	}
+	if f.NoMesh {
+		return nil, withHint(errors.New("the mesh is disabled on this machine"), "enable it with `gst mesh enable`")
+	}
 	if f.Mesh == nil {
-		return nil, withHint(errors.New("the mesh is not enabled on this machine"), "enable it with `gst mesh enable`")
+		if err := a.joinMesh(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return a.backend()
 }
 
-// defaultNodeName derives a valid node name from the host name.
-func defaultNodeName() string {
-	host, _ := os.Hostname()
-	host, _, _ = strings.Cut(strings.ToLower(host), ".")
-	var b strings.Builder
-	for _, r := range host {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case b.Len() > 0:
-			b.WriteByte('-')
-		}
+// joinMesh gives this machine its place in the mesh, unless the mesh is
+// disabled, and starts the daemon.
+func (a *app) joinMesh(ctx context.Context) error {
+	if err := a.update(func(f *config.File) error { f.JoinMesh(); return nil }); err != nil {
+		return err
 	}
-	name := strings.Trim(b.String(), "-")
-	if len(name) > 32 {
-		name = strings.Trim(name[:32], "-")
+	if err := a.sync(ctx); err != nil {
+		return withHint(fmt.Errorf("start the gst daemon: %w", err), "retry with `gst mesh enable`")
 	}
-	if config.ValidateNodeName(name) != nil {
-		return "node"
-	}
-	return name
+	return nil
 }
 
 func (a *app) meshDisableCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "disable",
 		Short: "Leave the mesh",
-		Long: `Leave the mesh: close every peer link and refuse new ones. Tunnels keep
-running and link again after gst mesh enable.
+		Long: `Leave the mesh: close every peer link, refuse new ones, and stop joining
+by itself. Tunnels keep running and link again after gst mesh enable.
 The node keeps its id only while enabled; enabling again creates a new one.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			wasEnabled := false
 			err := a.update(func(f *config.File) error {
-				wasEnabled = f.Mesh != nil
-				f.Mesh = nil
+				wasEnabled = !f.NoMesh
+				f.NoMesh = true
 				return nil
 			})
 			if err != nil {
@@ -155,7 +154,7 @@ from other machines' tunnels. A link is connecting, up, or down (failed
 and retrying, with the reason).`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			b, err := a.meshBackend()
+			b, err := a.meshBackend(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -207,7 +206,7 @@ when this machine can get to it through running tunnels, going on past a
 machine only over a peer link.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			b, err := a.meshBackend()
+			b, err := a.meshBackend(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -295,7 +294,7 @@ gst node has a tunnel to it.`,
 			if err != nil {
 				return err
 			}
-			b, err := a.meshBackend()
+			b, err := a.meshBackend(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -339,21 +338,36 @@ func shortID(id string) string { return id[:min(8, len(id))] }
 // daemon on this machine. A peer's daemon runs it over SSH.
 func (a *app) peerBridgeCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:         "peer-bridge",
-		Annotations: standalone,
-		Short:       "Connect standard input and output to the gst daemon",
-		Long:        "Connect standard input and output to the gst daemon on this machine, for a peer's gst, which runs this command over SSH.",
-		Hidden:      true,
-		Args:        a.args(0, 0),
+		Use:    "peer-bridge",
+		Short:  "Connect standard input and output to the gst daemon",
+		Long:   "Connect standard input and output to the gst daemon on this machine, for a peer's gst, which runs this command over SSH. A machine that has not joined the mesh joins it now, unless the mesh is disabled there.",
+		Hidden: true,
+		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
+			f, err := a.load()
+			if err != nil {
+				return err
+			}
+			if f.NoMesh {
+				return errors.New("gst mesh is disabled on this machine; run `gst mesh enable` there")
+			}
 			paths, err := service.DefaultPaths()
 			if err != nil {
 				return err
 			}
 			var d net.Dialer
 			conn, err := d.DialContext(cmd.Context(), "unix", paths.Socket)
-			if err != nil {
-				return errors.New("the gst daemon is not running on this machine; run `gst mesh enable` there")
+			if err != nil || f.Mesh == nil {
+				// Not in the mesh yet, or the daemon is not running.
+				if err == nil {
+					conn.Close()
+				}
+				if err := a.joinMesh(cmd.Context()); err != nil {
+					return err
+				}
+				if conn, err = d.DialContext(cmd.Context(), "unix", paths.Socket); err != nil {
+					return errors.New("the gst daemon does not answer on this machine")
+				}
 			}
 			defer conn.Close()
 			done := make(chan struct{}, 2)

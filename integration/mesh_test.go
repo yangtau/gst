@@ -108,13 +108,13 @@ func TestMeshLinksThreeNodes(t *testing.T) {
 	m3.waitLinks("out devcn up devcn", "out mini up mini")
 }
 
-// A server without gst in PATH reports why the link fails; --remote-gst
-// names it, and --no-mesh turns the link off.
+// Machines join the mesh by themselves: the client with its tunnel, the
+// server when the client links to it. A server without gst in PATH reports
+// why the link fails; --remote-gst names it, and --no-mesh turns the link
+// off.
 func TestMeshRemoteGst(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
-	p.client.mustGst("mesh", "enable", "--name", "client")
-	p.server.mustGst("mesh", "enable", "--name", "server")
 	if _, err := p.server.exec("root", "mv", "/usr/local/bin/gst", "/opt/gst"); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,17 @@ func TestMeshRemoteGst(t *testing.T) {
 	}
 
 	p.client.mustGst("set", "srv", "--remote-gst", "/opt/gst")
-	p.client.waitLinks("out srv up server")
+	eventually(t, 30*time.Second, "link to the server not up", func() bool {
+		links := p.client.peers().Links
+		return len(links) == 1 && links[0].State == "up"
+	})
+	var server meshPeers
+	if err := json.Unmarshal([]byte(p.server.mustSh(`/opt/gst mesh peers --json`)), &server); err != nil {
+		t.Fatal(err)
+	}
+	if link := p.client.peers().Links[0]; !server.Enabled || link.Peer.ID != server.Node.ID {
+		t.Fatalf("the server did not join: %+v, link %+v", server, link)
+	}
 
 	// --no-mesh keeps a tunnel out of the mesh.
 	p.client.mustGst("set", "srv", "--no-mesh")
@@ -235,6 +245,7 @@ func TestMeshTopology(t *testing.T) {
 	toMini, toDevcn := trust(t, m3, mini), trust(t, m3, devcn)
 	m3.mustGst("mesh", "enable", "--name", "m3")
 	mini.mustGst("mesh", "enable", "--name", "mini")
+	devcn.mustGst("mesh", "disable") // a server out of the mesh, until it joins below
 	m3.mustGst(append([]string{"add", "mini"}, toMini.flags()...)...)
 	m3.mustGst(append([]string{"add", "devcn"}, toDevcn.flags()...)...)
 
@@ -320,6 +331,7 @@ func TestMeshRelay(t *testing.T) {
 	toMini, toDevcn := trust(t, m3, mini), trust(t, m3, devcn)
 	m3.mustGst("mesh", "enable", "--name", "m3")
 	mini.mustGst("mesh", "enable", "--name", "mini")
+	devcn.mustGst("mesh", "disable") // a server out of the mesh, until it joins below
 	m3.mustGst(append([]string{"add", "mini"}, toMini.flags()...)...)
 	m3.mustGst(append([]string{"add", "devcn"}, toDevcn.flags()...)...)
 	devcn.serve(7100, "hello from devcn")

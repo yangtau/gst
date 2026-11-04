@@ -16,20 +16,20 @@ mini 上的 gst 能看到 m3 和 devcn，并能建立 `mini → devcn` 的连接
 ## 分步
 
 1. **单进程 daemon**：每台机器只有一个 gst 后台服务，持有全部 tunnel，暴露一个 unix control socket；CLI 通过 [gst 协议](#gst-协议) 与它通信。（已实现）
-2. **peer link**：本机执行 `gst mesh enable` 后，每条 SSH tunnel（设置了 `--no-mesh` 的除外）连上后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
+2. **peer link**：默认开启。每条 SSH tunnel（设置了 `--no-mesh` 的除外）连上后，客户端一侧的 daemon 通过已有 SSH 连接在服务器上执行 `gst peer-bridge`，接通服务器 daemon 的 control socket，两侧以 `peer` 角色握手。`gst mesh peers` 列出直连节点。（已实现）
 3. **拓扑扩散**：节点交换带版本号的 link-state 记录，`gst mesh nodes` 输出全局视图（文本与 `--json`）。（已实现）
 4. **中转转发**：`gst add <name> mesh:<node> -L ... -D ...` 与 `gst connect <node> <port>`（可作 `ProxyCommand`）。（已实现）
 5. **Web UI**：`gst ui` 提供本地页面，显示本节点和全局拓扑，并能启动、停止、重启本节点的 tunnel。（已实现）
 
 ## 已确定的决策
 
-- **信任**：control socket 权限为 `0600`，能连上的只有本机同一用户；peer link 由 SSH 登录建立，登录的就是该用户，同样不另做认证。加入 mesh 以机器为单位：执行 `gst mesh enable` 的机器上，每条 SSH tunnel 都建立 peer link、被宣告到拓扑中、允许被中转；单条 tunnel 可以用 `--no-mesh` 退出，例如服务器对每个会话执行强制命令时。服务器上没有 gst 时 link 失败，重试间隔从 10 秒起每次翻倍，最长 5 分钟。
+- **信任**：control socket 权限为 `0600`，能连上的只有本机同一用户；peer link 由 SSH 登录建立，登录的就是该用户，同样不另做认证。mesh 默认开启，以机器为单位：机器有了 tunnel（配置文件第一次写入 tunnel）就自动加入，作为服务器第一次被 `gst peer-bridge` 连到时也自动加入（必要时安装并启动 daemon）；`gst mesh disable` 写入 `no_mesh` 让本机退出且不再自动加入。加入后每条 SSH tunnel 都建立 peer link、被宣告到拓扑中、允许被中转；单条 tunnel 可以用 `--no-mesh` 退出，例如服务器对每个会话执行强制命令时。服务器上没有 gst 时 link 失败，重试间隔从 10 秒起每次翻倍，最长 5 分钟。
 - **远程配置**：第一版只能配置本节点；其他节点的信息只读。
 - **隐私**：拓扑信息在节点之间传播、在 Web UI 和交互式命令中显示，属于交互式输出；后台日志仍不记录地址、用户和密钥路径。
 
 ## 节点身份
 
-运行 gst 的节点以随机 id 标识，而不是名字：`gst mesh enable` 生成 128 位随机 id，保存在配置文件的 `mesh` 中；名字（`--name`，默认取主机名）只用于显示，可以重复。没有用 host key 指纹做 id，是因为 macOS 等机器未必有 sshd host key。
+运行 gst 的节点以随机 id 标识，而不是名字：加入 mesh 时生成 128 位随机 id，保存在配置文件的 `mesh` 中；名字（`--name`，默认取主机名）只用于显示，可以重复。没有用 host key 指纹做 id，是因为 macOS 等机器未必有 sshd host key。
 
 - 节点在 `node.info` 和自己的记录中附带本机 `/etc/ssh/ssh_host_*_key.pub` 的 SHA-256 指纹；tunnel 的边记录连接时验证过的服务器 host key 指纹。于是“作为 gst 节点的 mini”与“m3 看到的 mini sshd”合并为同一节点。
 - 边指向的机器按以下顺序确定：peer link 报告的节点 id；host key 指纹属于某个 gst 节点时为该节点；否则为没有 gst 的 SSH 服务器，id 为 `ssh:<指纹>`；从未连上过（还没有指纹）时为 `tunnel:<节点 id>/<tunnel 名>`。

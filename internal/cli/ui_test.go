@@ -17,6 +17,7 @@ func TestUIState(t *testing.T) {
 	e.mustGst("add", "web", "myhost", "-L", "8080:localhost:80")
 	e.mustGst("add", "db", "myhost", "-L", "15432:localhost:5432")
 	e.mustGst("stop", "db")
+	e.mustGst("mesh", "disable")
 	srv := httptest.NewServer(e.app(io.Discard, io.Discard).uiHandler("secret"))
 	defer srv.Close()
 

@@ -29,13 +29,17 @@ const Version = 2
 // File is the configuration file: tunnels keyed by name. Version is 0 in
 // files written before versions were recorded.
 type File struct {
-	Version int                `json:"version,omitempty"`
-	Mesh    *Mesh              `json:"mesh,omitempty"`
+	Version int   `json:"version,omitempty"`
+	Mesh    *Mesh `json:"mesh,omitempty"`
+	// NoMesh keeps this machine out of the gst mesh, which it otherwise
+	// joins once it has a tunnel or a peer links to it.
+	NoMesh  bool               `json:"no_mesh,omitempty"`
 	Tunnels map[string]*Tunnel `json:"tunnels"`
 }
 
 // Mesh is present when this machine takes part in the gst mesh: its daemon
-// accepts peer links and keeps running without started tunnels.
+// accepts peer links and keeps running without started tunnels. See
+// File.JoinMesh.
 type Mesh struct {
 	ID   string `json:"id"`   // random and stable
 	Name string `json:"name"` // shown to peers
@@ -168,6 +172,11 @@ func Update(path string, fn func(*File) error) error {
 	if err := fn(f); err != nil {
 		return err
 	}
+	if f.NoMesh {
+		f.Mesh = nil
+	} else if len(f.Tunnels) > 0 {
+		f.JoinMesh()
+	}
 	if err := f.validate(); err != nil {
 		return err
 	}
@@ -260,6 +269,38 @@ func ValidateNodeName(name string) error {
 // NewMeshID returns a random mesh node id.
 func NewMeshID() string {
 	return hex.EncodeToString(randomBytes(16))
+}
+
+// JoinMesh gives this machine its place in the mesh, with a new id and the
+// default name, unless it has one or NoMesh is set. Update calls it once
+// the configuration has a tunnel.
+func (f *File) JoinMesh() {
+	if f.Mesh == nil && !f.NoMesh {
+		f.Mesh = &Mesh{ID: NewMeshID(), Name: DefaultNodeName()}
+	}
+}
+
+// DefaultNodeName derives a valid node name from the host name.
+func DefaultNodeName() string {
+	host, _ := os.Hostname()
+	host, _, _ = strings.Cut(strings.ToLower(host), ".")
+	var b strings.Builder
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0:
+			b.WriteByte('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 32 {
+		name = strings.Trim(name[:32], "-")
+	}
+	if ValidateNodeName(name) != nil {
+		return "node"
+	}
+	return name
 }
 
 // ValidateName checks a tunnel name. Names become part of service names and

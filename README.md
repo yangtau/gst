@@ -94,7 +94,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | `gst logs <name> [-f] [-n N]` | Print the log |
 | `gst check <name>` | Diagnose: ssh config, identity, known_hosts, network, login |
 | `gst ui [--port N] [--no-open]` | Show tunnels, peer links, and a map of the mesh in a browser; start, stop, and restart tunnels there |
-| `gst mesh enable [--name name]` / `gst mesh disable` | Join or leave the mesh of linked machines |
+| `gst mesh enable [--name name]` / `gst mesh disable` | Rejoin (or rename in) or leave the mesh of linked machines |
 | `gst mesh peers` | List peer links |
 | `gst mesh nodes` | Show every machine in the mesh and the tunnels between them |
 | `gst add <name> mesh:<machine> [-L spec]... [-D port]...` | Add a tunnel to a machine of the mesh, through other machines |
@@ -196,24 +196,21 @@ Limitations:
 
 ## Linking machines (mesh)
 
-gst on several machines can link with each other. Run `gst mesh enable` on each of them, and nothing else: from then on, every tunnel links this machine's gst with the gst on its server over the tunnel's SSH connection, so each sees the other in `gst mesh peers`. Linked machines pass on what they know, so `gst mesh nodes` on any of them shows the whole network: when laptop has tunnels to `mini` and `devcn`, `gst mesh nodes` on mini lists laptop and devcn too, and mini can connect to devcn through laptop.
+gst on several machines links with each other by itself, without any setup: a machine with a tunnel joins the mesh, every tunnel links this machine's gst with the gst on its server over the tunnel's SSH connection, and the server's gst joins when it is first linked to. Each then sees the other in `gst mesh peers`. Linked machines pass on what they know, so `gst mesh nodes` on any of them shows the whole network: when laptop has tunnels to `mini` and `devcn`, `gst mesh nodes` on mini lists laptop and devcn too, and mini can connect to devcn through laptop.
 
 ```bash
-# On every machine that takes part (the name defaults to the host name)
-gst mesh enable --name laptop
-
-# On any machine in the mesh
-gst mesh peers     # this machine's links
-gst mesh nodes     # every machine and the tunnels between them
+gst mesh peers                  # this machine's links
+gst mesh nodes                  # every machine and the tunnels between them
+gst mesh enable --name laptop   # optional: change the node name (default: the host name)
 ```
 
-- A link needs gst 0.2 or later with `gst mesh enable` on the server. gst starts it over SSH with `gst peer-bridge` in the login shell; when gst is not in that shell's `PATH`, give its path with `--remote-gst`, such as `gst set myhost --remote-gst ~/.nix-profile/bin/gst`. A server without gst, or without the mesh, still takes part as a machine its tunnels reach; its link stays `down` and retries less and less often, up to every 5 minutes.
+- A link needs gst 0.2 or later on the server. gst starts it over SSH with `gst peer-bridge` in the login shell; when gst is not in that shell's `PATH`, give its path with `--remote-gst`, such as `gst set myhost --remote-gst ~/.nix-profile/bin/gst`. A server without gst, or after `gst mesh disable` there, still takes part as a machine its tunnels reach; its link stays `down` and retries less and less often, up to every 5 minutes.
 - `gst set <name> --no-mesh` keeps a tunnel from running gst on its server, for example when the server runs a forced command for every session; `--no-mesh=false` undoes it.
-- With the mesh enabled, the daemon keeps running even when no tunnel is started, so that it can accept links.
+- In the mesh, the daemon keeps running even when no tunnel is started, so that it can accept links.
 - A link is `connecting`, `up`, or `down`. `gst mesh peers` shows why a link is down. A failed link does not affect the tunnel's forwards.
 - `gst mesh nodes` lists gst nodes by name and SSH servers without gst by the name of the tunnel to them. A server whose gst joins the mesh later shows up as that gst node. A machine is reachable when this machine can get to it through running tunnels, going on past a machine only over a peer link that is up. Machines that drop out disappear within 30 minutes.
-- Peers are trusted: a link logs in as your user on the server, and the server's daemon accepts it only through its own socket.
-- `gst mesh disable` closes every link. Enabling again creates a new node id.
+- Peers are trusted: a link logs in as your user on the server, and the server's daemon accepts it only through its own socket. So any server with gst that your tunnels reach can, through the mesh, reach wherever your machines can; use `--no-mesh` for a server you do not fully trust, or `gst mesh disable` on this machine.
+- `gst mesh disable` takes this machine out of the mesh: it closes every link, stops joining by itself, and stops the daemon when no tunnel is started. `gst mesh enable` joins again with a new node id.
 
 ### Connecting through the mesh
 

@@ -13,6 +13,8 @@ import (
 // had its own background service, to the daemon: tunnels with a service
 // stay started and move to the daemon; the others are marked stopped.
 // Services that an interrupted migration left behind are removed later.
+// A machine with tunnels but no place in the mesh, as from an earlier gst,
+// joins it, unless the mesh is disabled.
 func (a *app) migrate(cmd *cobra.Command) error {
 	if !needsConfig(cmd) {
 		return nil
@@ -54,13 +56,19 @@ func (a *app) migrate(cmd *cobra.Command) error {
 			return fmt.Errorf("remove the gst 0.1 service of tunnel %s: %w", name, err)
 		}
 	}
-	if len(moved) == 0 {
+	if f.Mesh == nil && !f.NoMesh && len(f.Tunnels) > 0 {
+		if err := a.update(func(f *config.File) error { f.JoinMesh(); return nil }); err != nil {
+			return err
+		}
+	} else if len(moved) == 0 {
 		return nil
 	}
 	if err := a.sync(cmd.Context()); err != nil {
 		return withHint(fmt.Errorf("start the gst daemon: %w", err), "retry with `gst restart --all`")
 	}
-	fmt.Fprintf(a.stderr, "note: the gst daemon now runs tunnels %s, which ran as separate services before gst 0.2.\n", strings.Join(moved, ", "))
+	if len(moved) > 0 {
+		fmt.Fprintf(a.stderr, "note: the gst daemon now runs tunnels %s, which ran as separate services before gst 0.2.\n", strings.Join(moved, ", "))
+	}
 	return nil
 }
 

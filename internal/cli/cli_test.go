@@ -508,9 +508,10 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("unexpected list without a daemon %+v: %v", views, err)
 	}
 
+	// The mesh keeps the daemon without tunnels.
 	e.back.calls = nil
 	e.mustGst("rm", "myhost", "db")
-	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || !slices.Equal(e.back.calls, []string{"sync", "remove-logs myhost", "remove-logs db"}) || e.back.installed {
+	if f, _ := config.Load(e.config); len(f.Tunnels) != 0 || f.Mesh == nil || !slices.Equal(e.back.calls, []string{"sync", "remove-logs myhost", "remove-logs db"}) || !e.back.installed {
 		t.Fatalf("remove left %+v, calls %v, daemon installed %v", f.Tunnels, e.back.calls, e.back.installed)
 	}
 	if out := e.mustGst("list"); !strings.Contains(out, "No tunnels") {
@@ -612,8 +613,12 @@ func TestStopAllRemovesDaemon(t *testing.T) {
 	e.mustGst("add", "myhost")
 	e.mustGst("add", "db")
 	e.mustGst("stop", "--all")
+	if !e.back.installed {
+		t.Fatal("stopping every tunnel removed the daemon of the mesh")
+	}
+	e.mustGst("mesh", "disable")
 	if e.back.installed {
-		t.Fatal("the daemon stays installed without started tunnels")
+		t.Fatal("the daemon stays installed without started tunnels or the mesh")
 	}
 	e.mustGst("start", "db")
 	if !e.back.installed || !e.back.running["db"] || e.back.running["myhost"] {
@@ -662,6 +667,12 @@ func TestMigratesLegacyServices(t *testing.T) {
 
 func TestMesh(t *testing.T) {
 	e := newEnv(t)
+	// A mesh command joins a machine that has not joined yet.
+	e.mustGst("mesh", "peers")
+	if f, _ := config.Load(e.config); f.Mesh == nil || !e.back.installed {
+		t.Fatalf("peers did not join the mesh: %+v", f.Mesh)
+	}
+	e.mustGst("mesh", "disable")
 	if stderr := e.expectCode(exitFailure, "mesh", "peers"); !strings.Contains(stderr, "gst mesh enable") {
 		t.Fatalf("peers without the mesh: %q", stderr)
 	}
@@ -737,7 +748,7 @@ func TestMesh(t *testing.T) {
 }
 
 func TestDefaultNodeName(t *testing.T) {
-	if err := config.ValidateNodeName(defaultNodeName()); err != nil {
+	if err := config.ValidateNodeName(config.DefaultNodeName()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -800,5 +811,34 @@ func TestMeshConnectAndTunnels(t *testing.T) {
 	e.mustGst("set", "db-mesh", "--destination", "mesh:far")
 	if code, out, _ := e.gst("check", "db-mesh"); code != exitFailure || !strings.Contains(out, "no route to far") {
 		t.Fatalf("check exited %d: %s", code, out)
+	}
+}
+
+// A machine joins the mesh once it has a tunnel, unless the mesh is
+// disabled; a configuration from an earlier gst joins at the next command.
+func TestJoinsMeshWithTunnels(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("list")
+	if f, _ := config.Load(e.config); f.Mesh != nil || e.back.installed {
+		t.Fatalf("joined without tunnels: %+v", f.Mesh)
+	}
+	e.mustGst("add", "myhost")
+	if f, _ := config.Load(e.config); f.Mesh == nil || f.Mesh.Name != config.DefaultNodeName() {
+		t.Fatalf("adding a tunnel did not join: %+v", f.Mesh)
+	}
+	e.mustGst("mesh", "disable")
+	e.mustGst("add", "db")
+	if f, _ := config.Load(e.config); f.Mesh != nil || !f.NoMesh {
+		t.Fatalf("joined although disabled: %+v", f.Mesh)
+	}
+
+	e = newEnv(t)
+	if err := os.MkdirAll(filepath.Dir(e.config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, e.config, `{"version": 2, "tunnels": {"myhost": {"destination": "myhost", "forwards": []}}}`)
+	e.mustGst("list")
+	if f, _ := config.Load(e.config); f.Mesh == nil || !slices.Equal(e.back.calls, []string{"sync"}) {
+		t.Fatalf("earlier configuration did not join: %+v, calls %v", f.Mesh, e.back.calls)
 	}
 }
