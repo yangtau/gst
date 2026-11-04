@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -69,7 +68,7 @@ func start(t *testing.T, d *dialer) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	s := &Server{Dial: d.dial, PAC: func() []byte { return []byte("pac file\n") }}
+	s := &Server{Dial: d.dial}
 	go func() { done <- s.Serve(ctx, ln) }()
 	t.Cleanup(func() {
 		cancel()
@@ -349,7 +348,7 @@ func TestHTTPForwardRefusals(t *testing.T) {
 	}
 }
 
-func TestPACAndOtherRequests(t *testing.T) {
+func TestOtherRequests(t *testing.T) {
 	addr := start(t, &dialer{err: errors.New("unused")})
 	tests := []struct {
 		name, request string
@@ -357,9 +356,8 @@ func TestPACAndOtherRequests(t *testing.T) {
 		contentType   string
 		body          string
 	}{
-		{"pac", "GET /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 200, "application/x-ns-proxy-autoconfig", "pac file\n"},
 		{"root", "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 400, "text/plain", "This is the gst proxy"},
-		{"post pac", "POST /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n", 400, "text/plain", ""},
+		{"post", "POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n", 400, "text/plain", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -389,89 +387,5 @@ func TestServeReturnsListenerError(t *testing.T) {
 	s := &Server{}
 	if err := s.Serve(context.Background(), ln); err == nil {
 		t.Fatal("Serve on a closed listener returned nil")
-	}
-}
-
-func TestPAC(t *testing.T) {
-	const ending = "}\n"
-	tests := []struct {
-		name    string
-		listen  string
-		routes  config.Routes
-		contain []string
-		absent  []string
-	}{
-		{
-			name:    "no routes",
-			listen:  "127.0.0.1:1080",
-			contain: []string{`var proxy = "PROXY 127.0.0.1:1080";`, `if (dnsDomainIs(host, ".gst")) return proxy;`, "  return \"DIRECT\";\n" + ending},
-		},
-		{
-			name:    "default",
-			listen:  "127.0.0.1:1080",
-			routes:  config.Routes{{Match: "default", Via: "gw"}},
-			contain: []string{"  return proxy;\n" + ending},
-			absent:  []string{`"DIRECT"`},
-		},
-		{
-			name:   "domain",
-			listen: "127.0.0.1:1080",
-			routes: config.Routes{{Match: "example.com", Via: "gw"}},
-			contain: []string{
-				`if (host == "example.com" || dnsDomainIs(host, ".example.com")) return proxy;`,
-				"  return \"DIRECT\";\n" + ending,
-			},
-		},
-		{
-			name:    "IPv4 CIDR",
-			listen:  "127.0.0.1:1080",
-			routes:  config.Routes{{Match: "10.0.0.0/8", Via: "gw"}, {Match: "192.0.2.0/25", Via: "gw"}},
-			contain: []string{`if (ipv4 && isInNet(host, "10.0.0.0", "255.0.0.0")) return proxy;`, `isInNet(host, "192.0.2.0", "255.255.255.128")`},
-		},
-		{
-			name:    "IPv4 address",
-			listen:  "127.0.0.1:1080",
-			routes:  config.Routes{{Match: "192.0.2.7", Via: "gw"}},
-			contain: []string{`isInNet(host, "192.0.2.7", "255.255.255.255")`},
-		},
-		{
-			name:   "IPv6 left out",
-			listen: "127.0.0.1:1080",
-			routes: config.Routes{{Match: "2001:db8::/32", Via: "gw"}, {Match: "::1", Via: "gw"}},
-			absent: []string{"2001", "::1", "isInNet"},
-		},
-		{
-			name:    "unspecified IPv4 listen address",
-			listen:  "0.0.0.0:8080",
-			contain: []string{`"PROXY 127.0.0.1:8080"`},
-		},
-		{
-			name:    "unspecified IPv6 listen address",
-			listen:  "[::]:8080",
-			contain: []string{`"PROXY 127.0.0.1:8080"`},
-		},
-		{
-			name:    "specific listen address",
-			listen:  "192.0.2.5:8080",
-			contain: []string{`"PROXY 192.0.2.5:8080"`},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pac := string(PAC(tt.listen, tt.routes))
-			for _, s := range tt.contain {
-				if !strings.Contains(pac, s) {
-					t.Errorf("PAC lacks %q:\n%s", s, pac)
-				}
-			}
-			for _, s := range tt.absent {
-				if strings.Contains(pac, s) {
-					t.Errorf("PAC contains %q:\n%s", s, pac)
-				}
-			}
-			if !strings.Contains(pac, "function FindProxyForURL(url, host) {") || !strings.HasSuffix(pac, ending) {
-				t.Errorf("PAC is not a complete function:\n%s", pac)
-			}
-		})
 	}
 }

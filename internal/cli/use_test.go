@@ -16,10 +16,7 @@ func TestProxyShowsDefault(t *testing.T) {
 	out := e.mustGst("proxy")
 	contains(t, out,
 		"Proxy: 127.0.0.1:1080 (gst is not running; start it with gst up)\n",
-		"ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080",
-		"http://127.0.0.1:1080/proxy.pac",
-		"Host *.gst",
-		"ProxyCommand gst connect %h %p")
+		"ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080")
 	if len(e.back.calls) != 0 {
 		t.Fatalf("showing the proxy reached the daemon: %v", e.back.calls)
 	}

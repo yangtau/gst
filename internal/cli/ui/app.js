@@ -321,8 +321,6 @@ function renderProxy(proxy, isSelf) {
   if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
   const addr = `${host}:${port}`;
   $("use-env").textContent = `ALL_PROXY=socks5h://${addr}`;
-  $("use-pac").textContent = `http://${addr}/proxy.pac`;
-  $("use-ssh").textContent = "Host *.gst\n  ProxyCommand gst connect %h %p";
   usage.hidden = false;
 }
 

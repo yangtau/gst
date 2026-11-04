@@ -118,7 +118,7 @@ func (d *Daemon) listen(f *config.File) {
 	}
 	wg.Wait()
 	if d.proxy == nil && f.ProxyAddress() != "" {
-		srv := &proxy.Server{Dial: d.dialProxy, PAC: d.pac}
+		srv := &proxy.Server{Dial: d.dialProxy}
 		d.proxy = open(ctx, f.ProxyAddress(), func(ctx context.Context, ln net.Listener) { srv.Serve(ctx, ln) })
 	}
 	for addr, m := range want {
@@ -164,9 +164,4 @@ func (d *Daemon) dialProxy(ctx context.Context, address string) (net.Conn, error
 	}
 	var dialer net.Dialer
 	return dialer.DialContext(ctx, "tcp", address)
-}
-
-func (d *Daemon) pac() []byte {
-	f := d.config.Load()
-	return proxy.PAC(f.ProxyAddress(), f.Routes)
 }

@@ -323,24 +323,3 @@ func TestProxyRoutes(t *testing.T) {
 	}
 	expectGreeting(t, c, "local")
 }
-
-func TestProxyServesPACWithRoutes(t *testing.T) {
-	a, _ := pair(t)
-	addr := proxied(t, a)
-	get := func() string {
-		resp, err := http.Get("http://" + addr + "/proxy.pac")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return string(body)
-	}
-	if pac := get(); !strings.Contains(pac, "PROXY "+addr) || strings.Contains(pac, "corp.example.com") {
-		t.Fatalf("pac = %s", pac)
-	}
-	a.apply(func(f *config.File) { f.Routes = config.Routes{{Match: "corp.example.com", Via: "b"}} })
-	if pac := get(); !strings.Contains(pac, "corp.example.com") {
-		t.Fatalf("pac after adding a route = %s", pac)
-	}
-}

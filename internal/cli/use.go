@@ -22,8 +22,7 @@ func (a *app) proxyCommand() *cobra.Command {
 serves a SOCKS5 and HTTP proxy on one port, 127.0.0.1:1080 unless
 changed. Through it, <machine>.gst reaches a machine of the mesh, the
 hosts that routes match go out through their exits, and other hosts are
-connected to directly. Browsers can use its proxy auto-configuration
-file, which sends only those hosts to the proxy.`,
+connected to directly.`,
 		Example: `  gst proxy
   gst proxy 127.0.0.1:1081
   gst proxy off`,
@@ -79,12 +78,7 @@ file, which sends only those hosts to the proxy.`,
 			if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
 				v.Address = net.JoinHostPort("127.0.0.1", port)
 			}
-			fmt.Fprintf(a.stdout, `Shell:    export ALL_PROXY=socks5h://%[1]s http_proxy=http://%[1]s https_proxy=http://%[1]s
-Browser:  automatic proxy configuration URL http://%[1]s/proxy.pac
-ssh:      add to ~/.ssh/config, then run ssh <machine>.gst
-            Host *.gst
-              ProxyCommand gst connect %%h %%p
-`, v.Address)
+			fmt.Fprintf(a.stdout, "export ALL_PROXY=socks5h://%[1]s http_proxy=http://%[1]s https_proxy=http://%[1]s\n", v.Address)
 			return nil
 		}),
 	}

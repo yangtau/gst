@@ -54,7 +54,7 @@ type Daemon struct {
 	cfg Config
 
 	mesh    *mesh.Node
-	control wire.Server                // the methods of control connections
+	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
 	ops      sync.Mutex // serializes reloads and restarts
