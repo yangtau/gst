@@ -56,7 +56,17 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 main { max-width: 1100px; margin: 0 auto; padding: 8px 24px 48px; }
 section { margin-top: 28px; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
-section > p { margin: 0 0 10px; }
+section > p, .block > p { margin: 0 0 10px; }
+h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.block { margin-top: 22px; }
+#detail:not(.self) .self-only { display: none; }
+
+.machine-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.machine-name { font-size: 16px; }
+.problem { margin: 12px 0 0; }
 
 .alert {
   margin: 20px 0 0; padding: 10px 14px; border-radius: 8px;
@@ -84,6 +94,14 @@ td .sub { display: block; color: var(--muted); font-size: 12.5px; }
 td .err { display: block; color: var(--bad); font-size: 12.5px; }
 .err-inline { color: var(--bad); }
 .table-wrap.spaced { margin-top: 12px; }
+tr.pickable { cursor: pointer; }
+tr.pickable:hover { background: var(--bg); }
+tr.pickable.picked { background: var(--node-self); }
+button.pick {
+  font: inherit; font-weight: 600; padding: 0; border: 0; border-radius: 4px; background: none;
+  color: var(--text); text-align: left; cursor: pointer; filter: none;
+}
+tr.picked button.pick { color: var(--accent); }
 [hidden] { display: none !important; }
 
 .usage { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 10px 0 0; }
@@ -100,6 +118,8 @@ td .err { display: block; color: var(--bad); font-size: 12.5px; }
 #map .edge-label { font: 11px var(--mono); fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
 #map .box { fill: var(--node); stroke: var(--border); stroke-width: 1.2; }
 #map .self .box { fill: var(--node-self); stroke: var(--accent); }
+#map .node { cursor: pointer; }
+#map .picked .box { fill: var(--node-self); stroke: var(--accent); stroke-width: 2.4; }
 #map .unreachable { opacity: .45; }
 #map .name { font-size: 13px; font-weight: 600; fill: var(--text); }
 #map .kind { font: 11px var(--mono); fill: var(--muted); }
@@ -119,7 +139,7 @@ td .err { display: block; color: var(--bad); font-size: 12.5px; }
   border: 1px solid var(--border); background: var(--surface);
 }
 .actions { display: inline-flex; gap: 6px; justify-content: flex-end; width: 100%; }
-#links td:last-child { text-align: right; }
+#detail.self #links td:last-child { text-align: right; }
 button {
   font: inherit; font-size: 12.5px; padding: 3px 11px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--accent); background: var(--accent); color: #fff;

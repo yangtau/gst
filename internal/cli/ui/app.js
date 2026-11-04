@@ -1,12 +1,15 @@
 "use strict";
 
-// The page polls /api/state with the token from the address that gst ui
-// printed. Everything shown is built with DOM text nodes: names and
-// destinations come from other machines of the mesh.
+// The page polls /api/state (this machine and the mesh) and, for another
+// machine that the user selected, /api/nodes/{id}, with the token from the
+// address that gst ui printed. Everything shown is built with DOM text
+// nodes: names and destinations come from other machines of the mesh.
 
 const token = location.hash.slice(1);
 const SVG = "http://www.w3.org/2000/svg";
 const POLL_MS = 3000;
+const NODE_POLL_MS = 5000;
+const SELECTED_KEY = "gst.machine";
 
 const $ = (id) => document.getElementById(id);
 
@@ -120,14 +123,16 @@ async function act(name, action) {
   }
 }
 
-function renderLinks(links) {
+function renderLinks(links, isSelf) {
   show("links", links.map((l) => {
     const status = [pill(l.status)];
     if (l.error && l.status !== "running") status.push(el("span", { class: "err" }, l.error));
     const peer = l.peer && l.peer.id
       ? [l.peer.name, el("span", { class: "sub mono" }, shortID(l.peer.id))]
       : [el("span", { class: "sub" }, "-")];
-    return [el("strong", null, l.name), status, l.destination, peer, actions(l)];
+    const row = [el("strong", null, l.name), status, l.destination, peer];
+    if (isSelf) row.push(actions(l));
+    return row;
   }));
 }
 
@@ -143,13 +148,18 @@ function routeText(n, topo, names) {
 
 function renderNodes(topo, names) {
   const nodes = [...topo.nodes].sort((a, b) => (a.id === topo.self ? -1 : b.id === topo.self ? 1 : names[a.id].localeCompare(names[b.id])));
-  fill($("nodes"), nodes.map((n) => [
-    el("strong", null, names[n.id]),
-    el("span", { class: "mono" }, shortID(n.id)),
-    n.software || "-",
-    pill(n.exit ? "yes" : "no", n.exit ? "yes" : "off"),
-    n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "unreachable"),
-  ]));
+  $("nodes").tBodies[0].replaceChildren(...nodes.map((n) => {
+    const picked = n.id === selected;
+    const pick = el("button", { type: "button", class: "pick", "aria-pressed": String(picked) }, names[n.id]);
+    const row = el("tr", { class: "pickable" + (picked ? " picked" : "") },
+      el("td", null, pick),
+      el("td", null, el("span", { class: "mono" }, shortID(n.id))),
+      el("td", null, n.software || "-"),
+      el("td", null, pill(n.exit ? "yes" : "no", n.exit ? "yes" : "off")),
+      el("td", null, n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "unreachable")));
+    row.addEventListener("click", () => select(n.id));
+    return row;
+  }));
 }
 
 // The graph puts each machine in a column by its distance from this one,
@@ -233,13 +243,16 @@ function renderGraph(topo, names) {
     const p = pos[n.id];
     const classes = ["node"];
     if (n.id === topo.self) classes.push("self");
+    if (n.id === selected) classes.push("picked");
     if (!n.reachable) classes.push("unreachable");
     const kind = n.id === topo.self ? "this machine" : shortID(n.id) + (n.exit ? " · exit" : "");
-    nodeLayer.append(svg("g", { class: classes.join(" "), transform: `translate(${p.x},${p.y})` },
+    const g = svg("g", { class: classes.join(" "), transform: `translate(${p.x},${p.y})` },
       svg("title", null, `${names[n.id]}\n${n.id}${n.software ? "\n" + n.software : ""}${n.reachable ? "" : "\nunreachable"}`),
       svg("rect", { class: "box", width: W, height: H, rx: 8 }),
       svg("text", { class: "name", x: 12, y: 19 }, truncate(names[n.id], 18)),
-      svg("text", { class: "kind", x: 12, y: 35 }, kind)));
+      svg("text", { class: "kind", x: 12, y: 35 }, kind));
+    g.addEventListener("click", () => select(n.id));
+    nodeLayer.append(g);
   }
 
   map.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -253,29 +266,58 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// ---- proxy, maps, routes ----
 
-function renderProxy(proxy) {
+// ---- machine detail ----
+
+// A machine's detail has one shape whether it comes from /api/state (this
+// machine, which is shown even when its daemon is not running) or from
+// /api/nodes/{id} (another machine, as its daemon reports it).
+
+function listenState(listen, error) {
+  return !listen ? "off" : error ? "failed" : "listening";
+}
+
+function detailFromState(state) {
+  const p = state.proxy;
+  return {
+    proxy: { listen: p.address, state: !p.address ? "off" : p.status === "failed" ? "failed" : p.status === "listening" ? "listening" : "not running", error: p.error },
+    links: state.links,
+    maps: state.maps.map((m) => ({ listen: m.listen, machine: m.machine, target: m.target, state: m.status === "listening" ? "listening" : m.status === "failed" ? "failed" : "not running", error: m.error })),
+    routes: state.routes || [],
+  };
+}
+
+function detailFromStatus(st) {
+  return {
+    proxy: { listen: st.proxy.listen, state: listenState(st.proxy.listen, st.proxy.error), error: st.proxy.error },
+    links: (st.links || []).map((l) => ({ name: l.name, destination: l.destination, status: l.state, error: l.error, peer: l.peer })),
+    maps: (st.maps || []).map((m) => ({ listen: m.listen, machine: m.machine, target: m.target, state: listenState(m.listen, m.error), error: m.error })),
+    routes: st.routes || [],
+  };
+}
+
+function renderProxy(proxy, isSelf) {
   const state = $("proxy-state");
   const usage = $("proxy-usage");
-  if (!proxy.address) {
-    state.replaceChildren(pill("off"), " ", el("span", { class: "muted" }, "Turn it on with "), el("code", null, "gst proxy 127.0.0.1:1080"));
-    usage.hidden = true;
+  usage.hidden = true;
+  if (!proxy.listen) {
+    state.replaceChildren(pill("off"), ...(isSelf ? [" ", el("span", { class: "muted" }, "Turn it on with "), el("code", null, "gst proxy 127.0.0.1:1080")] : []));
     return;
   }
-  const children = [el("code", null, proxy.address), " "];
-  if (proxy.status === "failed") {
+  const children = [el("code", null, proxy.listen), " "];
+  if (proxy.state === "failed") {
     children.push(pill("failed", "down"), " ", el("span", { class: "err-inline" }, proxy.error || ""));
-  } else if (proxy.status === "listening") {
+  } else if (proxy.state === "listening") {
     children.push(pill("listening", "running"));
   } else {
     children.push(pill("gst is not running", "down"));
   }
   state.replaceChildren(...children);
+  if (!isSelf) return;
 
   // The usage lines name an address that clients can connect to.
-  const i = proxy.address.lastIndexOf(":");
-  let host = proxy.address.slice(0, i), port = proxy.address.slice(i + 1);
+  const i = proxy.listen.lastIndexOf(":");
+  let host = proxy.listen.slice(0, i), port = proxy.listen.slice(i + 1);
   if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
   const addr = `${host}:${port}`;
   $("use-env").textContent = `ALL_PROXY=socks5h://${addr}`;
@@ -286,7 +328,7 @@ function renderProxy(proxy) {
 
 function renderMaps(maps) {
   show("maps", maps.map((m) => {
-    const status = [pill(m.status === "listening" ? "listening" : m.status === "failed" ? "failed" : "not running", m.status === "listening" ? "running" : "down")];
+    const status = [pill(m.state, m.state === "listening" ? "running" : "down")];
     if (m.error) status.push(el("span", { class: "err" }, m.error));
     return [el("span", { class: "mono" }, m.listen), el("span", { class: "mono" }, `${m.machine}:${m.target}`), status];
   }));
@@ -308,9 +350,138 @@ function renderRoutes(routes, topo) {
   }));
 }
 
+// renderDetail shows the selected machine: its header from what this
+// machine knows of it, and its tables once its status is known.
+function renderDetail(state, names) {
+  const topo = state.topology;
+  const isSelf = isSelfSelected(state);
+  const known = topo && topo.nodes.find((n) => n.id === selected);
+  const info = isSelf && state.node ? state.node : known;
+  const detail = $("detail");
+  detail.classList.toggle("self", isSelf);
+
+  const view = nodeView && nodeView.id === selected ? nodeView : null;
+  const status = isSelf ? null : view && view.status;
+  const node = status && status.node && status.node.id ? status.node : info;
+  $("m-name").textContent = node ? (names && names[node.id]) || node.name : "this machine";
+  $("m-id").textContent = node ? shortID(node.id) : "";
+  const software = isSelf ? state.software : (status && status.software) || (node && node.software) || "";
+  $("m-software").textContent = software;
+  const exit = $("m-exit");
+  exit.hidden = !node;
+  exit.className = "pill " + (node && node.exit ? "yes" : "off");
+  exit.textContent = node && node.exit ? "exit" : "not an exit";
+  $("m-self").hidden = !isSelf;
+
+  let d = null;
+  let problem = "";
+  if (isSelf) {
+    d = detailFromState(state);
+  } else if (!view) {
+    problem = "Loading…";
+  } else if (view.error) {
+    problem = view.error;
+  } else {
+    d = detailFromStatus(view.status);
+  }
+  $("m-problem").textContent = problem;
+  $("m-problem").className = view && view.error ? "problem err-inline" : "problem muted";
+  $("m-problem").hidden = !problem;
+  $("m-body").hidden = !d;
+  if (!d) return;
+  renderLinks(d.links, isSelf);
+  renderProxy(d.proxy, isSelf);
+  renderMaps(d.maps);
+  renderRoutes(d.routes, topo);
+}
+
+// ---- selection ----
+
+let selected = ""; // the id of the machine shown in detail
+let lastState = null;
+let nodeView = null; // {id, status} or {id, error}: the last answer for a machine other than this one
+let nodeInflight = false;
+let nodeTimer = 0;
+
+try {
+  selected = localStorage.getItem(SELECTED_KEY) || "";
+} catch (_) {}
+
+// selfID is this machine's id as far as the page knows; empty when it has
+// none yet.
+function selfID(state) {
+  return (state.topology && state.topology.self) || (state.node && state.node.id) || "";
+}
+
+// isSelfSelected is true when the selection is this machine, or when the
+// page knows no other machines.
+function isSelfSelected(state) {
+  return !state.topology || state.topology.nodes.length === 0 || selected === selfID(state);
+}
+
+function select(id) {
+  if (id === selected) return;
+  selected = id;
+  try {
+    localStorage.setItem(SELECTED_KEY, id);
+  } catch (_) {}
+  nodeView = null;
+  if (lastState) draw(lastState);
+  refreshNode();
+}
+
+// refreshNode fetches the selected machine's status unless it is this
+// machine, whose status comes with /api/state, or is known to be
+// unreachable. Requests do not overlap: a request that finishes for a
+// machine no longer selected is followed by one for the selected machine.
+async function refreshNode() {
+  clearTimeout(nodeTimer);
+  nodeTimer = 0;
+  const state = lastState;
+  if (!state || !state.topology || isSelfSelected(state)) return;
+  const id = selected;
+  const known = state.topology.nodes.find((n) => n.id === id);
+  if (known && !known.reachable) {
+    const msg = "Unreachable: no running link leads to this machine from here.";
+    if (!nodeView || nodeView.id !== id || nodeView.error !== msg) {
+      nodeView = { id, error: msg };
+      draw(state);
+    }
+    return;
+  }
+  if (nodeInflight) return;
+  nodeInflight = true;
+  try {
+    const res = await fetch(`api/nodes/${encodeURIComponent(id)}`, { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+    let view;
+    if (res.ok) {
+      view = { id, status: await res.json() };
+    } else {
+      view = { id, error: (await res.text()).trim() || res.statusText };
+    }
+    if (id === selected) nodeView = view;
+  } catch (err) {
+    if (id === selected) nodeView = { id, error: err instanceof TypeError ? "gst ui is not running." : String(err.message || err) };
+  } finally {
+    nodeInflight = false;
+  }
+  if (id !== selected) {
+    refreshNode();
+    return;
+  }
+  if (lastState) draw(lastState);
+  if (!document.hidden) nodeTimer = setTimeout(refreshNode, NODE_POLL_MS);
+}
+
 // ---- page ----
 
 function render(state) {
+  lastState = state;
+  // A remembered machine that the mesh no longer lists gives way to this one.
+  const topo = state.topology;
+  if (topo && topo.nodes.length > 0 && !topo.nodes.some((n) => n.id === selected)) selected = topo.self;
+  if (!topo && selected !== selfID(state)) selected = selfID(state);
+
   const self = state.node;
   document.title = self ? `gst · ${self.name}` : "gst";
   $("node").textContent = self ? `${self.name} · ${shortID(self.id)}` : "this machine";
@@ -331,18 +502,22 @@ function render(state) {
 
   if (Date.now() > alertSticky) showAlert(...(state.errors || []));
 
-  renderLinks(state.links);
+  draw(state);
+  if (!nodeInflight && !nodeTimer) refreshNode();
+}
+
+// draw shows state and the selected machine's status.
+function draw(state) {
   const topo = state.topology;
   const showTopo = !!topo && topo.nodes.length > 0;
   $("nodes-section").hidden = !showTopo;
+  let names;
   if (showTopo) {
-    const names = displayNames(topo.nodes);
+    names = displayNames(topo.nodes);
     renderGraph(topo, names);
     renderNodes(topo, names);
   }
-  renderProxy(state.proxy);
-  renderMaps(state.maps);
-  renderRoutes(state.routes, topo);
+  renderDetail(state, names);
 }
 
 let timer;
@@ -364,6 +539,9 @@ async function refresh() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refresh();
+  if (!document.hidden) {
+    refresh();
+    refreshNode();
+  }
 });
 refresh();

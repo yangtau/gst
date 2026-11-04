@@ -17,18 +17,9 @@
   <div id="alert" class="alert" role="alert" hidden></div>
   <p id="notice" class="notice" role="status" hidden></p>
 
-  <section>
-    <h2>Links</h2>
-    <div class="table-wrap"><table id="links">
-      <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th><th><span class="sr">Actions</span></th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <p id="links-empty" class="muted" hidden>No links. Add one with <code>gst link add &lt;name&gt; [destination]</code>.</p>
-  </section>
-
   <section id="nodes-section" hidden>
     <h2>Machines</h2>
-    <p class="muted small">As this machine knows the mesh. Lines are running links, labeled with their name on the machine that runs them.</p>
+    <p class="muted small">As this machine knows the mesh. Lines are running links, labeled with their name on the machine that runs them. Select a machine to see its links, proxy, maps, and routes below.</p>
     <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh graph"></svg></div>
     <div class="table-wrap spaced"><table id="nodes">
       <thead><tr><th>Name</th><th>ID</th><th>Software</th><th>Exit</th><th>Route</th></tr></thead>
@@ -36,34 +27,57 @@
     </table></div>
   </section>
 
-  <section>
-    <h2>Proxy</h2>
-    <p id="proxy-state"></p>
-    <div id="proxy-usage" hidden>
-      <dl class="usage">
-        <dt>Shell</dt><dd><code id="use-env"></code></dd>
-        <dt>Browser PAC</dt><dd><code id="use-pac"></code></dd>
-        <dt>ssh config</dt><dd><pre id="use-ssh"></pre></dd>
-      </dl>
+  <section id="detail" class="self">
+    <h2>Machine</h2>
+    <div class="machine-head">
+      <strong id="m-name" class="machine-name"></strong>
+      <span id="m-id" class="mono muted"></span>
+      <span id="m-software" class="muted small"></span>
+      <span id="m-exit" class="pill"></span>
+      <span id="m-self" class="pill off">this machine</span>
     </div>
-  </section>
+    <p id="m-problem" class="problem" role="status" hidden></p>
 
-  <section>
-    <h2>Maps</h2>
-    <div class="table-wrap"><table id="maps">
-      <thead><tr><th>Listen</th><th>Machine : target</th><th>Status</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <p id="maps-empty" class="muted" hidden>No maps. Add one with <code>gst map add &lt;listen&gt; &lt;machine&gt;:&lt;target&gt;</code>.</p>
-  </section>
+    <div id="m-body">
+      <div class="block">
+        <h3>Links</h3>
+        <div class="table-wrap"><table id="links">
+          <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th><th class="self-only"><span class="sr">Actions</span></th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p id="links-empty" class="muted" hidden>No links.<span class="self-only"> Add one with <code>gst link add &lt;name&gt; [destination]</code>.</span></p>
+      </div>
 
-  <section>
-    <h2>Routes</h2>
-    <div class="table-wrap"><table id="routes">
-      <thead><tr><th>Match</th><th>Via</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <p id="routes-empty" class="muted" hidden>No routes. Add one with <code>gst route add &lt;match&gt; &lt;machine&gt;</code>.</p>
+      <div class="block">
+        <h3>Proxy</h3>
+        <p id="proxy-state"></p>
+        <div id="proxy-usage" class="self-only" hidden>
+          <dl class="usage">
+            <dt>Shell</dt><dd><code id="use-env"></code></dd>
+            <dt>Browser PAC</dt><dd><code id="use-pac"></code></dd>
+            <dt>ssh config</dt><dd><pre id="use-ssh"></pre></dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="block">
+        <h3>Maps</h3>
+        <div class="table-wrap"><table id="maps">
+          <thead><tr><th>Listen</th><th>Machine : target</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p id="maps-empty" class="muted" hidden>No maps.<span class="self-only"> Add one with <code>gst map add &lt;listen&gt; &lt;machine&gt;:&lt;target&gt;</code>.</span></p>
+      </div>
+
+      <div class="block">
+        <h3>Routes</h3>
+        <div class="table-wrap"><table id="routes">
+          <thead><tr><th>Match</th><th>Via</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p id="routes-empty" class="muted" hidden>No routes.<span class="self-only"> Add one with <code>gst route add &lt;match&gt; &lt;machine&gt;</code>.</span></p>
+      </div>
+    </div>
   </section>
 </main>
 </body>

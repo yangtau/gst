@@ -33,11 +33,11 @@ func (a *app) uiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ui",
 		Short: "Show the mesh in a browser",
-		Long: `Show this machine's links, proxy, maps, and routes, and the mesh as this
-machine knows it, in a web page that keeps itself up to date. gst ui
-serves the page on 127.0.0.1 until interrupted, prints its address, and
-opens it in a browser. The page can also start, stop, and restart this
-machine's links. The address ends with a secret that the page needs; anyone with
+		Long: `Show the mesh as this machine knows it, and the links, proxy, maps, and
+routes of any machine in it, in a web page that keeps itself up to date.
+gst ui serves the page on 127.0.0.1 until interrupted, prints its
+address, and opens it in a browser. The page can also start, stop, and
+restart this machine's links. The address ends with a secret that the page needs; anyone with
 the address can use the page while gst ui runs.`,
 		Example: `  gst ui
   gst ui --port 8370 --no-open   # on a server: ssh -L 8370:localhost:8370 myhost`,
