@@ -140,7 +140,7 @@ func TestProxyListenFailure(t *testing.T) {
 func TestMapAdd(t *testing.T) {
 	e := newEnv(t)
 	out := e.mustGst("map", "add", "15432", "DevCN.gst:5432")
-	if want := "Mapped 127.0.0.1:15432 to devcn:localhost:5432.\n"; out != want {
+	if want := "Mapped 127.0.0.1:15432 to localhost:5432 on devcn.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	if !e.back.installed || !slices.Equal(e.back.calls, []string{"sync"}) {

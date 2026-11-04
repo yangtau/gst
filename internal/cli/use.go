@@ -222,7 +222,7 @@ own needs the machine to be an exit.`,
 			if err := a.checkListening(cmd.Context(), listen); err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "Mapped %s to %s:%s.\n", listen, machine, target)
+			fmt.Fprintf(a.stdout, "Mapped %s to %s on %s.\n", listen, target, machine)
 			return nil
 		}),
 	}
