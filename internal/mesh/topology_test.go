@@ -10,7 +10,7 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-var now = time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+var now = time.Now()
 
 // rec returns the live record of the node called name, with links to the
 // named nodes (link name = peer name).
