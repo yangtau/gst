@@ -267,6 +267,7 @@ func (n *Node) sessionTo(id string) *yamux.Session {
 
 func yamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
+	cfg.MaxStreamWindowSize = 2 * 1024 * 1024
 	cfg.LogOutput = io.Discard
 	cfg.KeepAliveInterval = 15 * time.Second
 	cfg.ConnectionWriteTimeout = 30 * time.Second
