@@ -129,7 +129,7 @@ func TestHandshakeRefusal(t *testing.T) {
 		hello Hello
 		code  string
 	}{
-		{Hello{Role: RolePeer, Protocol: 1}, CodeUnsupportedRole},
+		{Hello{Role: RolePeer, Protocol: Protocol}, CodeUnsupportedRole},
 		{Hello{Role: RoleControl, Protocol: 0}, CodeUnsupportedProto},
 	} {
 		client, server := net.Pipe()
@@ -146,5 +146,73 @@ func TestHandshakeRefusal(t *testing.T) {
 			t.Errorf("%+v: reply %+v, %v; want %s", tt.hello, reply, err, tt.code)
 		}
 		client.Close()
+	}
+}
+
+func TestAnswerRefusesOlderProtocol(t *testing.T) {
+	for protocol := range Protocol {
+		var buf bytes.Buffer
+		err := Answer(&buf, Hello{Protocol: protocol, Software: "old gst", Role: RoleControl}, Hello{Software: "gst test"}, nil)
+		var werr *Error
+		if !errors.As(err, &werr) || werr.Code != CodeUnsupportedProto || !strings.Contains(werr.Message, "old gst") {
+			t.Errorf("protocol %d: Answer returned %v", protocol, err)
+		}
+		var reply Hello
+		if err := ReadFrame(&buf, &reply); err != nil || reply.Error == nil || reply.Error.Code != CodeUnsupportedProto || reply.Protocol != Protocol {
+			t.Errorf("protocol %d: sent %+v, %v", protocol, reply, err)
+		}
+	}
+}
+
+func TestAnswerAccepts(t *testing.T) {
+	for _, protocol := range []int{Protocol, Protocol + 1} {
+		var buf bytes.Buffer
+		if err := Answer(&buf, Hello{Protocol: protocol}, Hello{Software: "gst test", Protocol: 99}, nil); err != nil {
+			t.Errorf("protocol %d: Answer returned %v", protocol, err)
+		}
+		var reply Hello
+		if err := ReadFrame(&buf, &reply); err != nil || reply.Error != nil || reply.Protocol != Protocol || reply.Software != "gst test" {
+			t.Errorf("protocol %d: sent %+v, %v", protocol, reply, err)
+		}
+	}
+	// The caller's own refusal wins over a good protocol.
+	var buf bytes.Buffer
+	if err := Answer(&buf, Hello{Protocol: Protocol}, Hello{}, Errorf(CodeUnsupportedRole, "no")); err == nil {
+		t.Error("refusal not returned")
+	}
+}
+
+func TestDialOlderProtocol(t *testing.T) {
+	var peer bytes.Buffer
+	WriteFrame(&peer, Hello{Protocol: Protocol - 1, Software: "gst 0.2", Role: RolePeer})
+	rw := struct {
+		io.Reader
+		io.Writer
+	}{&peer, io.Discard}
+	hello, err := Dial(rw, Hello{Role: RolePeer})
+	var werr *Error
+	if !errors.As(err, &werr) || werr.Code != CodeUnsupportedProto || !strings.Contains(werr.Message, "gst 0.2") {
+		t.Fatalf("Dial = %+v, %v", hello, err)
+	}
+	if hello.Protocol != Protocol-1 {
+		t.Errorf("Dial hid the other side's hello: %+v", hello)
+	}
+}
+
+func TestDialSendsCurrentProtocolAndReturnsRefusal(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	go func() {
+		defer server.Close()
+		theirs, _ := ReadHello(server)
+		if theirs.Protocol != Protocol {
+			t.Errorf("Dial sent protocol %d", theirs.Protocol)
+		}
+		Answer(server, theirs, Hello{}, Errorf(CodeUnsupportedRole, "no peers here"))
+	}()
+	_, err := Dial(client, Hello{Role: RolePeer, Protocol: 1})
+	var werr *Error
+	if !errors.As(err, &werr) || werr.Code != CodeUnsupportedRole {
+		t.Fatalf("Dial = %v, want the refusal", err)
 	}
 }

@@ -113,12 +113,16 @@ func (c *Conn) Start(command string) (*Session, error) {
 		session.Close()
 		return nil, err
 	}
-	s := &Session{Reader: stdout, Writer: stdin, session: session, stderr: limitedBuffer{max: 512}}
+	s := &Session{Reader: stdout, Writer: stdin, session: session, stderr: limitedBuffer{max: 512}, exited: make(chan struct{})}
 	session.Stderr = &s.stderr
 	if err := session.Start(command); err != nil {
 		session.Close()
 		return nil, errors.New("remote command start failed")
 	}
+	go func() {
+		session.Wait()
+		close(s.exited)
+	}()
 	return s, nil
 }
 
@@ -129,14 +133,20 @@ type Session struct {
 	io.Writer
 	session *ssh.Session
 	stderr  limitedBuffer
+	exited  chan struct{} // closed when the command has exited and its output is copied
 }
 
 // Close ends the session.
 func (s *Session) Close() error { return s.session.Close() }
 
 // Failure returns the first line that the command wrote to its standard
-// error, which for gst carries the error. It may quote the server.
+// error, which for gst carries the error. It may quote the server. It
+// waits a moment for a command that is exiting to finish writing.
 func (s *Session) Failure() string {
+	select {
+	case <-s.exited:
+	case <-time.After(time.Second):
+	}
 	line, _, _ := strings.Cut(s.stderr.String(), "\n")
 	return line
 }
