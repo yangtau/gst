@@ -123,6 +123,19 @@ func (n *Node) newer(sent map[string]uint64) ([]wire.Record, <-chan struct{}) {
 }
 
 // merge keeps the records that are newer than the ones this node has.
+// valid reports whether a record that a peer sent is well formed.
+func valid(r wire.Record) bool {
+	if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !fits(r) {
+		return false
+	}
+	for _, e := range r.Links {
+		if !config.ValidNodeID(e.Peer) || config.ValidateName(e.Name) != nil {
+			return false
+		}
+	}
+	return true
+}
+
 func (n *Node) merge(recs []wire.Record) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -132,7 +145,7 @@ func (n *Node) merge(recs []wire.Record) {
 	now := time.Now()
 	changed := false
 	for _, r := range recs {
-		if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !r.Expires.After(now) || !fits(r) {
+		if !valid(r) || !r.Expires.After(now) {
 			continue
 		}
 		if r.Node.ID == n.info.ID {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -102,12 +103,14 @@ func Build(path string) (string, error) {
 }
 
 // DialWait dials like Dial, retrying until the daemon accepts or ctx is
-// done, for use right after the daemon's service starts.
+// done, for use right after the daemon's service starts. A daemon that
+// refuses the handshake, as one of another protocol does, is not retried.
 func DialWait(ctx context.Context, socket, software, build string) (*Client, error) {
 	for {
 		c, err := Dial(ctx, socket, software, build)
-		if err == nil {
-			return c, nil
+		var refused *wire.Error
+		if err == nil || errors.As(err, &refused) {
+			return c, err
 		}
 		select {
 		case <-ctx.Done():

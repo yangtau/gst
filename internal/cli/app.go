@@ -295,7 +295,14 @@ func (a *app) connectLink(ctx context.Context, _ string, l *config.Link) (io.Rea
 	if err != nil {
 		return nil, err
 	}
+	// A server can stall opening the session; the mesh handshake bounds
+	// only what follows.
+	stall := time.AfterFunc(defaultConnectTimeout, func() { conn.Close() })
 	session, err := conn.Start(remoteGst(l) + " peer-bridge")
+	if !stall.Stop() && err == nil {
+		session.Close()
+		err = errors.New("the remote command did not start in time")
+	}
 	if err != nil {
 		conn.Close()
 		return nil, err

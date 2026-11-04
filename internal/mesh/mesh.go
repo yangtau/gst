@@ -218,6 +218,10 @@ func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeI
 	var info wire.NodeInfo
 	conn, err := call(ctx, session, wire.MethodNodeInfo, nil, &info)
 	if err != nil {
+		var refused *wire.Error
+		if errors.As(err, &refused) {
+			return info, &RemoteError{"the peer did not say who it is: " + refused.Message}
+		}
 		return info, fmt.Errorf("ask the peer who it is: %w", err)
 	}
 	conn.Close()

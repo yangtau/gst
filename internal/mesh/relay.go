@@ -203,7 +203,7 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 		}
 		ids := make([]string, len(found))
 		for i, node := range found {
-			ids[i] = node.ID[:8]
+			ids[i] = node.ID[:min(8, len(node.ID))]
 		}
 		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from gst nodes", ref, strings.Join(ids, ", "))
 	}

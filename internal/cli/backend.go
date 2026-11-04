@@ -80,12 +80,17 @@ func (b *daemonBackend) Sync(ctx context.Context, command []string) error {
 		return err
 	}
 	c, err := b.connect(ctx, "")
+	if otherProtocol(err) {
+		c, err = nil, nil
+	}
 	if err != nil {
 		return err
 	}
-	if c.Daemon.Build != build {
+	if c == nil || c.Daemon.Build != build {
 		// The daemon runs another gst, as after an upgrade.
-		c.Close()
+		if c != nil {
+			c.Close()
+		}
 		if err := b.manager.Install(command, true); err != nil {
 			return err
 		}
@@ -100,6 +105,13 @@ func (b *daemonBackend) Sync(ctx context.Context, command []string) error {
 	return nil
 }
 
+// otherProtocol reports whether err is the handshake failure with a
+// daemon of another gst protocol, as after an upgrade.
+func otherProtocol(err error) bool {
+	var refused *wire.Error
+	return errors.As(err, &refused) && refused.Code == wire.CodeUnsupportedProto
+}
+
 // connect connects to the daemon, waiting for its service to start it.
 // With build set, it also waits until a daemon of that build answers, as
 // one that is still shutting down may answer for a moment.
@@ -108,13 +120,14 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 	defer cancel()
 	for {
 		c, err := daemon.DialWait(ctx, b.paths.Socket, software, build)
-		if err != nil {
+		switch {
+		case err == nil && (build == "" || c.Daemon.Build == build):
+			return c, nil
+		case err == nil:
+			c.Close()
+		case build == "" || !otherProtocol(err):
 			return nil, withHint(fmt.Errorf("the gst daemon does not answer: %w", err), b.manager.LogHint())
 		}
-		if build == "" || c.Daemon.Build == build {
-			return c, nil
-		}
-		c.Close()
 		select {
 		case <-ctx.Done():
 			return nil, withHint(errors.New("the gst daemon still runs another gst after a restart"), b.manager.LogHint())

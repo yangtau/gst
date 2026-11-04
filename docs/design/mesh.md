@@ -26,7 +26,7 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 
 - **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）；作为服务器第一次被 `gst peer-bridge` 连到时同样生成身份并启动 daemon。
 - **up / down**：`gst down` 在配置里写 `down: true`，停止 daemon 并删除服务；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它并启动 daemon。除 down 外，daemon 总在运行（即使没有 link），因为它要提供 proxy、map，并接受别人的 link。
-- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 内任何节点都可以请求任何节点连接**它自己机器上的**地址（loopback 与 Unix socket）。连接本机以外的地址（局域网、互联网）需要该节点开启 exit：`gst exit on`。这条规则由执行连接的最后一跳检查。
+- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 内任何节点都可以请求任何节点连接**它自己机器上的**地址（loopback 与 Unix socket）。连接本机以外的地址（局域网、互联网）需要该节点开启 exit：`gst exit on`。这条规则由执行连接的最后一跳检查。mesh 里的机器都属于同一个用户、彼此完全信任：能连本机 loopback 与 Unix socket，就能用上面的任何服务（sshd、本机 gst 的 proxy 与 control socket），所以 exit 是防止流量意外从某台机器出去的默认策略，不是机器之间的安全边界。
 - **只有 TCP**：中转的是字节流。目标是 TCP `host:port` 或 Unix socket 路径。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志、`gst link logs`）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
