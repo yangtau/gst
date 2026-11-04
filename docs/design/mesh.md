@@ -92,22 +92,13 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 daemon 在 `proxy` 地址上同时提供 SOCKS5 和 HTTP 代理，按首字节区分（`0x05` 为 SOCKS5）：
 
 - SOCKS5：仅 CONNECT、无认证；域名原样交给路由（等同 `socks5h`）。
-- HTTP：`CONNECT host:port`；绝对形式的普通请求（`GET http://host/…`），转发时加 `Connection: close`；`GET /proxy.pac` 返回 PAC 文件；其他请求返回 400。
+- HTTP：`CONNECT host:port`；绝对形式的普通请求（`GET http://host/…`），转发时加 `Connection: close`；其他请求返回 400。
 
 每个连接的去向：
 
 1. 主机名为 `<machine>.gst`：连接该机器的 `localhost:port`；
 2. 命中某条 route：经 `via` 机器连接原地址，域名由 `via` 解析；`via` 必须开启 exit；
 3. 否则由本机直接连接。
-
-PAC 文件把 `.gst` 和 route 命中的主机交给 `PROXY <proxy 地址>`，其余 `DIRECT`；IPv4 CIDR 规则只对 IP 字面量生效，IPv6 CIDR 规则不进入 PAC。
-
-ssh 通过 `ProxyCommand` 使用 mesh：
-
-```
-Host *.gst
-  ProxyCommand gst connect %h %p
-```
 
 ## gst 协议
 
@@ -162,13 +153,14 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
-| `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`proxy`（地址与错误）、`links`（每条 link 的 state、since、error、reconnects、对端 `peer`）、`maps`（每个 map 的 listen 与错误） |
+| `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`proxy`（`listen` 与错误；代理关闭时 `listen` 为空）、`links`（配置中的每条 link，含已停止的：name、`destination`、state、since、error、reconnects、对端 `peer`；按名字排序）、`maps`（按配置顺序：listen 与错误、`machine`、`target`）、`routes`（按配置顺序：`match`、`via`） |
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
 | `link.restart` | `{"names": [...]}` | 重启后的 `Status` |
 | `mesh.nodes` | 无 | `Topology` |
+| `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
 | `mesh.connect` | `{"node": <machine>, "target": {"network": "tcp"\|"unix", "address": …}}` | 成功后该连接变为到目标的原始字节流 |
 
-link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）；配置中停止的 link 不出现在 `Status` 里，CLI 显示为 `stopped`。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
+link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）、`stopped`（配置中已停止，daemon 不运行它）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
 
 ### peer 方法
 
@@ -176,7 +168,8 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 | --- | --- | --- |
 | `node.info` | 无 | `NodeInfo`：`id`、`name`、`software`、`exit` |
 | `topology.sync` | `{"known": {节点 id: seq}}` | `{"records": [...]}`：比调用方新的记录；之后该流持续推送 `{"records": [...]}`，每次变化一帧 |
-| `relay.open` | `{"path": [节点 id...], "target": {...}}` | 成功后该流变为到目标的原始字节流 |
+| `relay.open` | `{"path": [节点 id...], "target": {...}}` | 成功后该流变为到目标的原始字节流；`target.network` 为 `gst` 时见下文 |
+| `node.status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同）；不提供状态的节点返回 `unsupported_method` |
 
 ### link 的建立
 
@@ -207,6 +200,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - 发起方根据自己的 `Topology` 计算最短路径（源路由），最多 16 个节点。`relay.open` 的 `path` 以被调方开头，每个节点检查 `path[0]` 是自己，然后：
   - 只剩自己：连接 `target`。目标不是本机地址（Unix socket、`localhost`、loopback IP）且本节点没有开启 exit 时返回 `forbidden`；
   - 否则在与 `path[1]` 的 peer 会话上开新流，把 `path[1:]` 交给它。
+  - 目标的 `network` 为 `gst`（`address` 必须为空，否则 `invalid_params`）：路径末端的节点不连接任何地址，而是在该流上继续处理 peer 方法，一个接一个，直到发起方关闭流。它不是连接地址，不受 exit 规则限制；发起方用它调用任意节点的 peer 方法（`mesh.status` 即经此向目标节点调用 `node.status`；调用自己时在进程内完成）。
 - 失败时错误沿路径原样传回发起方。
 
 ## Web UI
@@ -214,4 +208,5 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - `gst ui` 是前台进程，只监听 `127.0.0.1`（`--port`，默认任意空闲端口），启动时生成随机 token，打印 `http://127.0.0.1:<port>/#<token>` 并打开浏览器（`--no-open` 跳过）。daemon 只有 control socket 这一个控制入口，退出后不留监听。
 - 页面（`internal/cli/ui`，go:embed）以 `Authorization: Bearer <token>` 请求 `GET /api/state`；`Host` 不是 localhost 或回环地址时返回 403；响应带严格的 CSP 等安全头。页面用 DOM 文本节点渲染所有字段。
 - `/api/state` 返回本机 node、proxy、links、maps、routes、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。
+- `GET /api/nodes/{node}`（同样需要 token）返回 mesh 中任一机器的 `Status`，即 `mesh.status` 的结果，`{node}` 是机器的称呼（名称、id、id 前缀或 link 名）；出错时返回 502 和错误信息。页面选中某台机器时请求它。
 - `POST /api/links/{name}/{start|stop|restart}` 执行与 `gst link start|stop|restart <name>` 相同的代码。

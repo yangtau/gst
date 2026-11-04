@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 - Every machine runs gst (0.3 or later, on both ends of a link) and a small background daemon.
 - A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `mini` and `devcn`, then `mini` reaches `devcn` through `laptop`, without any credentials for `devcn`.
-- You reach a machine with `gst connect` (also as an ssh `ProxyCommand`), through a SOCKS5/HTTP proxy where `<machine>.gst` is that machine, or through a local port or Unix socket that leads to it (a map).
+- You reach a machine with `gst connect`, through a SOCKS5/HTTP proxy where `<machine>.gst` is that machine, or through a local port or Unix socket that leads to it (a map).
 
 ## Install
 
@@ -71,6 +71,7 @@ gst link add devcn        # the "devcn" entry of ~/.ssh/config
 gst link add mini
 gst link list             # NAME STATUS DESTINATION PEER; wait for "running"
 gst nodes                 # every machine in the mesh, and how to get there
+gst status devcn          # devcn's own links, proxy, maps, and routes
 ```
 
 `gst nodes` prints something like:
@@ -92,15 +93,10 @@ Reach a machine in any of these ways:
 # One connection on standard input and output: a bare port means localhost on devcn
 gst connect devcn 22
 
-# ssh through the mesh, with your own login on devcn: add to ~/.ssh/config, then run "ssh devcn.gst"
-#   Host *.gst
-#     ProxyCommand gst connect %h %p
-
 # The proxy: SOCKS5 and HTTP on 127.0.0.1:1080, where devcn.gst is devcn
 gst proxy                 # prints how to use it
 export ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
 curl http://devcn.gst:8080/   # port 8080 on devcn
-# Browsers: use the automatic proxy configuration URL http://127.0.0.1:1080/proxy.pac
 
 # A map: local port 15432 leads to devcn's port 5432
 gst map add 15432 devcn:5432
@@ -160,7 +156,6 @@ gst proxy off             # turn it off
 
 - SOCKS5 supports `CONNECT` without authentication; names are passed on unresolved, as with `socks5h://`. UDP, `BIND`, and SOCKS4 are not supported, so UDP DNS queries and QUIC cannot go through it.
 - HTTP supports `CONNECT host:port` and plain `GET http://host/...` requests.
-- `http://127.0.0.1:1080/proxy.pac` is a proxy auto-configuration file that sends only `.gst` hosts and hosts that routes match to the proxy, and everything else direct. IPv4 prefix routes apply to IP addresses only; IPv6 prefixes are left out.
 - Anyone who can reach the proxy address can use it. Keep the default loopback address unless a firewall limits access.
 - For programs that ignore proxies, use a map, or a tool such as tun2socks to route their TCP traffic into the proxy; gst creates no TUN devices or routes.
 
@@ -229,6 +224,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst link logs <name> [-f] [-n N]` | Print the log |
 | `gst link check <name>` | Diagnose step by step: ssh config, identity, known_hosts, network, login, gst on the machine |
 | `gst nodes` | Show every machine in the mesh as this machine knows it: NAME, ID, SOFTWARE, EXIT, ROUTE (the machines a connection passes through), then the links between machines |
+| `gst status [machine]` | Show the links (with state, destination, and peer), proxy, maps, and routes of this machine, or of another machine of the mesh, which is asked through the mesh |
 
 `destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. Link settings override your ssh configuration (see [ssh configuration](#ssh-configuration)):
 
@@ -249,7 +245,7 @@ Link status: `running` (the two daemons are linked), `connecting`, `down` (faile
 
 | Command | Purpose |
 | --- | --- |
-| `gst connect <machine> <port \| host:port \| socket>` | Connect standard input and output to a port or socket of a machine, such as for `ProxyCommand` |
+| `gst connect <machine> <port \| host:port \| socket>` | Connect standard input and output to a port or socket of a machine, such as for ssh's `ProxyCommand` |
 | `gst proxy [address \| off]` | Show or change the proxy |
 | `gst map add <listen> <machine>:<target>` | Map a local port or socket to a machine |
 | `gst map remove <listen>...` (`rm`) | Remove maps |
@@ -268,10 +264,10 @@ Link status: `running` (the two daemons are linked), `connecting`, `down` (faile
 | `gst exit [on \| off]` | Show or change whether this machine is an exit |
 | `gst up` | Run the daemon now and at login |
 | `gst down` | Stop the daemon and keep it from starting; other machines cannot link to this one |
-| `gst ui [--port N] [--no-open]` | Show the mesh in a browser |
+| `gst ui [--port N] [--no-open]` | Show the mesh, and any machine's links, proxy, maps, and routes, in a browser |
 | `gst version` | Show the gst version |
 
-Every command accepts `--config <file>`. `list`, `show`, `check`, `nodes`, `proxy`, `map list`, and `route list` accept `--json`.
+Every command accepts `--config <file>`. `list`, `show`, `check`, `nodes`, `status`, `proxy`, `map list`, and `route list` accept `--json`.
 
 ## ssh configuration
 
@@ -306,7 +302,7 @@ Limitations:
 
 ### Web page
 
-`gst ui` shows this machine's links, proxy, maps, and routes, and a map of the mesh, in a browser page that updates itself every few seconds. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. Its buttons start, stop, and restart this machine's links, as `gst link start`, `stop`, and `restart` do; other changes still take the commands above.
+`gst ui` shows a map of the mesh in a browser page that updates itself every few seconds, and the links, proxy, maps, and routes of this machine and, when you pick it, of any other machine of the mesh (as `gst status <machine>` does). It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. Its buttons start, stop, and restart this machine's links, as `gst link start`, `stop`, and `restart` do; other changes still take the commands above.
 
 ```bash
 gst ui
@@ -342,6 +338,7 @@ Start with `gst link check <name>`. It checks each step and suggests a fix for t
 | `... is not an exit, so it connects only to addresses on its own machine` | The target is not on the machine you are connecting through. Run `gst exit on` there, or aim at its own `localhost` |
 | `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst nodes` (a machine that is `unreachable` or missing) and `gst link list` |
 | `cannot listen on ...` for the proxy or a map | Another program uses the address: choose another with `gst proxy <address>` or `gst map`, or free it, then run `gst up` |
+| `gst status <machine>` fails | The machine must be reachable and run gst 0.3 or later with a running daemon; see `gst nodes` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
 | A machine name matches several machines | Use its id or an id prefix from `gst nodes` |
 | macOS blocks access to a local network server | Allow gst in the Local Network alert or in System Settings → Privacy & Security → Local Network, then run `gst link restart <name>`. Authorization for your terminal does not necessarily authorize the background service |
@@ -350,7 +347,7 @@ Start with `gst link check <name>`. It checks each step and suggests a fix for t
 
 - Results go to stdout. Errors go to stderr, start with `error:`, and usually come with a `hint:` line naming the next command to run. Notes that are not errors start with `note:`.
 - Exit status: `0` success, `1` the work failed (including a failed `link check`), `2` invalid arguments.
-- `--json` fields are stable on `link list`, `link show`, `link check`, `nodes`, `proxy`, `map list`, and `route list`.
+- `--json` fields are stable on `link list`, `link show`, `link check`, `nodes`, `status`, `proxy`, `map list`, and `route list`.
 - No command prompts for input. Adding a route with an existing match replaces it; adding a map for an address that is already mapped is an error. The proxy and the maps cannot share a listen address.
 
 ## Configuration file

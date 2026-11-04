@@ -19,7 +19,7 @@ go test -tags integration -count=1 -v .
 | `link_test.go` | `TestLinkLifecycle` | `gst link add`：状态变为 running，对端名称正确，peer-bridge 启动了 server 的 daemon，`gst nodes` 在 server 上显示 client；`link set` 重启；`stop` / `start`；杀掉 server 的 daemon 或断开 SSH 会话后先 down 再 running；`remove` |
 | | `TestLinkRemoteGstMissing` | server 上没有 gst：状态 down 且错误提到 gst，`gst link check` 在 `remote gst` 一步失败并给出提示，`link set --remote-gst` 修复后 running |
 | | `TestLinkStopIsSeenByServer` | link 关闭后 server 不再认为 client 可达（已知问题，被 `t.Skip` 标记为 BUG） |
-| `mesh_test.go` | `TestMesh` | 三个节点 a → b ← c：拓扑与路径（`Topology`）；`gst connect` 的机器寻址（名称、`.gst`、link 名、id 前缀）和 TCP、Unix socket 目标（`Connect`）；`gst map`（`Maps`）；SOCKS5、HTTP CONNECT、普通 HTTP 请求和 `/proxy.pac`，以及改变代理地址（`Proxy`）；`gst route` 与 `gst exit`：c 不是 exit 时被拒绝，`gst exit on` 后允许，无路由时直连（`Exit`） |
+| `mesh_test.go` | `TestMesh` | 三个节点 a → b ← c：拓扑与路径（`Topology`）；`gst connect` 的机器寻址（名称、`.gst`、link 名、id 前缀）和 TCP、Unix socket 目标（`Connect`）；`gst map`（`Maps`）；SOCKS5、HTTP CONNECT 和普通 HTTP 请求，以及改变代理地址（`Proxy`）；`gst route` 与 `gst exit`：c 不是 exit 时被拒绝，`gst exit on` 后允许，无路由时直连（`Exit`）；`gst status`：在 a 上查看两跳外 c 的 link（含 stopped）、map、route 和代理，以及 a 自己的（`Status`） |
 | `migrate_test.go` | `TestMigrateVersion2Config` | 版本 2 的配置在第一条命令时转换：tunnel 变成 link，`-L` 变成 map，`-R` 被丢弃并在 stderr 给出说明，link 运行且 map 可用 |
 | `daemon_test.go` | `TestDaemonRestartsAfterUpgrade` | 升级 gst 后下一条命令重启 daemon，没有升级则不重启 |
 | | `TestDownAndUp` | `gst down` 停止 daemon，其他节点的 `gst peer-bridge` 被拒绝（"gst is down"），`gst up` 后 link 恢复 |

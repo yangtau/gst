@@ -27,7 +27,13 @@ func nid(name string) string {
 // test ends. An empty name gives a node without identity.
 func newNode(t *testing.T, name string) *Node {
 	t.Helper()
-	n := New("gst test", log.New(io.Discard, "", 0), nil)
+	return newNodeStatus(t, name, nil)
+}
+
+// newNodeStatus is newNode for a node that reports status to the others.
+func newNodeStatus(t *testing.T, name string, status func() wire.Status) *Node {
+	t.Helper()
+	n := New("gst test", log.New(io.Discard, "", 0), status)
 	if name != "" {
 		n.Configure(&config.Node{ID: nid(name), Name: name})
 	}

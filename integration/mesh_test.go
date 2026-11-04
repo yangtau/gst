@@ -3,10 +3,13 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // Three machines a -> b <- c, where a and c each link to b and know
@@ -14,7 +17,7 @@ import (
 // machines and run in order.
 func TestMesh(t *testing.T) {
 	t.Parallel()
-	a, b, c, _, _ := start3(t)
+	a, b, c, _, cb := start3(t)
 	c.startEcho(7000)
 	c.startEchoOn("/tmp/echo.sock")
 	c.mustSh(`setsid gst-it http-server 127.0.0.1:8000 'hello from c' </dev/null >/dev/null 2>&1 &`)
@@ -103,7 +106,7 @@ func TestMesh(t *testing.T) {
 	t.Run("Proxy", func(t *testing.T) {
 		const proxy = "127.0.0.1:1080"
 		out := a.mustGst("proxy")
-		if !strings.Contains(out, proxy) || !strings.Contains(out, "listening") || !strings.Contains(out, "/proxy.pac") {
+		if !strings.Contains(out, proxy) || !strings.Contains(out, "listening") {
 			t.Fatalf("unexpected gst proxy:\n%s", out)
 		}
 
@@ -119,12 +122,6 @@ func TestMesh(t *testing.T) {
 		out, err := a.exec(nodeUser, "env", "HTTP_PROXY=http://"+proxy, "gst-it", "http", "GET", "http://c.gst:8000/")
 		if err != nil || out != "200\nhello from c" {
 			t.Fatalf("GET through the proxy: %q, %v", out, err)
-		}
-
-		// The same address serves the PAC file for browsers.
-		out, err = a.helper("http", "GET", "http://"+proxy+"/proxy.pac")
-		if err != nil || !strings.HasPrefix(out, "200\n") || !strings.Contains(out, `".gst"`) {
-			t.Fatalf("proxy.pac: %q, %v", out, err)
 		}
 
 		// A machine that does not exist fails the connection.
@@ -216,6 +213,66 @@ func TestMesh(t *testing.T) {
 		code, _, stderr = a.gst("connect", "c", target)
 		if code != 1 || !strings.Contains(stderr, "is not an exit") {
 			t.Fatalf("gst connect c %s after exit off: exit %d, stderr %q", target, code, stderr)
+		}
+	})
+
+	// gst status shows a machine's own configuration, asked through the
+	// mesh: c's links, proxy, maps, and routes on a, two hops away.
+	t.Run("Status", func(t *testing.T) {
+		status := func(n *node, args ...string) wire.Status {
+			t.Helper()
+			var st wire.Status
+			if err := json.Unmarshal([]byte(n.mustGst(append([]string{"status"}, append(args, "--json")...)...)), &st); err != nil {
+				t.Fatal(err)
+			}
+			return st
+		}
+		c.mustGst(append([]string{"link", "add", "spare"}, cb.flags()...)...)
+		c.mustGst("link", "stop", "spare")
+		c.mustGst("map", "add", "16000", "b:7100")
+		c.mustGst("route", "add", "10.9.0.0/16", "b")
+		c.mustGst("proxy", "127.0.0.1:1090")
+
+		var st wire.Status
+		eventually(t, 10*time.Second, "a does not see c's configuration", func() bool {
+			st = status(a, "c")
+			return len(st.Maps) == 1 && st.Maps[0].Error == "" && st.Proxy.Listen == "127.0.0.1:1090" && st.Proxy.Error == ""
+		})
+		if st.Node.Name != "c" || st.Node.ID == status(a).Node.ID {
+			t.Fatalf("status of c is for %+v", st.Node)
+		}
+		if m := st.Maps[0]; m.Listen != "127.0.0.1:16000" || m.Machine != "b" || m.Target != "localhost:7100" {
+			t.Fatalf("c's map = %+v", m)
+		}
+		if want := []wire.Route{{Match: "10.9.0.0/16", Via: "b"}}; len(st.Routes) != 1 || st.Routes[0] != want[0] {
+			t.Fatalf("c's routes = %+v", st.Routes)
+		}
+		if len(st.Links) != 2 || st.Links[0].Name != "spare" || st.Links[0].State != wire.StateStopped || st.Links[0].Destination != cb.destination() ||
+			st.Links[1].Name != "tob" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "b" {
+			t.Fatalf("c's links = %+v", st.Links)
+		}
+
+		// a's own status is not c's: its link, proxy, and the map from the
+		// Exit test.
+		own := status(a)
+		if own.Node.Name != "a" || own.Proxy.Listen != "127.0.0.1:1080" || len(own.Routes) != 0 ||
+			len(own.Links) != 1 || own.Links[0].Name != "tob" || len(own.Maps) != 1 || own.Maps[0].Listen != "127.0.0.1:15435" {
+			t.Fatalf("a's status = %+v", own)
+		}
+		for _, args := range [][]string{{"status"}, {"status", "c.gst"}} {
+			out := a.mustGst(args...)
+			for _, want := range []string{"LINK", "tob", "running", "Proxy: 127.0.0.1:"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("gst %v lacks %q:\n%s", args, want, out)
+				}
+			}
+		}
+		// b only accepts links, so it has none of its own.
+		if out := a.mustGst("status", "b"); !strings.Contains(out, "No links.") {
+			t.Fatalf("gst status b:\n%s", out)
+		}
+		if code, _, stderr := a.gst("status", "nowhere"); code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "gst nodes") {
+			t.Fatalf("gst status nowhere: exit %d, stderr %q", code, stderr)
 		}
 	})
 }

@@ -374,3 +374,92 @@ func shortDir(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
+
+func TestCallReachesAnyNode(t *testing.T) {
+	status := func(name string) func() wire.Status {
+		return func() wire.Status {
+			return wire.Status{Software: "status of " + name, Links: []wire.LinkState{{Name: "to-" + name}}}
+		}
+	}
+	a, b, c := newNodeStatus(t, "a", status("a")), newNodeStatus(t, "b", status("b")), newNodeStatus(t, "c", status("c"))
+	linkUp(t, a, b, "ab")
+	linkUp(t, b, c, "bc")
+	waitFor(t, "a reaches c", func() bool { return reaches(a, "c", "a", "b", "c") })
+
+	for _, tt := range []struct{ name, ref string }{
+		{"itself", "a"},
+		{"a neighbor", "b.gst"},
+		{"two hops away", "c"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var st wire.Status
+			if err := a.Call(t.Context(), tt.ref, wire.MethodPeerStatus, nil, &st); err != nil {
+				t.Fatal(err)
+			}
+			name := strings.TrimSuffix(tt.ref, ".gst")
+			if st.Software != "status of "+name || len(st.Links) != 1 || st.Links[0].Name != "to-"+name {
+				t.Fatalf("status = %+v, want the status of %s", st, name)
+			}
+		})
+	}
+
+	// The connection is closed after the call; calls do not interfere.
+	var st wire.Status
+	for range 2 {
+		if err := a.Call(t.Context(), "c", wire.MethodPeerStatus, nil, &st); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCallErrors(t *testing.T) {
+	a := newNodeStatus(t, "a", func() wire.Status { return wire.Status{} })
+	b := newNode(t, "b") // reports no status
+	linkUp(t, a, b, "ab")
+	waitFor(t, "a reaches b", func() bool { return reaches(a, "b", "a", "b") })
+	a.merge([]wire.Record{rec("far")})
+	waitFor(t, "far is known", func() bool { _, ok := findTopo(a.Topology(), nid("far")); return ok })
+
+	for _, tt := range []struct {
+		name, ref string
+		code      string
+	}{
+		{"a node without a status", "b", wire.CodeUnsupportedMethod},
+		{"unknown machine", "nowhere", wire.CodeNotFound},
+		{"unreachable machine", "far", wire.CodeNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var st wire.Status
+			wantCode(t, a.Call(t.Context(), tt.ref, wire.MethodPeerStatus, nil, &st), tt.code)
+		})
+	}
+
+	// A done context ends the call.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := a.Call(ctx, "b", wire.MethodPeerStatus, nil, nil); err == nil {
+		t.Fatal("Call succeeded with a done context")
+	}
+}
+
+func TestOpenGstTarget(t *testing.T) {
+	a, _, _, _, _ := chain(t)
+	path := []string{nid("a")}
+
+	// The target is the node itself, so no address is allowed.
+	_, err := a.open(t.Context(), path, wire.Target{Network: wire.NetworkGst, Address: "localhost:1"})
+	wantCode(t, err, wire.CodeInvalidParams)
+
+	// The exit rule is about addresses to connect to: a node that is not
+	// an exit still answers calls, here and at the end of a path.
+	for _, ref := range []string{"a", "c"} {
+		conn, err := a.Dial(t.Context(), ref, wire.NetworkGst, "")
+		if err != nil {
+			t.Fatalf("Dial %s: %v", ref, err)
+		}
+		conn.Close()
+	}
+	if self := a.Self(); self.Exit {
+		t.Fatal("a is an exit; the test needs a node that is not")
+	}
+}

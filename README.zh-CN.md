@@ -6,7 +6,7 @@
 
 - 每台机器都运行 gst（link 的两端都需要 0.3 或更高版本）和一个小的后台 daemon。
 - **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `mini` 和 `devcn` 的 link 时，`mini` 经由 `laptop` 就能到达 `devcn`，不需要 `devcn` 的任何凭据。
-- 到达一台机器的方式有：`gst connect`（也可以作为 ssh 的 `ProxyCommand`）；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；或者一个通向它的本地端口或 Unix socket（map）。
+- 到达一台机器的方式有：`gst connect`；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；或者一个通向它的本地端口或 Unix socket（map）。
 
 ## 安装
 
@@ -71,6 +71,7 @@ gst link add devcn        # ~/.ssh/config 中的 "devcn"
 gst link add mini
 gst link list             # NAME STATUS DESTINATION PEER；等到状态变为 "running"
 gst nodes                 # mesh 中的所有机器，以及如何到达它们
+gst status devcn          # devcn 自己的 link、代理、map 和 route
 ```
 
 `gst nodes` 的输出类似：
@@ -92,15 +93,10 @@ laptop  mini   mini
 # 一个使用标准输入输出的连接：只给端口时表示 devcn 的 localhost
 gst connect devcn 22
 
-# 经由 mesh ssh，使用你自己在 devcn 上的登录：加入 ~/.ssh/config，然后执行 "ssh devcn.gst"
-#   Host *.gst
-#     ProxyCommand gst connect %h %p
-
 # 代理：127.0.0.1:1080 上的 SOCKS5 和 HTTP，devcn.gst 就是 devcn
 gst proxy                 # 显示用法
 export ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
 curl http://devcn.gst:8080/   # devcn 的 8080 端口
-# 浏览器：使用自动代理配置 URL http://127.0.0.1:1080/proxy.pac
 
 # map：本机 15432 端口通向 devcn 的 5432 端口
 gst map add 15432 devcn:5432
@@ -160,7 +156,6 @@ gst proxy off             # 关闭
 
 - SOCKS5 支持无认证的 `CONNECT`；域名原样交给路由，等同 `socks5h://`。不支持 UDP、`BIND` 和 SOCKS4，所以 UDP DNS 查询和 QUIC 无法通过。
 - HTTP 支持 `CONNECT host:port` 和普通的 `GET http://host/...` 请求。
-- `http://127.0.0.1:1080/proxy.pac` 是自动代理配置文件，只把 `.gst` 主机和路由命中的主机交给代理，其余直连。IPv4 网段规则只对 IP 地址生效；IPv6 网段不进入该文件。
 - 能访问代理地址的人都能使用代理。除非用防火墙限制访问来源，否则请保持默认的 loopback 地址。
 - 不支持代理的程序，可以使用 map，或用 tun2socks 等工具把它们的 TCP 流量导入代理；gst 不创建 TUN 设备，也不配置路由。
 
@@ -229,6 +224,7 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `gst link logs <name> [-f] [-n N]` | 查看日志 |
 | `gst link check <name>` | 逐步诊断：ssh 配置、私钥、known_hosts、网络、登录、对方机器上的 gst |
 | `gst nodes` | 显示本机所知道的 mesh 中所有机器：NAME、ID、SOFTWARE、EXIT、ROUTE（连接途经的机器），然后是机器之间的 link |
+| `gst status [machine]` | 显示本机或 mesh 中另一台机器的 link（含状态、目标和对端）、代理、map 和 route；另一台机器经由 mesh 查询 |
 
 `destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。link 的设置会覆盖你的 ssh 配置（见 [ssh 配置](#ssh-配置)）：
 
@@ -249,7 +245,7 @@ link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`dow
 
 | 命令 | 作用 |
 | --- | --- |
-| `gst connect <machine> <port \| host:port \| socket>` | 把标准输入输出连到某台机器的端口或 socket，例如用作 `ProxyCommand` |
+| `gst connect <machine> <port \| host:port \| socket>` | 把标准输入输出连到某台机器的端口或 socket，例如用作 ssh 的 `ProxyCommand` |
 | `gst proxy [address \| off]` | 查看或修改代理 |
 | `gst map add <listen> <machine>:<target>` | 把本机的端口或 socket 映射到某台机器 |
 | `gst map remove <listen>...`（`rm`） | 删除 map |
@@ -268,10 +264,10 @@ link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`dow
 | `gst exit [on \| off]` | 查看或修改本机是否为 exit |
 | `gst up` | 现在运行 daemon，并在登录时自动运行 |
 | `gst down` | 停止 daemon 并不再启动；其他机器无法连接本机 |
-| `gst ui [--port N] [--no-open]` | 在浏览器中查看 mesh |
+| `gst ui [--port N] [--no-open]` | 在浏览器中查看 mesh，以及任一机器的 link、代理、map 和 route |
 | `gst version` | 查看 gst 版本 |
 
-所有命令都接受 `--config <file>`。`list`、`show`、`check`、`nodes`、`proxy`、`map list`、`route list` 支持 `--json`。
+所有命令都接受 `--config <file>`。`list`、`show`、`check`、`nodes`、`status`、`proxy`、`map list`、`route list` 支持 `--json`。
 
 ## ssh 配置
 
@@ -306,7 +302,7 @@ link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`dow
 
 ### 网页
 
-`gst ui` 在浏览器页面中显示本机的 link、代理、map 和 route，以及 mesh 的拓扑图，每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面上的按钮可以启动、停止、重启本机的 link，效果与 `gst link start`、`stop`、`restart` 相同；其他修改仍使用上面的命令。
+`gst ui` 在浏览器页面中显示 mesh 的拓扑图，以及本机的 link、代理、map 和 route；选中 mesh 中的另一台机器，也能看到它的这些内容（与 `gst status <machine>` 相同）。页面每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面上的按钮可以启动、停止、重启本机的 link，效果与 `gst link start`、`stop`、`restart` 相同；其他修改仍使用上面的命令。
 
 ```bash
 gst ui
@@ -342,6 +338,7 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 | `... is not an exit, so it connects only to addresses on its own machine` | 目标不在你途经的那台机器上。在那里执行 `gst exit on`，或改为连接它自己的 `localhost` |
 | `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst nodes`（机器为 `unreachable` 或缺失）和 `gst link list` |
 | 代理或 map 报 `cannot listen on ...` | 地址被其他程序占用：用 `gst proxy <address>` 或 `gst map` 换一个地址，或释放它，然后执行 `gst up` |
+| `gst status <machine>` 失败 | 那台机器必须可达，并运行 0.3 或更新版本的 gst 且 daemon 在运行；用 `gst nodes` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
 | 机器名匹配到多台机器 | 使用 `gst nodes` 中的 id 或 id 前缀 |
 | macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后运行 `gst link restart <name>`。终端获得授权不一定代表后台服务也获得授权 |
@@ -350,7 +347,7 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 
 - 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。不是错误的提示以 `note:` 开头。
 - 退出码：`0` 成功，`1` 执行失败（包括 `link check` 未通过），`2` 参数无效。
-- `link list`、`link show`、`link check`、`nodes`、`proxy`、`map list`、`route list` 的 `--json` 字段是稳定的。
+- `link list`、`link show`、`link check`、`nodes`、`status`、`proxy`、`map list`、`route list` 的 `--json` 字段是稳定的。
 - 所有命令都不需要交互输入。添加匹配项相同的 route 会替换原有的；为已映射的地址再添加 map 会报错。代理和 map 不能共用同一个监听地址。
 
 ## 配置文件

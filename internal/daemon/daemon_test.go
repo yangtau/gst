@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -760,6 +761,66 @@ func TestControlClient(t *testing.T) {
 	if _, err := c.Status(ctx); err == nil {
 		t.Fatal("Status succeeded with a done context")
 	}
+}
+
+func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
+	a, b := pair(t)
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	proxy, free := freeAddr(t), freeAddr(t)
+	b.apply(func(f *config.File) {
+		f.Proxy = proxy
+		f.Links["back"] = &config.Link{Destination: "a"}
+		f.Links["off"] = &config.Link{Destination: "ssh.example.com", Stopped: true}
+		f.Maps = []config.Map{
+			{Listen: occupied.Addr().String(), Machine: "a", Target: "localhost:1"},
+			{Listen: free, Machine: "a", Target: "localhost:2"},
+		}
+		f.Routes = config.Routes{{Match: "example.com", Via: "a"}, {Match: config.DefaultRoute, Via: "a"}}
+	})
+	waitFor(t, "b's link back runs", func() bool { l, _ := b.link("back"); return l.State == wire.StateRunning })
+
+	c, err := Dial(t.Context(), a.socket, "gst cli", "sha256:cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Another machine answers with its own configuration, not ours.
+	st, err := c.NodeStatus(t.Context(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Node.ID != nid("b") || st.Proxy.Listen != proxy || st.Proxy.Error != "" {
+		t.Fatalf("node = %+v, proxy = %+v", st.Node, st.Proxy)
+	}
+	if len(st.Links) != 2 || st.Links[0].Name != "back" || st.Links[0].Destination != "a" || st.Links[0].State != wire.StateRunning ||
+		st.Links[1].Name != "off" || st.Links[1].Destination != "ssh.example.com" || st.Links[1].State != wire.StateStopped {
+		t.Fatalf("links = %+v, want back running and off stopped", st.Links)
+	}
+	if len(st.Maps) != 2 || st.Maps[0].Machine != "a" || st.Maps[0].Target != "localhost:1" || st.Maps[0].Error == "" ||
+		st.Maps[1].Listen != free || st.Maps[1].Target != "localhost:2" || st.Maps[1].Error != "" {
+		t.Fatalf("maps = %+v, want the first to fail to listen", st.Maps)
+	}
+	if want := []wire.Route{{Match: "example.com", Via: "a"}, {Match: "default", Via: "a"}}; !slices.Equal(st.Routes, want) {
+		t.Fatalf("routes = %+v", st.Routes)
+	}
+
+	// This machine answers for itself, with the proxy off.
+	st, err = c.NodeStatus(t.Context(), "a.gst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Node.ID != nid("a") || st.Proxy.Listen != "" || len(st.Links) != 1 || st.Links[0].Name != "bee" || st.Links[0].Destination != "b" ||
+		len(st.Maps) != 0 || len(st.Routes) != 0 {
+		t.Fatalf("status of a = %+v", st)
+	}
+
+	_, err = c.NodeStatus(t.Context(), "nowhere")
+	wantCode(t, err, wire.CodeNotFound)
 }
 
 func TestControlRefusesPeerlessRoles(t *testing.T) {
