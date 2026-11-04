@@ -292,7 +292,7 @@ link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重�
 
 ### 网页
 
-`gst ui` 在浏览器页面中显示 mesh 的拓扑图（每台机器有一列“Status”：online、offline 或 online via …），以及本机的 link、代理、map 和 route；选中 mesh 中的另一台机器，也能看到它的这些内容（与 `gst status <machine>` 相同）。页面显示 daemon 报告的本机状态，daemon 没有运行时会说明。页面每隔几秒自动刷新。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面只用来查看；修改仍使用上面的命令。
+`gst ui` 在浏览器页面中显示 mesh，每隔几秒自动刷新：所有机器及其状态和问题、机器之间的 link 关系图，以及所选机器的 link、其他机器连过来的 link、代理、map 和 route（与 `gst status <machine>` 相同）。按 J 和 K 在机器之间移动。本机 daemon 没有运行时，页面会说明。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面只用来查看；修改仍使用上面的命令。
 
 ```bash
 gst ui

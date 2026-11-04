@@ -9,73 +9,29 @@
 <script src="app.js" defer></script>
 </head>
 <body>
-<header class="bar">
-  <div class="brand"><span class="logo">gst</span><span id="node" class="node"></span><span id="exit" class="pill"></span></div>
-  <div class="meta"><span id="daemon" class="pill"></span><span id="updated" class="muted"></span></div>
-</header>
-<main>
-  <div id="alert" class="alert" role="alert" hidden></div>
+<div class="app">
+  <aside class="rail">
+    <header class="rail-head">
+      <span class="brand">gst</span>
+      <span id="summary" class="summary"></span>
+    </header>
+    <nav id="machines" class="machines" aria-label="Machines"></nav>
+    <footer class="rail-foot">
+      <span id="software"></span>
+      <span class="keys"><kbd>J</kbd><kbd>K</kbd> to move</span>
+    </footer>
+  </aside>
 
-  <section id="nodes-section" hidden>
-    <h2>Machines</h2>
-    <p class="muted small">As this machine knows the mesh. Lines are running links, labeled with their name on the machine that runs them. Select a machine to see its links, proxy, maps, and routes below.</p>
-    <div class="map-wrap"><svg id="map" role="img" aria-label="Mesh graph"></svg></div>
-    <div class="table-wrap spaced"><table id="nodes">
-      <thead><tr><th>Name</th><th>ID</th><th>Software</th><th>Exit</th><th>Status</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
+  <main class="main">
+    <div id="alert" class="alert" role="alert" hidden></div>
+    <header id="head" class="head"></header>
+    <div id="detail" class="detail"></div>
+  </main>
 
-  <section id="detail" class="self">
-    <h2>Machine</h2>
-    <div class="machine-head">
-      <strong id="m-name" class="machine-name"></strong>
-      <span id="m-id" class="mono muted"></span>
-      <span id="m-software" class="muted small"></span>
-      <span id="m-exit" class="pill"></span>
-      <span id="m-self" class="pill off">this machine</span>
-    </div>
-    <p id="m-problem" class="problem" role="status" hidden></p>
-
-    <div id="m-body">
-      <div class="block">
-        <h3>Links</h3>
-        <div class="table-wrap"><table id="links">
-          <thead><tr><th>Name</th><th>Status</th><th>Destination</th><th>Peer</th></tr></thead>
-          <tbody></tbody>
-        </table></div>
-        <p id="links-empty" class="muted" hidden>No links.<span class="self-only"> Add one with <code>gst link add &lt;name&gt; [destination]</code>.</span></p>
-      </div>
-
-      <div class="block">
-        <h3>Proxy</h3>
-        <p id="proxy-state"></p>
-        <div id="proxy-usage" class="self-only" hidden>
-          <dl class="usage">
-            <dt>Shell</dt><dd><code id="use-env"></code></dd>
-          </dl>
-        </div>
-      </div>
-
-      <div class="block">
-        <h3>Maps</h3>
-        <div class="table-wrap"><table id="maps">
-          <thead><tr><th>Listen</th><th>Machine : target</th><th>Status</th></tr></thead>
-          <tbody></tbody>
-        </table></div>
-        <p id="maps-empty" class="muted" hidden>No maps.<span class="self-only"> Add one with <code>gst map add &lt;listen&gt; &lt;machine&gt;:&lt;target&gt;</code>.</span></p>
-      </div>
-
-      <div class="block">
-        <h3>Routes</h3>
-        <div class="table-wrap"><table id="routes">
-          <thead><tr><th>Match</th><th>Via</th></tr></thead>
-          <tbody></tbody>
-        </table></div>
-        <p id="routes-empty" class="muted" hidden>No routes.<span class="self-only"> Add one with <code>gst route add &lt;match&gt; &lt;machine&gt;</code>.</span></p>
-      </div>
-    </div>
-  </section>
-</main>
+  <aside class="side" aria-label="The mesh and the selected machine">
+    <svg id="ring" class="ring" role="img" aria-label="Machines of the mesh and the running links between them"></svg>
+    <dl id="props" class="props"></dl>
+  </aside>
+</div>
 </body>
 </html>

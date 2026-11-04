@@ -1,14 +1,16 @@
 "use strict";
 
-// The page polls /api/state (this machine and the mesh) and, for another
-// machine that the user selected, /api/nodes/{id}, with the token from the
-// address that gst ui printed. Everything shown is built with DOM text
-// nodes: names and destinations come from other machines of the mesh.
+// The page polls /api/state (this machine and the mesh) and /api/nodes/{id}
+// (every other machine it can reach, so that selecting one is instant), with
+// the token from the address that gst ui printed. Everything shown is built
+// with DOM text nodes: names and destinations come from other machines of
+// the mesh.
 
 const token = location.hash.slice(1);
 const SVG = "http://www.w3.org/2000/svg";
 const POLL_MS = 3000;
-const NODE_POLL_MS = 5000;
+const MACHINE_POLL_MS = 5000;
+const MACHINE_REQUESTS = 4; // at a time
 const SELECTED_KEY = "gst.machine";
 
 const $ = (id) => document.getElementById(id);
@@ -18,8 +20,8 @@ function el(tag, attrs, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v);
   }
-  for (const c of children) {
-    if (c === null || c === undefined) continue;
+  for (const c of children.flat()) {
+    if (c === null || c === undefined || c === false) continue;
     e.append(c instanceof Node ? c : String(c));
   }
   return e;
@@ -32,32 +34,33 @@ function svg(tag, attrs, ...children) {
   return e;
 }
 
-function pill(text, cls) {
-  return el("span", { class: "pill " + (cls || text.replace(/ /g, "-")) }, text);
+const shortID = (id) => id.slice(0, 8);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// ---- state ----
+
+let state = null; // the last /api/state
+const answers = new Map(); // machine id: {status} or {error}, for machines other than this one
+let selected = "";
+let drawn = ""; // what the page shows, to leave it alone when nothing changed
+
+try {
+  selected = localStorage.getItem(SELECTED_KEY) || "";
+} catch (_) {}
+
+const topology = () => (state && state.topology) || null;
+const selfID = () => (topology() && topology().self) || (state && state.node && state.node.id) || "";
+
+// machines lists this machine first, as the mesh knows it or, without a
+// daemon, as its configuration does.
+function machines() {
+  const topo = topology();
+  if (topo && topo.nodes.length > 0) return topo.nodes;
+  if (state && state.node) return [{ id: state.node.id, name: state.node.name, exit: state.node.exit, reachable: false }];
+  return [];
 }
 
-function shortID(id) {
-  return id.slice(0, 8);
-}
-
-function fill(table, rows) {
-  table.tBodies[0].replaceChildren(...rows.map((cells) => el("tr", null, ...cells.map((c) => el("td", null, ...[].concat(c))))));
-}
-
-// show fills a table, or hides it for the empty-state paragraph.
-function show(name, rows) {
-  fill($(name), rows);
-  $(name).closest(".table-wrap").hidden = rows.length === 0;
-  $(name + "-empty").hidden = rows.length !== 0;
-}
-
-function showAlert(...texts) {
-  const a = $("alert");
-  a.replaceChildren(...texts.filter(Boolean).map((t) => el("p", null, t)));
-  a.hidden = a.childNodes.length === 0;
-}
-
-// Machines that share a name are told apart by their id prefix.
+// displayNames tells apart the machines that share a name by their ids.
 function displayNames(nodes) {
   const count = {};
   for (const n of nodes) count[n.name] = (count[n.name] || 0) + 1;
@@ -66,330 +69,361 @@ function displayNames(nodes) {
   return names;
 }
 
-// ---- links ----
-
-function renderLinks(links) {
-  show("links", links.map((l) => {
-    const status = [pill(l.state)];
-    if (l.error && l.state !== "running") status.push(el("span", { class: "err" }, l.error));
-    const peer = l.peer && l.peer.id
-      ? [l.peer.name, el("span", { class: "sub mono" }, shortID(l.peer.id))]
-      : [el("span", { class: "sub" }, "-")];
-    return [el("strong", null, l.name), status, l.destination, peer];
-  }));
+// statusOf returns what the daemon on machine id reports, if it answered.
+function statusOf(id) {
+  if (id === selfID()) return (state && state.status) || null;
+  const answer = answers.get(id);
+  return (answer && answer.status) || null;
 }
 
-// ---- machines ----
-
-// routeText says whether n is online, as gst status does, and the
-// machines that connections to it pass through.
-function routeText(n, topo, names) {
-  if (n.id === topo.self) return "this machine";
-  if (!n.reachable || !n.path || n.path.length < 2) return "offline";
-  if (n.path.length === 2) return "online";
-  return "online via " + n.path.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ");
+// problems names what does not work on a machine, as gst status does.
+function problems(st) {
+  if (!st) return [];
+  const found = [];
+  for (const l of st.links || []) if (l.state !== "running") found.push(`link ${l.name} is ${l.state}`);
+  if (st.proxy && st.proxy.error) found.push(`proxy ${st.proxy.listen} failed`);
+  for (const m of st.maps || []) if (m.error) found.push(`map ${m.listen} failed`);
+  return found;
 }
 
-function renderNodes(topo, names) {
-  const nodes = [...topo.nodes].sort((a, b) => (a.id === topo.self ? -1 : b.id === topo.self ? 1 : names[a.id].localeCompare(names[b.id])));
-  $("nodes").tBodies[0].replaceChildren(...nodes.map((n) => {
-    const picked = n.id === selected;
-    const pick = el("button", { type: "button", class: "pick", "aria-pressed": String(picked) }, names[n.id]);
-    const row = el("tr", { class: "pickable" + (picked ? " picked" : "") },
-      el("td", null, pick),
-      el("td", null, el("span", { class: "mono" }, shortID(n.id))),
-      el("td", null, n.software || "-"),
-      el("td", null, pill(n.exit ? "yes" : "no", n.exit ? "yes" : "off")),
-      el("td", null, n.reachable ? routeText(n, topo, names) : el("span", { class: "err-inline" }, "offline")));
-    row.addEventListener("click", () => select(n.id));
-    return row;
-  }));
+// findMachine finds the machine that a map or a route names, as far as the
+// page can tell: by its name, the name of a link to it, or an id prefix.
+function findMachine(ref) {
+  const nodes = machines();
+  const name = ref.replace(/\.gst$/, "");
+  const byName = nodes.find((n) => n.name === name || n.id === name || (name.length >= 4 && n.id.startsWith(name)));
+  if (byName) return byName;
+  const topo = topology();
+  const edge = topo && topo.edges.find((e) => e.link === name);
+  return edge ? nodes.find((n) => n.id === edge.to) : undefined;
 }
 
-// The graph puts each machine in a column by its distance from this one,
-// following links in either direction; machines without a path to it come
-// last. Links are straight lines labeled with their names.
-function renderGraph(topo, names) {
-  const map = $("map");
-  const W = 150, H = 44, COL = 230, ROW = 86, PAD = 24;
+// via names the machines on the way to n, after this one and before n.
+function via(n, names) {
+  return n.path && n.path.length > 2 ? n.path.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ") : "";
+}
 
-  const adj = {};
-  for (const n of topo.nodes) adj[n.id] = [];
-  const edges = topo.edges.filter((e) => adj[e.from] && adj[e.to] && e.from !== e.to);
-  for (const e of edges) {
-    adj[e.from].push(e.to);
-    adj[e.to].push(e.from);
-  }
-  const layer = { [topo.self]: 0 };
-  const queue = [topo.self];
-  while (queue.length) {
-    const id = queue.shift();
-    for (const next of adj[id] || []) {
-      if (!(next in layer)) {
-        layer[next] = layer[id] + 1;
-        queue.push(next);
-      }
+function age(since) {
+  if (!since) return "";
+  const s = Math.max(0, (Date.now() - new Date(since).getTime()) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+// ---- parts ----
+
+// mark is a status icon. Healthy things show nothing else, so that the
+// words on a page are the things that need attention.
+function mark(kind, title) {
+  const children = [svg("title", null, title)];
+  if (kind === "ok") children.push(svg("circle", { class: "fill", cx: 7, cy: 7, r: 4.5 }));
+  if (kind === "wait" || kind === "off") children.push(svg("circle", { cx: 7, cy: 7, r: 4.75 }));
+  if (kind === "bad") children.push(svg("circle", { class: "fill", cx: 7, cy: 7, r: 6 }), svg("path", { d: "M5 5l4 4M9 5l-4 4" }));
+  return svg("svg", { class: "mark " + kind, viewBox: "0 0 14 14", role: "img", "aria-label": title }, ...children);
+}
+
+const linkMark = (l) => mark({ running: "ok", connecting: "wait" }[l.state] || "bad", l.state);
+const listenMark = (l) => (l.error ? mark("bad", "failed") : mark("ok", "listening"));
+
+// jump names a machine and selects it when clicked, if the mesh knows it.
+function jump(ref, cls) {
+  const n = findMachine(ref);
+  if (!n) return el("span", { class: "cell " + (cls || "") }, ref);
+  const b = el("button", { type: "button", class: "jump cell " + (cls || ""), title: `Show ${n.name}` }, ref);
+  b.addEventListener("click", () => select(n.id));
+  return el("span", { class: "cell" }, b);
+}
+
+function copyButton(text, label) {
+  const b = el("button", { type: "button", class: "copy" }, label);
+  b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      b.textContent = "Copied";
+    } catch (_) {
+      b.textContent = "Not copied";
     }
-  }
-  const maxLayer = Math.max(0, ...Object.values(layer));
-  const columns = [];
-  for (const n of topo.nodes) {
-    const l = n.id in layer ? layer[n.id] : maxLayer + 1;
-    (columns[l] ||= []).push(n);
-  }
-  const rows = Math.max(1, ...columns.filter(Boolean).map((c) => c.length));
-  const height = PAD * 2 + (rows - 1) * ROW + H;
-  const pos = {};
-  let x = PAD;
-  for (const col of columns) {
-    if (!col) continue;
-    col.sort((a, b) => names[a.id].localeCompare(names[b.id]));
-    const top = PAD + ((rows - col.length) * ROW) / 2;
-    col.forEach((n, i) => (pos[n.id] = { x, y: top + i * ROW }));
-    x += COL;
-  }
-  const width = x - COL + W + PAD;
-
-  const defs = svg("defs", null,
-    svg("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" },
-      svg("path", { d: "M0,0 L10,5 L0,10 z", class: "arrow" })));
-
-  const center = (a) => ({ x: a.x + W / 2, y: a.y + H / 2 });
-
-  // clip returns where the line from the center of box a towards point b
-  // leaves a.
-  const clip = (a, b) => {
-    const c = center(a);
-    const dx = b.x - c.x, dy = b.y - c.y;
-    if (dx === 0 && dy === 0) return c;
-    const s = Math.min(dx ? W / 2 / Math.abs(dx) : Infinity, dy ? H / 2 / Math.abs(dy) : Infinity);
-    return { x: c.x + dx * s, y: c.y + dy * s };
-  };
-
-  // curve is the line from box a to box b, bent sideways by bend.
-  const curve = (a, b, bend) => {
-    const ca = center(a), cb = center(b);
-    const dx = cb.x - ca.x, dy = cb.y - ca.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const c = { x: (ca.x + cb.x) / 2 - (dy / len) * bend, y: (ca.y + cb.y) / 2 + (dx / len) * bend };
-    return { p: clip(a, c), c, q: clip(b, c) };
-  };
-
-  const pointAt = ({ p, c, q }, t) => ({
-    x: (1 - t) ** 2 * p.x + 2 * t * (1 - t) * c.x + t ** 2 * q.x,
-    y: (1 - t) ** 2 * p.y + 2 * t * (1 - t) * c.y + t ** 2 * q.y,
+    setTimeout(() => (b.textContent = label), 1500);
   });
+  return b;
+}
 
-  const samples = (k) => Array.from({ length: 41 }, (_, i) => pointAt(k, i / 40));
+function group(title, note, rows, empty) {
+  return el("section", { class: "group" },
+    el("h2", null, title, note),
+    el("ul", null, rows.length > 0 ? rows : empty && el("li", { class: "row row-empty" }, empty)));
+}
 
-  // crosses reports whether curve k passes over a box other than its ends'.
-  const crosses = (k, a, b) => Object.values(pos).some((box) => box !== a && box !== b &&
-    samples(k).some(({ x, y }) => x > box.x - 8 && x < box.x + W + 8 && y > box.y - 8 && y < box.y + H + 8));
+const count = (n, bad) => el("span", { class: bad ? "bad" : "" }, n);
 
-  // route bends the line from a to b away from base until it passes no
-  // other box, so that a line never seems to end at a machine it passes.
-  // It tries the right of the graph first, or its bottom for a level line,
-  // where there is room.
-  const route = (a, b, base) => {
-    const ca = center(a), cb = center(b);
-    const out = cb.y > ca.y || (cb.y === ca.y && cb.x < ca.x) ? -1 : 1;
-    for (let i = 0; i <= 16; i++) {
-      const k = curve(a, b, base + out * (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 36);
-      if (!crosses(k, a, b)) return k;
-    }
-    return curve(a, b, base);
-  };
+// ---- the selected machine ----
 
-  // Several links between the same two machines are bent apart.
-  const seen = {};
-  const edgeLayer = svg("g");
-  const labelLayer = svg("g");
-  let left = 0, top = 0, right = width, bottom = height;
-  for (const e of edges) {
-    const key = [e.from, e.to].sort().join("\0");
-    const n = (seen[key] = (seen[key] || 0) + 1) - 1;
-    const k = route(pos[e.from], pos[e.to], (n % 2 ? -1 : 1) * Math.ceil(n / 2) * 26 * (e.from < e.to ? 1 : -1));
-    edgeLayer.append(svg("path", { d: `M${k.p.x},${k.p.y} Q${k.c.x},${k.c.y} ${k.q.x},${k.q.y}`, class: "edge", "marker-end": "url(#arrow)" },
-      svg("title", null, `${names[e.from]} → ${names[e.to]}: link ${e.link}`)));
-    const mid = pointAt(k, 0.5);
-    labelLayer.append(svg("text", { x: mid.x, y: mid.y - 4, "text-anchor": "middle", class: "edge-label" }, e.link));
-    // A line bent around a box may leave the columns; the graph grows to hold it.
-    for (const { x, y } of samples(k)) {
-      left = Math.min(left, x - PAD);
-      right = Math.max(right, x + PAD);
-      top = Math.min(top, y - PAD);
-      bottom = Math.max(bottom, y + PAD);
-    }
-    right = Math.max(right, mid.x + 4 * e.link.length + PAD);
-    left = Math.min(left, mid.x - 4 * e.link.length - PAD);
+function linksGroup(st, isSelf) {
+  const links = st.links || [];
+  const down = links.filter((l) => l.state !== "running").length;
+  const rows = links.map((l) => {
+    const running = l.state === "running";
+    const end = running
+      ? el("span", { class: "row-end", title: `running since ${new Date(l.since).toLocaleString()}${l.reconnects ? `, ${plural(l.reconnects, "reconnect")}` : ""}` }, age(l.since))
+      : el("span", { class: "row-end " + (l.state === "down" ? "bad" : "warn") }, l.state);
+    return el("li", { class: "row" },
+      linkMark(l),
+      el("span", { class: "cell row-name" }, l.name),
+      el("span", { class: "cell mono sub", title: l.destination }, l.destination),
+      l.peer && l.peer.id ? jump(l.peer.name) : el("span", { class: "cell faint" }, "no peer yet"),
+      end,
+      !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
+  });
+  return group("Links", count(down ? `${links.length - down} of ${links.length} running` : links.length, down), rows,
+    isSelf && ["Add one with ", el("code", null, "gst link add <name> [destination]")]);
+}
+
+// linkedFrom lists the links that other machines opened to this one,
+// which only the mesh knows.
+function linkedFromGroup(id, names) {
+  const topo = topology();
+  const edges = topo ? topo.edges.filter((e) => e.to === id) : [];
+  if (edges.length === 0) return null;
+  const rows = edges.map((e) => el("li", { class: "row" },
+    mark("ok", "running"),
+    jump(names[e.from] || shortID(e.from), "row-name"),
+    el("span", { class: "cell mono sub" }, e.link)));
+  return group("Linked from", count(edges.length), rows);
+}
+
+// proxyEnv is the line that gst proxy prints, for an address that clients
+// can connect to.
+function proxyEnv(listen) {
+  const i = listen.lastIndexOf(":");
+  let host = listen.slice(0, i);
+  if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
+  const a = `${host}:${listen.slice(i + 1)}`;
+  return `export ALL_PROXY=socks5h://${a} http_proxy=http://${a} https_proxy=http://${a}`;
+}
+
+function proxyGroup(st, isSelf) {
+  const p = st.proxy || {};
+  if (!p.listen) {
+    return group("Proxy", count("off"), [], isSelf && ["Turn it on with ", el("code", null, "gst proxy 127.0.0.1:1080")]);
   }
-
-  const nodeLayer = svg("g");
-  for (const n of topo.nodes) {
-    const p = pos[n.id];
-    const classes = ["node"];
-    if (n.id === topo.self) classes.push("self");
-    if (n.id === selected) classes.push("picked");
-    if (!n.reachable) classes.push("unreachable");
-    const kind = n.id === topo.self ? "this machine" : shortID(n.id) + (n.exit ? " · exit" : "");
-    const g = svg("g", { class: classes.join(" "), transform: `translate(${p.x},${p.y})` },
-      svg("title", null, `${names[n.id]}\n${n.id}${n.software ? "\n" + n.software : ""}${n.reachable ? "" : "\noffline"}`),
-      svg("rect", { class: "box", width: W, height: H, rx: 8 }),
-      svg("text", { class: "name", x: 12, y: 19 }, truncate(names[n.id], 18)),
-      svg("text", { class: "kind", x: 12, y: 35 }, kind));
-    g.addEventListener("click", () => select(n.id));
-    nodeLayer.append(g);
-  }
-
-  map.setAttribute("viewBox", `${left} ${top} ${right - left} ${bottom - top}`);
-  map.style.maxWidth = right - left + "px";
-  // On narrow screens the graph scrolls rather than shrinking past legibility.
-  map.style.minWidth = Math.min(right - left, 520) + "px";
-  map.replaceChildren(defs, edgeLayer, nodeLayer, labelLayer);
+  const env = proxyEnv(p.listen);
+  const row = el("li", { class: "row" },
+    listenMark(p),
+    el("span", { class: "cell mono" }, p.listen),
+    isSelf ? el("span", { class: "cell mono faint row-wide", title: env }, env) : el("span", { class: "row-wide" }),
+    p.error ? el("span", { class: "row-end bad" }, "failed") : isSelf ? el("span", { class: "row-end" }, copyButton(env, "Copy")) : el("span"),
+    p.error ? el("p", { class: "row-error" }, p.error) : null);
+  return group("Proxy", null, [row]);
 }
 
-function truncate(s, n) {
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+function mapsGroup(st, isSelf) {
+  const maps = st.maps || [];
+  const failed = maps.filter((m) => m.error).length;
+  const rows = maps.map((m) => el("li", { class: "row" },
+    listenMark(m),
+    el("span", { class: "cell mono", title: m.listen }, m.listen),
+    el("span", { class: "cell mono sub", title: m.target }, m.target),
+    jump(m.machine),
+    m.error ? el("span", { class: "row-end bad" }, "failed") : el("span"),
+    m.error ? el("p", { class: "row-error" }, m.error) : null));
+  return group("Maps", count(failed ? `${maps.length - failed} of ${maps.length} listening` : maps.length, failed), rows,
+    isSelf && ["Add one with ", el("code", null, "gst map add <listen> <machine>:<target>")]);
 }
 
-
-// ---- machine detail ----
-
-// A machine's detail is its status, as its daemon reports it: this
-// machine's comes with /api/state, another's from /api/nodes/{id}.
-
-function listenState(listen, error) {
-  return !listen ? "off" : error ? "failed" : "listening";
+// routeNote says what the mesh shows about the machine a route goes through.
+function routeNote(via) {
+  if (!topology()) return "";
+  const n = findMachine(via);
+  if (!n) return "not in the mesh";
+  return n.exit ? "" : "not an exit";
 }
 
-function detailFromStatus(st) {
-  return {
-    proxy: { listen: st.proxy.listen, state: listenState(st.proxy.listen, st.proxy.error), error: st.proxy.error },
-    links: st.links || [],
-    maps: (st.maps || []).map((m) => ({ listen: m.listen, machine: m.machine, target: m.target, state: listenState(m.listen, m.error), error: m.error })),
-    routes: st.routes || [],
-  };
+function routesGroup(st, isSelf) {
+  const routes = st.routes || [];
+  const rows = routes.map((r) => {
+    const note = routeNote(r.via);
+    return el("li", { class: "row" },
+      note ? mark("off", note) : mark("ok", "goes out through " + r.via),
+      el("span", { class: "cell mono", title: r.match }, r.match),
+      el("span"),
+      jump(r.via),
+      note ? el("span", { class: "row-end warn" }, note) : el("span"));
+  });
+  return group("Routes", count(routes.length), rows,
+    isSelf && ["Add one with ", el("code", null, "gst route add <match> <machine>")]);
 }
 
-function renderProxy(proxy, isSelf) {
-  const state = $("proxy-state");
-  const usage = $("proxy-usage");
-  usage.hidden = true;
-  if (!proxy.listen) {
-    state.replaceChildren(pill("off"), ...(isSelf ? [" ", el("span", { class: "muted" }, "Turn it on with "), el("code", null, "gst proxy 127.0.0.1:1080")] : []));
+function blank(title, ...text) {
+  return el("div", { class: "blank" }, el("strong", null, title), el("p", null, text));
+}
+
+function drawHead(n, names, st) {
+  const isSelf = n && n.id === selfID();
+  const found = problems(st);
+  $("head").replaceChildren(...[
+    el("h1", { class: "truncate" }, n ? names[n.id] : "This machine"),
+    isSelf && el("span", { class: "tag" }, "this machine"),
+    n && n.exit && el("span", { class: "tag" }, "exit"),
+    found.length > 0 && el("span", { class: "head-problems", title: found.join("\n") }, plural(found.length, "problem")),
+  ].filter(Boolean));
+}
+
+function drawDetail(n, names) {
+  const detail = $("detail");
+  const isSelf = !n || n.id === selfID();
+  const st = n ? statusOf(n.id) : state.status;
+  if (isSelf && !st) {
+    const title = state.down ? "gst is down on this machine" : "The gst daemon is not running";
+    detail.replaceChildren(blank(title, "Start it with ", el("code", null, "gst up"), "."));
     return;
   }
-  const children = [el("code", null, proxy.listen), " "];
-  if (proxy.state === "failed") {
-    children.push(pill("failed", "down"), " ", el("span", { class: "err-inline" }, proxy.error || ""));
-  } else {
-    children.push(pill("listening", "running"));
+  if (!st) {
+    const answer = answers.get(n.id);
+    if (!n.reachable) {
+      detail.replaceChildren(blank(`${names[n.id]} is offline`, "No running link leads to it from this machine. Its last report stays in the mesh until it expires."));
+    } else if (answer && answer.error) {
+      detail.replaceChildren(blank(`${names[n.id]} did not answer`, answer.error));
+    } else {
+      detail.replaceChildren(blank("Asking…", `Waiting for ${names[n.id]} to answer through the mesh.`));
+    }
+    return;
   }
-  state.replaceChildren(...children);
-  if (!isSelf) return;
-
-  // The usage lines name an address that clients can connect to.
-  const i = proxy.listen.lastIndexOf(":");
-  let host = proxy.listen.slice(0, i), port = proxy.listen.slice(i + 1);
-  if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
-  const addr = `${host}:${port}`;
-  $("use-env").textContent = `ALL_PROXY=socks5h://${addr}`;
-  usage.hidden = false;
+  detail.replaceChildren(...[
+    linksGroup(st, isSelf),
+    n && linkedFromGroup(n.id, names),
+    proxyGroup(st, isSelf),
+    mapsGroup(st, isSelf),
+    routesGroup(st, isSelf),
+  ].filter(Boolean));
 }
 
-function renderMaps(maps) {
-  show("maps", maps.map((m) => {
-    const status = [pill(m.state, m.state === "listening" ? "running" : "down")];
-    if (m.error) status.push(el("span", { class: "err" }, m.error));
-    return [el("span", { class: "mono" }, m.listen), el("span", { class: "mono" }, `${m.machine}:${m.target}`), status];
+// ---- the machines ----
+
+function nodeMark(n) {
+  if (n.id === selfID()) return state.status ? mark("ok", "this machine, running") : mark("off", "this machine, not running");
+  return n.reachable ? mark("ok", "online") : mark("off", "offline");
+}
+
+function drawMachines(nodes, names) {
+  const nav = $("machines");
+  const focused = nav.contains(document.activeElement) ? document.activeElement.dataset.id : "";
+  nav.replaceChildren(...nodes.map((n) => {
+    const found = problems(statusOf(n.id)).length;
+    const route = via(n, names);
+    const b = el("button", { type: "button", class: "machine", "data-id": n.id, "aria-current": n.id === selected ? "true" : "false" },
+      nodeMark(n),
+      el("span", { class: "truncate machine-name" }, names[n.id]),
+      el("span", { class: "machine-meta" },
+        found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
+        route ? el("span", { class: "truncate", title: "via " + route }, "via " + route) : null,
+        !n.reachable && n.id !== selfID() ? el("span", null, "offline") : null,
+        n.exit ? el("span", { class: "tag" }, "exit") : null));
+    b.addEventListener("click", () => select(n.id));
+    return b;
   }));
-}
-
-// viaNote says what the mesh shows about the machine a route goes through.
-function viaNote(via, topo) {
-  if (!topo) return null;
-  const found = topo.nodes.filter((n) => n.name === via || n.id.startsWith(via));
-  if (found.length === 0) return "not in the mesh";
-  if (!found.some((n) => n.exit)) return "not an exit";
-  return null;
-}
-
-function renderRoutes(routes, topo) {
-  show("routes", routes.map((r) => {
-    const note = viaNote(r.via, topo);
-    return [el("span", { class: "mono" }, r.match), [r.via, note ? el("span", { class: "err" }, note) : null]];
-  }));
-}
-
-// renderDetail shows the selected machine: its header from what this
-// machine knows of it, and its tables once its status is known.
-function renderDetail(state, names) {
-  const topo = state.topology;
-  const isSelf = isSelfSelected(state);
-  const known = topo && topo.nodes.find((n) => n.id === selected);
-  const info = isSelf && state.node ? state.node : known;
-  const detail = $("detail");
-  detail.classList.toggle("self", isSelf);
-
-  const view = nodeView && nodeView.id === selected ? nodeView : null;
-  const status = isSelf ? state.status : view && view.status;
-  const node = status && status.node && status.node.id ? status.node : info;
-  $("m-name").textContent = node ? (names && names[node.id]) || node.name : "this machine";
-  $("m-id").textContent = node ? shortID(node.id) : "";
-  const software = isSelf ? state.software : (status && status.software) || (node && node.software) || "";
-  $("m-software").textContent = software;
-  const exit = $("m-exit");
-  exit.hidden = !node;
-  exit.className = "pill " + (node && node.exit ? "yes" : "off");
-  exit.textContent = node && node.exit ? "exit" : "not an exit";
-  $("m-self").hidden = !isSelf;
-
-  let d = null;
-  let problem = "";
-  if (isSelf) {
-    if (state.status) d = detailFromStatus(state.status);
-    else problem = state.down ? "gst is down on this machine; run gst up." : "The gst daemon is not running; run gst up.";
-  } else if (!view) {
-    problem = "Loading…";
-  } else if (view.error) {
-    problem = view.error;
-  } else {
-    d = detailFromStatus(view.status);
+  if (focused) {
+    const b = nav.querySelector(`[data-id="${CSS.escape(focused)}"]`);
+    if (b) b.focus();
   }
-  $("m-problem").textContent = problem;
-  $("m-problem").className = (isSelf ? !d : view && view.error) ? "problem err-inline" : "problem muted";
-  $("m-problem").hidden = !problem;
-  $("m-body").hidden = !d;
-  if (!d) return;
-  renderLinks(d.links);
-  renderProxy(d.proxy, isSelf);
-  renderMaps(d.maps);
-  renderRoutes(d.routes, topo);
 }
 
-// ---- selection ----
-
-let selected = ""; // the id of the machine shown in detail
-let lastState = null;
-let nodeView = null; // {id, status} or {id, error}: the last answer for a machine other than this one
-let nodeInflight = false;
-let nodeTimer = 0;
-
-try {
-  selected = localStorage.getItem(SELECTED_KEY) || "";
-} catch (_) {}
-
-// selfID is this machine's id as far as the page knows; empty when it has
-// none yet.
-function selfID(state) {
-  return (state.topology && state.topology.self) || (state.node && state.node.id) || "";
+function drawSummary(nodes) {
+  const online = nodes.filter((n) => n.reachable || n.id === selfID()).length;
+  const found = nodes.reduce((sum, n) => sum + problems(statusOf(n.id)).length, 0);
+  const text = !state.status ? "not running" : online === nodes.length ? `${online} online` : `${online} of ${nodes.length} online`;
+  $("summary").replaceChildren(text, ...(found ? [", ", el("span", { class: "bad" }, plural(found, "problem"))] : []));
 }
 
-// isSelfSelected is true when the selection is this machine, or when the
-// page knows no other machines.
-function isSelfSelected(state) {
-  return !state.topology || state.topology.nodes.length === 0 || selected === selfID(state);
+// ---- the mesh ----
+
+// The machines sit on a circle, so that a line between two of them never
+// passes a third, however the mesh grows. Lines are links and point at the
+// machine that was linked to.
+function drawRing(nodes, names) {
+  const ring = $("ring");
+  const topo = topology();
+  const alone = !topo || nodes.length < 2;
+  ring.toggleAttribute("hidden", alone);
+  if (alone) return;
+
+  const r = Math.max(82, nodes.length * 13);
+  const padX = 88, padY = 28;
+  const cx = r + padX, cy = r + padY;
+  const pos = {};
+  nodes.forEach((n, i) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / nodes.length;
+    pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), cos: Math.cos(a), sin: Math.sin(a) };
+  });
+
+  const seen = {};
+  const links = [];
+  const tips = [];
+  for (const e of topo.edges) {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b || a === b) continue;
+    const key = [e.from, e.to].sort().join("\0");
+    const k = (seen[key] = (seen[key] || 0) + 1) - 1;
+    // Lines bow towards the center; repeated links bow further.
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const side = k * 16 * (e.from < e.to ? 1 : -1);
+    const c = { x: mx + (cx - mx) * 0.3 - ((b.y - a.y) / len) * side, y: my + (cy - my) * 0.3 + ((b.x - a.x) / len) * side };
+    const away = (p, d) => {
+      const l = Math.hypot(c.x - p.x, c.y - p.y) || 1;
+      return { x: p.x + ((c.x - p.x) / l) * d, y: p.y + ((c.y - p.y) / l) * d };
+    };
+    const p = away(a, 9), q = away(b, 12);
+    const on = e.from === selected || e.to === selected ? " on" : "";
+    links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
+      svg("title", null, `${names[e.from]} to ${names[e.to]}, link ${e.link}`)));
+    // The arrowhead, along the line's last stretch.
+    const angle = Math.atan2(q.y - c.y, q.x - c.x);
+    const at = (d, turn) => `${q.x + d * Math.cos(angle + turn)},${q.y + d * Math.sin(angle + turn)}`;
+    tips.push(svg("path", { d: `M${at(3, 0)} L${at(5, 2.5)} L${at(5, -2.5)} Z`, class: "ring-tip" + on }));
+  }
+
+  const dots = nodes.map((n) => {
+    const p = pos[n.id];
+    const online = n.reachable || n.id === selfID();
+    const side = p.cos > 0.25 ? "start" : p.cos < -0.25 ? "end" : "middle";
+    const dx = side === "start" ? 12 : side === "end" ? -12 : 0;
+    const dy = side === "middle" ? (p.sin < 0 ? -12 : 20) : 4;
+    const name = names[n.id].length > 12 ? names[n.id].slice(0, 11) + "…" : names[n.id];
+    const g = svg("g", { class: `ring-node ${online ? "online" : "offline"}${n.id === selected ? " picked" : ""}` },
+      svg("title", null, `${names[n.id]}${online ? "" : ", offline"}`),
+      svg("circle", { class: "hit", cx: p.x, cy: p.y, r: 14 }),
+      ...(n.id === selected ? [svg("circle", { class: "halo", cx: p.x, cy: p.y, r: 8.5 })] : []),
+      svg("circle", { class: "dot", cx: p.x, cy: p.y, r: 4.5 }),
+      svg("text", { x: p.x + dx, y: p.y + dy, "text-anchor": side }, name));
+    g.addEventListener("click", () => select(n.id));
+    return g;
+  });
+
+  ring.setAttribute("viewBox", `0 0 ${2 * cx} ${2 * cy}`);
+  ring.replaceChildren(...links, ...tips, ...dots);
 }
+
+function drawProps(n, names, st) {
+  const props = $("props");
+  if (!n) {
+    props.replaceChildren();
+    return;
+  }
+  const isSelf = n.id === selfID();
+  const route = n.path && n.path.length > 1 ? n.path.map((id) => names[id] || shortID(id)).join(" → ") : "";
+  const software = (st && st.software) || n.software;
+  const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
+  props.replaceChildren(
+    ...row("Status", isSelf ? (state.status ? "Running" : "Not running") : n.reachable ? "Online" : "Offline"),
+    ...row("Path", route),
+    ...row("Exit", n.exit ? "Yes, connects out for others" : "No"),
+    ...row("Version", software),
+    ...row("ID", el("span", null, el("span", { class: "mono" }, shortID(n.id)), " ", copyButton(n.id, "Copy"))));
+}
+
+// ---- page ----
 
 function select(id) {
   if (id === selected) return;
@@ -397,123 +431,115 @@ function select(id) {
   try {
     localStorage.setItem(SELECTED_KEY, id);
   } catch (_) {}
-  nodeView = null;
-  if (lastState) draw(lastState);
-  refreshNode();
+  draw();
 }
 
-// refreshNode fetches the selected machine's status unless it is this
-// machine, whose status comes with /api/state, or is known to be
-// unreachable. Requests do not overlap: a request that finishes for a
-// machine no longer selected is followed by one for the selected machine.
-async function refreshNode() {
-  clearTimeout(nodeTimer);
-  nodeTimer = 0;
-  const state = lastState;
-  if (!state || !state.topology || isSelfSelected(state)) return;
-  const id = selected;
-  const known = state.topology.nodes.find((n) => n.id === id);
-  if (known && !known.reachable) {
-    const msg = "Offline: no running link leads to this machine from here.";
-    if (!nodeView || nodeView.id !== id || nodeView.error !== msg) {
-      nodeView = { id, error: msg };
-      draw(state);
-    }
-    return;
-  }
-  if (nodeInflight) return;
-  nodeInflight = true;
-  try {
-    const res = await fetch(`api/nodes/${encodeURIComponent(id)}`, { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
-    let view;
-    if (res.ok) {
-      view = { id, status: await res.json() };
-    } else {
-      view = { id, error: (await res.text()).trim() || res.statusText };
-    }
-    if (id === selected) nodeView = view;
-  } catch (err) {
-    if (id === selected) nodeView = { id, error: err instanceof TypeError ? "gst ui is not running." : String(err.message || err) };
-  } finally {
-    nodeInflight = false;
-  }
-  if (id !== selected) {
-    refreshNode();
-    return;
-  }
-  if (lastState) draw(lastState);
-  if (!document.hidden) nodeTimer = setTimeout(refreshNode, NODE_POLL_MS);
+function move(step) {
+  const nodes = machines();
+  const i = nodes.findIndex((n) => n.id === selected);
+  const next = nodes[Math.min(nodes.length - 1, Math.max(0, i + step))];
+  if (!next) return;
+  select(next.id);
+  const b = $("machines").querySelector(`[data-id="${CSS.escape(next.id)}"]`);
+  if (b) b.scrollIntoView({ block: "nearest" });
 }
 
-// ---- page ----
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "j" || e.key === "ArrowDown") move(1);
+  else if (e.key === "k" || e.key === "ArrowUp") move(-1);
+  else return;
+  e.preventDefault();
+});
 
-function render(state) {
-  lastState = state;
+function showAlert(...texts) {
+  const a = $("alert");
+  a.replaceChildren(...texts.filter(Boolean).map((t) => el("p", null, t)));
+  a.hidden = a.childNodes.length === 0;
+}
+
+// draw shows the state, unless nothing changed: redrawing would take away
+// a text selection for nothing.
+function draw() {
+  if (!state) return;
+  const nodes = machines();
   // A remembered machine that the mesh no longer lists gives way to this one.
-  const topo = state.topology;
-  if (topo && topo.nodes.length > 0 && !topo.nodes.some((n) => n.id === selected)) selected = topo.self;
-  if (!topo && selected !== selfID(state)) selected = selfID(state);
+  if (!nodes.some((n) => n.id === selected)) selected = selfID();
+  const key = JSON.stringify([state, [...answers], selected, Math.floor(Date.now() / 60000)]);
+  if (key === drawn) return;
+  drawn = key;
 
-  const self = state.node;
-  document.title = self ? `gst · ${self.name}` : "gst";
-  $("node").textContent = self ? `${self.name} · ${shortID(self.id)}` : "this machine";
-  const exit = $("exit");
-  exit.hidden = !self;
-  exit.className = "pill " + (self && self.exit ? "yes" : "off");
-  exit.textContent = self && self.exit ? "exit" : "not an exit";
-
-  const daemon = $("daemon");
-  if (state.status) {
-    daemon.className = "pill running";
-    daemon.textContent = "daemon running";
-  } else {
-    daemon.className = "pill down";
-    daemon.textContent = (state.down ? "down" : "daemon not running") + " — run gst up";
-  }
-  $("updated").textContent = `${state.software} · updated ${new Date().toLocaleTimeString()}`;
-
-  showAlert(...(state.errors || []));
-
-  draw(state);
-  if (!nodeInflight && !nodeTimer) refreshNode();
+  const names = displayNames(nodes);
+  const n = nodes.find((m) => m.id === selected);
+  const st = n ? statusOf(n.id) : state.status;
+  document.title = state.node ? `gst: ${state.node.name}` : "gst";
+  $("software").textContent = state.software;
+  drawSummary(nodes);
+  drawMachines(nodes, names);
+  drawHead(n, names, st);
+  drawDetail(n, names);
+  drawRing(nodes, names);
+  drawProps(n, names, st);
 }
 
-// draw shows state and the selected machine's status.
-function draw(state) {
-  const topo = state.topology;
-  const showTopo = !!topo && topo.nodes.length > 0;
-  $("nodes-section").hidden = !showTopo;
-  let names;
-  if (showTopo) {
-    names = displayNames(topo.nodes);
-    renderGraph(topo, names);
-    renderNodes(topo, names);
-  }
-  renderDetail(state, names);
-}
-
-let timer;
+const authorized = { headers: { Authorization: "Bearer " + token }, cache: "no-store" };
+let stateTimer = 0;
 
 async function refresh() {
-  clearTimeout(timer);
+  clearTimeout(stateTimer);
   try {
-    const res = await fetch("api/state", { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+    const res = await fetch("api/state", authorized);
     if (res.status === 401) {
       showAlert("This address lacks the secret. Open the address that gst ui printed, including the part after #.");
       return;
     }
     if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
-    render(await res.json());
+    state = await res.json();
+    showAlert(...(state.errors || []));
+    draw();
   } catch (err) {
-    showAlert(err instanceof TypeError ? "gst ui is not running. Start it again with gst ui." : String(err.message || err));
+    showAlert(err instanceof TypeError ? "gst ui stopped. Start it again with gst ui." : String(err.message || err));
   }
-  if (!document.hidden) timer = setTimeout(refresh, POLL_MS);
+  if (!document.hidden) stateTimer = setTimeout(refresh, POLL_MS);
+}
+
+// ask stores what a machine's daemon answers.
+async function ask(id) {
+  try {
+    const res = await fetch(`api/nodes/${encodeURIComponent(id)}`, authorized);
+    answers.set(id, res.ok ? { status: await res.json() } : { error: (await res.text()).trim() || res.statusText });
+  } catch (err) {
+    answers.set(id, { error: err instanceof TypeError ? "gst ui stopped." : String(err.message || err) });
+  }
+  draw();
+}
+
+let asking = false;
+let machineTimer = 0;
+
+// refreshMachines asks every machine that it can reach, the selected one
+// first, a few at a time.
+async function refreshMachines() {
+  clearTimeout(machineTimer);
+  if (asking) return;
+  const self = selfID();
+  const reachable = machines().filter((n) => n.reachable && n.id !== self).map((n) => n.id);
+  for (const id of answers.keys()) if (!reachable.includes(id)) answers.delete(id);
+  const queue = reachable.sort((a, b) => (b === selected) - (a === selected));
+  asking = true;
+  await Promise.all(Array.from({ length: MACHINE_REQUESTS }, async () => {
+    while (queue.length) await ask(queue.shift());
+  }));
+  asking = false;
+  draw();
+  if (!document.hidden) machineTimer = setTimeout(refreshMachines, MACHINE_POLL_MS);
 }
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     refresh();
-    refreshNode();
+    refreshMachines();
   }
 });
-refresh();
+
+refresh().then(refreshMachines);

@@ -292,7 +292,7 @@ Limitations:
 
 ### Web page
 
-`gst ui` shows a map of the mesh in a browser page that updates itself every few seconds, with a Status column for each machine (online, offline, or online via …), and the links, proxy, maps, and routes of this machine and, when you pick it, of any other machine of the mesh (as `gst status <machine>` does). It shows this machine's status from the daemon, and says so when the daemon is not running. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; changes take the commands above.
+`gst ui` shows the mesh in a browser page that updates itself every few seconds: every machine with its state and problems, a map of the links between them, and, for the machine you pick, its links, the links from other machines, its proxy, maps, and routes (as `gst status <machine>` does). Press J and K to move between machines. It says so when the daemon on this machine is not running. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; changes take the commands above.
 
 ```bash
 gst ui
