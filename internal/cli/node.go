@@ -79,7 +79,7 @@ func writeTopology(out io.Writer, topo wire.Topology) error {
 		switch {
 		case n.ID == topo.Self:
 			route = "this machine"
-		case n.Reachable:
+		case n.Reachable && len(n.Path) > 1:
 			hops := make([]string, len(n.Path)-1)
 			for i, id := range n.Path[1:] {
 				hops[i] = names[id]

@@ -184,6 +184,8 @@ func (a *app) linkRemoveCommand() *cobra.Command {
 					if _, err := lookup(f, name); err != nil {
 						return err
 					}
+				}
+				for _, name := range args {
 					delete(f.Links, name)
 				}
 				return nil

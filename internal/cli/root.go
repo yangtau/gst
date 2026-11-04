@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -136,14 +137,10 @@ func (a *app) args(minN, maxN int) cobra.PositionalArgs {
 
 // placeholders returns the <argument> names in cmd's Use line.
 func placeholders(cmd *cobra.Command) []string {
-	var names []string
-	for _, field := range strings.Fields(cmd.Use) {
-		if strings.HasPrefix(field, "<") {
-			names = append(names, field)
-		}
-	}
-	return names
+	return placeholderPattern.FindAllString(cmd.Use, -1)
 }
+
+var placeholderPattern = regexp.MustCompile(`<[^>]*>([^\s<]*<[^>]*>)*(\.\.\.)?`)
 
 // linksHint adds the existing link names to err.
 func (a *app) linksHint(err error) error {
