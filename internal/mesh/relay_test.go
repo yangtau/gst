@@ -306,17 +306,17 @@ func TestDialHonorsContext(t *testing.T) {
 func TestFindNode(t *testing.T) {
 	node := func(id, name string) wire.TopoNode { return wire.TopoNode{ID: id, Name: name} }
 	const (
-		m3, mini, devcn, devcn2 = "aaaa0000000000000000000000000001", "bbbb0000000000000000000000000002", "cccc0000000000000000000000000003", "cccd0000000000000000000000000004"
+		laptop, homelab, devbox, devbox2 = "aaaa0000000000000000000000000001", "bbbb0000000000000000000000000002", "cccc0000000000000000000000000003", "cccd0000000000000000000000000004"
 	)
 	topo := wire.Topology{
-		Nodes: []wire.TopoNode{node(m3, "m3"), node(mini, "mini"), node(devcn, "devcn"), node(devcn2, "devcn"), node("dddd0000000000000000000000000005", "other"), node("dddd1111111111111111111111111111", "dup")},
+		Nodes: []wire.TopoNode{node(laptop, "laptop"), node(homelab, "homelab"), node(devbox, "devbox"), node(devbox2, "devbox"), node("dddd0000000000000000000000000005", "other"), node("dddd1111111111111111111111111111", "dup")},
 		Edges: []wire.TopoEdge{
-			{From: m3, To: mini, Link: "box"},      // m3 calls mini "box"
-			{From: devcn, To: mini, Link: "box"},   // another node calls mini "box" too: still one machine
-			{From: m3, To: devcn, Link: "work"},    // "work" names devcn from m3
-			{From: mini, To: devcn2, Link: "work"}, // but another "work" names devcn2: ambiguous
-			{From: m3, To: m3, Link: "other"},      // a link name does not beat a node name
-			{From: m3, To: "dddd1111111111111111111111111111", Link: "m3"},
+			{From: laptop, To: homelab, Link: "box"},   // laptop calls homelab "box"
+			{From: devbox, To: homelab, Link: "box"},   // another node calls homelab "box" too: still one machine
+			{From: laptop, To: devbox, Link: "work"},   // "work" names devbox from laptop
+			{From: homelab, To: devbox2, Link: "work"}, // but another "work" names devbox2: ambiguous
+			{From: laptop, To: laptop, Link: "other"},  // a link name does not beat a node name
+			{From: laptop, To: "dddd1111111111111111111111111111", Link: "laptop"},
 		},
 	}
 	byID := map[string]wire.TopoNode{}
@@ -328,18 +328,18 @@ func TestFindNode(t *testing.T) {
 		want string // id, or "" with code
 		code string
 	}{
-		{m3, m3, ""},
-		{"M3", m3, ""},
-		{"m3.gst", m3, ""}, // the node name wins over the link called m3
-		{"MINI.GST", mini, ""},
-		{"box", mini, ""}, // link name, published twice for the same node
+		{laptop, laptop, ""},
+		{"LAPTOP", laptop, ""},
+		{"laptop.gst", laptop, ""}, // the node name wins over the link called laptop
+		{"HOMELAB.GST", homelab, ""},
+		{"box", homelab, ""}, // link name, published twice for the same node
 		{"other", "dddd0000000000000000000000000005", ""},
-		{"devcn", "", wire.CodeInvalidParams}, // two nodes of that name
-		{"work", "", wire.CodeInvalidParams},  // two links of that name to different nodes
-		{"aaaa", m3, ""},
-		{"bbbb0000", mini, ""},
+		{"devbox", "", wire.CodeInvalidParams}, // two nodes of that name
+		{"work", "", wire.CodeInvalidParams},   // two links of that name to different nodes
+		{"aaaa", laptop, ""},
+		{"bbbb0000", homelab, ""},
 		{"ccc", "", wire.CodeNotFound}, // prefixes need four characters
-		{"cccc", devcn, ""},
+		{"cccc", devbox, ""},
 		{"ccc0", "", wire.CodeNotFound},
 		{"dddd", "", wire.CodeInvalidParams}, // two ids share the prefix
 		{"nowhere", "", wire.CodeNotFound},

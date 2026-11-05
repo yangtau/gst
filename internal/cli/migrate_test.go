@@ -27,7 +27,7 @@ const legacyConfig = `{
       ]
     },
     "viamesh": {
-      "destination": "mesh:devcn",
+      "destination": "mesh:devbox",
       "forwards": [{"direction": "local", "listen": "127.0.0.1:8080", "target": "localhost:80"}]
     }
   }
@@ -67,7 +67,7 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	}
 	wantMaps := []config.Map{
 		{Listen: "127.0.0.1:15432", Machine: "myhost", Target: "127.0.0.1:5432"},
-		{Listen: "127.0.0.1:8080", Machine: "devcn", Target: "localhost:80"},
+		{Listen: "127.0.0.1:8080", Machine: "devbox", Target: "localhost:80"},
 	}
 	if !slices.Equal(f.Maps, wantMaps) {
 		t.Fatalf("maps\n got %+v\nwant %+v", f.Maps, wantMaps)

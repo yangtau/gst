@@ -37,7 +37,7 @@ not supported.
 Before saving, gst checks that an identity without a passphrase exists
 and that known_hosts records the server; it never accepts unknown host
 keys. To change a link, remove it and add it again.`,
-		Example: `  gst add devcn    # the "devcn" entry of ~/.ssh/config
+		Example: `  gst add devbox    # the "devbox" entry of ~/.ssh/config
   gst add db admin@db.example.com
   gst add web ssh://deploy@203.0.113.7:2200 --remote-gst ~/bin/gst`,
 		Args: a.args(1, 2),
@@ -86,7 +86,7 @@ func (a *app) removeCommand() *cobra.Command {
 		Use:               "remove <name>...",
 		Aliases:           []string{"rm"},
 		Short:             "Remove links to other machines",
-		Example:           "  gst remove devcn\n  gst remove devcn db",
+		Example:           "  gst remove devbox\n  gst remove devbox db",
 		Args:              a.args(1, -1),
 		ValidArgsFunction: a.completeLinks,
 		RunE: run(func(cmd *cobra.Command, args []string) error {

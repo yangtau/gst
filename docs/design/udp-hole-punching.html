@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UDP 打洞从零讲起</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: a single long-read column in the voice of a network manual; the packet simulator breaks out wider. */
+:root {
+  --bg: #f2f5f8; --panel: #ffffff; --fg: #16212e; --muted: #566778; --rule: #d3dce5;
+  --code: #e7ecf2; --accent: #2f5fd0; --ok: #16784e; --drop: #c5352b; --nat: #a36a12; --new: #dfe9ff;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --nat: #e2b04a; --new: #24375c; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --nat: #e2b04a; --new: #24375c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 16px/1.8 var(--sans); }
+.page { max-width: 980px; margin: 0 auto; padding-block: 40px 96px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 700px; }
+h1 { font-size: clamp(34px, 7vw, 54px); font-weight: 900; line-height: 1.15; margin: 0 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font-size: 26px; font-weight: 900; line-height: 1.3; margin: 0 0 14px; text-wrap: balance; }
+h3 { font-size: 18px; font-weight: 700; margin: 28px 0 6px; }
+p { margin: 0 0 14px; }
+section { padding-top: 52px; }
+.no { font: 600 13px var(--mono); color: var(--accent); letter-spacing: .06em; display: block; margin-bottom: 4px; }
+.lede { font-size: 18px; color: var(--muted); max-width: 660px; }
+code, .m { font-family: var(--mono); font-size: .88em; }
+p code, li code, td code { background: var(--code); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+pre { font: 400 13.5px/1.7 var(--mono); background: var(--code); padding: 14px 16px; margin: 0 0 16px; overflow-x: auto; border-radius: 4px; }
+pre .c { color: var(--muted); }
+pre .k { color: var(--accent); font-weight: 600; }
+pre .d { color: var(--drop); font-weight: 600; }
+pre .o { color: var(--ok); font-weight: 600; }
+ul, ol { margin: 0 0 14px; padding-left: 1.4em; }
+li { margin-bottom: 6px; }
+strong { font-weight: 700; }
+a { color: var(--accent); }
+.tw { overflow-x: auto; margin-bottom: 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; line-height: 1.6; }
+th { text-align: left; font-weight: 700; border-bottom: 2px solid var(--fg); padding: 6px 12px 6px 0; white-space: nowrap; }
+td { border-bottom: 1px solid var(--rule); padding: 8px 12px 8px 0; vertical-align: top; }
+figure { margin: 8px 0 20px; }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+svg text { font-family: var(--sans); fill: currentColor; }
+svg .mono { font-family: var(--mono); }
+
+/* Answers */
+.answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 2px solid var(--fg); margin-top: 28px; }
+.answers > div { padding: 14px 18px 14px 0; min-width: 0; }
+.answers > div + div { border-left: 1px solid var(--rule); padding-left: 18px; }
+.answers h3 { margin: 0 0 6px; font-size: 15px; color: var(--muted); font-weight: 500; }
+.answers b { display: block; font-size: 19px; line-height: 1.4; font-weight: 900; margin-bottom: 6px; }
+.answers p { font-size: 14.5px; line-height: 1.7; margin: 0; }
+@media (max-width: 720px) { .answers { grid-template-columns: 1fr; } .answers > div + div { border-left: 0; border-top: 1px solid var(--rule); padding-left: 0; } }
+
+/* Header diagram */
+.hdr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); font: 400 12.5px/1.4 var(--mono); border: 1px solid var(--fg); margin-bottom: 8px; }
+.hdr div { padding: 8px 6px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); text-align: center; min-width: 0; overflow-wrap: anywhere; }
+.hdr .w2 { grid-column: span 2; } .hdr .w4 { grid-column: span 4; }
+.hdr .lay { background: var(--code); text-align: left; font-weight: 600; }
+.hdr .hot { background: var(--new); font-weight: 600; }
+
+/* Simulator */
+.sim { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; margin: 18px 0 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 500 14px var(--sans); color: var(--fg); background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .4; cursor: default; }
+.tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.intro { font-size: 15px; color: var(--muted); margin-bottom: 10px; }
+.stage { overflow-x: auto; }
+.stage svg { display: block; width: 100%; min-width: 660px; height: auto; color: var(--fg); }
+.ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 12px; }
+.ctl .pos { font: 400 13px var(--mono); color: var(--muted); }
+.ctl .primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.steptitle { font-size: 18px; font-weight: 700; margin: 0 0 4px; line-height: 1.45; }
+.stepbody { font-size: 15.5px; margin-bottom: 14px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.grid2 > div { min-width: 0; }
+@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.lbl { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+.sim table { font: 400 12.5px/1.5 var(--mono); }
+.sim th { font-family: var(--sans); font-size: 12.5px; border-bottom: 1px solid var(--fg); padding: 3px 10px 3px 0; }
+.sim td { padding: 4px 10px 4px 0; overflow-wrap: anywhere; }
+.sim tr.new td { background: var(--new); }
+.sim td.none { color: var(--muted); font-family: var(--sans); }
+.targets { font: 400 12.5px/1.7 var(--mono); }
+.targets span { display: block; overflow-wrap: anywhere; }
+.targets span.new { background: var(--new); }
+.jump { font: inherit; color: var(--accent); border: 0; padding: 0; background: none; text-decoration: underline; text-underline-offset: 3px; }
+
+/* SVG classes */
+.s-line { stroke: var(--rule); stroke-width: 2; fill: none; }
+.s-box { fill: var(--panel); stroke: currentColor; stroke-width: 1.5; }
+.s-fw { fill: var(--accent); }
+.s-nat { fill: var(--nat); }
+.s-none { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.s-zone { fill: var(--muted); font-size: 12px; }
+.s-path-ok { stroke: var(--ok); stroke-width: 3; fill: none; }
+.s-path-drop { stroke: var(--drop); stroke-width: 3; fill: none; }
+.s-ssh { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+.s-dot { fill: var(--accent); }
+.s-ok-t { fill: var(--ok); font-size: 13px; font-weight: 700; }
+.s-drop-t { fill: var(--drop); font-size: 13px; font-weight: 700; }
+.s-x { stroke: var(--drop); stroke-width: 4; }
+.s-sub { font-size: 11.5px; fill: var(--muted); }
+.s-title { font-size: 14px; font-weight: 700; }
+.mk-ok { fill: var(--ok); } .mk-drop { fill: var(--drop); }
+.f-v4 { stroke: var(--accent); stroke-width: 2.5; fill: none; }
+.f-v6 { stroke: var(--ok); stroke-width: 2.5; fill: none; }
+.f-learn { stroke: var(--nat); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+.f-t-learn { fill: var(--nat); }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<header>
+  <h1>UDP 打洞从零讲起</h1>
+  <p class="lede">从一个 UDP 包的字节开始，讲防火墙和 NAT 到底做了什么，打洞为什么能成，对端地址从哪里来，以及 gst 的直连在一个实际网络里走的是哪条路，最后讲它怎么加密、靠什么保证安全。</p>
+
+  <div class="answers">
+    <div>
+      <h3>N 组和 M 组有几种尝试？</h3>
+      <b>N×M，不是 N+M</b>
+      <p>每个本机 socket 都向对方每个同地址族的地址发探测，两个方向都发，而且收到探测后目标还会增加。见<a href="#s8">第 8 节</a>。</p>
+    </div>
+    <div>
+      <h3>打洞到底骗了什么？</h3>
+      <b>让对方的包看起来像回包</b>
+      <p>防火墙只放行“内部先发过”的对话。两边都向外发一次，双方的防火墙都以为对方的包是回复。见<a href="#s5">第 5 节</a>。</p>
+    </div>
+    <div>
+      <h3>gst 用到打洞了吗？</h3>
+      <b>用到一半</b>
+      <p>常见情况是一端可以被直接打到，另一端靠出站映射和地址学习。严格的“两边同时打”代码也支持。见<a href="#s9">第 9 节</a>。</p>
+    </div>
+  </div>
+</header>
+
+<section id="s1">
+  <span class="no">1 / 地基</span>
+  <h2>一个 UDP 包里有什么</h2>
+  <div class="col">
+    <p>整件事的根在包头。网络上传的 UDP 包就是一段字节，里面和“谁发给谁”有关的只有四个字段：</p>
+  </div>
+  <figure class="col">
+    <div class="hdr" role="img" aria-label="IP 头里有源地址和目的地址，UDP 头里有源端口和目的端口，这四个字段决定包的去向和回复地址">
+      <div class="w4 lay">IP 头：路由器看这一层</div>
+      <div class="w2">版本、长度、TTL…</div><div class="w2">协议 = 17 (UDP)</div>
+      <div class="w2 hot">源 IP</div><div class="w2 hot">目的 IP</div>
+      <div class="w4 lay">UDP 头：一共只有 8 字节</div>
+      <div class="hot">源端口</div><div class="hot">目的端口</div><div>长度</div><div>校验和</div>
+      <div class="w4 lay">数据</div>
+      <div class="w4">gst 的探测包：0x01 + 16 字节 token，一共 17 字节</div>
+    </div>
+    <figcaption>高亮的四个字段，再加上协议号，就是常说的五元组。防火墙和 NAT 全部的工作，都是围绕这几个字段做的。</figcaption>
+  </figure>
+  <div class="col">
+    <p>有三个事实，后面每一步都靠它们：</p>
+    <ol>
+      <li><strong>路由器只看目的 IP。</strong>它查路由表，把包往下一跳送。它不验证源地址是真是假，也不记得这个包。</li>
+      <li><strong>源地址是回信地址。</strong>收包的程序想回复，只能把收到的源和目的对调，再发一个包。除此之外，它没有其他途径知道该回到哪里。</li>
+      <li><strong>私网地址在公网上没有路由。</strong><code>10.x</code>、<code>192.168.x</code> 这些地址全世界有无数台机器在用，公网路由器遇到目的地址是它们的包，直接丢掉。</li>
+    </ol>
+    <pre><span class="c"># 一来一回，四个字段对调</span>
+去  src=198.51.100.9:6000  dst=203.0.113.7:40001
+回  src=203.0.113.7:40001  dst=198.51.100.9:6000</pre>
+  </div>
+</section>
+
+<section id="s2">
+  <span class="no">2 / socket</span>
+  <h2>UDP 没有“连接”，也没有“服务端”</h2>
+  <div class="col">
+    <p>“两台机器分别 listen 一个 UDP server，然后相互连接对方”这个说法，方向是对的，但它来自 TCP。UDP 里没有 listen，也没有握手。</p>
+    <p>一个 UDP socket 就是向内核登记一个 <code>IP:端口</code>。登记之后可以做两件事：</p>
+    <ul>
+      <li><strong>收</strong>：内核把目的地址是这个 <code>IP:端口</code> 的包交给你，谁发来的都收。每个包都附带它的源地址。</li>
+      <li><strong>发</strong>：你指定目的地址，内核填上源地址（就是你登记的那个）发出去。</li>
+    </ul>
+    <p>所以两边对称：<strong>同一个 socket 既是“服务端”也是“客户端”。</strong>这一点是打洞的前提。向外发包用的端口，就是将来收包的端口，防火墙记下的正是这个端口。如果换一个 socket 发，源端口变了，之前开出来的洞也就对不上了。</p>
+    <p>“连接”这个词在 UDP 上只有一个含义：两边碰巧都在向对方的 <code>IP:端口</code> 发包。QUIC 在这种裸包之上自己做握手、重传、加密，所以 gst 的“直连”是 QUIC 连接，底层仍然只是 UDP 包。</p>
+    <pre><span class="c">// gst：绑定具体地址，端口 0 表示让内核随便分一个</span>
+udp, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))</pre>
+  </div>
+</section>
+
+<section id="s3">
+  <span class="no">3 / 防火墙</span>
+  <h2>外面的包为什么进不来：状态防火墙</h2>
+  <div class="col">
+    <p>假设两台机器都有公网 IPv6，路由也通。如果路上什么都没有，A 发给 B，B 就直接收到了。挡住它的是路由器上的状态防火墙，家用路由器和公司出口几乎都有。</p>
+    <p>它的默认策略很简单：内部主动发出去的放行，外面主动发进来的丢掉。但只有这两条规则是上不了网的，因为你访问网站时，网站的回包也是“外面发进来的”。所以防火墙必须记住内部发起过哪些对话，这张表叫<strong>状态表</strong>（Linux 里叫 conntrack）：</p>
+    <pre><span class="c"># 防火墙对每个经过的包做的事</span>
+<span class="k">if</span> 包从内部往外走:
+    在表里记一条 (内部 IP:端口, 外部 IP:端口)，开始倒计时
+    <span class="o">放行</span>
+<span class="k">else if</span> 表里有 (包的目的, 包的源) 这一条:
+    刷新倒计时
+    <span class="o">放行</span>           <span class="c"># 它认为这是回包</span>
+<span class="k">else</span>:
+    <span class="d">丢弃</span>           <span class="c"># 通常不告诉发送方</span></pre>
+    <p>注意判断回包的依据：<strong>只比较地址和端口。</strong>TCP 还有 SYN、ACK 这些标志位，防火墙可以看出谁先发起。UDP 包头里什么都没有，防火墙看不出一个包是“回复”还是“另一方主动发的”，只要四个字段对得上就放行。打洞利用的就是这一点。</p>
+    <p>UDP 也没有结束标志，所以表项只能靠超时删除。Linux 默认大约 30 秒，有来有回之后大约 2 分钟；家用路由器和运营商设备从几十秒到几分钟都有。这就是 gst 每 5 秒发一次 keepalive 的原因：一旦表项过期，后面的包就会被当成陌生来客丢掉。</p>
+  </div>
+</section>
+
+<section id="s4">
+  <span class="no">4 / NAT</span>
+  <h2>NAT：防火墙之外再加一层地址改写</h2>
+  <div class="col">
+    <p>IPv4 地址不够用，所以一个家庭或公司内部用私网地址，共用一个公网地址出门。根据上面第 3 个事实，私网地址的包回不来，所以出口设备要把包头改掉：</p>
+    <pre><span class="c"># 出去：NAT 改写源地址，并记一条映射</span>
+内部发出  src=10.0.0.2:5000      dst=198.51.100.9:6000
+NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
+
+<span class="c"># 回来：NAT 查映射，改写目的地址</span>
+到达 NAT  src=198.51.100.9:6000  dst=<span class="k">203.0.113.7:40001</span>
+转发内部  src=198.51.100.9:6000  dst=10.0.0.2:5000</pre>
+    <p>NAT 的映射表和防火墙的状态表是一回事，只多了一列“公网端口”。它同样靠超时清理，也同样会丢掉匹配不上的入站包。它是被迫丢的：包到了 <code>203.0.113.7:40001</code>，如果表里没有这个端口，它不知道该转给内网哪台机器。</p>
+    <p>这带来了一个新问题，也是打洞最难的部分：</p>
+    <p><strong>A 不知道自己在公网上是谁。</strong>A 的网卡上只有 <code>10.0.0.2</code>，端口 <code>40001</code> 是 NAT 临时分配的，A 的操作系统里查不到。这个地址只有 NAT 自己和收到包的人知道。</p>
+    <p>再加一层也一样。运营商级 NAT（常用 <code>100.64.0.0/10</code> 地址段）是家用 NAT 外面又套一层，A 连自己路由器的外网地址都不是公网地址。</p>
+    <p>另外，IPv6 不一定没有这些事。有些机器的 IPv6 出口地址和网卡上的地址就不一样，说明路上有地址转换或代理。</p>
+  </div>
+</section>
+
+<section id="s5">
+  <span class="no">5 / 打洞</span>
+  <h2>打洞：让两边都先说话</h2>
+  <div class="col">
+    <p>现在可以说清楚了。两边的防火墙都只放行“内部先发过”的对话，那么让两边都向对方发一个包。A 的包走出 A 的防火墙时，在表里留下一条记录。这时 B 发来的包，对 A 的防火墙来说就是回包。</p>
+    <p>说“骗”不算错，但防火墙并没有被攻破。它的规则是“内部的机器想和谁说话，就放行谁”，而 A 确实想和 B 说话。打洞只是让两台机器同时表达这个意愿。</p>
+    <p>下面的模拟器可以一步步看。每一步都能看到包的地址怎么变，以及表里多了什么。<strong>建议先看前两个场景。</strong></p>
+  </div>
+
+  <div class="sim" id="sim">
+    <div class="tabs" id="tabs" role="tablist" aria-label="场景"></div>
+    <p class="intro" id="intro"></p>
+    <div class="stage" id="stage"></div>
+    <div class="ctl">
+      <button id="prev" type="button">上一步</button>
+      <button id="next" type="button" class="primary">下一步</button>
+      <button id="reset" type="button">从头看</button>
+      <span class="pos" id="pos"></span>
+    </div>
+    <p class="steptitle" id="stitle"></p>
+    <p class="stepbody" id="sbody"></p>
+    <div id="hops"></div>
+    <div class="grid2">
+      <div><div class="lbl" id="fal"></div><div id="fat"></div></div>
+      <div><div class="lbl" id="fbl"></div><div id="fbt"></div></div>
+      <div><div class="lbl">A 的探测目标</div><div class="targets" id="ta"></div></div>
+      <div><div class="lbl">B 的探测目标</div><div class="targets" id="tb"></div></div>
+    </div>
+  </div>
+  <p style="font-size:14px;color:var(--muted)">地址都是文档专用的示例地址，不是真实机器的地址。高亮的行是这一步新增的。</p>
+
+  <div class="col">
+    <h3>从模拟器里要看懂的三件事</h3>
+    <ol>
+      <li><strong>第一个包常常被丢，但它没有白发。</strong>A 的第一个探测被 B 的防火墙丢掉，但它在 A 自己的防火墙上留下了记录，这才是它的作用。</li>
+      <li><strong>“同时”不需要精确。</strong>只要 B 的包到达时 A 的表项还没过期就行。gst 每 200 毫秒发一轮，持续最多 15 秒，所以两边的启动时间差几秒也没关系。</li>
+      <li><strong>全程必须是同一个 socket。</strong>表项记的是具体端口。探测用 5000，QUIC 换成 5001，就是另一个表项，洞对不上。</li>
+    </ol>
+    <h3>为什么 TCP 打洞难得多</h3>
+    <p>TCP 有握手，防火墙看得懂 SYN。两边要同时发 SYN（TCP 的 simultaneous open），时序要求严格，还要让监听和连接共用一个端口，很多防火墙和 NAT 处理得也不好。UDP 什么状态都没有，反而容易。这也是 QUIC 跑在 UDP 上对打洞很有利的原因。</p>
+  </div>
+</section>
+
+<section id="s6">
+  <span class="no">6 / 地址</span>
+  <h2>怎么拿到对端的实际地址</h2>
+  <div class="col">
+    <p>只有一个来源：<strong>收到的包的源地址。</strong>你的公网地址是 NAT 写在包头上的，所以必须有人收到你的包，再告诉你或直接用它。下面是三种情况：</p>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th>来源</th><th>怎么来的</th><th>什么时候有用</th></tr>
+      <tr><td>本机网卡地址</td><td>程序读自己的网卡，放进 offer，经 SSH 发给对方</td><td>公网 IPv6、同一内网、或对方能路由到这个私网地址</td></tr>
+      <tr><td>对方的来包</td><td>对方的探测到达时，<code>recvfrom</code> 返回的源地址。<strong>gst 用这个</strong></td><td>至少有一方能被对方打到</td></tr>
+      <tr><td>STUN</td><td>向公网上的 STUN 服务器发包，它回复“我看到你的地址是这个”。<strong>gst 没用</strong></td><td>两边都不可达时才必须</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <p>STUN 没有什么魔法。它就是公网上一台会把源地址念给你听的机器，协议的核心只有这一件事。gst 里第二种情况相当于让对端节点兼任 STUN，而且不用把地址告诉你，直接回包就行。这就是下面这段代码：</p>
+    <pre><span class="c">// internal/direct/direct.go，read()：source 就是对方在公网上的真实地址</span>
+source := udp.AddrPort()
+<span class="k">switch</span> buf[0] {
+<span class="k">case</span> kindProbe:
+    s.transport.WriteTo(a.packet(kindAnswer), from) <span class="c">// 原路回复</span>
+    a.targets[source] = true                        <span class="c">// 学到一个新目标</span>
+<span class="k">case</span> kindAnswer:
+    p := path{s, source}                            <span class="c">// 这条路径被证明可用</span>
+    proved &lt;- p
+}</pre>
+    <p>为了不让无关的包混进来，探测里带 16 字节的 token。token 事先经 SSH 交换，只有 token 正确的包，来源才会被当成对端。探测包本身是明文，所以 token 只用来找路径，确认身份靠之后 QUIC 握手里的证书指纹。在 <button class="jump" data-sc="1" type="button">场景二</button> 里可以看到这个过程。</p>
+    <p>这个方法的边界也很清楚：<strong>学习地址的前提是对方的包能到你这里。</strong>如果两边都在 NAT 后面，谁的包也到不了谁，就谁都学不到，看 <button class="jump" data-sc="2" type="button">场景三</button>。解法是找一个两边都能到的第三方，就是 <button class="jump" data-sc="3" type="button">场景四</button> 的 STUN。</p>
+  </div>
+</section>
+
+<section id="s7">
+  <span class="no">7 / NAT 的类型</span>
+  <h2>什么时候打不通：映射和过滤</h2>
+  <div class="col">
+    <p>NAT 的行为可以拆成两个独立的问题（RFC 4787 的分类），打洞能否成功就取决于这两个答案：</p>
+    <p><strong>映射：同一个内部端口发往不同目标时，公网端口变不变？</strong></p>
+    <ul>
+      <li><strong>不变</strong>（Endpoint-Independent）：发给 STUN 和发给 B 都是 <code>:40001</code>。STUN 告诉你的地址，对 B 同样有效。</li>
+      <li><strong>每个目标都变</strong>（Address and Port-Dependent，俗称对称 NAT）：发给 STUN 是 <code>:40001</code>，发给 B 是 <code>:40077</code>。STUN 告诉你的地址对 B 没用。</li>
+    </ul>
+    <p><strong>过滤：入站包要满足什么才放行？</strong></p>
+    <ul>
+      <li><strong>来者不拒</strong>：映射存在就放行，谁发的都行。这种 NAT 不用打洞，有地址就能进。</li>
+      <li><strong>只看 IP</strong>：内部发过这个 IP 才放行，端口不限。</li>
+      <li><strong>IP 和端口都看</strong>：内部发过这个 <code>IP:端口</code> 才放行。这就是第 3 节那张状态表，最常见的严格行为。</li>
+    </ul>
+    <p>这也解释了为什么“两边都要发”：只要过滤不是来者不拒，对方的包就必须匹配你发过的目标。</p>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th>两端组合（有 STUN 时）</th><th>结果</th><th>原因</th></tr>
+      <tr><td>映射都不变，过滤任意</td><td>能打通</td><td>STUN 给的地址准确，两边互发就开洞</td></tr>
+      <tr><td>一端对称，另一端只看 IP</td><td>能打通</td><td>新端口虽然猜不到，但 IP 对得上，包能进去，对方再从来包学到新端口</td></tr>
+      <tr><td>一端对称，另一端 IP 和端口都看</td><td>打不通</td><td>对称一端的新端口无法提前知道，见 <button class="jump" data-sc="4" type="button">场景五</button></td></tr>
+      <tr><td>两端都对称</td><td>打不通</td><td>两边都猜不到对方的端口</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <p>打不通时，Tailscale、WebRTC 这类系统会走中继服务器。gst 也一样，只是它的中继就是 SSH mesh，本来就在，所以失败的代价很低：继续走 SSH。</p>
+  </div>
+</section>
+
+<section id="s8">
+  <span class="no">8 / gst</span>
+  <h2>gst 代码里的每一步</h2>
+  <div class="col">
+    <h3>路径数是 N×M，不是 N+M</h3>
+    <p>N+M 是 offer 里一共交换了多少个地址。实际的路径数是乘法，因为每一条路径都是“这边某个 socket 到那边某个地址”。下面的例子里，A 有 1 个 IPv4 和 2 个 IPv6，B 各有 1 个：</p>
+  </div>
+  <figure class="col">
+    <svg viewBox="0 0 640 290" role="img" aria-label="A 的三个 socket 向 B 的同地址族地址发探测：一条 IPv4 路径，两条 IPv6 路径；收到探测后，学到的来源地址成为新目标，增加两条虚线路径" style="width:100%;height:auto;color:var(--fg)">
+      <defs>
+        <marker id="ar1" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--accent)"/></marker>
+        <marker id="ar2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--ok)"/></marker>
+        <marker id="ar3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--nat)"/></marker>
+      </defs>
+      <text x="90" y="22" text-anchor="middle" class="s-title">A 的 socket（N = 3）</text>
+      <text x="550" y="22" text-anchor="middle" class="s-title">B 的地址（M = 2，后来 3）</text>
+      <g class="mono" font-size="12">
+        <rect x="20" y="42" width="140" height="36" class="s-box"/><text x="90" y="65" text-anchor="middle" class="mono" font-size="12">v4 10.0.0.2:5000</text>
+        <rect x="20" y="112" width="140" height="36" class="s-box"/><text x="90" y="135" text-anchor="middle" class="mono" font-size="12">v6 ::a1:5001</text>
+        <rect x="20" y="182" width="140" height="36" class="s-box"/><text x="90" y="205" text-anchor="middle" class="mono" font-size="12">v6 ::a2:5002</text>
+        <rect x="480" y="42" width="140" height="36" class="s-box"/><text x="550" y="65" text-anchor="middle" class="mono" font-size="12">v4 10.1.1.3:6000</text>
+        <rect x="480" y="122" width="140" height="36" class="s-box"/><text x="550" y="145" text-anchor="middle" class="mono" font-size="12">v6 ::b1:6001</text>
+        <rect x="480" y="202" width="140" height="36" class="s-box" style="stroke-dasharray:5 4"/><text x="550" y="225" text-anchor="middle" class="mono" font-size="12">v6 ::b9:41000</text>
+      </g>
+      <path d="M160 60H478" class="f-v4" marker-end="url(#ar1)"/>
+      <path d="M160 130L478 140" class="f-v6" marker-end="url(#ar2)"/>
+      <path d="M160 200L478 146" class="f-v6" marker-end="url(#ar2)"/>
+      <path d="M160 136L478 214" class="f-learn" marker-end="url(#ar3)"/>
+      <path d="M160 206L478 224" class="f-learn" marker-end="url(#ar3)"/>
+      <text x="320" y="52" text-anchor="middle" font-size="12" class="s-sub">IPv4 只发 IPv4：1×1</text>
+      <text x="320" y="124" text-anchor="middle" font-size="12" class="s-sub">IPv6 只发 IPv6：2×1</text>
+      <text x="320" y="264" text-anchor="middle" font-size="12" class="f-t-learn">虚线：收到 B 的探测后，从来源学到的地址（经过转换的出口）</text>
+    </svg>
+    <figcaption>第一轮 A→B 是 1×1 + 2×1 = 3 条路径，B→A 也是 3 条，学到新地址后再增加。每个探测 17 字节，每 200 毫秒一轮，开销可以忽略。</figcaption>
+  </figure>
+  <div class="col">
+    <p>所有路径是并行试的，谁的 answer 先回来，发起方就先在这条路径上发起 QUIC。成功后其余路径和 socket 全部放弃。所以 gst 选的是最先被证明可用的路径，通常延迟也比较低，但不保证最优。</p>
+
+    <h3>从触发到连上</h3>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th>步骤</th><th>代码</th><th>对应的原理</th></tr>
+      <tr><td>每个本机 IP 开一个 UDP socket，端口随机</td><td><code>direct.New</code></td><td>第 2 节：绑定后这个 socket 收发同一个地址</td></tr>
+      <tr><td>经 SSH 交换地址、token、证书指纹</td><td><code>connectDirect</code>、<code>serveOffer</code></td><td>代替公共信令服务器</td></tr>
+      <tr><td>每 200 毫秒向所有目标发探测</td><td><code>sendProbes</code></td><td>第 5 节：留下状态表记录，不必精确同时</td></tr>
+      <tr><td>收到探测：回 answer，来源加入目标</td><td><code>read</code></td><td>第 6 节：从包头学到真实地址</td></tr>
+      <tr><td>收到 answer：这条路径来回都通</td><td><code>read</code></td><td>一来一回都到，说明两边的洞都开了</td></tr>
+      <tr><td>在同一个 socket 上发起 QUIC</td><td><code>p.socket.transport.Dial</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
+      <tr><td>每 5 秒 keepalive，20 秒没收到算断开</td><td><code>quicConfig</code></td><td>第 3 节：表项靠超时删除</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <h3>为什么要绑定具体 IP</h3>
+    <p>绑定 <code>*</code> 时，回包的源地址由内核选，放到状态表里看就很具体。B 发探测到 homelab 的地址 X，B 那边的防火墙记下“允许来自 X 的回包”。如果 homelab 用 <code>*</code> socket 回复，内核可能选另一个地址 Y 作为源地址。这个包到了 B 的防火墙，<strong>表里只有 X，没有 Y，于是被丢掉。</strong>第 1 节说过回包必须是四个字段对调，这里就是源地址没有对调回去。这种情况在有多个 IPv6 地址的机器上很常见，所以 gst 绑定具体地址。</p>
+
+    <h3>为什么探测包不直接用 QUIC</h3>
+    <p>QUIC 握手有状态、有重试和超时，第一批包被丢很常见。用 17 字节的探测先把路径试出来，再握手，又快又便宜。探测的第一字节是 <code>0x01</code> 或 <code>0x02</code>，高两位是 0，而 QUIC 包不是这样，所以 quic-go 能把它们分开，同一个 socket 上探测和 QUIC 可以共存，这也是“全程同一个端口”能做到的原因。</p>
+  </div>
+</section>
+
+<section id="s9">
+  <span class="no">9 / 实例</span>
+  <h2>一个家庭加公司的网络</h2>
+  <div class="col">
+    <p>假设有四台机器：<code>homelab</code> 在家里，有公网 IPv6 且入站放行；<code>laptop</code> 和 <code>devbox</code> 都在 NAT 后面；<code>gateway</code> 和 <code>devbox</code> 在同一个内网。先把“打洞”拆成两件事：</p>
+    <ul>
+      <li><strong>靠出站包开映射，让回包进来</strong>：这里的机器都在用。</li>
+      <li><strong>两边都不可达，靠同时发包互相开洞</strong>：这里用不到，只有两端都有真实地址、都开着防火墙时才需要。</li>
+    </ul>
+    <p>能跑通的关键是有一端能被打到。下面都是 <button class="jump" data-sc="1" type="button">场景二</button> 这种形状：一端能被打到，另一端主动向外发，被打到的一端从来包学到地址。</p>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th>机器对</th><th>谁能被打到</th><th>走的路</th></tr>
+      <tr><td>laptop ↔ homelab</td><td>homelab 的公网 IPv6</td><td>场景二</td></tr>
+      <tr><td>devbox ↔ homelab</td><td>homelab 的公网 IPv6</td><td>场景二</td></tr>
+      <tr><td>devbox ↔ gateway</td><td>互相能到内网地址</td><td>没有 NAT 问题</td></tr>
+      <tr><td>laptop ↔ devbox</td><td>两边都在 NAT 后，互相路由不到时谁也打不到</td><td>场景三，继续走 SSH</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <p>如果 <code>homelab</code> 换了网络，失去公网 IPv6，它和 <code>laptop</code>、<code>devbox</code> 之间就会变成场景三：两边都在 NAT 后，又没有 STUN，直连建不起来，gst 继续走 SSH，不会断。</p>
+  </div>
+</section>
+
+<section id="s10">
+  <span class="no">10 / 加密</span>
+  <h2>直连怎么加密，靠什么保证安全</h2>
+  <div class="col">
+    <p>打洞只解决了包能到达的问题，UDP 本身没有任何保护。路上的任何设备都能读、能改、能伪造。安全要回答三个问题：<strong>对面是谁</strong>（认证）、<strong>别人能不能看</strong>（保密）、<strong>别人能不能改</strong>（完整性）。gst 把后两个交给 QUIC 内置的 TLS 1.3，第一个靠 SSH 传来的证书指纹。</p>
+
+    <h3>第一步：信任从 SSH 来</h3>
+    <p>加密的前提是认证。如果不知道对面是谁，你可能在和攻击者安全地通信。互联网上靠 CA 解决这个问题，gst 不需要 CA，因为两台机器已经有一条可信通道，就是 SSH mesh。</p>
+    <p>每次尝试，两边各生成一张新的 ed25519 自签名证书。私钥只在内存里，从不离开本机，也不写磁盘。公开的部分是证书的 SHA-256 指纹，放进 <code>direct.offer</code>，经 SSH 发给对方。于是双方在发出第一个 UDP 包之前，已经知道对方应该出示哪张证书。</p>
+    <p>这和你第一次 SSH 登录时确认主机指纹是同一个思路，只是这里的指纹由已经认证过的通道送达，不需要人工确认。</p>
+
+    <h3>第二步：TLS 1.3 握手</h3>
+  </div>
+  <figure class="col">
+    <svg viewBox="0 0 680 440" role="img" aria-label="TLS 1.3 握手：先用临时公钥协商共享密钥，之后证书和签名都在加密状态下交换，双方校验指纹和签名后开始传数据" style="width:100%;height:auto;color:var(--fg)">
+      <defs>
+        <marker id="tp" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--nat)"/></marker>
+        <marker id="te" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--ok)"/></marker>
+      </defs>
+      <text x="90" y="24" text-anchor="middle" class="s-title">发起方（QUIC 客户端）</text>
+      <text x="590" y="24" text-anchor="middle" class="s-title">接受方（QUIC 服务端）</text>
+      <path d="M90 36V426M590 36V426" class="s-line"/>
+      <text x="340" y="62" text-anchor="middle" font-size="12">ClientHello：临时公钥、ALPN gst-direct</text>
+      <path d="M90 72H588" style="stroke:var(--nat);stroke-width:2.5;fill:none" marker-end="url(#tp)"/>
+      <text x="340" y="110" text-anchor="middle" font-size="12">ServerHello：临时公钥</text>
+      <path d="M590 120H92" style="stroke:var(--nat);stroke-width:2.5;fill:none" marker-end="url(#tp)"/>
+      <text x="340" y="156" text-anchor="middle" class="s-sub">两边各自算出同一个共享秘密，它从未在网络上出现；由它派生握手密钥</text>
+      <text x="340" y="194" text-anchor="middle" font-size="12">证书 + 对握手记录的签名 + Finished，并要求对方也出示证书</text>
+      <path d="M590 204H92" class="f-v6" marker-end="url(#te)"/>
+      <text x="340" y="238" text-anchor="middle" class="s-sub">发起方校验：证书指纹等于 SSH 传来的指纹，签名正确</text>
+      <text x="340" y="276" text-anchor="middle" font-size="12">证书 + 对握手记录的签名 + Finished</text>
+      <path d="M90 286H588" class="f-v6" marker-end="url(#te)"/>
+      <text x="340" y="320" text-anchor="middle" class="s-sub">接受方校验：同样比对指纹和签名</text>
+      <text x="340" y="358" text-anchor="middle" font-size="12">之后的所有数据：1-RTT 密钥加密</text>
+      <path d="M92 368H588" class="f-v6" marker-start="url(#te)" marker-end="url(#te)" style="stroke-width:4"/>
+      <text x="340" y="404" text-anchor="middle" class="s-sub">橙色：路上的设备可以解开。绿色：只有两端能解开</text>
+    </svg>
+    <figcaption>证书在绿色阶段才发送，所以路上的人看不到。橙色消息里只有临时公钥这类公开信息。</figcaption>
+  </figure>
+  <div class="col">
+    <p>这里有两个独立的机制，分工不同：</p>
+    <ul>
+      <li><strong>密钥交换负责保密。</strong>两边各生成一对临时密钥，只交换公钥，再各自算出同一个共享秘密。路上的人看到全部公钥，也算不出这个秘密。Go 默认优先用 <code>X25519MLKEM768</code>，把 X25519 和抗量子的 ML-KEM 混合使用，gst 没有改这个默认值。</li>
+      <li><strong>证书签名负责认证。</strong>光有密钥交换，中间人可以和两边各做一次交换。所以每一方还要用证书私钥，对整段握手记录的哈希签名（<code>CertificateVerify</code>）。这个签名绑定了本次握手的临时公钥，抄来的旧签名用不了。</li>
+    </ul>
+    <p>指纹校验在 <code>tlsConfig</code> 里。代码写着 <code>InsecureSkipVerify: true</code>，它只跳过 CA 证书链校验，因为这里根本没有 CA。真正的判断由 <code>VerifyPeerCertificate</code> 完成，比 CA 更严格：全世界只接受这一张证书。<code>ClientAuth: RequireAnyClientCert</code> 让发起方也必须出示证书，所以是双向认证。证书的有效期不参与校验，只看指纹。</p>
+    <pre><span class="c">// internal/direct/direct.go，tlsConfig()</span>
+MinVersion:             tls.VersionTLS13,
+SessionTicketsDisabled: true,                  <span class="c">// 没有会话恢复，也就没有 0-RTT</span>
+ClientAuth:             tls.RequireAnyClientCert,
+InsecureSkipVerify:     true,                  <span class="c">// 下面这个函数代替 CA 校验</span>
+VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Certificate) error {
+    <span class="k">if</span> len(raw) == 0 || subtle.ConstantTimeCompare([]byte(fingerprint(raw[0])), []byte(want)) != 1 {
+        <span class="k">return</span> errors.New("unexpected certificate")
+    }
+    <span class="k">return</span> nil
+},</pre>
+
+    <h3>第三步：每个包怎么加密</h3>
+    <p>握手之后，TLS 把密钥交给 QUIC，由 QUIC 逐包加密。这和 TCP 上的 TLS 不同，TLS 不再处理字节流，只负责产生密钥。</p>
+  </div>
+  <figure class="col">
+    <div class="hdr" role="img" aria-label="一个 QUIC 包：IP 和 UDP 头是明文，连接 ID 可见，包号被头部保护遮盖，载荷被 AEAD 加密">
+      <div class="w4 lay">IP + UDP 头：明文，否则路由器和 NAT 没法工作</div>
+      <div class="w2">地址、端口、长度</div><div class="w2">所有设备都看得到</div>
+      <div class="w4 lay">QUIC 短包头</div>
+      <div class="w2">目的连接 ID：可见</div><div class="w2 hot">包号：被头部保护遮盖</div>
+      <div class="w4 lay">载荷：AEAD 加密，只有两端能解</div>
+      <div class="w4 hot">流编号、业务数据、ACK、关闭信号 + 16 字节认证标签</div>
+    </div>
+    <figcaption>握手后的数据包。外面只能看到地址、端口、长度和连接 ID，看不到里面跑了几个 TCP 连接。</figcaption>
+  </figure>
+  <div class="col">
+    <ul>
+      <li><strong>AEAD</strong>：算法由 TLS 协商，AES-GCM 或 ChaCha20-Poly1305。它一次完成加密和防篡改，每个包带 16 字节认证标签，改动一个比特都会校验失败，包被直接丢弃。</li>
+      <li><strong>Nonce</strong>：由密钥派生的 IV 和包号异或得到。包号不重复，所以 nonce 不重复，这是 AEAD 安全的前提。</li>
+      <li><strong>包头也被认证</strong>：包头作为附加数据参与校验，所以连接 ID 这些可见字段也改不了。</li>
+      <li><strong>防重放</strong>：同一个包号收到第二次会被丢弃。</li>
+      <li><strong>头部保护</strong>：再用一层掩码盖住包号，外面无法靠包号把流量串起来。</li>
+    </ul>
+    <p>QUIC 一共有三级密钥。Initial 密钥由包里的连接 ID 算出，算法公开，只防误伤，不算保密，所以防火墙能读到 ClientHello。Handshake 密钥来自密钥交换，保护证书。1-RTT 密钥保护之后的全部数据。</p>
+
+    <h3>前向保密</h3>
+    <p>有人录下全部流量，以后再偷到机器，能解开吗？不能。解密需要的临时密钥在握手后就丢了，证书也是一次性的，磁盘上没有任何长期密钥。gst 还关掉了会话票据，没有能恢复旧会话的材料。</p>
+
+    <h3>和 SSH 路径比较</h3>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th></th><th>经 SSH 中转</th><th>直连</th></tr>
+      <tr><td>加密范围</td><td>逐跳：每段 SSH 单独加密</td><td>端到端：两端之间只有一层</td></tr>
+      <tr><td>中转的 gst 能否看到明文</td><td>能</td><td>没有中转，看不到</td></tr>
+      <tr><td>身份依据</td><td>SSH 密钥和 known_hosts</td><td>经 SSH 送达的一次性证书指纹</td></tr>
+      <tr><td>长期密钥</td><td>有，在 <code>~/.ssh</code></td><td>没有</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <h3>各种攻击分别怎么挡</h3>
+  </div>
+  <div class="tw col">
+    <table>
+      <tr><th>攻击</th><th>结果</th><th>靠什么</th></tr>
+      <tr><td>路上窃听</td><td>只看到密文和元数据</td><td>TLS 1.3 密钥交换和 AEAD</td></tr>
+      <tr><td>篡改、注入、重放</td><td>包被丢弃</td><td>AEAD 认证标签，包号去重</td></tr>
+      <tr><td>中间人冒充任一端</td><td>握手失败</td><td>他没有私钥，签不出匹配指纹的证书</td></tr>
+      <tr><td>陌生人直接连 UDP 端口</td><td>连不上</td><td>端口随机且只在尝试时存在，接受方只认 offer 里的指纹</td></tr>
+      <tr><td>伪造探测包</td><td>最多干扰这次尝试</td><td>探测只找路径，身份在 QUIC 握手时确认</td></tr>
+      <tr><td>录下流量，以后偷私钥</td><td>解不开</td><td>前向保密，证书一次性</td></tr>
+      <tr><td>阻断 UDP</td><td>直连断开，新连接走 SSH</td><td>SSH 兜底</td></tr>
+    </table>
+  </div>
+  <div class="col">
+    <h3>挡不住什么</h3>
+    <ul>
+      <li><strong>mesh 里的机器被攻破。</strong>信任根是 SSH，所以 mesh 成员都是可信的。offer 经过的中转 gst 能看到明文，理论上能替换指纹。这和它本来就能看到中转业务数据的风险相同，直连没有让它变差。</li>
+      <li><strong>元数据。</strong>路上的人知道这两个地址在通信、什么时候、流量多大，也能认出 QUIC 和 <code>gst-direct</code>。gst 不做流量伪装。</li>
+      <li><strong>拒绝服务。</strong>能阻断 UDP 的人总能让直连失败。</li>
+      <li><strong>已移除但没收到通知的节点。</strong>link 已断时执行 <code>gst remove</code>，对方收不到 <code>link.remove</code>，现有直连会继续运行，直到它自己断开。这段时间对方仍然能走这条直连。</li>
+    </ul>
+    <p>到达目标时的权限也和 SSH 路径一样：直连只是换了一段传输，<code>relay.open</code> 的 exit 检查仍然在最后一跳执行。</p>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function () {
+  var NS = 'http://www.w3.org/2000/svg';
+  var X = { A: 80, FA: 270, N: 460, FB: 650, B: 840, S: 460 };
+  var Y = 170;
+  var a6 = '[2001:db8:a::1]:5000', b6 = '[2001:db8:b::1]:6000';
+  var aP = '10.0.0.2:5000', bP = '10.1.1.3:6000', aN = '203.0.113.7:40001', aN2 = '203.0.113.7:40077';
+  var bPub = '198.51.100.9:6000', bN = '198.51.100.9:50002', stun = '192.0.2.1:3478';
+  function H(at, src, dst, note) { return { at: at, src: src, dst: dst, note: note }; }
+
+  var SC = [
+    { name: '一 · 两边都有防火墙', kinds: ['fw', 'fw'], stun: false,
+      intro: '两台机器都有公网 IPv6，所以地址是真的，offer 里写的就是对方能用的。唯一的障碍是两边的状态防火墙。这是最纯粹的打洞。',
+      nodes: { A: a6, B: b6 },
+      steps: [
+        { t: '经 SSH 交换 offer', d: '发包之前，两边先经 SSH mesh 互换地址和 token。两台防火墙的状态表都是空的。此时谁主动发包，都会被对方的防火墙丢掉。',
+          ssh: 'direct.offer：互换地址、token、指纹', ta: [b6], tb: [a6], fa: [], fb: [] },
+        { t: 'A 发探测：出得去，进不来', d: '包经过 A 的防火墙，留下一条记录。到了 B 的防火墙，表里没有匹配项，被丢掉。这个包没有到达 B，但它已经完成了任务：A 这边的洞开了。',
+          path: [H('A', a6, b6, 'A 发出'), H('FA', a6, b6, '出站：写入状态表，放行'), H('FB', a6, b6, '入站：表里没有，丢弃')], drop: '表里没有，丢弃',
+          fa: [[a6, b6]] },
+        { t: 'B 发探测：A 的防火墙以为这是回包', d: 'B 的包走出 B 的防火墙，同样留下记录。到达 A 的防火墙时，四个字段正好和 A 刚才那条记录对调，防火墙认为这是回包，放行。A 收到了。',
+          path: [H('B', b6, a6, 'B 发出'), H('FB', b6, a6, '出站：写入状态表，放行'), H('FA', b6, a6, '入站：匹配记录，放行'), H('A', b6, a6, 'A 收到，token 正确')],
+          fb: [[b6, a6]] },
+        { t: 'A 回 answer：现在 B 的防火墙也放行了', d: 'A 收到探测后立刻回 answer。这次 B 的防火墙已经有记录，放行。两个方向都打通了。',
+          path: [H('A', a6, b6, 'A 回 answer'), H('FA', a6, b6, '出站：刷新记录'), H('FB', a6, b6, '入站：匹配记录，放行'), H('B', a6, b6, 'B 收到，路径被证明')] },
+        { t: '在这条路径上跑 QUIC', d: '发起方用同一个 socket 发起 QUIC 握手，四个地址字段完全不变，所以直接匹配已有记录。之后 keepalive 每 5 秒刷新一次，表项不会过期。',
+          path: [H('A', a6, b6, 'QUIC Initial，同一个 socket'), H('FA', a6, b6, '匹配记录'), H('FB', a6, b6, '匹配记录'), H('B', a6, b6, 'TLS 1.3 握手，校验指纹')] }
+      ] },
+    { name: '二 · 一端 NAT，一端可达', kinds: ['nat', 'none'], stun: false,
+      intro: 'A 在 NAT 后，B 能被直接打到。这是下面第 9 节里 laptop、devbox 连 homelab 的形状。图里用 IPv4 示例，IPv6 带地址转换时原理相同。这里没有 STUN，靠 B 从来包学到地址。',
+      nodes: { A: aP, B: bPub },
+      steps: [
+        { t: '经 SSH 交换 offer', d: 'A 只知道自己网卡上的私网地址，所以 offer 里写的是 10.0.0.2:5000。这个地址 B 用不了，但现在还没人知道这一点。',
+          ssh: 'direct.offer：A 只能写自己的私网地址', ta: [bPub], tb: [aP], fa: [] },
+        { t: 'B 按 offer 发探测：私网地址在公网上没有路由', d: 'B 向 10.0.0.2:5000 发探测。公网路由器没有这个地址的路由，包被丢掉。这是预期之中的，gst 不知道哪个地址有用，所以全部都试。',
+          path: [H('B', bPub, aP, 'B 发出'), H('N', bPub, aP, '路由器：私网地址，丢弃')], drop: '私网地址没有路由' },
+        { t: 'A 发探测：NAT 改写源地址', d: 'A 向 B 的公网地址发探测。经过 NAT 时，源地址被改成 203.0.113.7:40001，并写入映射表。这个地址 A 自己看不到。',
+          path: [H('A', aP, bPub, 'A 发出'), H('FA', aN, bPub, 'NAT 改写源地址，写入映射'), H('FB', aN, bPub, 'B 没有防火墙，直接通过'), H('B', aN, bPub, 'B 收到，读到源地址')],
+          fa: [[aP, aN, bPub]], tb: [aP, aN] },
+        { t: 'B 从来包学到真实地址，原路回复', d: '探测里的 token 正确，所以 B 把来源 203.0.113.7:40001 加入目标，并回 answer。这个包到达 NAT，映射存在，目的地址被改回 10.0.0.2:5000，A 收到。',
+          path: [H('B', bPub, aN, 'B 回 answer'), H('FA', bPub, aP, 'NAT 查映射，改写目的地址'), H('A', bPub, aP, 'A 收到，路径被证明')] },
+        { t: 'A 在同一个 socket 上发起 QUIC', d: '源端口还是 5000，NAT 继续用 40001 这条映射，所以 B 看到的来源不变。keepalive 让映射不过期。这里全程不需要 STUN，B 自己就充当了告诉你地址的角色。',
+          path: [H('A', aP, bPub, 'QUIC Initial，同一个 socket'), H('FA', aN, bPub, '同一条映射'), H('B', aN, bPub, 'TLS 1.3 握手，校验指纹')] }
+      ] },
+    { name: '三 · 两边 NAT，没有 STUN', kinds: ['nat', 'nat'], stun: false,
+      intro: '这是 gst 打不通的情况。两边都只知道自己的私网地址，谁的包都到不了对方，所以谁也学不到地址。',
+      nodes: { A: aP, B: bP },
+      steps: [
+        { t: '经 SSH 交换 offer', d: '两边 offer 里都只有私网地址。除非它们恰好在同一个内网，否则这些地址都用不了。',
+          ssh: 'direct.offer：双方都只有私网地址', ta: [bP], tb: [aP], fa: [], fb: [] },
+        { t: 'A 发探测：出了 NAT 就没路了', d: 'A 的 NAT 建了映射，但目的地址是私网地址，到公网就被丢掉。映射建了也没用，因为 B 不知道 203.0.113.7:40001 这个地址。',
+          path: [H('A', aP, bP, 'A 发出'), H('FA', aN, bP, 'NAT 改写源地址'), H('N', aN, bP, '路由器：私网地址，丢弃')], drop: '私网地址没有路由',
+          fa: [[aP, aN, bP]] },
+        { t: 'B 发探测：同样到不了', d: 'B 这边完全对称。两边都在发，但包都到不了对方，所以没有一方能看到对方的源地址。',
+          path: [H('B', bP, aP, 'B 发出'), H('FB', '198.51.100.9:50002', aP, 'NAT 改写源地址'), H('N', '198.51.100.9:50002', aP, '路由器：私网地址，丢弃')], drop: '私网地址没有路由',
+          fb: [[bP, '198.51.100.9:50002', aP]] },
+        { t: '15 秒后放弃，继续走 SSH', d: '整次尝试限时 15 秒，之后记录失败，等 1 分钟再试，连续失败时等待翻倍，最长 30 分钟。业务不受影响，连接一直走 SSH。缺的只有一样东西：一个两边都能到达、能告诉它们公网地址的第三方。',
+          ssh: '业务继续走 SSH' }
+      ] },
+    { name: '四 · 两边 NAT，有 STUN', kinds: ['nat', 'nat'], stun: true,
+      intro: '这是教科书里的经典打洞。gst 目前没有实现，放在这里是为了让你看到 STUN 补上了哪一块。STUN 服务器在公网，只做一件事：告诉你它看到的源地址。这个场景有一个前提：两边的 NAT 都是映射不变型，映射只按内部 IP:端口 分配，换目标也沿用同一个公网端口，所以 STUN 看到的地址对 B 同样有效。不满足这个前提的情况见场景五。',
+      nodes: { A: aP, B: bP },
+      steps: [
+        { t: 'A 问 STUN：我是谁', d: 'A 向 STUN 发一个包。NAT 建立映射，源地址变成 203.0.113.7:40001。',
+          path: [H('A', aP, stun, 'A 发出'), H('FA', aN, stun, 'NAT 改写源地址，写入映射'), H('S', aN, stun, 'STUN 读到源地址')],
+          fa: [[aP, aN, 'STUN']], ta: [], tb: [], fb: [] },
+        { t: 'STUN 回答：你是 203.0.113.7:40001', d: 'STUN 把看到的源地址写进回复的数据里。A 这时才第一次知道自己的公网地址。',
+          path: [H('S', stun, aN, '数据里写着 203.0.113.7:40001'), H('FA', stun, aP, '匹配映射，改写目的地址'), H('A', stun, aP, 'A 知道了自己的公网地址')] },
+        { t: 'B 做同样的事', d: 'B 也问了 STUN，得到 198.51.100.9:50002。',
+          path: [H('B', bP, stun, 'B 发出'), H('FB', bN, stun, 'NAT 改写源地址，写入映射'), H('S', bN, stun, 'STUN 读到源地址，回复方式同上')],
+          fb: [[bP, bN, 'STUN']] },
+        { t: '经信令交换公网地址', d: '现在两边都有能用的地址了。在 gst 这里，这一步可以经 SSH mesh 完成。',
+          ssh: '互换公网地址', ta: [bN], tb: [aN] },
+        { t: 'A 向 B 的公网地址发包：被 B 的 NAT 丢掉', d: 'A 还用同一个 socket 发包，映射不变型的 NAT 查到内部 10.0.0.2:5000 已有映射，所以继续用 40001，只记下现在也允许 B。B 的 NAT 目前只允许来自 STUN 的包，所以丢掉。和场景一的第一步完全一样：这个包的任务是开 A 这边的洞。',
+          path: [H('A', aP, bN, 'A 发出'), H('FA', aN, bN, '映射不变，增加允许的对端'), H('FB', aN, bN, '只允许 STUN，丢弃')], drop: '对端不在允许名单',
+          fa: [[aP, aN, 'STUN, B']] },
+        { t: 'B 向 A 的公网地址发包：穿过去了', d: 'B 的包到达 A 的 NAT，来源是 B，A 的 NAT 刚才记下了允许 B，放行并改写目的地址。',
+          path: [H('B', bP, aN, 'B 发出'), H('FB', bN, aN, '映射不变，增加允许的对端'), H('FA', bN, aP, '匹配，改写目的地址'), H('A', bN, aP, 'A 收到')],
+          fb: [[bP, bN, 'STUN, A']] },
+        { t: 'A 回复：两个方向都通了', d: '现在 B 的 NAT 也允许 A。之后的 QUIC 和场景一相同。STUN 退场，不再参与。',
+          path: [H('A', aP, bN, 'A 回 answer'), H('FA', aN, bN, '匹配映射'), H('FB', aN, bP, '匹配，改写目的地址'), H('B', aN, bP, 'B 收到')] }
+      ] },
+    { name: '五 · 对称 NAT', kinds: ['nat', 'nat'], stun: true,
+      intro: 'A 的 NAT 是对称型：发往不同目标时用不同的公网端口。B 的 NAT 严格过滤 IP 和端口。这时即使有 STUN 也打不通。',
+      nodes: { A: aP, B: bP },
+      steps: [
+        { t: '和 STUN 的来回完成，地址已交换', d: 'A 从 STUN 得知自己是 203.0.113.7:40001，并告诉了 B。B 也一样。到这里都和场景四相同。但 A 的这条映射只属于 A 和 STUN 这一对。',
+          ssh: '互换 STUN 告诉它们的公网地址', fa: [[aP, aN, 'STUN']], fb: [[bP, bN, 'STUN']], ta: [bN], tb: [aN] },
+        { t: 'A 向 B 发包：NAT 换了一个新端口', d: '目标变了，对称 NAT 为这个目标新开映射，端口变成 40077。B 的 NAT 不认识这个来源，丢掉。B 也不知道这个端口的存在，因为包根本没送到 B。',
+          path: [H('A', aP, bN, 'A 发出'), H('FA', aN2, bN, '新目标，分配新端口 40077'), H('FB', aN2, bN, '没发过这个来源，丢弃')], drop: '来源不匹配，丢弃',
+          fa: [[aP, aN, 'STUN'], [aP, aN2, 'B']] },
+        { t: 'B 向 A 告知的端口发包：这个端口不属于 B', d: 'B 只知道 40001。这条映射只允许 STUN，所以丢掉。B 的 NAT 现在允许来自 40001 的包，但 A 用的是 40077，还是对不上。',
+          path: [H('B', bP, aN, 'B 发出'), H('FB', bN, aN, '映射不变，增加允许 40001'), H('FA', bN, aN, '40001 只允许 STUN，丢弃')], drop: '这条映射只给 STUN',
+          fb: [[bP, bN, 'STUN, 203.0.113.7:40001']] },
+        { t: '打不通，只能走中继', d: 'A 实际用 40077，B 打的是 40001，两个洞始终错开。可以猜端口（新端口常常是递增的），但不可靠。这时 Tailscale 走 DERP，WebRTC 走 TURN，gst 走 SSH。',
+          ssh: '业务继续走中继，在 gst 里就是 SSH' }
+      ] }
+  ];
+
+  // Tables and targets carry over between steps; each step lists only what changes.
+  SC.forEach(function (sc) {
+    var st = { fa: [], fb: [], ta: [], tb: [] };
+    sc.steps.forEach(function (s) {
+      var prev = JSON.parse(JSON.stringify(st));
+      ['fa', 'fb', 'ta', 'tb'].forEach(function (k) { if (s[k]) st[k] = s[k]; });
+      s.state = JSON.parse(JSON.stringify(st));
+      s.prev = prev;
+    });
+  });
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, attrs, text) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  var cur = 0, step = 0, raf = 0;
+  var reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+
+  function point(key, end) {
+    if (key === 'S') return [X.S, 72];
+    if (key === 'A') return [end ? 154 : 152, Y];
+    if (key === 'B') return [end ? 766 : 768, Y];
+    return [X[key], Y];
+  }
+
+  function drawBase(svg, sc) {
+    svg.appendChild(el('path', { d: 'M152 ' + Y + 'H768', 'class': 's-line' }));
+    [['FA', sc.kinds[0], 'A'], ['FB', sc.kinds[1], 'B']].forEach(function (f) {
+      var x = X[f[0]];
+      if (f[1] === 'none') {
+        svg.appendChild(el('rect', { x: x - 8, y: Y - 60, width: 16, height: 120, 'class': 's-none' }));
+        svg.appendChild(el('text', { x: x, y: Y - 70, 'text-anchor': 'middle', 'class': 's-sub' }, '无防火墙'));
+      } else {
+        svg.appendChild(el('rect', { x: x - 8, y: Y - 60, width: 16, height: 120, 'class': f[1] === 'nat' ? 's-nat' : 's-fw' }));
+        svg.appendChild(el('text', { x: x, y: Y - 70, 'text-anchor': 'middle', 'class': 's-title' }, (f[1] === 'nat' ? 'NAT ' : '防火墙 ') + f[2]));
+      }
+    });
+    [['A', sc.nodes.A], ['B', sc.nodes.B]].forEach(function (n) {
+      var x = X[n[0]];
+      svg.appendChild(el('rect', { x: x - 74, y: Y - 30, width: 148, height: 60, rx: 3, 'class': 's-box' }));
+      svg.appendChild(el('text', { x: x, y: Y - 6, 'text-anchor': 'middle', 'class': 's-title' }, '机器 ' + n[0]));
+      svg.appendChild(el('text', { x: x, y: Y + 14, 'text-anchor': 'middle', 'class': 's-sub mono' }, n[1]));
+    });
+    if (sc.stun) {
+      svg.appendChild(el('rect', { x: X.S - 64, y: 22, width: 128, height: 50, rx: 3, 'class': 's-box' }));
+      svg.appendChild(el('text', { x: X.S, y: 43, 'text-anchor': 'middle', 'class': 's-title' }, 'STUN'));
+      svg.appendChild(el('text', { x: X.S, y: 61, 'text-anchor': 'middle', 'class': 's-sub mono' }, stun));
+    }
+    svg.appendChild(el('text', { x: 175, y: 296, 'text-anchor': 'middle', 'class': 's-zone' }, 'A 这边'));
+    svg.appendChild(el('text', { x: 460, y: 296, 'text-anchor': 'middle', 'class': 's-zone' }, '公网'));
+    svg.appendChild(el('text', { x: 745, y: 296, 'text-anchor': 'middle', 'class': 's-zone' }, 'B 这边'));
+  }
+
+  function draw(animate) {
+    cancelAnimationFrame(raf);
+    var sc = SC[cur], s = sc.steps[step];
+    var svg = el('svg', { viewBox: '0 0 920 304', role: 'img', 'aria-label': s.t });
+    var defs = el('defs');
+    [['mok', 'mk-ok'], ['mdrop', 'mk-drop']].forEach(function (m) {
+      var mk = el('marker', { id: m[0], viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 5, markerHeight: 5, orient: 'auto' });
+      mk.appendChild(el('path', { d: 'M0 0L8 4L0 8Z', 'class': m[1] }));
+      defs.appendChild(mk);
+    });
+    svg.appendChild(defs);
+    drawBase(svg, sc);
+
+    var marks = [];
+    if (s.ssh) {
+      svg.appendChild(el('path', { d: 'M80 200V258H840V200', 'class': 's-ssh' }));
+      svg.appendChild(el('text', { x: 460, y: 250, 'text-anchor': 'middle', 'class': 's-sub' }, s.ssh));
+    }
+    var line = null;
+    if (s.path) {
+      var pts = s.path.map(function (h, i) { return point(h.at, i === s.path.length - 1); });
+      var last = pts[pts.length - 1];
+      line = el('polyline', { points: pts.map(function (p) { return p.join(','); }).join(' '),
+        'class': s.drop ? 's-path-drop' : 's-path-ok', 'marker-end': s.drop ? '' : 'url(#mok)' });
+      if (s.drop) line.removeAttribute('marker-end');
+      svg.appendChild(line);
+      if (s.drop) {
+        var g = el('g');
+        g.appendChild(el('line', { x1: last[0] - 11, y1: last[1] - 11, x2: last[0] + 11, y2: last[1] + 11, 'class': 's-x' }));
+        g.appendChild(el('line', { x1: last[0] + 11, y1: last[1] - 11, x2: last[0] - 11, y2: last[1] + 11, 'class': 's-x' }));
+        g.appendChild(el('text', { x: last[0], y: Y + 82, 'text-anchor': 'middle', 'class': 's-drop-t' }, s.drop));
+        marks.push(g);
+      } else {
+        var end = s.path[s.path.length - 1].at;
+        var tx = end === 'S' ? X.S + 110 : X[end];
+        var ty = end === 'S' ? 52 : Y + 56;
+        marks.push(el('text', { x: tx, y: ty, 'text-anchor': 'middle', 'class': 's-ok-t' }, '收到'));
+      }
+    }
+    marks.forEach(function (m) { svg.appendChild(m); });
+    var stage = $('stage');
+    stage.textContent = '';
+    stage.appendChild(svg);
+
+    if (animate && line && !reduce && line.getTotalLength) {
+      var len = line.getTotalLength();
+      var dot = el('circle', { r: 7, 'class': 's-dot' });
+      svg.appendChild(dot);
+      line.style.strokeDasharray = len;
+      line.style.strokeDashoffset = len;
+      marks.forEach(function (m) { m.style.visibility = 'hidden'; });
+      var t0 = 0, dur = 1000;
+      var tick = function (t) {
+        if (!t0) t0 = t;
+        var k = Math.min(1, (t - t0) / dur);
+        var p = line.getPointAtLength(len * k);
+        dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y);
+        line.style.strokeDashoffset = len * (1 - k);
+        if (k < 1) { raf = requestAnimationFrame(tick); return; }
+        dot.remove();
+        line.style.strokeDasharray = ''; line.style.strokeDashoffset = '';
+        marks.forEach(function (m) { m.style.visibility = ''; });
+      };
+      raf = requestAnimationFrame(tick);
+    }
+  }
+
+  function table(host, rows, prev, kind) {
+    host.textContent = '';
+    var t = document.createElement('table');
+    var heads = kind === 'nat' ? ['内部', '公网映射', '允许来自'] : ['内部', '允许来自'];
+    var tr = document.createElement('tr');
+    heads.forEach(function (h) { var th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });
+    t.appendChild(tr);
+    if (kind === 'none') { host.textContent = '这一端没有防火墙，不记录任何状态。'; host.style.fontSize = '13px'; host.style.color = 'var(--muted)'; return; }
+    host.style.fontSize = ''; host.style.color = '';
+    if (!rows.length) {
+      var r = document.createElement('tr'), d = document.createElement('td');
+      d.colSpan = heads.length; d.className = 'none'; d.textContent = '空，所有入站包都会被丢弃';
+      r.appendChild(d); t.appendChild(r);
+    }
+    var seen = prev.map(function (x) { return JSON.stringify(x); });
+    rows.forEach(function (row) {
+      var r = document.createElement('tr');
+      if (seen.indexOf(JSON.stringify(row)) < 0) r.className = 'new';
+      row.forEach(function (c) { var d = document.createElement('td'); d.textContent = c; r.appendChild(d); });
+      t.appendChild(r);
+    });
+    host.appendChild(t);
+  }
+
+  function targets(host, list, prev) {
+    host.textContent = '';
+    if (!list.length) { host.textContent = '还没有'; return; }
+    list.forEach(function (a) {
+      var s = document.createElement('span');
+      s.textContent = a;
+      if (prev.indexOf(a) < 0) s.className = 'new';
+      host.appendChild(s);
+    });
+  }
+
+  function hops(s) {
+    var host = $('hops');
+    host.textContent = '';
+    if (!s.path) return;
+    var w = document.createElement('div'); w.className = 'tw';
+    var t = document.createElement('table');
+    var tr = document.createElement('tr');
+    ['源地址', '目的地址', '这一跳发生了什么'].forEach(function (h) { var th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });
+    t.appendChild(tr);
+    s.path.forEach(function (h) {
+      var r = document.createElement('tr');
+      [h.src, h.dst, h.note].forEach(function (c) { var d = document.createElement('td'); d.textContent = c; r.appendChild(d); });
+      t.appendChild(r);
+    });
+    w.appendChild(t); host.appendChild(w);
+  }
+
+  function show(animate) {
+    var sc = SC[cur], s = sc.steps[step];
+    $('intro').textContent = sc.intro;
+    $('pos').textContent = (step + 1) + ' / ' + sc.steps.length;
+    $('stitle').textContent = s.t;
+    $('sbody').textContent = s.d;
+    $('prev').disabled = step === 0;
+    $('next').disabled = step === sc.steps.length - 1;
+    $('fal').textContent = (sc.kinds[0] === 'nat' ? 'NAT A 映射表' : '防火墙 A 状态表');
+    $('fbl').textContent = sc.kinds[1] === 'none' ? 'B 这边' : (sc.kinds[1] === 'nat' ? 'NAT B 映射表' : '防火墙 B 状态表');
+    table($('fat'), s.state.fa, step ? s.prev.fa : s.state.fa, sc.kinds[0]);
+    table($('fbt'), s.state.fb, step ? s.prev.fb : s.state.fb, sc.kinds[1]);
+    targets($('ta'), s.state.ta, step ? s.prev.ta : s.state.ta);
+    targets($('tb'), s.state.tb, step ? s.prev.tb : s.state.tb);
+    hops(s);
+    draw(animate);
+    Array.prototype.forEach.call($('tabs').children, function (b, i) { b.setAttribute('aria-selected', i === cur ? 'true' : 'false'); });
+  }
+
+  function pick(i) { cur = i; step = 0; show(false); }
+
+  SC.forEach(function (sc, i) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.textContent = sc.name; b.setAttribute('role', 'tab');
+    b.addEventListener('click', function () { pick(i); });
+    $('tabs').appendChild(b);
+  });
+  $('prev').addEventListener('click', function () { if (step > 0) { step--; show(false); } });
+  $('next').addEventListener('click', function () { if (step < SC[cur].steps.length - 1) { step++; show(true); } });
+  $('reset').addEventListener('click', function () { step = 0; show(false); });
+  Array.prototype.forEach.call(document.querySelectorAll('.jump'), function (b) {
+    b.addEventListener('click', function () {
+      pick(Number(b.getAttribute('data-sc')));
+      $('sim').scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    });
+  });
+  show(false);
+})();
+</script>
+</body>
+</html>

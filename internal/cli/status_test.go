@@ -14,12 +14,12 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// devcnStatus is the status of the machine devcn, with what every table can show.
+// devcnStatus is the status of the machine devbox, with what every table can show.
 func devcnStatus() wire.Status {
 	peer := peerOf("bastion")
 	return wire.Status{
 		Software: "gst 0.3.0",
-		Node:     wire.NodeInfo{ID: nodeID("bbbb2222"), Name: "devcn", Exit: true},
+		Node:     wire.NodeInfo{ID: nodeID("bbbb2222"), Name: "devbox", Exit: true},
 		Proxy:    wire.Listener{Listen: "127.0.0.1:1080"},
 		Links: []wire.LinkState{
 			{Name: "bastion", Destination: "bastion.example.com", State: wire.StateRunning, Since: time.Now(), Peer: &peer},
@@ -38,9 +38,9 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(node string) (wire.Status, error) { return devcnStatus(), nil }
 
-	out := e.mustGst("status", "devcn")
+	out := e.mustGst("status", "devbox")
 	header, rest, _ := strings.Cut(out, "\n")
-	if want := "devcn (bbbb2222), gst 0.3.0, an exit"; header != want {
+	if want := "devbox (bbbb2222), gst 0.3.0, an exit"; header != want {
 		t.Fatalf("header %q, want %q", header, want)
 	}
 	proxy, tables, _ := strings.Cut(rest, "\n\n")
@@ -56,9 +56,9 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 	}{
 		{"links", links, [][]string{
 			{"LINK", "STATUS", "DESTINATION"},
-			{"devcn->bastion", "running", "bastion.example.com"},
-			{"devcn->flaky", "down", "(last", "error:", "connection", "refused)", "myhost"},
-			{"devcn->off", "connecting", "db"},
+			{"devbox->bastion", "running", "bastion.example.com"},
+			{"devbox->flaky", "down", "(last", "error:", "connection", "refused)", "myhost"},
+			{"devbox->off", "connecting", "db"},
 		}},
 		{"maps", maps, [][]string{
 			{"MAP", "TARGET", "STATUS"},
@@ -77,11 +77,11 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 	}
 
 	// The same status as JSON, with the stable field names.
-	got := decode[wire.Status](t, e.mustGst("status", "devcn", "--json"))
+	got := decode[wire.Status](t, e.mustGst("status", "devbox", "--json"))
 	if want := devcnStatus(); got.Node != want.Node || !reflect.DeepEqual(got.Maps, want.Maps) || !reflect.DeepEqual(got.Routes, want.Routes) || len(got.Links) != 3 {
 		t.Fatalf("json = %+v", got)
 	}
-	contains(t, e.mustGst("status", "devcn", "--json"), `"destination": "bastion.example.com"`, `"state": "connecting"`, `"machine": "bastion"`, `"via": "far"`)
+	contains(t, e.mustGst("status", "devbox", "--json"), `"destination": "bastion.example.com"`, `"state": "connecting"`, `"machine": "bastion"`, `"via": "far"`)
 }
 
 func TestStatusOfAMachineWithNothingConfigured(t *testing.T) {
@@ -104,8 +104,8 @@ func TestStatusMachineReference(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(string) (wire.Status, error) { return wire.Status{}, nil }
 	for _, tc := range []struct{ arg, node string }{
-		{"devcn", "devcn"},
-		{"DevCN.GST", "devcn"},
+		{"devbox", "devbox"},
+		{"DevBox.GST", "devbox"},
 		{"cccc3333", "cccc3333"},
 	} {
 		e.resetCalls()
@@ -146,7 +146,7 @@ func lines(out string) []string {
 
 func TestStatusListsTheMachines(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "devcn")
+	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
 	e.resetCalls()
 
@@ -157,9 +157,9 @@ func TestStatusListsTheMachines(t *testing.T) {
 	// One line per machine, this one first, without a header or an edge table.
 	want := []string{
 		"aaaa1111 laptop gst 0.3.0 -",
-		"bbbb2222 devcn gst 0.3.0 online; exit",
-		"cccc3333 far - online; via devcn",
-		"dddd4444 dup (dddd4444) gst 0.3.0 online; via devcn",
+		"bbbb2222 devbox gst 0.3.0 online; exit",
+		"cccc3333 far - online; via devbox",
+		"dddd4444 dup (dddd4444) gst 0.3.0 online; via devbox",
 		"eeee5555 dup (eeee5555) gst 0.3.0 offline",
 	}
 	if got := lines(out); !slices.Equal(got, want) {
@@ -172,15 +172,15 @@ func TestStatusListsTheMachines(t *testing.T) {
 
 func TestStatusAllListsTheLinks(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "devcn")
+	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
 
 	got := lines(e.mustGst("status", "--all"))
-	want := []string{"", "LINK", "devcn->dup (dddd4444) (d1)", "devcn->far", "laptop->devcn"}
+	want := []string{"", "LINK", "devbox->dup (dddd4444) (d1)", "devbox->far", "laptop->devbox"}
 	if len(got) != 5+len(want) || !slices.Equal(got[5:], want) {
 		t.Fatalf("status --all\n got %q\nwant 5 machines and %q", got, want)
 	}
-	if code, _, stderr := e.gst("status", "--all", "devcn"); code != exitUsage || !strings.Contains(stderr, "--all") {
+	if code, _, stderr := e.gst("status", "--all", "devbox"); code != exitUsage || !strings.Contains(stderr, "--all") {
 		t.Fatalf("--all with a machine: exit %d, stderr %q", code, stderr)
 	}
 }
@@ -246,7 +246,7 @@ func TestStatusWithoutLinks(t *testing.T) {
 	}
 
 	// A link that has not found anything yet is not "no links yet".
-	e.mustGst("add", "devcn")
+	e.mustGst("add", "devbox")
 	if out := e.mustGst("status"); strings.Contains(out, "No links yet") {
 		t.Fatalf("a configured link was ignored:\n%s", out)
 	}
@@ -257,10 +257,10 @@ func TestStatusListsProblems(t *testing.T) {
 	e.mustGst("name", "laptop")
 	e.mustGst("add", "web", "myhost")
 	e.mustGst("add", "db")
-	e.mustGst("add", "cache", "devcn")
+	e.mustGst("add", "cache", "devbox")
 	e.mustGst("proxy", "1081")
-	e.mustGst("map", "add", "15432", "devcn:5432")
-	e.mustGst("map", "add", "15433", "devcn:5433")
+	e.mustGst("map", "add", "15432", "devbox:5432")
+	e.mustGst("map", "add", "15433", "devbox:5433")
 	e.back.topology = meshTopology()
 	e.back.linkStates["web"] = wire.LinkState{Name: "web", State: wire.StateDown, Error: "SSH keepalive timed out"}
 	e.back.linkStates["db"] = wire.LinkState{Name: "db", State: wire.StateConnecting}
@@ -294,7 +294,7 @@ func TestStatusJSON(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
 	e.mustGst("add", "web", "myhost")
-	e.mustGst("map", "add", "15432", "devcn:5432")
+	e.mustGst("map", "add", "15432", "devbox:5432")
 	e.back.listenErrors["127.0.0.1:15432"] = "address in use"
 	e.back.topology = meshTopology()
 	e.resetCalls()
@@ -306,13 +306,13 @@ func TestStatusJSON(t *testing.T) {
 	}
 	got := decode[meshStatus](t, out)
 	if got.Self.Node.Name != "laptop" || len(got.Self.Links) != 1 || got.Self.Links[0].Name != "web" ||
-		len(got.Self.Maps) != 1 || got.Self.Maps[0].Machine != "devcn" || got.Self.Maps[0].Error != "address in use" {
+		len(got.Self.Maps) != 1 || got.Self.Maps[0].Machine != "devbox" || got.Self.Maps[0].Error != "address in use" {
 		t.Fatalf("self = %+v", got.Self)
 	}
 	if !reflect.DeepEqual(got.Mesh, e.back.topology) {
 		t.Fatalf("mesh = %+v\nwant %+v", got.Mesh, e.back.topology)
 	}
-	contains(t, out, `"self": {`, `"mesh": {`, `"reachable": true`, `"link": "devcn"`, `"name": "web"`)
+	contains(t, out, `"self": {`, `"mesh": {`, `"reachable": true`, `"link": "devbox"`, `"name": "web"`)
 	if slices.Contains(e.back.calls, "node-status laptop") {
 		t.Fatalf("calls %v; this machine is asked directly", e.back.calls)
 	}
@@ -334,13 +334,13 @@ func TestStatusWithoutDaemon(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	e := newEnv(t)
-	devcn := peerOf("devcn")
+	devbox := peerOf("devbox")
 
-	out := e.mustGst("ping", "devcn", "-c", "1")
-	if want := "pong from devcn (" + shortID(devcn.ID) + ") over SSH in 1.5 ms\n"; out != want {
+	out := e.mustGst("ping", "devbox", "-c", "1")
+	if want := "pong from devbox (" + shortID(devbox.ID) + ") over SSH in 1.5 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	if want := []string{"ping devcn"}; !slices.Equal(e.back.calls, want) {
+	if want := []string{"ping devbox"}; !slices.Equal(e.back.calls, want) {
 		t.Fatalf("calls %v, want %v", e.back.calls, want)
 	}
 
@@ -355,9 +355,9 @@ func TestPing(t *testing.T) {
 
 	// Machines are named like for gst connect.
 	e.resetCalls()
-	e.mustGst("ping", "DevCN.GST", "-c", "1")
+	e.mustGst("ping", "DevBox.GST", "-c", "1")
 	e.mustGst("ping", "cccc3333", "-c", "1")
-	if want := []string{"ping devcn", "ping cccc3333"}; !slices.Equal(e.back.calls, want) {
+	if want := []string{"ping devbox", "ping cccc3333"}; !slices.Equal(e.back.calls, want) {
 		t.Fatalf("calls %v, want %v", e.back.calls, want)
 	}
 }
@@ -412,9 +412,9 @@ func TestPingRejects(t *testing.T) {
 		{[]string{"ping", "a", "b"}, `error: unexpected argument "b"`},
 		{[]string{"ping", "Bad_Name"}, "error: invalid machine"},
 		{[]string{"ping", "dev cn"}, "error: invalid machine"},
-		{[]string{"ping", "devcn", "-c", "0"}, "error: -c must be at least 1\n"},
-		{[]string{"ping", "devcn", "-c", "-2"}, "error: -c must be at least 1\n"},
-		{[]string{"ping", "devcn", "-c", "x"}, "error: invalid argument"},
+		{[]string{"ping", "devbox", "-c", "0"}, "error: -c must be at least 1\n"},
+		{[]string{"ping", "devbox", "-c", "-2"}, "error: -c must be at least 1\n"},
+		{[]string{"ping", "devbox", "-c", "x"}, "error: invalid argument"},
 	} {
 		e.resetCalls()
 		stderr := e.expectCode(exitUsage, tc.args...)
@@ -440,7 +440,7 @@ func TestUINodeStatus(t *testing.T) {
 	c := newUIClient(t, e)
 
 	for _, auth := range []string{"", "Bearer wrong"} {
-		if res := c.do("GET", "/api/nodes/devcn", auth); res.StatusCode != http.StatusUnauthorized {
+		if res := c.do("GET", "/api/nodes/devbox", auth); res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("with %q: %s", auth, res.Status)
 		}
 	}
@@ -448,15 +448,15 @@ func TestUINodeStatus(t *testing.T) {
 		t.Fatalf("a request without the token reached the mesh: %v", asked)
 	}
 
-	res := c.do("GET", "/api/nodes/devcn", "Bearer secret")
+	res := c.do("GET", "/api/nodes/devbox", "Bearer secret")
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("%s %q: %s", res.Status, res.Header.Get("Content-Type"), body)
 	}
-	if st := decode[wire.Status](t, string(body)); st.Node.Name != "devcn" || len(st.Links) != 3 || len(st.Maps) != 2 || len(st.Routes) != 2 || st.Proxy.Listen != "127.0.0.1:1080" {
+	if st := decode[wire.Status](t, string(body)); st.Node.Name != "devbox" || len(st.Links) != 3 || len(st.Maps) != 2 || len(st.Routes) != 2 || st.Proxy.Listen != "127.0.0.1:1080" {
 		t.Fatalf("status = %+v", st)
 	}
-	if !slices.Equal(asked, []string{"devcn"}) {
+	if !slices.Equal(asked, []string{"devbox"}) {
 		t.Fatalf("asked %v", asked)
 	}
 
@@ -465,7 +465,7 @@ func TestUINodeStatus(t *testing.T) {
 	if res.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), `no machine "nowhere"`) {
 		t.Fatalf("error: %s %q", res.Status, body)
 	}
-	if res := c.do("POST", "/api/nodes/devcn", "Bearer secret"); res.StatusCode != http.StatusMethodNotAllowed {
+	if res := c.do("POST", "/api/nodes/devbox", "Bearer secret"); res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST: %s", res.Status)
 	}
 }
@@ -490,15 +490,15 @@ func TestPingVerbose(t *testing.T) {
 			Peer:   wire.DirectTrace{},
 		}, nil
 	}
-	out := e.mustGst("ping", "devcn", "-c", "1", "-v")
+	out := e.mustGst("ping", "devbox", "-c", "1", "-v")
 	if asked != 2 {
 		t.Fatalf("asked %d times, want 2", asked)
 	}
 	for _, want := range []string{
 		"over a direct link in 1.5 ms\n",
-		"Direct link with devcn: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
+		"Direct link with devbox: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
 		"This machine:\n    0.000s  offering\n    1.500s  up\n",
-		"devcn:\n  no try yet\n",
+		"devbox:\n  no try yet\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q lacks %q", out, want)
@@ -509,18 +509,18 @@ func TestPingVerbose(t *testing.T) {
 	e.back.direct = func(node string) (wire.DirectReport, error) {
 		return wire.DirectReport{Node: peerOf(node), Next: time.Now().Add(time.Minute), PeerError: "no way"}, nil
 	}
-	out = e.mustGst("ping", "devcn", "-c", "1", "-v")
-	for _, want := range []string{"Direct link with devcn: none, next try in 1m0s\n", "no answer: no way\n"} {
+	out = e.mustGst("ping", "devbox", "-c", "1", "-v")
+	for _, want := range []string{"Direct link with devbox: none, next try in 1m0s\n", "no answer: no way\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q lacks %q", out, want)
 		}
 	}
 
 	var got verbosePing
-	if err := json.Unmarshal([]byte(e.mustGst("ping", "devcn", "-c", "1", "-v", "--json")), &got); err != nil {
+	if err := json.Unmarshal([]byte(e.mustGst("ping", "devbox", "-c", "1", "-v", "--json")), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Pings) != 1 || got.Direct.Node.Name != "devcn" {
+	if len(got.Pings) != 1 || got.Direct.Node.Name != "devbox" {
 		t.Fatalf("--json: %+v", got)
 	}
 }

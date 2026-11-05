@@ -17,11 +17,11 @@ gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon�
 没有 `-L`、`-R`、`-D`：`-L` 由 map 取代；`-R` 由对方机器自己建 map 取代；`-D` 由 proxy 加 route 取代。两端都必须安装 gst。
 
 ```
-m3 ──link──► mini
-m3 ──link──► devcn
+laptop ──link──► homelab
+laptop ──link──► devbox
 ```
 
-mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst map add 15432 devcn:5432`，连接都经 m3 中转到 devcn。mini 不需要 devcn 的 SSH 凭据。
+homelab 上执行 `gst connect devbox 22`、访问 `devbox.gst:8080`，或建 `gst map add 15432 devbox:5432`，连接都经 laptop 中转到 devbox。homelab 不需要 devbox 的 SSH 凭据。
 
 ## 决策
 
@@ -54,19 +54,19 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 ```json
 {
   "version": 3,
-  "node": {"id": "9db2b03b…（32 位十六进制）", "name": "m3", "exit": false},
+  "node": {"id": "3f2a9c10…（32 位十六进制）", "name": "laptop", "exit": false},
   "proxy": "127.0.0.1:1080",
   "links": {
-    "devcn": {"destination": "devcn", "remote_gst": ""}
+    "devbox": {"destination": "devbox", "remote_gst": ""}
   },
   "maps": [
-    {"listen": "127.0.0.1:15432", "machine": "devcn", "target": "localhost:5432"},
-    {"listen": "127.0.0.1:18082", "machine": "devcn", "target": "/run/user/1000/app.sock"}
+    {"listen": "127.0.0.1:15432", "machine": "devbox", "target": "localhost:5432"},
+    {"listen": "127.0.0.1:18082", "machine": "devbox", "target": "/run/user/1000/app.sock"}
   ],
   "routes": [
-    {"match": "corp.example.com", "via": "devcn"},
-    {"match": "10.20.0.0/16", "via": "devcn"},
-    {"match": "default", "via": "devsg"}
+    {"match": "corp.example.com", "via": "devbox"},
+    {"match": "10.20.0.0/16", "via": "devbox"},
+    {"match": "default", "via": "gateway"}
   ]
 }
 ```
@@ -87,7 +87,7 @@ mini 上执行 `gst connect devcn 22`、访问 `devcn.gst:8080`，或建 `gst ma
 4. link 名：某条 link 的名字，指向该 link 对端的节点（任意节点发布的 link 都算，唯一时）；
 5. 至少 4 位的 id 前缀（唯一时）。
 
-所以 `devcn.gst`、`devcn`（m3 上 link 的名字，或 devcn 自己的节点名）在整个 mesh 中都能用。
+所以 `devbox.gst`、`devbox`（laptop 上 link 的名字，或 devbox 自己的节点名）在整个 mesh 中都能用。
 
 ## 代理
 
@@ -139,9 +139,9 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 握手之后，一个**流**承载一次调用：
 
 ```
-请求：  {"method": "link.restart", "params": {"names": ["devcn"]}}
+请求：  {"method": "link.restart", "params": {"names": ["devbox"]}}
 响应：  {"result": {...}}
-     或 {"error": {"code": "not_found", "message": "link devcn is not started"}}
+     或 {"error": {"code": "not_found", "message": "link devbox is not started"}}
 ```
 
 - `control` 连接本身就是一个流，可以顺序发多次请求。
@@ -189,10 +189,10 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 ```json
 {
-  "node": {"id": "…", "name": "m3", "software": "gst 0.3.0", "exit": false},
+  "node": {"id": "…", "name": "laptop", "software": "gst 0.3.0", "exit": false},
   "seq": 1793700000000000000,
   "expires": "2026-11-03T12:00:00Z",
-  "links": [{"name": "devcn", "peer": "…devcn 的 id…"}]
+  "links": [{"name": "devbox", "peer": "…devbox 的 id…"}]
 }
 ```
 
@@ -212,7 +212,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 ### direct link
 
-SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。
+SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。[`udp-hole-punching.html`](udp-hole-punching.html) 从 UDP 包头讲起，解释防火墙、NAT、打洞和 direct link 的加密，并带逐步的模拟器。
 
 - **触发**：`Node.Dial` 向某节点建立连接时，如果没有到它的 direct link，就在后台尝试，这个连接不等待、继续走原路，之后的连接走 direct link。失败或断开后等待 1 分钟再试，连续失败时加倍，最长 30 分钟，成功后重置。
 - **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …], "fingerprint": …}`，响应是对方的 `addresses` 和 `fingerprint`。候选地址只出现在这次调用中。建好的 direct link 所用的两端地址写进发起方的 link-state 记录，让每个节点都能显示它们。地址都不进日志。

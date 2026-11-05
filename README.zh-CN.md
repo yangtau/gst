@@ -5,7 +5,7 @@
 `gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，但只工作在第 4 层：只中转 TCP 连接和 Unix socket，不需要 root，直接使用你已有的 SSH 登录。网络允许时，机器之间还会经 UDP 直连。支持 Linux 和 macOS。
 
 - 每台机器都运行 gst（link 的两端都需要 0.3 或更高版本）和一个小的后台 daemon。
-- **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `mini` 和 `devcn` 的 link 时，`mini` 经由 `laptop` 就能到达 `devcn`，不需要 `devcn` 的任何凭据。
+- **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `homelab` 和 `devbox` 的 link 时，`homelab` 经由 `laptop` 就能到达 `devbox`，不需要 `devbox` 的任何凭据。
 - 到达一台机器的方式有：`gst connect`；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；或者一个通向它的本地端口或 Unix socket（map）。
 
 ## 安装
@@ -42,13 +42,13 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 
    ```bash
    ssh-keygen -t ed25519 -N '' -f ~/.ssh/gst_ed25519
-   ssh-copy-id -i ~/.ssh/gst_ed25519 user@devcn.example.com
+   ssh-copy-id -i ~/.ssh/gst_ed25519 user@devbox.example.com
    ```
 
 2. **`~/.ssh/config` 里的 Host**，例如：
 
    ```
-   Host devcn
+   Host devbox
      HostName ssh.example.com
      User user
      IdentityFile ~/.ssh/gst_ed25519
@@ -56,7 +56,7 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 
    也可以不写这一项，直接把目标地址交给 `gst add`，例如 `user@ssh.example.com`。所有 SSH 设置（地址、用户、私钥、known_hosts、超时）都来自 `~/.ssh/config`，见 [ssh 配置](#ssh-配置)。
 
-3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devcn` 连接一次，核对并接受主机密钥。
+3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devbox` 连接一次，核对并接受主机密钥。
 
 4. **那台机器上有 gst 0.3 或更高版本。** 它不需要自己的 link、配置或正在运行的 daemon：被连接就够了，gst 会在第一次 link 时在那里启动。
 
@@ -64,47 +64,47 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 
 ## 快速开始
 
-在 `laptop` 上连接 `devcn` 和 `mini`：
+在 `laptop` 上连接 `devbox` 和 `homelab`：
 
 ```bash
-gst add devcn             # ~/.ssh/config 中的 "devcn"
-gst add mini
+gst add devbox             # ~/.ssh/config 中的 "devbox"
+gst add homelab
 gst status                # mesh 中的所有机器，每台一行
-gst ping devcn            # 检查 devcn 能否经由 mesh 应答
-gst status devcn          # devcn 自己的 link、代理、map 和 route
+gst ping devbox            # 检查 devbox 能否经由 mesh 应答
+gst status devbox          # devbox 自己的 link、代理、map 和 route
 ```
 
 `gst status` 的输出类似（第一行是本机，状态显示为 `-`）：
 
 ```
-4f1c9a27  laptop  gst 0.3.0  -
-9db2b03b  devcn   gst 0.3.0  online
-c07e5d11  mini    gst 0.3.0  online
+4f1c9a27  laptop   gst 0.3.0  -
+3f2a9c10  devbox   gst 0.3.0  online
+c07e5d11  homelab  gst 0.3.0  online
 ```
 
-link 在后台连接；连上之前，对应的机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。`gst ping devcn` 输出 `pong from devcn (9db2b03b) over SSH in 12.3 ms`，连接改走 UDP 直连后显示 `over a direct link`。
+link 在后台连接；连上之前，对应的机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。`gst ping devbox` 输出 `pong from devbox (3f2a9c10) over SSH in 12.3 ms`，连接改走 UDP 直连后显示 `over a direct link`。
 
 到达一台机器的几种方式：
 
 ```bash
-# 一个使用标准输入输出的连接：只给端口时表示 devcn 的 localhost
-gst connect devcn 22
+# 一个使用标准输入输出的连接：只给端口时表示 devbox 的 localhost
+gst connect devbox 22
 
-# 代理默认关闭，需要先开启：SOCKS5 和 HTTP，devcn.gst 就是 devcn
+# 代理默认关闭，需要先开启：SOCKS5 和 HTTP，devbox.gst 就是 devbox
 gst proxy 127.0.0.1:1080  # 开启代理并显示用法
 export ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
-curl http://devcn.gst:8080/   # devcn 的 8080 端口
+curl http://devbox.gst:8080/   # devbox 的 8080 端口
 
-# map：本机 15432 端口通向 devcn 的 5432 端口
-gst map add 15432 devcn:5432
+# map：本机 15432 端口通向 devbox 的 5432 端口
+gst map add 15432 devbox:5432
 psql -h 127.0.0.1 -p 15432
 
 # 两端也都可以是 Unix socket
-gst map add 18082 devcn:/run/user/1000/app.sock
-gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
+gst map add 18082 devbox:/run/user/1000/app.sock
+gst map add /tmp/devbox-docker.sock devbox:/var/run/docker.sock
 ```
 
-`mini` 现在看到的是同一个 mesh：在 `mini` 上运行 `gst status` 会列出 `laptop` 和 `devcn`，`gst connect devcn 22` 经由 `laptop` 连接。
+`homelab` 现在看到的是同一个 mesh：在 `homelab` 上运行 `gst status` 会列出 `laptop` 和 `devbox`，`gst connect devbox 22` 经由 `laptop` 连接。
 
 每个命令都可以用 `--help` 查看说明。在终端中，帮助的标题加粗，命令名和选项名显示为青色。管道或重定向输出保持纯文本；设置 `NO_COLOR=1` 或 `TERM=dumb` 也可以关闭终端中的配色。
 
@@ -122,7 +122,7 @@ gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
 ### node 和 link
 
 - node 的名字用于显示和寻址，不要求唯一；id 是唯一的。用 `gst name laptop` 修改名字。名字和 link 名一样，由 1-32 个小写字母、数字或 `-` 组成。
-- link 是双向的：流量可以沿任一方向通过，所以 `devcn` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst add devcn`），在对端报告自己的名字之前，它也是对端机器的名字。
+- link 是双向的：流量可以沿任一方向通过，所以 `devbox` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst add devbox`），在对端报告自己的名字之前，它也是对端机器的名字。
 - 网络允许时，连接在两台机器之间直连，即使它们之间没有 link：到某台机器的第一个连接在后台经 UDP 建立直连，之后的连接都走它。不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器继续走 link。`gst status` 在机器后面显示 `direct`。直连失败时，走它的连接随之中断，新连接重新走 link。直连建立后不再依赖 link，所以两台机器之间的机器休眠时直连继续运行；`gst remove` 之后如果已没有 link 通向某台机器，到它的直连也会断开。
 - 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst status` 都能看到整个 mesh；退出网络的机器会在 30 分钟内消失。路径只能经由运行中的 link 越过一台机器。
 
@@ -133,7 +133,7 @@ gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
 1. 去掉末尾的 `.gst`。
 2. node id。
 3. node 名字。
-4. link 名，表示该 link 另一端的机器。mesh 中任何机器的 link 都算，所以 `devcn` 在哪里都能用，不论它是 `laptop` 上的 link 名还是 `devcn` 自己的名字。
+4. link 名，表示该 link 另一端的机器。mesh 中任何机器的 link 都算，所以 `devbox` 在哪里都能用，不论它是 `laptop` 上的 link 名还是 `devbox` 自己的名字。
 5. 至少 4 位的 id 前缀。
 
 名字重复时，`gst status` 用 id 区分这些机器；此时请使用 id 或 id 前缀。
@@ -171,9 +171,9 @@ gst map add <listen> <machine>:<target>
 ### route
 
 ```bash
-gst route add corp.example.com devcn   # 该域名及其所有子域名
-gst route add 10.20.0.0/16 devcn       # 一个 IP 网段（或单个 IP）
-gst route add default devsg           # 其余所有主机
+gst route add corp.example.com devbox   # 该域名及其所有子域名
+gst route add 10.20.0.0/16 devbox       # 一个 IP 网段（或单个 IP）
+gst route add default gateway           # 其余所有主机
 ```
 
 - route 作用于代理中的连接。最具体的规则优先：域名和网段越长越优先，`default` 最后。添加匹配项相同的 route 会替换原有的。
@@ -195,15 +195,15 @@ mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通
 
 | ssh | gst |
 | --- | --- |
-| `ssh -L 15432:127.0.0.1:5432 devcn` | `gst map add 15432 devcn:5432` |
-| `ssh -L 15432:db.example.com:5432 devcn` | `gst map add 15432 devcn:db.example.com:5432`，并在 devcn 上执行 `gst exit on` |
-| `ssh -L ~/db.sock:/run/postgresql/.s.PGSQL.5432 devcn` | `gst map add ~/db.sock devcn:/run/postgresql/.s.PGSQL.5432` |
-| `ssh -R 2222:localhost:22 devcn` | 在 devcn 上：`gst map add 2222 laptop:22` |
-| `ssh -R /home/user/agent.sock:$SSH_AUTH_SOCK devcn` | 在 devcn 上：`gst map add /home/user/agent.sock laptop:"$SSH_AUTH_SOCK"`（绝对路径） |
-| `ssh -D 1080 devcn` | `gst route add default devcn`（也可以只路由部分域名或网段），并在 devcn 上执行 `gst exit on`；用 `gst proxy 127.0.0.1:1080` 开启代理 |
-| 反向代理：devcn 上的程序使用 laptop 的网络 | 在 devcn 上：`gst route add default laptop`，并在 laptop 上执行 `gst exit on` |
+| `ssh -L 15432:127.0.0.1:5432 devbox` | `gst map add 15432 devbox:5432` |
+| `ssh -L 15432:db.example.com:5432 devbox` | `gst map add 15432 devbox:db.example.com:5432`，并在 devbox 上执行 `gst exit on` |
+| `ssh -L ~/db.sock:/run/postgresql/.s.PGSQL.5432 devbox` | `gst map add ~/db.sock devbox:/run/postgresql/.s.PGSQL.5432` |
+| `ssh -R 2222:localhost:22 devbox` | 在 devbox 上：`gst map add 2222 laptop:22` |
+| `ssh -R /home/user/agent.sock:$SSH_AUTH_SOCK devbox` | 在 devbox 上：`gst map add /home/user/agent.sock laptop:"$SSH_AUTH_SOCK"`（绝对路径） |
+| `ssh -D 1080 devbox` | `gst route add default devbox`（也可以只路由部分域名或网段），并在 devbox 上执行 `gst exit on`；用 `gst proxy 127.0.0.1:1080` 开启代理 |
+| 反向代理：devbox 上的程序使用 laptop 的网络 | 在 devbox 上：`gst route add default laptop`，并在 laptop 上执行 `gst exit on` |
 
-devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台机器都能经由 mesh 到达其他所有机器，所以 `laptop` 不需要自己的监听或开放端口。崩溃后服务器上不会留下失效的 `-R` 端口或 socket 文件，`GatewayPorts` 也不适用。
+devbox 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台机器都能经由 mesh 到达其他所有机器，所以 `laptop` 不需要自己的监听或开放端口。崩溃后服务器上不会留下失效的 `-R` 端口或 socket 文件，`GatewayPorts` 也不适用。
 
 ## 命令
 
@@ -216,7 +216,7 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `gst add <name> [destination] [--remote-gst cmd]` | 添加 link 并在后台启动 |
 | `gst remove <name>...`（`rm`） | 停止并删除 link |
 | `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态（`online`、`via` 中间机器、`direct`、`exit`）；然后是本机的问题 |
-| `gst status --all` | 同时列出所有机器之间运行着的 link，以及直连和发起方看到的两端地址，例如 `laptop->mini (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
+| `gst status --all` | 同时列出所有机器之间运行着的 link，以及直连和发起方看到的两端地址，例如 `laptop->homelab (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
 | `gst status <machine>` | 显示某台机器的 link（含状态和目标）、代理、map 和 route，经由 mesh 查询 |
 | `gst ping <machine> [-c N] [-v]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时；`-v` 还显示到它的直连（或没有直连的原因），以及两台机器最近一次尝试建立直连的过程 |
 
@@ -228,13 +228,13 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | --- | --- |
 | `-` | 本机 |
 | `online` | 有运行中的 link 直接通向它 |
-| `online; via devcn` | 到它的连接经过所列的机器 |
+| `online; via devbox` | 到它的连接经过所列的机器 |
 | `online; direct` | 到它的连接经 UDP 直连 |
 | `offline` | 没有运行中的 link 通向它 |
 
-exit 的状态后面带 `; exit`。link 显示为两端的机器，如 `m3->devsg`；link 名字和它通向的机器不同时，后面会带上 `gst remove` 用的名字，如 `m3->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。
+exit 的状态后面带 `; exit`。link 显示为两端的机器，如 `laptop->gateway`；link 名字和它通向的机器不同时，后面会带上 `gst remove` 用的名字，如 `laptop->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。
 
-`gst ping` 的输出例如 `pong from devsg (1a2b3c4d) via devcn in 41.3 ms`。耗时包括途经的每台机器上建立连接的时间。没有收到应答时退出码为 1。
+`gst ping` 的输出例如 `pong from gateway (1a2b3c4d) via devbox in 41.3 ms`。耗时包括途经的每台机器上建立连接的时间。没有收到应答时退出码为 1。
 
 ### 到达机器
 
@@ -301,7 +301,7 @@ link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重�
 gst ui
 # 在没有浏览器的机器上：指定端口并转发出来
 gst ui --port 8370 --no-open
-ssh -L 8370:localhost:8370 devcn   # 然后在你自己的机器上打开打印出的地址
+ssh -L 8370:localhost:8370 devbox   # 然后在你自己的机器上打开打印出的地址
 ```
 
 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。
@@ -325,7 +325,7 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 | `no usable key`、私钥 `passphrase-protected` | 按[使用前准备](#使用前准备)创建无口令私钥，并在 `~/.ssh/config` 中用 `IdentityFile` 指定 |
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
 | 主机密钥不匹配 | 确认该机器的密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
-| link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devcn`，再 `gst add devcn --remote-gst ~/.nix-profile/bin/gst` |
+| link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devbox`，再 `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | link 为 `down`，错误是 `gst is down on this machine; run gst up there` | 在对方机器上执行 `gst up` |
 | `speaks an older gst protocol; upgrade gst there to 0.3 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.3） |
 | `... is not an exit, so it connects only to addresses on its own machine` | 目标不在你途经的那台机器上。在那里执行 `gst exit on`，或改为连接它自己的 `localhost` |

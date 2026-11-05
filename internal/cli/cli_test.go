@@ -173,7 +173,7 @@ type testEnv struct {
 }
 
 // newEnv returns an environment where the destinations myhost, db, and
-// devcn resolve to a server with a usable identity and a known host key,
+// devbox resolve to a server with a usable identity and a known host key,
 // unknown to one whose host key is not recorded, and nowhere to nothing.
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
@@ -206,7 +206,7 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	unknown := host
 	unknown.Hostname = "unknown.example.com"
-	e.hosts = map[string]sshconfig.Host{"myhost": host, "db": host, "devcn": host, "unknown": unknown}
+	e.hosts = map[string]sshconfig.Host{"myhost": host, "db": host, "devbox": host, "unknown": unknown}
 	return e
 }
 
@@ -607,7 +607,7 @@ func TestLinkRemoveDaemonFailure(t *testing.T) {
 
 func TestConnectMissingTargetNamesArgument(t *testing.T) {
 	e := newEnv(t)
-	e.expectError(exitUsage, []string{"connect", "devcn"}, "error: missing argument <port | host:port | socket>\n")
+	e.expectError(exitUsage, []string{"connect", "devbox"}, "error: missing argument <port | host:port | socket>\n")
 }
 
 func TestCompletesLinkNames(t *testing.T) {

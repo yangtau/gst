@@ -7,19 +7,19 @@ import (
 
 func TestParseMachine(t *testing.T) {
 	for ref, want := range map[string]string{
-		"devcn":         "devcn",
-		"DevCN":         "devcn",
-		"devcn.gst":     "devcn",
-		"DEVCN.GST":     "devcn",
-		"0a1b":          "0a1b",
-		"my-host":       "my-host",
-		"":              "",
-		".gst":          "",
-		"a.b":           "",
-		"a_b":           "",
-		"-a":            "",
-		"a b":           "",
-		"devcn.gst.gst": "",
+		"devbox":         "devbox",
+		"DevBox":         "devbox",
+		"devbox.gst":     "devbox",
+		"DEVBOX.GST":     "devbox",
+		"0a1b":           "0a1b",
+		"my-host":        "my-host",
+		"":               "",
+		".gst":           "",
+		"a.b":            "",
+		"a_b":            "",
+		"-a":             "",
+		"a b":            "",
+		"devbox.gst.gst": "",
 	} {
 		got, err := ParseMachine(ref)
 		if (want == "") != (err != nil) || got != want {
@@ -32,17 +32,17 @@ func TestParseMachineTarget(t *testing.T) {
 	tests := []struct {
 		spec, machine, target string // machine is empty when the spec is invalid
 	}{
-		{"devcn:5432", "devcn", "localhost:5432"},
-		{"DevCN.gst:5432", "devcn", "localhost:5432"},
-		{"devcn:db.internal:5432", "devcn", "db.internal:5432"},
-		{"devcn:[::1]:5432", "devcn", "[::1]:5432"},
-		{"devcn:/run/app.sock", "devcn", "/run/app.sock"},
-		{"devcn", "", ""},
-		{"devcn:", "", ""},
+		{"devbox:5432", "devbox", "localhost:5432"},
+		{"DevBox.gst:5432", "devbox", "localhost:5432"},
+		{"devbox:db.internal:5432", "devbox", "db.internal:5432"},
+		{"devbox:[::1]:5432", "devbox", "[::1]:5432"},
+		{"devbox:/run/app.sock", "devbox", "/run/app.sock"},
+		{"devbox", "", ""},
+		{"devbox:", "", ""},
 		{":5432", "", ""},
 		{"bad_name:5432", "", ""},
-		{"devcn:db", "", ""},
-		{"devcn:0", "", ""},
+		{"devbox:db", "", ""},
+		{"devbox:0", "", ""},
 	}
 	for _, tt := range tests {
 		machine, target, err := ParseMachineTarget(tt.spec)

@@ -33,10 +33,10 @@ one, through the links between them. Reach them by:
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
 report state accept --json.`,
-		Example: `  gst add devcn                        # link to the ssh config host "devcn"
+		Example: `  gst add devbox                        # link to the ssh config host "devbox"
   gst status                           # every machine in the mesh
-  gst map add 15432 devcn:5432         # local port 15432 leads to devcn's 5432
-  curl http://devcn.gst:8080/          # with ALL_PROXY from gst proxy`,
+  gst map add 15432 devbox:5432         # local port 15432 leads to devbox's 5432
+  curl http://devbox.gst:8080/          # with ALL_PROXY from gst proxy`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})

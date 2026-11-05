@@ -5,7 +5,7 @@ English | [简体中文](README.zh-CN.md)
 `gst` (go ssh tunnel) links your machines into a private mesh over SSH. It feels like Tailscale, but works at layer 4: it carries TCP connections and Unix sockets only, needs no root, and uses the SSH logins you already have. When the network allows it, machines also connect directly over UDP. It runs on Linux and macOS.
 
 - Every machine runs gst (0.3 or later, on both ends of a link) and a small background daemon.
-- A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `mini` and `devcn`, then `mini` reaches `devcn` through `laptop`, without any credentials for `devcn`.
+- A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `homelab` and `devbox`, then `homelab` reaches `devbox` through `laptop`, without any credentials for `devbox`.
 - You reach a machine with `gst connect`, through a SOCKS5/HTTP proxy where `<machine>.gst` is that machine, or through a local port or Unix socket that leads to it (a map).
 
 ## Install
@@ -42,13 +42,13 @@ gst runs in the background, where it cannot type a passphrase or confirm an unkn
 
    ```bash
    ssh-keygen -t ed25519 -N '' -f ~/.ssh/gst_ed25519
-   ssh-copy-id -i ~/.ssh/gst_ed25519 user@devcn.example.com
+   ssh-copy-id -i ~/.ssh/gst_ed25519 user@devbox.example.com
    ```
 
 2. **A Host in `~/.ssh/config`**, for example:
 
    ```
-   Host devcn
+   Host devbox
      HostName ssh.example.com
      User user
      IdentityFile ~/.ssh/gst_ed25519
@@ -56,7 +56,7 @@ gst runs in the background, where it cannot type a passphrase or confirm an unkn
 
    Or skip the entry and give the destination to `gst add`, such as `user@ssh.example.com`. All SSH settings (address, user, key, known_hosts, timeouts) come from `~/.ssh/config`; see [ssh configuration](#ssh-configuration).
 
-3. **The machine's host key in known_hosts**: connect once with `ssh devcn`, then verify and accept the host key.
+3. **The machine's host key in known_hosts**: connect once with `ssh devbox`, then verify and accept the host key.
 
 4. **gst 0.3 or later on that machine.** It needs no links, configuration, or running daemon of its own: being linked to is enough, and gst starts there on the first link.
 
@@ -64,47 +64,47 @@ Only the machine that creates a link needs these; the machine that is linked to 
 
 ## Quick start
 
-On `laptop`, link to `devcn` and `mini`:
+On `laptop`, link to `devbox` and `homelab`:
 
 ```bash
-gst add devcn             # the "devcn" entry of ~/.ssh/config
-gst add mini
+gst add devbox             # the "devbox" entry of ~/.ssh/config
+gst add homelab
 gst status                # every machine in the mesh, one per line
-gst ping devcn            # check that devcn answers through the mesh
-gst status devcn          # devcn's own links, proxy, maps, and routes
+gst ping devbox            # check that devbox answers through the mesh
+gst status devbox          # devbox's own links, proxy, maps, and routes
 ```
 
 `gst status` prints something like (the first machine is this one, shown as `-`):
 
 ```
-4f1c9a27  laptop  gst 0.3.0  -
-9db2b03b  devcn   gst 0.3.0  online
-c07e5d11  mini    gst 0.3.0  online
+4f1c9a27  laptop   gst 0.3.0  -
+3f2a9c10  devbox   gst 0.3.0  online
+c07e5d11  homelab  gst 0.3.0  online
 ```
 
-Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running and its failed proxy or maps. `gst ping devcn` prints `pong from devcn (9db2b03b) over SSH in 12.3 ms`, or `over a direct link` once connections go directly over UDP.
+Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running and its failed proxy or maps. `gst ping devbox` prints `pong from devbox (3f2a9c10) over SSH in 12.3 ms`, or `over a direct link` once connections go directly over UDP.
 
 Reach a machine in any of these ways:
 
 ```bash
-# One connection on standard input and output: a bare port means localhost on devcn
-gst connect devcn 22
+# One connection on standard input and output: a bare port means localhost on devbox
+gst connect devbox 22
 
-# The proxy is off until you turn it on: SOCKS5 and HTTP, where devcn.gst is devcn
+# The proxy is off until you turn it on: SOCKS5 and HTTP, where devbox.gst is devbox
 gst proxy 127.0.0.1:1080  # turns it on and prints how to use it
 export ALL_PROXY=socks5h://127.0.0.1:1080 http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080
-curl http://devcn.gst:8080/   # port 8080 on devcn
+curl http://devbox.gst:8080/   # port 8080 on devbox
 
-# A map: local port 15432 leads to devcn's port 5432
-gst map add 15432 devcn:5432
+# A map: local port 15432 leads to devbox's port 5432
+gst map add 15432 devbox:5432
 psql -h 127.0.0.1 -p 15432
 
 # Unix sockets work too, on either side
-gst map add 18082 devcn:/run/user/1000/app.sock
-gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
+gst map add 18082 devbox:/run/user/1000/app.sock
+gst map add /tmp/devbox-docker.sock devbox:/var/run/docker.sock
 ```
 
-Machine `mini` now sees the same mesh: on `mini`, `gst status` lists `laptop` and `devcn`, and `gst connect devcn 22` goes through `laptop`.
+Machine `homelab` now sees the same mesh: on `homelab`, `gst status` lists `laptop` and `devbox`, and `gst connect devbox 22` goes through `laptop`.
 
 Every command explains itself with `--help`. In a terminal, help uses bold headings and cyan command and option names. Piped or redirected help is plain text; set `NO_COLOR=1` or `TERM=dumb` to disable styling in a terminal too.
 
@@ -122,7 +122,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 ### Nodes and links
 
 - A node's name is for display and addressing, and need not be unique; its id is unique. Change the name with `gst name laptop`. Names, like link names, are 1-32 lowercase letters, digits, or `-`.
-- A link is bidirectional: traffic can pass through it either way, so `devcn` needs no link of its own to reach `laptop`. A link has a name (`gst add devcn`), which also names the machine at the other end until it reports its own name.
+- A link is bidirectional: traffic can pass through it either way, so `devbox` needs no link of its own to reach `laptop`. A link has a name (`gst add devbox`), which also names the machine at the other end until it reports its own name.
 - Connections go directly between two machines when the network allows it, even without a link between them: the first connection to a machine starts a direct connection over UDP in the background, and the ones after it use it. Nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address keep using the links. `gst status` shows `direct` next to the machine. If a direct connection fails, the connections on it break, and new ones go over the links again. A direct connection does not need the links once it runs, so it carries on when a machine between the two sleeps; `gst remove` does end it if no links then lead to the machine.
 - A started link runs in the background, starts at login, and reconnects after failures. Linked machines pass on what they know, so `gst status` on any machine shows the whole mesh; a machine that drops out disappears within 30 minutes. A route goes on past a machine only over running links.
 
@@ -133,7 +133,7 @@ Every command and the proxy name a machine with `<machine>`. It is resolved in t
 1. Remove a trailing `.gst`.
 2. A node id.
 3. A node name.
-4. A link name, which means the machine at the other end of that link. Links of any machine in the mesh count, so `devcn` works everywhere, whether it is a link name on `laptop` or the name of `devcn` itself.
+4. A link name, which means the machine at the other end of that link. Links of any machine in the mesh count, so `devbox` works everywhere, whether it is a link name on `laptop` or the name of `devbox` itself.
 5. An id prefix of at least 4 characters.
 
 When names repeat, `gst status` tells the machines apart by id; use the id or an id prefix.
@@ -171,9 +171,9 @@ gst map add <listen> <machine>:<target>
 ### Route
 
 ```bash
-gst route add corp.example.com devcn   # the domain and its subdomains
-gst route add 10.20.0.0/16 devcn       # an IP prefix (or a single IP)
-gst route add default devsg           # everything else
+gst route add corp.example.com devbox   # the domain and its subdomains
+gst route add 10.20.0.0/16 devbox       # an IP prefix (or a single IP)
+gst route add default gateway           # everything else
 ```
 
 - Routes apply to the proxy's connections. The most specific route wins: longer domains and longer prefixes first, `default` last. Adding a route with the same match replaces it.
@@ -195,15 +195,15 @@ There are no `-L`, `-R`, or `-D` forwards; the mesh covers the same cases, and e
 
 | With ssh | With gst |
 | --- | --- |
-| `ssh -L 15432:127.0.0.1:5432 devcn` | `gst map add 15432 devcn:5432` |
-| `ssh -L 15432:db.example.com:5432 devcn` | `gst map add 15432 devcn:db.example.com:5432`, and `gst exit on` on devcn |
-| `ssh -L ~/db.sock:/run/postgresql/.s.PGSQL.5432 devcn` | `gst map add ~/db.sock devcn:/run/postgresql/.s.PGSQL.5432` |
-| `ssh -R 2222:localhost:22 devcn` | On devcn: `gst map add 2222 laptop:22` |
-| `ssh -R /home/user/agent.sock:$SSH_AUTH_SOCK devcn` | On devcn: `gst map add /home/user/agent.sock laptop:"$SSH_AUTH_SOCK"` (an absolute path) |
-| `ssh -D 1080 devcn` | `gst route add default devcn` (or just some domains or prefixes), and `gst exit on` on devcn; turn the proxy on with `gst proxy 127.0.0.1:1080` |
-| A reverse proxy: devcn's programs use laptop's network | On devcn: `gst route add default laptop`, and `gst exit on` on laptop |
+| `ssh -L 15432:127.0.0.1:5432 devbox` | `gst map add 15432 devbox:5432` |
+| `ssh -L 15432:db.example.com:5432 devbox` | `gst map add 15432 devbox:db.example.com:5432`, and `gst exit on` on devbox |
+| `ssh -L ~/db.sock:/run/postgresql/.s.PGSQL.5432 devbox` | `gst map add ~/db.sock devbox:/run/postgresql/.s.PGSQL.5432` |
+| `ssh -R 2222:localhost:22 devbox` | On devbox: `gst map add 2222 laptop:22` |
+| `ssh -R /home/user/agent.sock:$SSH_AUTH_SOCK devbox` | On devbox: `gst map add /home/user/agent.sock laptop:"$SSH_AUTH_SOCK"` (an absolute path) |
+| `ssh -D 1080 devbox` | `gst route add default devbox` (or just some domains or prefixes), and `gst exit on` on devbox; turn the proxy on with `gst proxy 127.0.0.1:1080` |
+| A reverse proxy: devbox's programs use laptop's network | On devbox: `gst route add default laptop`, and `gst exit on` on laptop |
 
-A `-R`-style map on `devcn` works because every machine can reach every other one through the mesh, so `laptop` needs no listener or open port of its own. No stale `-R` ports or socket files remain on the server after a crash, and `GatewayPorts` does not apply.
+A `-R`-style map on `devbox` works because every machine can reach every other one through the mesh, so `laptop` needs no listener or open port of its own. No stale `-R` ports or socket files remain on the server after a crash, and `GatewayPorts` does not apply.
 
 ## Commands
 
@@ -216,7 +216,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
 | `gst remove <name>...` (`rm`) | Stop links and delete them |
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state (`online`, `via` the machines in between, `direct`, `exit`); then this machine's problems |
-| `gst status --all` | Also list the running links between all the machines, and the direct links with their addresses as the machine that opened them sees them, such as `laptop->mini (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
+| `gst status --all` | Also list the running links between all the machines, and the direct links with their addresses as the machine that opened them sees them, such as `laptop->homelab (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
 | `gst status <machine>` | Show a machine's links (with state and destination), proxy, maps, and routes, asked through the mesh |
 | `gst ping <machine> [-c N] [-v]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer; `-v` also shows the direct link with it, or why there is none, and what both machines did in their latest try at one |
 
@@ -228,13 +228,13 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | --- | --- |
 | `-` | This machine |
 | `online` | A running link leads to it directly |
-| `online; via devcn` | Connections to it pass through the machines named |
+| `online; via devbox` | Connections to it pass through the machines named |
 | `online; direct` | Connections to it go directly over UDP |
 | `offline` | No running links lead to it |
 
-`; exit` follows the state of an exit. Links show as the machines at their ends, such as `m3->devsg`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `m3->prod (db)`. A `# Problems:` section lists this machine's links that are not running and its proxy or maps that failed. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
+`; exit` follows the state of an exit. Links show as the machines at their ends, such as `laptop->gateway`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `laptop->prod (db)`. A `# Problems:` section lists this machine's links that are not running and its proxy or maps that failed. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
 
-`gst ping` prints, for example, `pong from devsg (1a2b3c4d) via devcn in 41.3 ms`. The time includes setting up the connection through each machine on the way. It exits with status 1 if no answer came.
+`gst ping` prints, for example, `pong from gateway (1a2b3c4d) via devbox in 41.3 ms`. The time includes setting up the connection through each machine on the way. It exits with status 1 if no answer came.
 
 ### Reach machines
 
@@ -301,7 +301,7 @@ Limitations:
 gst ui
 # On a machine without a browser: pick a port and forward it
 gst ui --port 8370 --no-open
-ssh -L 8370:localhost:8370 devcn   # then open the printed address on your own machine
+ssh -L 8370:localhost:8370 devbox   # then open the printed address on your own machine
 ```
 
 The address ends with a random secret after `#`, which the page needs; anyone with the full address can use the page while `gst ui` runs. Each run makes a new secret.
@@ -325,7 +325,7 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 | `no usable key`, or a key is `passphrase-protected` | Create a key without a passphrase as in [Before you start](#before-you-start), and name it with `IdentityFile` in `~/.ssh/config` |
 | `no host key for ...` | Connect once with `ssh <host>` to record the host key |
 | Host key mismatch | Once you have confirmed the machine's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
-| A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devcn`, then `gst add devcn --remote-gst ~/.nix-profile/bin/gst` |
+| A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devbox`, then `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | A link is `down` with `gst is down on this machine; run gst up there` | Run `gst up` on the other machine |
 | `speaks an older gst protocol; upgrade gst there to 0.3 or later` | Upgrade gst on the machine it names (0.3 on both ends of every link) |
 | `... is not an exit, so it connects only to addresses on its own machine` | The target is not on the machine you are connecting through. Run `gst exit on` there, or aim at its own `localhost` |

@@ -38,8 +38,8 @@ func ParseMachine(ref string) (string, error) {
 	return machine, nil
 }
 
-// ParseMachineTarget reads "<machine>:<target>", such as devcn:5432,
-// devcn:db.internal:5432, or devcn:/run/app.sock.
+// ParseMachineTarget reads "<machine>:<target>", such as devbox:5432,
+// devbox:db.internal:5432, or devbox:/run/app.sock.
 func ParseMachineTarget(spec string) (machine, target string, err error) {
 	ref, rest, ok := strings.Cut(spec, ":")
 	if !ok {

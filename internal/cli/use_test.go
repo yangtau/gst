@@ -99,7 +99,7 @@ func TestProxyOff(t *testing.T) {
 		t.Fatalf("the daemon still listens on %q", st.Proxy.Listen)
 	}
 	// A map may then use the address, and the proxy may not.
-	e.mustGst("map", "add", "1080", "devcn:80")
+	e.mustGst("map", "add", "1080", "devbox:80")
 	e.expectCode(exitFailure, "proxy", "1080")
 	e.mustGst("map", "rm", "1080")
 	e.mustGst("proxy", "127.0.0.1:1080")
@@ -129,7 +129,7 @@ func TestProxyRejects(t *testing.T) {
 
 func TestProxyConflictsWithMap(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("map", "add", "1081", "devcn:5432")
+	e.mustGst("map", "add", "1081", "devbox:5432")
 	e.resetCalls()
 	e.expectError(exitFailure, []string{"proxy", "1081"},
 		"error: a map listens on 127.0.0.1:1081\n", "hint: remove it with `gst map remove 127.0.0.1:1081`, or choose another address\n")
@@ -159,23 +159,23 @@ func TestProxyListenFailure(t *testing.T) {
 
 func TestMapAdd(t *testing.T) {
 	e := newEnv(t)
-	out := e.mustGst("map", "add", "15432", "DevCN.gst:5432")
-	if want := "Mapped 127.0.0.1:15432 to localhost:5432 on devcn.\n"; out != want {
+	out := e.mustGst("map", "add", "15432", "DevBox.gst:5432")
+	if want := "Mapped 127.0.0.1:15432 to localhost:5432 on devbox.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	if !e.back.installed || !slices.Equal(e.back.calls, []string{"sync"}) {
 		t.Fatalf("installed %v, calls %v", e.back.installed, e.back.calls)
 	}
-	e.mustGst("map", "add", "0.0.0.0:8080", "devcn:db.internal:80")
-	e.mustGst("map", "add", "*:8081", "devcn:/run/app.sock")
-	e.mustGst("map", "add", "/tmp/devcn-docker.sock", "devcn:/var/run/docker.sock")
+	e.mustGst("map", "add", "0.0.0.0:8080", "devbox:db.internal:80")
+	e.mustGst("map", "add", "*:8081", "devbox:/run/app.sock")
+	e.mustGst("map", "add", "/tmp/devbox-docker.sock", "devbox:/var/run/docker.sock")
 	e.mustGst("map", "add", "localhost:18082", "far:8082")
 
 	want := []config.Map{
-		{Listen: "127.0.0.1:15432", Machine: "devcn", Target: "localhost:5432"},
-		{Listen: "0.0.0.0:8080", Machine: "devcn", Target: "db.internal:80"},
-		{Listen: "0.0.0.0:8081", Machine: "devcn", Target: "/run/app.sock"},
-		{Listen: "/tmp/devcn-docker.sock", Machine: "devcn", Target: "/var/run/docker.sock"},
+		{Listen: "127.0.0.1:15432", Machine: "devbox", Target: "localhost:5432"},
+		{Listen: "0.0.0.0:8080", Machine: "devbox", Target: "db.internal:80"},
+		{Listen: "0.0.0.0:8081", Machine: "devbox", Target: "/run/app.sock"},
+		{Listen: "/tmp/devbox-docker.sock", Machine: "devbox", Target: "/var/run/docker.sock"},
 		{Listen: "127.0.0.1:18082", Machine: "far", Target: "localhost:8082"},
 	}
 	if got := e.load().Maps; !slices.Equal(got, want) {
@@ -185,11 +185,11 @@ func TestMapAdd(t *testing.T) {
 
 func TestMapListenNormalization(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("map", "add", "15432", "devcn:5432")
+	e.mustGst("map", "add", "15432", "devbox:5432")
 	// The same listen address, spelled differently, is a duplicate.
 	for _, spelling := range []string{"15432", "127.0.0.1:15432", "localhost:15432"} {
 		e.expectError(exitFailure, []string{"map", "add", spelling, "far:80"},
-			"error: 127.0.0.1:15432 is already mapped to devcn:localhost:5432\n", "hint: remove it first with `gst map remove 127.0.0.1:15432`\n")
+			"error: 127.0.0.1:15432 is already mapped to devbox:localhost:5432\n", "hint: remove it first with `gst map remove 127.0.0.1:15432`\n")
 	}
 	if len(e.load().Maps) != 1 {
 		t.Fatalf("maps %+v", e.load().Maps)
@@ -198,7 +198,7 @@ func TestMapListenNormalization(t *testing.T) {
 	if out := e.mustGst("map", "remove", "localhost:15432"); out != "Removed map 127.0.0.1:15432.\n" {
 		t.Fatalf("output %q", out)
 	}
-	e.mustGst("map", "add", "127.0.0.1:15432", "devcn:5432")
+	e.mustGst("map", "add", "127.0.0.1:15432", "devbox:5432")
 	if out := e.mustGst("map", "rm", "15432"); out != "Removed map 127.0.0.1:15432.\n" {
 		t.Fatalf("output %q", out)
 	}
@@ -208,14 +208,14 @@ func TestMapAddRejects(t *testing.T) {
 	e := newEnv(t)
 	for _, args := range [][]string{
 		{"map", "add", "15432"},
-		{"map", "add", "15432", "devcn"},
-		{"map", "add", "0", "devcn:80"},
-		{"map", "add", "99999", "devcn:80"},
-		{"map", "add", "example.com:80", "devcn:80"},
+		{"map", "add", "15432", "devbox"},
+		{"map", "add", "0", "devbox:80"},
+		{"map", "add", "99999", "devbox:80"},
+		{"map", "add", "example.com:80", "devbox:80"},
 		{"map", "add", "15432", "Bad_Name:80"},
-		{"map", "add", "15432", "devcn:0"},
-		{"map", "add", "15432", "devcn:run/app.sock"},
-		{"map", "add", "15432", "devcn:80", "extra"},
+		{"map", "add", "15432", "devbox:0"},
+		{"map", "add", "15432", "devbox:run/app.sock"},
+		{"map", "add", "15432", "devbox:80", "extra"},
 	} {
 		if stderr := e.expectCode(exitUsage, args...); !strings.Contains(stderr, "usage: gst map add") {
 			t.Errorf("gst %v: %q", args, stderr)
@@ -228,27 +228,27 @@ func TestMapAddRejects(t *testing.T) {
 
 func TestMapConflictsWithProxy(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("map", "add", "1082", "devcn:80") // no proxy yet: the address is free
+	e.mustGst("map", "add", "1082", "devbox:80") // no proxy yet: the address is free
 	e.mustGst("map", "rm", "1082")
 	e.mustGst("proxy", "1080")
-	e.expectError(exitFailure, []string{"map", "add", "1080", "devcn:80"},
+	e.expectError(exitFailure, []string{"map", "add", "1080", "devbox:80"},
 		"error: the proxy listens on 127.0.0.1:1080\n", "hint: choose another address, or move the proxy with `gst proxy <address>`\n")
 	e.mustGst("proxy", "1081")
-	e.mustGst("map", "add", "1080", "devcn:80")
-	e.expectCode(exitFailure, "map", "add", "1081", "devcn:80")
+	e.mustGst("map", "add", "1080", "devbox:80")
+	e.expectCode(exitFailure, "map", "add", "1081", "devbox:80")
 	// An off proxy listens nowhere.
 	e.mustGst("proxy", "off")
-	e.mustGst("map", "add", "1081", "devcn:80")
+	e.mustGst("map", "add", "1081", "devbox:80")
 }
 
 func TestMapListenFailure(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	e.back.listenErrors["127.0.0.1:15432"] = "address already in use"
-	e.expectError(exitFailure, []string{"map", "add", "15432", "devcn:5432"},
+	e.expectError(exitFailure, []string{"map", "add", "15432", "devbox:5432"},
 		"error: cannot listen on 127.0.0.1:15432: address already in use\n", "hint: choose another address, or free this one and run `gst up`\n")
 	// A listener that works is not affected by one that does not.
-	if out := e.mustGst("map", "add", "15433", "devcn:5432"); !strings.Contains(out, "Mapped 127.0.0.1:15433") {
+	if out := e.mustGst("map", "add", "15433", "devbox:5432"); !strings.Contains(out, "Mapped 127.0.0.1:15433") {
 		t.Fatalf("output %q", out)
 	}
 	// The failed map stays configured, so that freeing the port and gst up fixes it.
@@ -259,9 +259,9 @@ func TestMapListenFailure(t *testing.T) {
 
 func TestMapRemove(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("map", "add", "15432", "devcn:5432")
-	e.mustGst("map", "add", "15433", "devcn:5433")
-	e.mustGst("map", "add", "/tmp/a.sock", "devcn:/run/a.sock")
+	e.mustGst("map", "add", "15432", "devbox:5432")
+	e.mustGst("map", "add", "15433", "devbox:5433")
+	e.mustGst("map", "add", "/tmp/a.sock", "devbox:/run/a.sock")
 	e.resetCalls()
 
 	e.expectError(exitFailure, []string{"map", "remove", "15432", "9999"}, "error: no map listens on 127.0.0.1:9999\n", "hint: see the maps with `gst map list`\n")
@@ -291,13 +291,13 @@ func TestMapList(t *testing.T) {
 		t.Fatalf("empty JSON %q", out)
 	}
 
-	e.mustGst("map", "add", "15432", "devcn:5432")
+	e.mustGst("map", "add", "15432", "devbox:5432")
 	e.mustGst("map", "add", "15433", "far:5433")
 	e.back.listenErrors["127.0.0.1:15433"] = "address already in use"
 
 	want := [][]string{
 		{"LISTEN", "MACHINE", "TARGET", "STATUS"},
-		{"127.0.0.1:15432", "devcn", "localhost:5432", "listening"},
+		{"127.0.0.1:15432", "devbox", "localhost:5432", "listening"},
 		{"127.0.0.1:15433", "far", "localhost:5433", "failed:", "address", "already", "in", "use"},
 	}
 	if got := rows(e.mustGst("map", "ls")); !equalRows(got, want) {
@@ -306,19 +306,19 @@ func TestMapList(t *testing.T) {
 
 	views := decode[[]mapView](t, e.mustGst("map", "list", "--json"))
 	wantViews := []mapView{
-		{Map: config.Map{Listen: "127.0.0.1:15432", Machine: "devcn", Target: "localhost:5432"}, Status: statusListening},
+		{Map: config.Map{Listen: "127.0.0.1:15432", Machine: "devbox", Target: "localhost:5432"}, Status: statusListening},
 		{Map: config.Map{Listen: "127.0.0.1:15433", Machine: "far", Target: "localhost:5433"}, Status: statusFailed, Error: "address already in use"},
 	}
 	if !slices.Equal(views, wantViews) {
 		t.Fatalf("views\n got %+v\nwant %+v", views, wantViews)
 	}
-	contains(t, e.mustGst("map", "list", "--json"), `"listen": "127.0.0.1:15432"`, `"machine": "devcn"`, `"target": "localhost:5432"`, `"status": "listening"`, `"error": "address already in use"`)
+	contains(t, e.mustGst("map", "list", "--json"), `"listen": "127.0.0.1:15432"`, `"machine": "devbox"`, `"target": "localhost:5432"`, `"status": "listening"`, `"error": "address already in use"`)
 
 	// Without a daemon, nothing listens.
 	e.back.installed = false
 	want = [][]string{
 		{"LISTEN", "MACHINE", "TARGET", "STATUS"},
-		{"127.0.0.1:15432", "devcn", "localhost:5432", "gst", "is", "not", "running;", "start", "it", "with", "gst", "up"},
+		{"127.0.0.1:15432", "devbox", "localhost:5432", "gst", "is", "not", "running;", "start", "it", "with", "gst", "up"},
 		{"127.0.0.1:15433", "far", "localhost:5433", "gst", "is", "not", "running;", "start", "it", "with", "gst", "up"},
 	}
 	if got := rows(e.mustGst("map", "list")); !equalRows(got, want) {
@@ -359,18 +359,18 @@ func TestListenerStatus(t *testing.T) {
 
 func TestRouteAdd(t *testing.T) {
 	e := newEnv(t)
-	out := e.mustGst("route", "add", "Corp.Example.com.", "DevCN")
-	if want := "Route corp.example.com goes through devcn.\n"; out != want {
+	out := e.mustGst("route", "add", "Corp.Example.com.", "DevBox")
+	if want := "Route corp.example.com goes through devbox.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	e.mustGst("route", "add", "10.20.1.5/16", "devcn")
+	e.mustGst("route", "add", "10.20.1.5/16", "devbox")
 	e.mustGst("route", "add", "192.0.2.7", "far.gst")
-	e.mustGst("route", "add", "default", "devsg")
+	e.mustGst("route", "add", "default", "gateway")
 	want := config.Routes{
-		{Match: "corp.example.com", Via: "devcn"},
-		{Match: "10.20.0.0/16", Via: "devcn"},
+		{Match: "corp.example.com", Via: "devbox"},
+		{Match: "10.20.0.0/16", Via: "devbox"},
 		{Match: "192.0.2.7", Via: "far"},
-		{Match: "default", Via: "devsg"},
+		{Match: "default", Via: "gateway"},
 	}
 	if got := e.load().Routes; !slices.Equal(got, want) {
 		t.Fatalf("routes\n got %+v\nwant %+v", got, want)
@@ -382,10 +382,10 @@ func TestRouteAdd(t *testing.T) {
 
 func TestRouteAddReplacesMatch(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("route", "add", "corp.example.com", "devcn")
-	e.mustGst("route", "add", "default", "devcn")
+	e.mustGst("route", "add", "corp.example.com", "devbox")
+	e.mustGst("route", "add", "default", "devbox")
 	e.mustGst("route", "add", "CORP.example.com", "far")
-	want := config.Routes{{Match: "default", Via: "devcn"}, {Match: "corp.example.com", Via: "far"}}
+	want := config.Routes{{Match: "default", Via: "devbox"}, {Match: "corp.example.com", Via: "far"}}
 	if got := e.load().Routes; !slices.Equal(got, want) {
 		t.Fatalf("routes\n got %+v\nwant %+v", got, want)
 	}
@@ -394,9 +394,9 @@ func TestRouteAddReplacesMatch(t *testing.T) {
 func TestRouteAddNotesAboutTheMachine(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
-	e.back.topology = meshTopology() // devcn is an exit, far is not
+	e.back.topology = meshTopology() // devbox is an exit, far is not
 
-	code, stdout, stderr := e.gst("route", "add", "corp.example.com", "devcn")
+	code, stdout, stderr := e.gst("route", "add", "corp.example.com", "devbox")
 	if code != exitOK || stderr != "" || stdout == "" {
 		t.Fatalf("an exit: code %d, stderr %q", code, stderr)
 	}
@@ -436,10 +436,10 @@ func TestRouteAddRejects(t *testing.T) {
 	e := newEnv(t)
 	for _, args := range [][]string{
 		{"route", "add", "default"},
-		{"route", "add", "not a host", "devcn"},
-		{"route", "add", "10.0.0.0/33", "devcn"},
+		{"route", "add", "not a host", "devbox"},
+		{"route", "add", "10.0.0.0/33", "devbox"},
 		{"route", "add", "corp.example.com", "Bad_Name"},
-		{"route", "add", "corp.example.com", "devcn", "extra"},
+		{"route", "add", "corp.example.com", "devbox", "extra"},
 	} {
 		if stderr := e.expectCode(exitUsage, args...); !strings.Contains(stderr, "usage: gst route add <match> <machine>") {
 			t.Errorf("gst %v: %q", args, stderr)
@@ -452,9 +452,9 @@ func TestRouteAddRejects(t *testing.T) {
 
 func TestRouteRemove(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("route", "add", "corp.example.com", "devcn")
-	e.mustGst("route", "add", "10.0.0.0/8", "devcn")
-	e.mustGst("route", "add", "default", "devsg")
+	e.mustGst("route", "add", "corp.example.com", "devbox")
+	e.mustGst("route", "add", "10.0.0.0/8", "devbox")
+	e.mustGst("route", "add", "default", "gateway")
 	e.resetCalls()
 
 	e.expectError(exitFailure, []string{"route", "remove", "default", "example.org"},
@@ -466,7 +466,7 @@ func TestRouteRemove(t *testing.T) {
 	if want := "Removed route 10.0.0.0/8.\nRemoved route corp.example.com.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	if got := e.load().Routes; !slices.Equal(got, config.Routes{{Match: "default", Via: "devsg"}}) {
+	if got := e.load().Routes; !slices.Equal(got, config.Routes{{Match: "default", Via: "gateway"}}) {
 		t.Fatalf("routes %+v", got)
 	}
 	if !slices.Equal(e.back.calls, []string{"sync"}) {
@@ -485,16 +485,16 @@ func TestRouteList(t *testing.T) {
 	if out := e.mustGst("route", "list", "--json"); strings.TrimSpace(out) != "[]" {
 		t.Fatalf("empty JSON %q", out)
 	}
-	e.mustGst("route", "add", "corp.example.com", "devcn")
-	e.mustGst("route", "add", "default", "devsg")
+	e.mustGst("route", "add", "corp.example.com", "devbox")
+	e.mustGst("route", "add", "default", "gateway")
 
-	want := [][]string{{"MATCH", "VIA"}, {"corp.example.com", "devcn"}, {"default", "devsg"}}
+	want := [][]string{{"MATCH", "VIA"}, {"corp.example.com", "devbox"}, {"default", "gateway"}}
 	if got := rows(e.mustGst("route", "ls")); !equalRows(got, want) {
 		t.Fatalf("list\n got %q\nwant %q", got, want)
 	}
 	got := decode[[]config.Route](t, e.mustGst("route", "list", "--json"))
-	if !slices.Equal(got, []config.Route{{Match: "corp.example.com", Via: "devcn"}, {Match: "default", Via: "devsg"}}) {
+	if !slices.Equal(got, []config.Route{{Match: "corp.example.com", Via: "devbox"}, {Match: "default", Via: "gateway"}}) {
 		t.Fatalf("routes %+v", got)
 	}
-	contains(t, e.mustGst("route", "list", "--json"), `"match": "corp.example.com"`, `"via": "devcn"`)
+	contains(t, e.mustGst("route", "list", "--json"), `"match": "corp.example.com"`, `"via": "devbox"`)
 }

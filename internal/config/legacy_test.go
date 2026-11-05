@@ -24,7 +24,7 @@ func TestParseLegacy(t *testing.T) {
       ]
     },
     "viamesh": {
-      "destination": "mesh:devcn",
+      "destination": "mesh:devbox",
       "forwards": [
         {"direction": "local", "listen": "127.0.0.1:8080", "target": "localhost:80"},
         {"direction": "remote", "listen": "127.0.0.1:9000", "target": "127.0.0.1:9001"}
@@ -48,7 +48,7 @@ func TestParseLegacy(t *testing.T) {
 		Maps: []Map{
 			{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"},
 			{Listen: "/tmp/app.sock", Machine: "myhost", Target: "/run/app.sock"},
-			{Listen: "127.0.0.1:8080", Machine: "devcn", Target: "localhost:80"},
+			{Listen: "127.0.0.1:8080", Machine: "devbox", Target: "localhost:80"},
 		},
 		Routes: Routes{},
 	}

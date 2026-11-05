@@ -23,9 +23,9 @@ func (a *app) connectCommand() *cobra.Command {
 mesh, for example as an ssh ProxyCommand. A bare port means localhost on
 that machine, and an absolute path is a Unix socket there. A host:port
 other than that machine's own needs the machine to be an exit.`,
-		Example: `  gst connect devcn 5432
-  gst connect devcn /run/user/1000/app.sock
-  ssh -o ProxyCommand='gst connect %h %p' devcn.gst`,
+		Example: `  gst connect devbox 5432
+  gst connect devbox /run/user/1000/app.sock
+  ssh -o ProxyCommand='gst connect %h %p' devbox.gst`,
 		Args: a.args(2, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			machine, err := config.ParseMachine(args[0])

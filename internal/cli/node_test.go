@@ -13,23 +13,23 @@ import (
 
 func nodeID(prefix string) string { return prefix + strings.Repeat("0", 32-len(prefix)) }
 
-// meshTopology is a mesh as seen from laptop: devcn is linked to it, far
-// and dup1 are behind devcn, dup2 shares dup1's name and is out of reach.
+// meshTopology is a mesh as seen from laptop: devbox is linked to it, far
+// and dup1 are behind devbox, dup2 shares dup1's name and is out of reach.
 func meshTopology() wire.Topology {
-	self, devcn, far, dup1, dup2 := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333"), nodeID("dddd4444"), nodeID("eeee5555")
+	self, devbox, far, dup1, dup2 := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333"), nodeID("dddd4444"), nodeID("eeee5555")
 	return wire.Topology{
 		Self: self,
 		Nodes: []wire.TopoNode{
 			{ID: self, Name: "laptop", Software: "gst 0.3.0", Reachable: true, Path: []string{self}},
-			{ID: devcn, Name: "devcn", Software: "gst 0.3.0", Exit: true, Reachable: true, Path: []string{self, devcn}},
-			{ID: far, Name: "far", Reachable: true, Path: []string{self, devcn, far}},
-			{ID: dup1, Name: "dup", Software: "gst 0.3.0", Reachable: true, Path: []string{self, devcn, dup1}},
+			{ID: devbox, Name: "devbox", Software: "gst 0.3.0", Exit: true, Reachable: true, Path: []string{self, devbox}},
+			{ID: far, Name: "far", Reachable: true, Path: []string{self, devbox, far}},
+			{ID: dup1, Name: "dup", Software: "gst 0.3.0", Reachable: true, Path: []string{self, devbox, dup1}},
 			{ID: dup2, Name: "dup", Software: "gst 0.3.0"},
 		},
 		Edges: []wire.TopoEdge{
-			{From: devcn, To: dup1, Link: "d1"},
-			{From: self, To: devcn, Link: "devcn"},
-			{From: devcn, To: far, Link: "far"},
+			{From: devbox, To: dup1, Link: "d1"},
+			{From: self, To: devbox, Link: "devbox"},
+			{From: devbox, To: far, Link: "far"},
 		},
 	}
 }
@@ -42,11 +42,11 @@ func TestConnect(t *testing.T) {
 		args []string
 		call string
 	}{
-		{[]string{"devcn", "5432"}, "connect devcn tcp localhost:5432"},
-		{[]string{"devcn.gst", "5432"}, "connect devcn tcp localhost:5432"},
-		{[]string{"DevCN.GST", "db.internal:5432"}, "connect devcn tcp db.internal:5432"},
-		{[]string{"devcn", "127.0.0.1:22"}, "connect devcn tcp 127.0.0.1:22"},
-		{[]string{"devcn", "/run/app.sock"}, "connect devcn unix /run/app.sock"},
+		{[]string{"devbox", "5432"}, "connect devbox tcp localhost:5432"},
+		{[]string{"devbox.gst", "5432"}, "connect devbox tcp localhost:5432"},
+		{[]string{"DevBox.GST", "db.internal:5432"}, "connect devbox tcp db.internal:5432"},
+		{[]string{"devbox", "127.0.0.1:22"}, "connect devbox tcp 127.0.0.1:22"},
+		{[]string{"devbox", "/run/app.sock"}, "connect devbox unix /run/app.sock"},
 		{[]string{"cccc3333", "80"}, "connect cccc3333 tcp localhost:80"},
 	} {
 		e.resetCalls()
@@ -70,10 +70,10 @@ func TestConnectWithoutStdin(t *testing.T) {
 	var stdout, stderr strings.Builder
 	a := e.app(&stdout, &stderr)
 	a.stdin = nil
-	if code := a.execute(context.Background(), []string{"--config", e.config, "connect", "devcn", "22"}); code != exitOK {
+	if code := a.execute(context.Background(), []string{"--config", e.config, "connect", "devbox", "22"}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if stdout.String() != "hello from devcn" {
+	if stdout.String() != "hello from devbox" {
 		t.Fatalf("output %q", stdout.String())
 	}
 }
@@ -84,10 +84,10 @@ func TestConnectErrors(t *testing.T) {
 	for _, args := range [][]string{
 		{"connect", "Bad_Name", "22"},
 		{"connect", "dev cn", "22"},
-		{"connect", "devcn", "0"},
-		{"connect", "devcn", "http"},
-		{"connect", "devcn", "relative.sock/x"},
-		{"connect", "devcn", "22", "extra"},
+		{"connect", "devbox", "0"},
+		{"connect", "devbox", "http"},
+		{"connect", "devbox", "relative.sock/x"},
+		{"connect", "devbox", "22", "extra"},
 	} {
 		if stderr := e.expectCode(exitUsage, args...); !strings.Contains(stderr, "usage: gst connect") {
 			t.Errorf("gst %v: %q", args, stderr)
@@ -223,7 +223,7 @@ func TestChangesWhileDown(t *testing.T) {
 		t.Fatal("the change was not saved")
 	}
 
-	_, _, stderr = e.gst("map", "add", "15432", "devcn:5432")
+	_, _, stderr = e.gst("map", "add", "15432", "devbox:5432")
 	contains(t, stderr, "note: gst is down on this machine")
 
 	e.mustGst("up")
@@ -231,7 +231,7 @@ func TestChangesWhileDown(t *testing.T) {
 		t.Fatal("up did not start the daemon")
 	}
 	// Only the changes made while down print the note.
-	if _, _, stderr := e.gst("route", "add", "default", "devcn"); strings.Contains(stderr, "gst is down") {
+	if _, _, stderr := e.gst("route", "add", "default", "devbox"); strings.Contains(stderr, "gst is down") {
 		t.Fatalf("stderr %q", stderr)
 	}
 }

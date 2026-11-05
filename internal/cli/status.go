@@ -44,7 +44,7 @@ With a machine, show its links, proxy, maps, and routes, asked through
 the mesh. A machine is named by its name, its id or an id prefix of at
 least 4 characters, or the name of a link to it, optionally followed by
 .gst.`,
-		Example: "  gst status\n  gst status --all\n  gst status devcn",
+		Example: "  gst status\n  gst status --all\n  gst status devbox",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			b, err := a.backend()
@@ -259,7 +259,7 @@ does. With -v, after the answers and any try still running, show that
 link, or why there is none, and what both machines did in their latest
 try: the addresses they offered, the probes they heard, and the QUIC
 handshake.`,
-		Example: "  gst ping devcn\n  gst ping devsg -c 10\n  gst ping devcn -v",
+		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -v",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if count < 1 {

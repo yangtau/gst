@@ -127,7 +127,7 @@ func TestUIIsReadOnly(t *testing.T) {
 	e.mustGst("add", "web", "myhost")
 	c := newUIClient(t, e)
 	e.resetCalls()
-	for _, path := range []string{"/api/state", "/api/nodes/devcn", "/api/links/web/stop", "/api/links/web/restart", "/api/links/web/start"} {
+	for _, path := range []string{"/api/state", "/api/nodes/devbox", "/api/links/web/stop", "/api/links/web/restart", "/api/links/web/start"} {
 		for _, method := range []string{"POST", "PUT", "DELETE"} {
 			if res := c.do(method, path, "Bearer secret"); res.StatusCode == http.StatusOK {
 				t.Errorf("%s %s: %s", method, path, res.Status)
@@ -162,7 +162,7 @@ func TestUIRejectsOtherHosts(t *testing.T) {
 		"localhost.evil.example.com:8370": http.StatusForbidden,
 		"":                                http.StatusForbidden,
 	} {
-		targets := []struct{ method, path string }{{"GET", "/"}, {"GET", "/api/state"}, {"GET", "/api/nodes/devcn"}}
+		targets := []struct{ method, path string }{{"GET", "/"}, {"GET", "/api/state"}, {"GET", "/api/nodes/devbox"}}
 		for _, target := range targets {
 			req := httptest.NewRequest(target.method, target.path, nil)
 			req.Host = host
@@ -186,8 +186,8 @@ func TestUIStateShape(t *testing.T) {
 	e.mustGst("add", "web", "myhost")
 	e.mustGst("add", "db")
 	e.mustGst("proxy", "1081")
-	e.mustGst("map", "add", "15432", "devcn:5432")
-	e.mustGst("route", "add", "corp.example.com", "devcn")
+	e.mustGst("map", "add", "15432", "devbox:5432")
+	e.mustGst("route", "add", "corp.example.com", "devbox")
 	e.back.topology = meshTopology()
 	c := newUIClient(t, e)
 
@@ -225,7 +225,7 @@ func TestUIStateShape(t *testing.T) {
 		st.Links[1].Name != "web" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "web" {
 		t.Fatalf("links %+v", st.Links)
 	}
-	if len(st.Maps) != 1 || st.Maps[0].Listen != "127.0.0.1:15432" || st.Maps[0].Machine != "devcn" || st.Maps[0].Target != "localhost:5432" || st.Maps[0].Error != "" {
+	if len(st.Maps) != 1 || st.Maps[0].Listen != "127.0.0.1:15432" || st.Maps[0].Machine != "devbox" || st.Maps[0].Target != "localhost:5432" || st.Maps[0].Error != "" {
 		t.Fatalf("maps %+v", st.Maps)
 	}
 	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Edges) != 3 {

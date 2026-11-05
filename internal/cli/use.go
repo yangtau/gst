@@ -178,10 +178,10 @@ listens on 127.0.0.1, an address:port, or an absolute socket path.
 <target> is a port, which means localhost on that machine, a host:port,
 or an absolute socket path there. A host:port other than that machine's
 own needs the machine to be an exit.`,
-		Example: `  gst map add 15432 devcn:5432
-  gst map add 0.0.0.0:8080 devcn:8080
-  gst map add 18082 devcn:/run/user/1000/app.sock
-  gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock`,
+		Example: `  gst map add 15432 devbox:5432
+  gst map add 0.0.0.0:8080 devbox:8080
+  gst map add 18082 devbox:/run/user/1000/app.sock
+  gst map add /tmp/devbox-docker.sock devbox:/var/run/docker.sock`,
 		Args: a.args(2, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			listen, err := config.ParseListen(args[0])
@@ -347,9 +347,9 @@ func (a *app) routeAddCommand() *cobra.Command {
 <machine>. <match> is default, a domain such as example.com, an IP
 address, or a CIDR prefix such as 10.0.0.0/8. A route with the same
 match is replaced.`,
-		Example: `  gst route add corp.example.com devcn
-  gst route add 10.20.0.0/16 devcn
-  gst route add default devsg`,
+		Example: `  gst route add corp.example.com devbox
+  gst route add 10.20.0.0/16 devbox
+  gst route add default gateway`,
 		Args: a.args(2, 2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			match, err := config.ParseRouteMatch(args[0])
