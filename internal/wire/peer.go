@@ -22,6 +22,10 @@ const (
 	// MethodLinkRemove ("link.remove") takes LinkRemove and returns
 	// nothing: the caller is about to remove the link for good.
 	MethodLinkRemove = "link.remove"
+	// MethodDirectTrace ("direct.trace") takes DirectTraceParams and
+	// returns DirectTrace: what the callee did in its latest try at a
+	// direct link with that node.
+	MethodDirectTrace = "direct.trace"
 )
 
 // FeatureYamux in a peer Hello says that the connection continues as a
@@ -85,12 +89,33 @@ type Edge struct {
 	// Direct marks a direct link, which has no name, that this node
 	// opened. A direct link that the other node opened has no marks.
 	Direct bool `json:"direct,omitempty"`
+	// Local and Remote are the addresses of a direct link as the node
+	// that opened it sees them, each an IP:port.
+	Local  string `json:"local,omitempty"`
+	Remote string `json:"remote,omitempty"`
 }
 
 // LinkRemove names a link that its opener is removing.
 type LinkRemove struct {
 	Node string `json:"node"` // the caller's id
 	Link string `json:"link"` // the link's name, as in the caller's record
+}
+
+// DirectTraceParams name the node at the other end of a direct link.
+type DirectTraceParams struct {
+	Node string `json:"node"` // its id
+}
+
+// DirectTrace is what a node did in its latest try at a direct link, in
+// order. It holds addresses, so it stays out of the daemon log.
+type DirectTrace struct {
+	Events []DirectEvent `json:"events"`
+}
+
+// DirectEvent is one thing that a try at a direct link did.
+type DirectEvent struct {
+	Time time.Time `json:"time"`
+	Text string    `json:"text"`
 }
 
 // DirectOffer is one node's side of a direct link: in the params of

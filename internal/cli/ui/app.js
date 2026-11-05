@@ -83,6 +83,16 @@ function linkText(from, to, name) {
   return !to || to === name ? `${from}->${name}` : `${from}->${to} (${name})`;
 }
 
+// addresses shows the ends of a direct link, as the machine that opened it
+// sees them.
+const addresses = (e) => (e.local ? `${e.local} → ${e.remote}` : "");
+
+// directEdges lists the direct links of the mesh.
+function directEdges() {
+  const topo = topology();
+  return topo ? topo.edges.filter((e) => e.direct) : [];
+}
+
 // problems names what does not work on a machine, as gst status does.
 function problems(st) {
   if (!st) return [];
@@ -192,12 +202,27 @@ function linksGroup(st, isSelf) {
 // which only the mesh knows.
 function linkedFromGroup(id, names) {
   const topo = topology();
-  const edges = topo ? topo.edges.filter((e) => e.to === id) : [];
+  const edges = topo ? topo.edges.filter((e) => e.to === id && !e.direct) : [];
   if (edges.length === 0) return null;
   const rows = edges.map((e) => el("li", { class: "row" },
     mark("ok", "running"),
     jump(names[e.from] || shortID(e.from), "row-name", linkText(names[e.from] || shortID(e.from), names[e.to], e.link))));
   return group("Linked from", count(edges.length), rows);
+}
+
+// directGroup lists the direct links of this machine, whichever end
+// opened them.
+function directGroup(id, names) {
+  const edges = directEdges().filter((e) => e.from === id || e.to === id);
+  if (edges.length === 0) return null;
+  const rows = edges.map((e) => {
+    const other = e.from === id ? e.to : e.from;
+    return el("li", { class: "row" },
+      mark("ok", "running"),
+      jump(names[other] || shortID(other), "row-name", linkText(names[e.from] || shortID(e.from), names[e.to] || shortID(e.to), "")),
+      el("span", { class: "cell mono sub row-wide", title: addresses(e) }, addresses(e)));
+  });
+  return group("Direct links", count(edges.length), rows);
 }
 
 // proxyEnv is the line that gst proxy prints, for an address that clients
@@ -299,6 +324,7 @@ function drawDetail(n, names) {
   }
   detail.replaceChildren(...[
     linksGroup(st, isSelf),
+    n && directGroup(n.id, names),
     n && linkedFromGroup(n.id, names),
     proxyGroup(st, isSelf),
     mapsGroup(st, isSelf),
@@ -384,8 +410,8 @@ function drawRing(nodes, names) {
     };
     const p = away(a, 9), q = away(b, 12);
     const on = e.from === selected || e.to === selected ? " on" : "";
-    links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
-      svg("title", null, linkText(names[e.from], names[e.to], e.link))));
+    links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + (e.direct ? " direct" : "") + on },
+      svg("title", null, [linkText(names[e.from], names[e.to], e.link), addresses(e)].filter(Boolean).join("\n"))));
     // The arrowhead, along the line's last stretch.
     const angle = Math.atan2(q.y - c.y, q.x - c.x);
     const at = (d, turn) => `${q.x + d * Math.cos(angle + turn)},${q.y + d * Math.sin(angle + turn)}`;
@@ -411,6 +437,17 @@ function drawRing(nodes, names) {
 
   ring.setAttribute("viewBox", `0 0 ${2 * cx} ${2 * cy}`);
   ring.replaceChildren(...links, ...tips, ...dots);
+}
+
+// drawDirects lists every direct link of the mesh, beside the ring that
+// draws them dashed.
+function drawDirects(names) {
+  const box = $("directs");
+  const edges = directEdges();
+  box.toggleAttribute("hidden", edges.length === 0);
+  box.replaceChildren(el("h2", null, "Direct links"), ...edges.map((e) => el("p", null,
+    el("span", { class: "direct-name" }, `${names[e.from] || shortID(e.from)} → ${names[e.to] || shortID(e.to)}`),
+    el("span", { class: "mono sub direct-addr" }, addresses(e)))));
 }
 
 function drawProps(n, names, st) {
@@ -487,6 +524,7 @@ function draw() {
   drawHead(n, names, st);
   drawDetail(n, names);
   drawRing(nodes, names);
+  drawDirects(names);
   drawProps(n, names, st);
 }
 

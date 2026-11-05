@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,4 +346,55 @@ func TestDirectOfferInvalid(t *testing.T) {
 			t.Errorf("answered an offer from %q", node)
 		}
 	}
+}
+
+// A node reports a direct link's addresses, in the topology too, and what
+// both ends did to set it up.
+func TestDirectReport(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	enableDirect(t, a, c)
+	linkUp(t, a, b, "b")
+	linkUp(t, c, b, "b")
+	goDirect(t, a, c)
+
+	var r wire.DirectReport
+	waitFor(t, "the report of the link", func() bool {
+		var err error
+		r, err = a.DirectReport(t.Context(), "c")
+		return err == nil && r.Link != nil && !r.Trying && len(r.Peer.Events) > 0 && slices.ContainsFunc(r.Peer.Events, hasText("up: ")) && slices.ContainsFunc(r.Local.Events, hasText("up: "))
+	})
+	if r.PeerError != "" || r.Link.Local == "" || r.Link.Remote == "" {
+		t.Fatalf("report %+v", r)
+	}
+	opener, other := r.Local.Events, r.Peer.Events
+	if !slices.ContainsFunc(opener, hasText("offering")) {
+		opener, other = other, opener // c offered.
+	}
+	for _, want := range []string{"offering", "the answer offers", "the path works", "QUIC handshake done"} {
+		if !slices.ContainsFunc(opener, hasText(want)) {
+			t.Fatalf("the offering side's trace lacks %q: %v", want, opener)
+		}
+	}
+	for _, want := range []string{"offer through the mesh", "answering with", "probe from", "QUIC connection from"} {
+		if !slices.ContainsFunc(other, hasText(want)) {
+			t.Fatalf("the answering side's trace lacks %q: %v", want, other)
+		}
+	}
+
+	waitFor(t, "the addresses in b's view", func() bool {
+		return slices.ContainsFunc(b.Topology().Edges, func(e wire.TopoEdge) bool { return e.Direct && e.Local != "" && e.Remote != "" })
+	})
+	if p, err := a.Ping(t.Context(), "c"); err != nil || !p.Direct {
+		t.Fatalf("ping: %+v, %v", p, err)
+	}
+	if p, err := a.Ping(t.Context(), "b"); err != nil || p.Direct {
+		t.Fatalf("ping over SSH: %+v, %v", p, err)
+	}
+	if _, err := a.DirectReport(t.Context(), "a"); err == nil {
+		t.Fatal("a report on this machine")
+	}
+}
+
+func hasText(text string) func(wire.DirectEvent) bool {
+	return func(e wire.DirectEvent) bool { return strings.Contains(e.Text, text) }
 }

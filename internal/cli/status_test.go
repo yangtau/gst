@@ -227,8 +227,8 @@ func TestStatusShowsDirectLinks(t *testing.T) {
 	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
 		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
 		{ID: b, Name: "b", Reachable: true, Direct: true, Path: []string{a, b}},
-	}, Edges: []wire.TopoEdge{{From: a, To: b, Direct: true}, {From: a, To: b, Link: "b"}}}
-	want := []string{"aaaa1111 a - -", "bbbb2222 b - online; direct", "", "LINK", "a->b (direct)", "a->b"}
+	}, Edges: []wire.TopoEdge{{From: a, To: b, Direct: true, Local: "192.0.2.1:5000", Remote: "192.0.2.2:6000"}, {From: a, To: b, Link: "b"}}}
+	want := []string{"aaaa1111 a - -", "bbbb2222 b - online; direct", "", "LINK", "a->b (direct) 192.0.2.1:5000 -> 192.0.2.2:6000", "a->b"}
 	if got := lines(e.mustGst("status", "--all")); !slices.Equal(got, want) {
 		t.Fatalf("status --all\n got %q\nwant %q", got, want)
 	}
@@ -337,7 +337,7 @@ func TestPing(t *testing.T) {
 	devcn := peerOf("devcn")
 
 	out := e.mustGst("ping", "devcn", "-c", "1")
-	if want := "pong from devcn (" + shortID(devcn.ID) + ") directly in 1.5 ms\n"; out != want {
+	if want := "pong from devcn (" + shortID(devcn.ID) + ") over SSH in 1.5 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	if want := []string{"ping devcn"}; !slices.Equal(e.back.calls, want) {
@@ -467,5 +467,60 @@ func TestUINodeStatus(t *testing.T) {
 	}
 	if res := c.do("POST", "/api/nodes/devcn", "Bearer secret"); res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST: %s", res.Status)
+	}
+}
+
+func TestPingVerbose(t *testing.T) {
+	e := newEnv(t)
+	start := time.Now()
+	event := func(after time.Duration, text string) wire.DirectEvent {
+		return wire.DirectEvent{Time: start.Add(after), Text: text}
+	}
+	asked := 0
+	e.back.ping = func(node string) (wire.Ping, error) {
+		return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 1.5, Direct: true}, nil
+	}
+	e.back.direct = func(node string) (wire.DirectReport, error) {
+		asked++
+		return wire.DirectReport{
+			Node:   peerOf(node),
+			Trying: asked == 1, // A try still running is waited for.
+			Link:   &wire.DirectLink{Local: "192.0.2.1:5000", Remote: "192.0.2.2:6000"},
+			Local:  wire.DirectTrace{Events: []wire.DirectEvent{event(0, "offering"), event(1500*time.Millisecond, "up")}},
+			Peer:   wire.DirectTrace{},
+		}, nil
+	}
+	out := e.mustGst("ping", "devcn", "-c", "1", "-v")
+	if asked != 2 {
+		t.Fatalf("asked %d times, want 2", asked)
+	}
+	for _, want := range []string{
+		"over a direct link in 1.5 ms\n",
+		"Direct link with devcn: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
+		"This machine:\n    0.000s  offering\n    1.500s  up\n",
+		"devcn:\n  no try yet\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+
+	// Without a link, it says when the next try is.
+	e.back.direct = func(node string) (wire.DirectReport, error) {
+		return wire.DirectReport{Node: peerOf(node), Next: time.Now().Add(time.Minute), PeerError: "no way"}, nil
+	}
+	out = e.mustGst("ping", "devcn", "-c", "1", "-v")
+	for _, want := range []string{"Direct link with devcn: none, next try in 1m0s\n", "no answer: no way\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+
+	var got verbosePing
+	if err := json.Unmarshal([]byte(e.mustGst("ping", "devcn", "-c", "1", "-v", "--json")), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Pings) != 1 || got.Direct.Node.Name != "devcn" {
+		t.Fatalf("--json: %+v", got)
 	}
 }

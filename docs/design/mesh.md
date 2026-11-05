@@ -159,7 +159,8 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
 | `mesh.nodes` | 无 | `Topology` |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
-| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 mesh 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（直连时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping` 每秒调用一次 |
+| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字, "direct": 布尔}`：经 mesh 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（直连时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping` 每秒调用一次 |
+| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 direct link）、`trying`（有尝试在进行）、`link`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
 | `mesh.connect` | `{"node": <machine>, "target": {"network": "tcp"\|"unix", "address": …}}` | 成功后该连接变为到目标的原始字节流 |
 
 link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
@@ -174,6 +175,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 | `node.status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同）；不提供状态的节点返回 `unsupported_method` |
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方建立 direct link，见下文 |
 | `link.remove` | `{"node": 调用方 id, "link": link 名}` | 无；调用方即将删除这条 link，见 direct link 一节 |
+| `direct.trace` | `{"node": 调用方 id}` | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次尝试建立 direct link 的过程 |
 
 ### link 的建立
 
@@ -196,9 +198,9 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 - 每个节点只发布自己的记录，`links` 是它处于 running 的 link：自己发起的带 `name`，接受的 `name` 为空。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`；若收到自己旧进程发布的更大 `seq`，立即以更大的 `seq` 重新发布。
 - 节点信息或 link 变化时立即重新发布；收到更大 `seq` 的记录就替换，并经各条 `topology.sync` 流推送给其他 peer（洪泛）。
-- direct link 由发起方列出，`links` 中 `name` 为空、`direct` 为 true；接受方的 `name` 同样为空，没有 `direct`。
+- direct link 由发起方列出，`links` 中 `name` 为空、`direct` 为 true，`local` 和 `remote` 是发起方看到的两端 `IP:port`；接受方的 `name` 同样为空，没有 `direct`。
 - 记录有效期 30 分钟，节点每 10 分钟刷新。每个节点最多保留 1024 条记录，每条记录最多 1024 条 link。
-- `Topology` 由查看方计算：`nodes`（id、name、software、exit、reachable、`path`：从本节点出发的最短路径上的节点 id）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link，direct link 带 `direct: true`。`nodes` 的 `direct` 表示查看方有到该节点的 direct link。link 是双向的，路径可以沿任一方向经过。
+- `Topology` 由查看方计算：`nodes`（id、name、software、exit、reachable、`path`：从本节点出发的最短路径上的节点 id）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link，direct link 带 `direct: true` 和 `local`、`remote`。`nodes` 的 `direct` 表示查看方有到该节点的 direct link。link 是双向的，路径可以沿任一方向经过。
 
 ### 中转
 
@@ -213,7 +215,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。
 
 - **触发**：`Node.Dial` 向某节点建立连接时，如果没有到它的 direct link，就在后台尝试，这个连接不等待、继续走原路，之后的连接走 direct link。失败或断开后等待 1 分钟再试，连续失败时加倍，最长 30 分钟，成功后重置。
-- **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …], "fingerprint": …}`，响应是对方的 `addresses` 和 `fingerprint`。地址只出现在这次调用中，不进 link-state 记录，也不进日志。
+- **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …], "fingerprint": …}`，响应是对方的 `addresses` 和 `fingerprint`。候选地址只出现在这次调用中。建好的 direct link 所用的两端地址写进发起方的 link-state 记录，让每个节点都能显示它们。地址都不进日志。
 - **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的 direct link，说明它已失效，先关闭。
 - **socket**：每次尝试为每个本机地址绑定一个 UDP socket（每个地址族最多 8 个），跳过回环、link-local 和点对点接口（VPN、代理的 TUN）。必须绑定具体地址：通配 socket 回包的源地址不一定是对方发往的地址，默认路由被代理的 TUN 接管时回包还会被截走。
 - **探测**：双方每 200 ms 向对方所有地址发探测包，`0x01` 加 16 字节 token，收到后回复 `0x02` 加 token。首字节让 quic-go 把它们当作非 QUIC 包交出来。收到探测包时，把来源地址也加入探测目标：NAT 后的节点不知道自己的公网地址，但只要一方能到达另一方，另一方就从来包学到地址，所以不需要 STUN。双方都有状态防火墙时，同时发包也让两边放行对方。
@@ -223,6 +225,7 @@ SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（
 - **选路**：`Topology` 的路径计入 direct link。每一跳由 `sessionTo` 选择 session，有 direct link 就用它，所以 `relay.open` 不变。direct link 在调用途中断开时，这一跳改走到同一节点的其他 link，连接不失败，只是最多等到 20 秒的超时。
 - **断开**：direct link 断开时，走它的连接随之中断，新连接回到其他 link。已有连接不在 link 之间迁移。
 - **SSH 决定成员**：丢失 SSH link 不改变成员，direct link 继续运行，例如两个节点之间的机器休眠时。只有 `gst remove` 删除 link 才改变成员：打开方在停止 link 前调用 `link.remove`（最多等 3 秒），之后 link 两端各检查一次，不计这条 link 时只经 SSH link 能否到达 direct link 的对端，到不了就关闭。对方没有收到 `link.remove`（link 当时已断）时，它的 direct link 继续运行，直到自行断开。
+- **过程记录**：每个节点在内存里保留与每个对端最近一次尝试的事件（提供的地址、听到的探测、被证明的路径、QUIC 握手、结果），新的尝试开始时清空，最多 200 条。记录含地址，只经 `mesh.direct` 和 `direct.trace` 交给发出请求的用户，不进日志。
 - `GST_DIRECT=off` 让 daemon 不发起也不接受 direct link，集成测试用它固定路径。
 
 ## Web UI

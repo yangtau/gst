@@ -74,8 +74,8 @@ func TestMesh(t *testing.T) {
 	// machines on the way.
 	t.Run("Ping", func(t *testing.T) {
 		a.waitReachable("c")
-		pong := regexp.MustCompile(`^pong from (\w+) \([0-9a-f]{8}\) (directly|via [\w, ]+) in [0-9]+\.[0-9] ms$`)
-		for _, tc := range []struct{ machine, path string }{{"c", "via b"}, {"b", "directly"}, {"c.gst", "via b"}} {
+		pong := regexp.MustCompile(`^pong from (\w+) \([0-9a-f]{8}\) (over SSH|via [\w, ]+) in [0-9]+\.[0-9] ms$`)
+		for _, tc := range []struct{ machine, path string }{{"c", "via b"}, {"b", "over SSH"}, {"c.gst", "via b"}} {
 			out := a.mustGst("ping", tc.machine, "-c", "1")
 			m := pong.FindStringSubmatch(strings.TrimSpace(out))
 			if m == nil || m[1] != strings.TrimSuffix(tc.machine, ".gst") || m[2] != tc.path {

@@ -52,6 +52,10 @@ const (
 // address. Close it when the try ends; the socket of the connection it
 // returned stays open.
 type Attempt struct {
+	// Trace, when set before Dial or Accept, receives what the attempt
+	// does, addresses included, from several goroutines.
+	Trace func(string)
+
 	token       [tokenLen]byte
 	cert        tls.Certificate
 	fingerprint string
@@ -60,6 +64,7 @@ type Attempt struct {
 	mu      sync.Mutex
 	targets map[netip.AddrPort]bool
 	proved  map[path]bool
+	heard   map[path]bool
 	won     *socket
 }
 
@@ -91,6 +96,7 @@ func New(addrs []netip.Addr) (*Attempt, error) {
 		fingerprint: fingerprint(cert.Certificate[0]),
 		targets:     map[netip.AddrPort]bool{},
 		proved:      map[path]bool{},
+		heard:       map[path]bool{},
 	}
 	if _, err := rand.Read(a.token[:]); err != nil {
 		return nil, err
@@ -115,6 +121,12 @@ func New(addrs []netip.Addr) (*Attempt, error) {
 		return nil, errors.New("no local address to use")
 	}
 	return a, nil
+}
+
+func (a *Attempt) trace(format string, args ...any) {
+	if a.Trace != nil {
+		a.Trace(fmt.Sprintf(format, args...))
+	}
 }
 
 // Close ends the attempt, keeping only what its connection uses.
@@ -153,12 +165,15 @@ func (a *Attempt) Dial(ctx context.Context, theirs wire.DirectOffer) (*Conn, err
 		case <-ctx.Done():
 			return nil, errors.New("no path found")
 		case p := <-proved:
+			a.trace("QUIC handshake from %s to %s", p.socket.addr, p.to)
 			dialCtx, stop := context.WithTimeout(ctx, dialTimeout)
 			conn, err := p.socket.transport.Dial(dialCtx, net.UDPAddrFromAddrPort(p.to), conf, quicConfig())
 			stop()
 			if err == nil {
+				a.trace("QUIC handshake done, certificates match")
 				return a.keep(p.socket, conn), nil
 			}
+			a.trace("QUIC handshake to %s failed: %v", p.to, err)
 		}
 	}
 }
@@ -207,6 +222,7 @@ func (a *Attempt) Accept(ctx context.Context, theirs wire.DirectOffer) (*Conn, e
 	a.probe(ctx, targets)
 	select {
 	case c := <-conns:
+		a.trace("QUIC connection from %s on %s, certificates match", c.conn.RemoteAddr(), c.socket.addr)
 		return a.keep(c.socket, c.conn), nil
 	case <-ctx.Done():
 		return nil, errors.New("no connection arrived")
@@ -244,6 +260,7 @@ func (a *Attempt) probe(ctx context.Context, targets []netip.AddrPort) <-chan pa
 		a.targets[t] = true
 	}
 	a.mu.Unlock()
+	a.trace("probing %d addresses from %d sockets", len(targets), len(a.sockets))
 	proved := make(chan path, 1024)
 	for _, s := range a.sockets {
 		go a.read(ctx, s, proved)
@@ -306,11 +323,20 @@ func (a *Attempt) read(ctx context.Context, s *socket, proved chan<- path) {
 		switch buf[0] {
 		case kindProbe:
 			s.transport.WriteTo(a.packet(kindAnswer), from)
+			p := path{s, source}
 			a.mu.Lock()
+			fresh, learned := !a.heard[p], !a.targets[source]
+			a.heard[p] = true
 			if len(a.targets) < 2*maxAddresses {
 				a.targets[source] = true
 			}
 			a.mu.Unlock()
+			switch {
+			case fresh && learned:
+				a.trace("probe from %s on %s: a new address, answering and probing it too", source, s.addr)
+			case fresh:
+				a.trace("probe from %s on %s: answering", source, s.addr)
+			}
 		case kindAnswer:
 			p := path{s, source}
 			a.mu.Lock()
@@ -318,6 +344,7 @@ func (a *Attempt) read(ctx context.Context, s *socket, proved chan<- path) {
 			a.proved[p] = true
 			a.mu.Unlock()
 			if fresh {
+				a.trace("answer from %s on %s: the path works", source, s.addr)
 				select {
 				case proved <- p:
 				default:

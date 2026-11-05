@@ -3,7 +3,10 @@ package mesh
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
@@ -16,6 +19,7 @@ const (
 	directRetry   = time.Minute      // first wait after a direct link fails or ends
 	directMaxWait = 30 * time.Minute
 	removeTimeout = 3 * time.Second // to tell a peer that its link is being removed
+	maxTrace      = 200             // events kept of a try
 )
 
 // A direct link is a link over UDP (internal/direct) between two nodes,
@@ -94,6 +98,50 @@ func (n *Node) endStrandedDirect(gone func(wire.TopoEdge) bool) {
 	}
 }
 
+// trace records what the try with node id did. The trace holds addresses,
+// so it goes only to the user who asks for it, never to the log.
+func (n *Node) trace(id, format string, args ...any) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.directTrace[id]) < maxTrace {
+		n.directTrace[id] = append(n.directTrace[id], wire.DirectEvent{Time: time.Now(), Text: fmt.Sprintf(format, args...)})
+	}
+}
+
+func (n *Node) serveTrace(_ context.Context, p wire.DirectTraceParams) (any, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return wire.DirectTrace{Events: slices.Clone(n.directTrace[p.Node])}, nil
+}
+
+// DirectReport reports the direct link with the machine that ref names,
+// and what this node and that machine did in their latest try at one.
+func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport, error) {
+	dest, err := FindNode(n.Topology(), ref)
+	if err != nil {
+		return wire.DirectReport{}, err
+	}
+	if dest.ID == n.Self().ID {
+		return wire.DirectReport{}, wire.Errorf(wire.CodeInvalidParams, "%s is this machine", dest.Name)
+	}
+	r := wire.DirectReport{Node: wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software, Exit: dest.Exit}}
+	if err := n.Call(ctx, dest.ID, wire.MethodDirectTrace, wire.DirectTraceParams{Node: n.Self().ID}, &r.Peer); err != nil {
+		r.PeerError = err.Error()
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	r.Off = n.directCtx == nil
+	r.Trying = n.directTries[dest.ID] != nil
+	if l := n.directLink(dest.ID); l != nil {
+		r.Link = &wire.DirectLink{Local: l.local, Remote: l.remote}
+	}
+	if next := n.directWaits[dest.ID].next; next.After(time.Now()) {
+		r.Next = next
+	}
+	r.Local.Events = slices.Clone(n.directTrace[dest.ID])
+	return r, nil
+}
+
 // directTry is a direct link being set up with a node.
 type directTry struct {
 	offering bool
@@ -115,6 +163,7 @@ func (n *Node) startDirect(id string, offering bool) (context.Context, *directTr
 	}
 	try := &directTry{offering: offering, cancel: cancel}
 	n.directTries[id] = try
+	n.directTrace[id] = nil
 	return ctx, try
 }
 
@@ -183,12 +232,16 @@ func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Conn, erro
 		return nil, errors.New("no local address")
 	}
 	defer attempt.Close()
+	attempt.Trace = func(text string) { n.trace(id, "%s", text) }
 	offer := attempt.Offer()
 	offer.Node = n.Self().ID
+	n.trace(id, "offering through the mesh: %s", strings.Join(offer.Addresses, ", "))
 	var answer wire.DirectOffer
 	if err := n.Call(ctx, id, wire.MethodDirectOffer, offer, &answer); err != nil {
+		n.trace(id, "the offer failed: %v", err)
 		return nil, errors.New("the other machine did not take the offer")
 	}
+	n.trace(id, "the answer offers: %s", strings.Join(answer.Addresses, ", "))
 	conn, err := attempt.Dial(ctx, answer)
 	if err != nil {
 		return nil, errors.New("no path")
@@ -203,6 +256,7 @@ func (n *Node) directFailed(ctx context.Context, id, reason string) {
 		return
 	}
 	n.log.Printf("direct link with %s: %s", n.nodeName(id), reason)
+	n.trace(id, "failed: %s", reason)
 	n.backOff(id)
 }
 
@@ -234,6 +288,9 @@ func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error
 	ctx, try := n.startDirect(offer.Node, false)
 	go func() {
 		defer n.endDirect(offer.Node, try)
+		attempt.Trace = func(text string) { n.trace(offer.Node, "%s", text) }
+		n.trace(offer.Node, "offer through the mesh: %s", strings.Join(offer.Addresses, ", "))
+		n.trace(offer.Node, "answering with: %s", strings.Join(answer.Addresses, ", "))
 		conn, err := attempt.Accept(ctx, offer)
 		attempt.Close()
 		if err != nil {
@@ -253,12 +310,15 @@ func (n *Node) runDirect(id string, conn *direct.Conn, opened bool, try *directT
 	delete(n.directWaits, id)
 	ctx := n.directCtx
 	n.mu.Unlock()
-	err := n.run(ctx, &link{session: conn, direct: true, opened: opened}, func(wire.NodeInfo) {
+	l := &link{session: conn, direct: true, opened: opened, local: conn.Local(), remote: conn.Remote()}
+	err := n.run(ctx, l, func(wire.NodeInfo) {
 		n.endDirect(id, try)
 		n.log.Printf("direct link with %s: up", n.nodeName(id))
+		n.trace(id, "up: %s -> %s", l.local, l.remote)
 	})
 	if err != nil && ctx.Err() == nil {
 		n.log.Printf("direct link with %s: ended", n.nodeName(id))
+		n.trace(id, "ended")
 		n.backOff(id)
 	}
 }

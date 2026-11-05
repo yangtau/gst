@@ -32,12 +32,15 @@ func TestDirectLink(t *testing.T) {
 	if out := a.mustSh(`printf hello | gst connect c 7000`); out != "reply:hello" {
 		t.Fatalf("gst connect c 7000 over the direct link: %q", out)
 	}
-	if out := a.mustGst("ping", "c", "-c", "1"); !strings.Contains(out, "directly") {
-		t.Fatalf("gst ping c: %q", out)
+	out := a.mustGst("ping", "c", "-c", "1", "-v")
+	for _, want := range []string{"over a direct link", "Direct link with c: up, ", "the path works", "QUIC", "offer through the mesh"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gst ping c -v lacks %q: %q", want, out)
+		}
 	}
 	eventually(t, 30*time.Second, "b did not see the direct link", func() bool {
-		return strings.Contains(b.mustGst("status", "--all"), "a->c (direct)") ||
-			strings.Contains(b.mustGst("status", "--all"), "c->a (direct)")
+		all := b.mustGst("status", "--all")
+		return (strings.Contains(all, "a->c (direct) ") || strings.Contains(all, "c->a (direct) ")) && strings.Contains(all, " -> ")
 	})
 
 	b.mustGst("down")

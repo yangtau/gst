@@ -41,6 +41,7 @@ type fakeBackend struct {
 	linkStates   map[string]wire.LinkState // replaces the state of a running link
 	nodeStatus   func(node string) (wire.Status, error)
 	ping         func(node string) (wire.Ping, error)
+	direct       func(node string) (wire.DirectReport, error)
 	listenErrors map[string]string // listen address -> why it does not listen
 	topology     wire.Topology
 	sent         bytes.Buffer // what gst connect sent
@@ -134,6 +135,14 @@ func (f *fakeBackend) Ping(_ context.Context, node string) (wire.Ping, error) {
 		return f.ping(node)
 	}
 	return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+}
+
+func (f *fakeBackend) Direct(_ context.Context, node string) (wire.DirectReport, error) {
+	f.calls = append(f.calls, "direct "+node)
+	if f.direct != nil {
+		return f.direct(node)
+	}
+	return wire.DirectReport{Node: peerOf(node)}, nil
 }
 
 func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {

@@ -36,6 +36,12 @@ func (c *Conn) Accept(ctx context.Context) (net.Conn, error) {
 	return &stream{Stream: s, conn: c.conn}, nil
 }
 
+// Local returns the IP:port of this end.
+func (c *Conn) Local() string { return c.conn.LocalAddr().String() }
+
+// Remote returns the IP:port of the other end, as this one sees it.
+func (c *Conn) Remote() string { return c.conn.RemoteAddr().String() }
+
 // Done is closed when the connection ends.
 func (c *Conn) Done() <-chan struct{} { return c.conn.Context().Done() }
 

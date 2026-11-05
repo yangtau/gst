@@ -13,6 +13,9 @@ const (
 	// MethodPing ("mesh.ping") takes NodeParams, calls node.info on that
 	// machine through the mesh, and returns Ping.
 	MethodPing = "mesh.ping"
+	// MethodDirect ("mesh.direct") takes NodeParams and returns
+	// DirectReport.
+	MethodDirect = "mesh.direct"
 	// MethodConnect ("mesh.connect") takes ConnectParams; on success the
 	// control connection carries the bytes of a connection to the target.
 	MethodConnect = "mesh.connect"
@@ -84,6 +87,30 @@ type Ping struct {
 	Node   NodeInfo   `json:"node"`
 	Via    []NodeInfo `json:"via"`
 	TimeMS float64    `json:"time_ms"`
+	Direct bool       `json:"direct,omitempty"` // it went over a direct link
+}
+
+// DirectReport is the direct link with a machine, or why there is none,
+// and what this node and that machine did in their latest try at one.
+type DirectReport struct {
+	Node NodeInfo `json:"node"`
+	// Off says that direct links are off on this machine.
+	Off    bool        `json:"off,omitempty"`
+	Trying bool        `json:"trying,omitempty"` // a try is running
+	Link   *DirectLink `json:"link,omitempty"`   // the running link
+	// Next is when a new try can start, after a failure.
+	Next  time.Time   `json:"next,omitzero"`
+	Local DirectTrace `json:"local"`
+	Peer  DirectTrace `json:"peer"`
+	// PeerError says why the machine's own trace is missing.
+	PeerError string `json:"peer_error,omitempty"`
+}
+
+// DirectLink is a running direct link as this node sees it: the IP:port
+// at each end.
+type DirectLink struct {
+	Local  string `json:"local"`
+	Remote string `json:"remote"`
 }
 
 // ConnectParams name a machine of the mesh, as the user refers to it, and
@@ -119,4 +146,8 @@ type TopoEdge struct {
 	Link string `json:"link"` // its name on From; empty for a direct link
 	// Direct says that the link is a direct link rather than one over SSH.
 	Direct bool `json:"direct,omitempty"`
+	// Local and Remote are the addresses of a direct link as From sees
+	// them, each an IP:port.
+	Local  string `json:"local,omitempty"`
+	Remote string `json:"remote,omitempty"`
 }

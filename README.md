@@ -82,7 +82,7 @@ gst status devcn          # devcn's own links, proxy, maps, and routes
 c07e5d11  mini    gst 0.3.0  online
 ```
 
-Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running and its failed proxy or maps. `gst ping devcn` prints `pong from devcn (9db2b03b) directly in 12.3 ms`.
+Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running and its failed proxy or maps. `gst ping devcn` prints `pong from devcn (9db2b03b) over SSH in 12.3 ms`, or `over a direct link` once connections go directly over UDP.
 
 Reach a machine in any of these ways:
 
@@ -216,9 +216,9 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
 | `gst remove <name>...` (`rm`) | Stop links and delete them |
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state (`online`, `via` the machines in between, `direct`, `exit`); then this machine's problems |
-| `gst status --all` | Also list the running links between all the machines, and the direct connections, such as `laptop->mini (direct)` |
+| `gst status --all` | Also list the running links between all the machines, and the direct links with their addresses as the machine that opened them sees them, such as `laptop->mini (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
 | `gst status <machine>` | Show a machine's links (with state and destination), proxy, maps, and routes, asked through the mesh |
-| `gst ping <machine> [-c N]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer |
+| `gst ping <machine> [-c N] [-v]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer; `-v` also shows the direct link with it, or why there is none, and what both machines did in their latest try at one |
 
 `destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. `--remote-gst <command>` names the gst command on the machine, when gst is not in the `PATH` of its login shell, such as `~/.nix-profile/bin/gst`. Everything else about the SSH connection comes from your ssh configuration (see [ssh configuration](#ssh-configuration)). To change a link, remove it and add it again. `gst add` checks first that a usable key without a passphrase exists and that known_hosts records the server, and saves nothing if not.
 
@@ -289,7 +289,7 @@ Limitations:
 - gst commands talk to the daemon over a socket that only you can access: `~/.local/state/gst/gst.sock` on Linux (under `$XDG_STATE_HOME` when set), `~/Library/Application Support/gst/gst.sock` on macOS.
 - If the daemon itself exits, its service restarts it after 5 seconds.
 - The daemon's log, which also holds link events (connected, failed, reconnecting), goes to journald on Linux (`journalctl --user -u gst`) and to `~/Library/Logs/gst-daemon.log` on macOS.
-- For privacy, logs record no server addresses, users, key paths, or target addresses, and not the errors that another gst reports. Those appear in interactive output only: `gst status`, `gst ping`, and `gst ui`. To see why a link fails in full, run `ssh -v <destination>`.
+- For privacy, logs record no server addresses, users, key paths, or target addresses, and not the errors that another gst reports. Those appear in interactive output only: `gst status`, `gst ping`, and `gst ui`. The addresses of direct links stay out of the logs too, but every machine of the mesh knows them. To see why a link fails in full, run `ssh -v <destination>`.
 - On Linux, to keep links running after you log out and start them at boot, run `loginctl enable-linger "$USER"`; gst tells you when lingering is off. On macOS, gst starts at login and stops at logout.
 - The service runs `gst daemon`, and links run `gst peer-bridge` on the other machine over SSH; neither is a command you run yourself.
 
@@ -318,7 +318,7 @@ gst 0.3 replaces tunnels and forwards with the mesh model above. Its configurati
 
 ## Troubleshooting
 
-Work from the outside in: `gst status` shows whether the machine is `online` and lists this machine's links that are not running, each with its last error; `gst ping <machine>` checks that the path to it works; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `gst add` also checks the key and known_hosts first, and saves nothing if the check fails.
+Work from the outside in: `gst status` shows whether the machine is `online` and lists this machine's links that are not running, each with its last error; `gst ping <machine>` checks that the path to it works, and `gst ping <machine> -v` shows why a direct link does or does not come up; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `gst add` also checks the key and known_hosts first, and saves nothing if the check fails.
 
 | Symptom | Fix |
 | --- | --- |

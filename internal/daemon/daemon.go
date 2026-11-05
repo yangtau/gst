@@ -97,6 +97,9 @@ func New(cfg Config) *Daemon {
 	wire.Handle(&d.control, wire.MethodPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		return m.Ping(ctx, p.Node)
 	})
+	wire.Handle(&d.control, wire.MethodDirect, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		return m.DirectReport(ctx, p.Node)
+	})
 	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
 	return d
 }

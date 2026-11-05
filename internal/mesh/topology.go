@@ -68,7 +68,11 @@ func (n *Node) publish(force bool) {
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
-		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID, Direct: l.direct && l.opened})
+		e := wire.Edge{Name: l.name, Peer: l.peer.ID}
+		if l.direct && l.opened {
+			e.Direct, e.Local, e.Remote = true, l.local, l.remote
+		}
+		edges = append(edges, e)
 	}
 	slices.SortFunc(edges, func(a, b wire.Edge) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer), boolOrder(a.Direct, b.Direct))
@@ -310,7 +314,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 				// Its record has not arrived yet.
 				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}
 			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name, Direct: e.Direct})
+			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name, Direct: e.Direct, Local: e.Local, Remote: e.Remote})
 		}
 	}
 	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {

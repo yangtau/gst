@@ -30,6 +30,9 @@ type backend interface {
 	NodeStatus(ctx context.Context, node string) (wire.Status, error)
 	// Ping asks a machine of the mesh to answer through the mesh.
 	Ping(ctx context.Context, node string) (wire.Ping, error)
+	// Direct reports the direct link with a machine of the mesh and how
+	// the latest try at one went.
+	Direct(ctx context.Context, node string) (wire.DirectReport, error)
 	// Connect connects to target on a machine of the mesh through the
 	// daemon.
 	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
@@ -190,6 +193,14 @@ func (b *daemonBackend) Ping(ctx context.Context, node string) (p wire.Ping, err
 		return err
 	})
 	return p, err
+}
+
+func (b *daemonBackend) Direct(ctx context.Context, node string) (r wire.DirectReport, err error) {
+	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
+		r, err = c.Direct(ctx, node)
+		return err
+	})
+	return r, err
 }
 
 // Connect connects through the mesh. The connection is set up within

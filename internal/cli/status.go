@@ -2,6 +2,7 @@ package cli
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,9 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
+
+// directPoll is how often gst ping -v looks whether a try ended.
+const directPoll = 500 * time.Millisecond
 
 // meshStatus is what gst status prints without a machine. Its JSON form
 // is part of the command line interface.
@@ -33,7 +37,8 @@ machines that connections to it pass through or that they go to it
 directly over UDP, and whether it is an exit. Linked machines pass on what they know, so the list includes machines
 several links away. Problems on this machine, such as a link that is
 down, follow the list; with --all, the running links between all the
-machines come first.
+machines come first, direct links with their addresses as the machine
+that opened them sees them.
 
 With a machine, show its links, proxy, maps, and routes, asked through
 the mesh. A machine is named by its name, its id or an id prefix of at
@@ -129,7 +134,11 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		})
 		fmt.Fprintln(out, "\nLINK")
 		for _, e := range edges {
-			fmt.Fprintln(out, linkText(names[e.From], names[e.To], e.Link))
+			text := linkText(names[e.From], names[e.To], e.Link)
+			if e.Local != "" {
+				text += " " + e.Local + " -> " + e.Remote
+			}
+			fmt.Fprintln(out, text)
 		}
 	}
 	var problems []string
@@ -236,15 +245,21 @@ func listenerText(l wire.Listener) string {
 
 func (a *app) pingCommand() *cobra.Command {
 	var count int
-	var asJSON bool
+	var asJSON, verbose bool
 	cmd := &cobra.Command{
 		Use:   "ping <machine>",
 		Short: "Check that a machine answers through the mesh",
 		Long: `Ask a machine of the mesh to answer through the links that lead to it,
 once a second, and print each answer with the machines it passed and
 the time it took, which includes setting up the relay at each machine on
-the way. Exit status is 1 if no answer came.`,
-		Example: "  gst ping devcn\n  gst ping devsg -c 10",
+the way. Exit status is 1 if no answer came.
+
+A connection to a machine also tries a direct link to it, as this one
+does. With -v, after the answers and any try still running, show that
+link, or why there is none, and what both machines did in their latest
+try: the addresses they offered, the probes they heard, and the QUIC
+handshake.`,
+		Example: "  gst ping devcn\n  gst ping devsg -c 10\n  gst ping devcn -v",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if count < 1 {
@@ -281,10 +296,22 @@ the way. Exit status is 1 if no answer came.`,
 					writePing(a.stdout, p)
 				}
 			}
-			if asJSON {
-				if pings == nil {
-					pings = []wire.Ping{}
+			if pings == nil {
+				pings = []wire.Ping{}
+			}
+			switch {
+			case verbose:
+				report, err := directReport(cmd.Context(), b, machine)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "no report on the direct link: %v\n", err)
+				} else if asJSON {
+					if err := writeJSON(a.stdout, verbosePing{pings, report}); err != nil {
+						return err
+					}
+				} else {
+					writeDirect(a.stdout, report)
 				}
+			case asJSON:
 				if err := writeJSON(a.stdout, pings); err != nil {
 					return err
 				}
@@ -296,12 +323,71 @@ the way. Exit status is 1 if no answer came.`,
 		}),
 	}
 	cmd.Flags().IntVarP(&count, "count", "c", 3, "number of answers to ask for")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the direct link and how the latest try at one went")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
 
+// verbosePing is what gst ping -v --json prints. Its JSON form is part of
+// the command line interface.
+type verbosePing struct {
+	Pings  []wire.Ping       `json:"pings"`
+	Direct wire.DirectReport `json:"direct"`
+}
+
+// directReport waits for a running try at a direct link to end and
+// reports it.
+func directReport(ctx context.Context, b backend, machine string) (wire.DirectReport, error) {
+	for {
+		r, err := b.Direct(ctx, machine)
+		if err != nil || !r.Trying {
+			return r, err
+		}
+		select {
+		case <-ctx.Done():
+			return r, ctx.Err()
+		case <-time.After(directPoll):
+		}
+	}
+}
+
+func writeDirect(out io.Writer, r wire.DirectReport) {
+	fmt.Fprintln(out)
+	switch {
+	case r.Link != nil:
+		fmt.Fprintf(out, "Direct link with %s: up, %s -> %s\n", r.Node.Name, r.Link.Local, r.Link.Remote)
+	case r.Off:
+		fmt.Fprintf(out, "Direct link with %s: off on this machine\n", r.Node.Name)
+	case !r.Next.IsZero():
+		fmt.Fprintf(out, "Direct link with %s: none, next try in %s\n", r.Node.Name, time.Until(r.Next).Round(time.Second))
+	default:
+		fmt.Fprintf(out, "Direct link with %s: none\n", r.Node.Name)
+	}
+	writeTrace(out, "This machine", r.Local, "")
+	writeTrace(out, r.Node.Name, r.Peer, r.PeerError)
+}
+
+// writeTrace prints a machine's events with the time since its first.
+func writeTrace(out io.Writer, machine string, t wire.DirectTrace, failure string) {
+	fmt.Fprintf(out, "\n%s:\n", machine)
+	if failure != "" {
+		fmt.Fprintf(out, "  no answer: %s\n", failure)
+		return
+	}
+	if len(t.Events) == 0 {
+		fmt.Fprintln(out, "  no try yet")
+		return
+	}
+	for _, e := range t.Events {
+		fmt.Fprintf(out, "  %7.3fs  %s\n", e.Time.Sub(t.Events[0].Time).Seconds(), e.Text)
+	}
+}
+
 func writePing(out io.Writer, p wire.Ping) {
-	path := "directly"
+	path := "over SSH"
+	if p.Direct {
+		path = "over a direct link"
+	}
 	if len(p.Via) > 0 {
 		via := make([]string, len(p.Via))
 		for i, n := range p.Via {

@@ -82,7 +82,7 @@ gst status devcn          # devcn 自己的 link、代理、map 和 route
 c07e5d11  mini    gst 0.3.0  online
 ```
 
-link 在后台连接；连上之前，对应的机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。`gst ping devcn` 输出 `pong from devcn (9db2b03b) directly in 12.3 ms`。
+link 在后台连接；连上之前，对应的机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。`gst ping devcn` 输出 `pong from devcn (9db2b03b) over SSH in 12.3 ms`，连接改走 UDP 直连后显示 `over a direct link`。
 
 到达一台机器的几种方式：
 
@@ -216,9 +216,9 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `gst add <name> [destination] [--remote-gst cmd]` | 添加 link 并在后台启动 |
 | `gst remove <name>...`（`rm`） | 停止并删除 link |
 | `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态（`online`、`via` 中间机器、`direct`、`exit`）；然后是本机的问题 |
-| `gst status --all` | 同时列出所有机器之间运行着的 link 和直连，例如 `laptop->mini (direct)` |
+| `gst status --all` | 同时列出所有机器之间运行着的 link，以及直连和发起方看到的两端地址，例如 `laptop->mini (direct) 192.0.2.1:5000 -> 192.0.2.2:6000` |
 | `gst status <machine>` | 显示某台机器的 link（含状态和目标）、代理、map 和 route，经由 mesh 查询 |
-| `gst ping <machine> [-c N]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时 |
+| `gst ping <machine> [-c N] [-v]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时；`-v` 还显示到它的直连（或没有直连的原因），以及两台机器最近一次尝试建立直连的过程 |
 
 `destination` 可以是 `host`、`user@host` 或 `ssh://user@host:port`，省略时等于 link 名。`--remote-gst <command>` 指定对方机器上的 gst 命令，用于 gst 不在其登录 shell 的 `PATH` 中的情况，例如 `~/.nix-profile/bin/gst`。SSH 连接的其他内容都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。要修改 link，先删除再重新添加。`gst add` 会先检查是否有可用的无口令私钥，以及 known_hosts 里是否有该服务器的记录，不通过时不保存。
 
@@ -289,7 +289,7 @@ link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重�
 - gst 命令通过只有你能访问的 socket 与 daemon 通信：Linux 上是 `~/.local/state/gst/gst.sock`（设置了 `$XDG_STATE_HOME` 时在其下），macOS 上是 `~/Library/Application Support/gst/gst.sock`。
 - daemon 本身退出后，服务会在 5 秒后重启它。
 - daemon 的日志（也包含 link 的事件：已连接、失败、重连）：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。
-- 为保护隐私，日志不记录服务器地址、用户、密钥路径和目标地址，也不记录对方 gst 返回的错误。这些只出现在交互式输出中：`gst status`、`gst ping` 和 `gst ui`。要看 link 失败的完整原因，执行 `ssh -v <destination>`。
+- 为保护隐私，日志不记录服务器地址、用户、密钥路径和目标地址，也不记录对方 gst 返回的错误。这些只出现在交互式输出中：`gst status`、`gst ping` 和 `gst ui`。直连的地址同样不进日志，但 mesh 里的每台机器都知道它们。要看 link 失败的完整原因，执行 `ssh -v <destination>`。
 - Linux 上，要让 link 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，gst 在登录后启动、注销后停止。
 - 服务运行的是 `gst daemon`，link 经 SSH 在对方机器上运行 `gst peer-bridge`；这两个都不是需要你自己执行的命令。
 
@@ -318,7 +318,7 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 
 ## 排查问题
 
-由外向内排查：`gst status` 显示机器是否 `online`，并列出本机未运行的 link 及其最近一次错误；`gst ping <machine>` 检查到它的路径是否通；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
+由外向内排查：`gst status` 显示机器是否 `online`，并列出本机未运行的 link 及其最近一次错误；`gst ping <machine>` 检查到它的路径是否通，`gst ping <machine> -v` 显示直连为什么建立或没建立；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
 
 | 现象 | 处理 |
 | --- | --- |

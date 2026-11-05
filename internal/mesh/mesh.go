@@ -45,8 +45,9 @@ type Node struct {
 	// Direct links; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
 	directAddrs func() []netip.Addr
-	directTries map[string]*directTry // by node id
-	directWaits map[string]directWait // by node id
+	directTries map[string]*directTry         // by node id
+	directWaits map[string]directWait         // by node id
+	directTrace map[string][]wire.DirectEvent // the latest try with each node
 }
 
 // link is a running link: the peer session with another node.
@@ -54,8 +55,10 @@ type link struct {
 	name    string // the link's name, for links over SSH that this node opened
 	peer    wire.NodeInfo
 	session session
-	direct  bool // over UDP rather than SSH
-	opened  bool // this node opened it
+	direct  bool   // over UDP rather than SSH
+	opened  bool   // this node opened it
+	local   string // the addresses of a direct link
+	remote  string
 }
 
 // New returns a node without an identity, which refuses links until
@@ -72,12 +75,14 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},
+		directTrace: map[string][]wire.DirectEvent{},
 	}
 	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.Self(), nil })
 	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
 	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
 	wire.Handle(&n.peer, wire.MethodDirectOffer, n.serveOffer)
 	wire.Handle(&n.peer, wire.MethodLinkRemove, n.serveLinkRemove)
+	wire.Handle(&n.peer, wire.MethodDirectTrace, n.serveTrace)
 	if status != nil {
 		wire.Handle(&n.peer, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return status(), nil })
 	}
