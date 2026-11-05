@@ -212,7 +212,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 ### direct link
 
-SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。[`udp-hole-punching.html`](udp-hole-punching.html) 从 UDP 包头讲起，解释防火墙、NAT、打洞和 direct link 的加密，并带逐步的模拟器。
+SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。[`udp-hole-punching.html`](udp-hole-punching.html) 从 UDP 包头讲起，解释防火墙、NAT、打洞和 direct link 的加密，并带逐步的模拟器。[`tls-encryption.html`](tls-encryption.html) 从算法原理讲起，解释 TLS 1.3 握手、它和 SSH 的异同，以及 direct link 为什么这样用它。
 
 - **触发**：`Node.Dial` 向某节点建立连接时，如果没有到它的 direct link，就在后台尝试，这个连接不等待、继续走原路，之后的连接走 direct link。失败或断开后等待 1 分钟再试，连续失败时加倍，最长 30 分钟，成功后重置。
 - **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …], "fingerprint": …}`，响应是对方的 `addresses` 和 `fingerprint`。候选地址只出现在这次调用中。建好的 direct link 所用的两端地址写进发起方的 link-state 记录，让每个节点都能显示它们。地址都不进日志。

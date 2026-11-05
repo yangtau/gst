@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TLS 加密从零讲起</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: a single long-read column in the voice of a network manual, matching udp-hole-punching.html; wide figures and the handshake ladder break out of the column. */
+:root {
+  --bg: #f2f5f8; --panel: #ffffff; --fg: #16212e; --muted: #566778; --rule: #d3dce5;
+  --code: #e7ecf2; --accent: #2f5fd0; --ok: #16784e; --drop: #c5352b; --nat: #a36a12; --new: #dfe9ff;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --nat: #e2b04a; --new: #24375c; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --nat: #e2b04a; --new: #24375c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 16px/1.8 var(--sans); }
+.page { max-width: 980px; margin: 0 auto; padding-block: 40px 96px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 700px; }
+h1 { font-size: clamp(34px, 7vw, 54px); font-weight: 900; line-height: 1.15; margin: 0 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font-size: 26px; font-weight: 900; line-height: 1.3; margin: 0 0 14px; text-wrap: balance; }
+h3 { font-size: 18px; font-weight: 700; margin: 28px 0 6px; }
+p { margin: 0 0 14px; }
+section { padding-top: 52px; }
+.no { font: 600 13px var(--mono); color: var(--accent); letter-spacing: .06em; display: block; margin-bottom: 4px; }
+.lede { font-size: 18px; color: var(--muted); max-width: 660px; }
+code, .m { font-family: var(--mono); font-size: .88em; }
+p code, li code, td code, figcaption code { background: var(--code); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+pre { font: 400 13px/1.7 var(--mono); background: var(--code); padding: 14px 16px; margin: 0 0 16px; overflow-x: auto; border-radius: 4px; }
+pre .c { color: var(--muted); }
+pre .k { color: var(--accent); font-weight: 600; }
+pre .o { color: var(--ok); font-weight: 600; }
+ul, ol { margin: 0 0 14px; padding-left: 1.4em; }
+li { margin-bottom: 6px; }
+strong { font-weight: 700; }
+a { color: var(--accent); }
+.tw { overflow-x: auto; margin-bottom: 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; line-height: 1.6; }
+th { text-align: left; font-weight: 700; border-bottom: 2px solid var(--fg); padding: 6px 12px 6px 0; white-space: nowrap; }
+td { border-bottom: 1px solid var(--rule); padding: 8px 12px 8px 0; vertical-align: top; }
+td.yes { color: var(--ok); font-weight: 700; white-space: nowrap; }
+td.no-go { color: var(--drop); font-weight: 700; white-space: nowrap; }
+figure { margin: 8px 0 20px; }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+.stage { overflow-x: auto; }
+.stage svg { display: block; width: 100%; min-width: 660px; height: auto; color: var(--fg); }
+svg text { font-family: var(--sans); fill: currentColor; font-size: 13px; }
+svg .mono { font-family: var(--mono); font-size: 12px; }
+svg .sm { font-size: 12px; fill: var(--muted); }
+svg .b { font-weight: 700; }
+svg .box { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+svg .hot { fill: var(--new); stroke: var(--accent); stroke-width: 1.5; }
+svg .ln { stroke: currentColor; stroke-width: 1.5; fill: none; }
+svg .ac { stroke: var(--accent); stroke-width: 2; fill: none; }
+svg .okl { stroke: var(--ok); stroke-width: 2; fill: none; }
+svg .ta { fill: var(--accent); }
+svg .to { fill: var(--ok); }
+
+/* Answers */
+.answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 2px solid var(--fg); margin-top: 28px; }
+.answers > div { padding: 14px 18px 14px 0; min-width: 0; }
+.answers > div + div { border-left: 1px solid var(--rule); padding-left: 18px; }
+.answers h3 { margin: 0 0 6px; font-size: 15px; color: var(--muted); font-weight: 500; }
+.answers b { display: block; font-size: 19px; line-height: 1.4; font-weight: 900; margin-bottom: 6px; }
+.answers p { font-size: 14.5px; line-height: 1.7; margin: 0; }
+
+/* Live demos */
+.demo { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; margin: 18px 0; }
+.demo h4 { margin: 0 0 8px; font-size: 15px; font-weight: 700; }
+.demo label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+.demo input[type="text"] { width: 100%; font: 400 14px var(--mono); padding: 8px 10px; background: var(--bg); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px; }
+.demo input[type="range"] { width: 100%; accent-color: var(--accent); }
+.demo button { font: 500 14px var(--sans); padding: 6px 12px; background: var(--panel); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px; cursor: pointer; }
+.demo button:hover { border-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.out { font: 400 13px/1.7 var(--mono); overflow-wrap: anywhere; margin-top: 10px; }
+.out .diff { color: var(--drop); font-weight: 600; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.pair > div { min-width: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.verdict { font-weight: 700; }
+.verdict.good { color: var(--ok); }
+.verdict.bad { color: var(--drop); }
+.dh { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; font-size: 14px; line-height: 1.7; }
+.dh > div { min-width: 0; border-top: 1px solid var(--rule); padding-top: 8px; }
+.dh b { display: block; }
+.dh .m { font-size: 13.5px; overflow-wrap: anywhere; }
+
+/* Primitive cards */
+.prims { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--fg); margin: 14px 0 8px; font-size: 13.5px; line-height: 1.55; }
+.prims > div { padding: 10px; min-width: 0; border-right: 1px solid var(--rule); }
+.prims > div:last-child { border-right: 0; }
+.prims b { display: block; font-size: 15px; }
+.prims .m { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+
+/* Handshake ladder */
+.lanes { display: grid; grid-template-columns: 1fr 1fr; font-weight: 700; font-size: 14px; border-bottom: 2px solid var(--fg); padding-bottom: 6px; margin-top: 16px; }
+.lanes span:last-child { text-align: right; }
+.msg { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.msg .h { min-width: 0; }
+.msg .dir { font: 600 13px var(--mono); color: var(--accent); }
+.msg .name { font: 600 14px var(--mono); display: block; overflow-wrap: anywhere; }
+.chip { display: inline-block; font-size: 12px; line-height: 1.5; padding: 0 6px; border-radius: 3px; margin-top: 4px; border: 1px solid currentColor; }
+.chip.open { color: var(--nat); }
+.chip.hs { color: var(--accent); }
+.chip.app { color: var(--ok); }
+.msg .d { font-size: 15px; line-height: 1.7; min-width: 0; }
+.msg .d ul { margin: 4px 0 0; }
+.msg .d li { margin-bottom: 2px; }
+.calc { background: var(--new); padding: 10px 12px; margin: 10px 0; border-radius: 4px; font-size: 15px; line-height: 1.7; }
+.calc b { display: block; }
+.toright { text-align: right; }
+
+/* Packet layout */
+.pkt { display: grid; grid-template-columns: 1fr 2fr 1.2fr 4fr 1.2fr; border: 1px solid var(--fg); font-size: 13px; line-height: 1.45; margin-bottom: 8px; }
+.pkt > div { padding: 8px 6px; border-right: 1px solid var(--rule); min-width: 0; overflow-wrap: anywhere; }
+.pkt > div:last-child { border-right: 0; }
+.pkt b { display: block; font: 600 12.5px var(--mono); }
+.pkt .mask { background: var(--code); }
+.pkt .enc { background: var(--new); }
+
+/* Trust roots */
+.trust { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 2px solid var(--fg); margin: 14px 0 8px; }
+.trust > div { padding: 12px 16px 12px 0; min-width: 0; font-size: 14.5px; line-height: 1.7; }
+.trust > div + div { border-left: 1px solid var(--rule); padding-left: 16px; }
+.trust b { display: block; font-size: 16px; font-weight: 900; margin-bottom: 4px; }
+.trust .q { color: var(--muted); display: block; margin-bottom: 6px; }
+
+.note { background: var(--new); padding: 12px 14px; margin: 16px 0; border-radius: 4px; }
+.note p:last-child { margin-bottom: 0; }
+
+@media (max-width: 720px) {
+  .answers, .trust { grid-template-columns: 1fr; }
+  .answers > div + div, .trust > div + div { border-left: 0; border-top: 1px solid var(--rule); padding-left: 0; }
+  .prims { grid-template-columns: 1fr; }
+  .prims > div { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .prims > div:last-child { border-bottom: 0; }
+  .pair, .dh { grid-template-columns: 1fr; }
+  .msg { grid-template-columns: 1fr; gap: 4px; }
+  .toright { text-align: left; }
+  .pkt { grid-template-columns: 1fr; }
+  .pkt > div { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .pkt > div:last-child { border-bottom: 0; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="col">
+  <h1>TLS 加密从零讲起</h1>
+  <p class="lede">TLS 和 SSH 用的是同一套数学工具。这份文档从哈希、密钥交换、签名讲到 TLS 1.3 的每一条握手消息，再对比 SSH，最后说明 gst 的 direct link 为什么这样用，以及能否换成“公钥经 SSH 传递”的模式。</p>
+</header>
+
+<div class="answers">
+  <div>
+    <h3>TLS 和 SSH 公私钥有何区别？</h3>
+    <b>加密方式基本相同，区别在如何信任公钥</b>
+    <p>两者都用临时密钥交换算出对称密钥，再用对称密钥加密数据。SSH 靠 <code>known_hosts</code> 和 <code>authorized_keys</code> 信任公钥，网站上的 TLS 靠 CA 证书链。</p>
+  </div>
+  <div>
+    <h3>gst 怎么用？</h3>
+    <b>经 SSH 传指纹，用 TLS 1.3 建立加密</b>
+    <p>每次尝试新生成一对 Ed25519 密钥，经 SSH 把证书指纹告诉对方。QUIC 握手时两端互相核对指纹。没有 CA，证书只是公钥的包装。</p>
+  </div>
+  <div>
+    <h3>能用公钥模式吗？</h3>
+    <b>信任模型已经是这样，加密不应这样做</b>
+    <p>公钥经 SSH 传递就是 gst 现在的做法。直接用公钥加密每条消息则不可取：太慢、也没有前向保密。第 10 节比较了全部方案。</p>
+  </div>
+</div>
+
+<section class="col">
+  <span class="no">01</span>
+  <h2>要防的是什么</h2>
+  <p>两台机器之间的包要穿过路由器、运营商和防火墙，这些设备都可能读取或改写它。加密协议要解决三件事：</p>
+  <div class="tw"><table>
+    <tr><th>威胁</th><th>攻击者做什么</th><th>对应的保证</th><th>靠什么工具</th></tr>
+    <tr><td>窃听</td><td>录下所有包，慢慢看</td><td>机密性</td><td>对称加密</td></tr>
+    <tr><td>篡改</td><td>改包的内容、重放旧包</td><td>完整性</td><td>认证标签、包序号</td></tr>
+    <tr><td>冒充</td><td>站在中间，假装是对方</td><td>身份认证</td><td>数字签名和公钥信任</td></tr>
+  </table></div>
+  <p>第三项最容易被忽略。加密本身防不住冒充：如果你和中间人协商出了密钥，那么加密做得再好，也只是把数据安全地交给了中间人。</p>
+
+  <h3>最常见的误解：公钥用来加密数据</h3>
+  <p>很多介绍把 SSH 说成“用公钥加密”。现代 TLS 和 SSH 都不这样工作。你的 <code>~/.ssh/id_ed25519</code> 从不加密任何一个字节，它只负责签名，证明“我是我”。真正的数据由一把临时算出来的对称密钥加密，连接结束后这把密钥就丢弃了。</p>
+</section>
+
+<figure>
+  <div class="stage">
+  <svg viewBox="0 0 900 210" role="img" aria-label="安全连接分两个阶段：握手阶段用非对称算法协商密钥和验证身份，只做一次；之后每个包都用对称算法加密。">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+      <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ta"/></marker>
+      <marker id="arO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="to"/></marker>
+    </defs>
+    <rect class="box" x="10" y="30" width="370" height="160" rx="4"/>
+    <text x="26" y="58" class="b">阶段一：握手（每条连接一次）</text>
+    <text x="26" y="88">密钥交换：双方算出同一个秘密</text>
+    <text x="26" y="108" class="mono">X25519 + ML-KEM</text>
+    <text x="26" y="142">签名：证明对面确实是对方</text>
+    <text x="26" y="162" class="mono">Ed25519</text>
+    <line class="ln" x1="380" y1="110" x2="450" y2="110" marker-end="url(#ar)"/>
+    <text x="415" y="98" text-anchor="middle" class="mono">HKDF</text>
+    <rect class="hot" x="452" y="84" width="92" height="52" rx="4"/>
+    <text x="498" y="107" text-anchor="middle" class="b">对称密钥</text>
+    <text x="498" y="125" text-anchor="middle" class="sm">用完即弃</text>
+    <line class="ln" x1="544" y1="110" x2="600" y2="110" marker-end="url(#ar)"/>
+    <rect class="box" x="602" y="30" width="288" height="160" rx="4"/>
+    <text x="618" y="58" class="b">阶段二：传数据（每个包）</text>
+    <text x="618" y="88">加密并附认证标签</text>
+    <text x="618" y="108" class="mono">AES-GCM / ChaCha20-Poly1305</text>
+    <text x="618" y="142">速度快，可达每秒 GB 级</text>
+    <text x="618" y="162" class="sm">改动一个比特就无法通过校验</text>
+  </svg>
+  </div>
+  <figcaption>TLS、SSH、WireGuard 都是这个结构。公钥算法慢但能解决“素未谋面如何约定密钥”，对称算法快但需要事先有共同的密钥，所以两者接力。</figcaption>
+</figure>
+
+<section class="col">
+  <span class="no">02</span>
+  <h2>五件工具</h2>
+  <p>整个协议由下面五种算法拼成。后面几节逐个讲原理。</p>
+</section>
+<div class="prims">
+  <div><b>哈希</b>任意数据变成固定长度的指纹<br><span class="m">SHA-256</span></div>
+  <div><b>对称加密</b>同一把钥匙加密和解密<br><span class="m">AES-GCM</span></div>
+  <div><b>密钥交换</b>公开对话，算出只有两人知道的秘密<br><span class="m">X25519, ML-KEM</span></div>
+  <div><b>签名</b>私钥签，公钥验，证明身份<br><span class="m">Ed25519</span></div>
+  <div><b>密钥派生</b>一个秘密扩展成多把密钥<br><span class="m">HKDF</span></div>
+</div>
+
+<section class="col">
+  <span class="no">03</span>
+  <h2>哈希：数据的指纹</h2>
+  <p>SHA-256 把任意长度的输入压缩成 32 字节，有两个关键性质：<strong>不可逆</strong>，看到指纹推不出原文；<strong>抗碰撞</strong>，找不到两份内容相同指纹的数据。所以比对 32 字节的指纹，就等于比对了整份数据。</p>
+  <p>内部过程：把输入切成 64 字节一块，维护 8 个 32 位整数的状态。每块做 64 轮混合，每轮用循环移位、异或和加法把这块数据搅进状态，最后的状态就是输出。这些操作反复叠加，输入改一位，每一轮的差异都会扩散，最终约一半的输出比特翻转。这叫雪崩效应。</p>
+  <div class="demo">
+    <h4>试一下：真实的 SHA-256</h4>
+    <div class="pair">
+      <div><label for="h1">输入 A</label><input type="text" id="h1" value="gst direct link"></div>
+      <div><label for="h2">输入 B（改一个字符试试）</label><input type="text" id="h2" value="gst direct linK"></div>
+    </div>
+    <div class="out" id="hout">需要浏览器的 WebCrypto 才能计算。</div>
+  </div>
+  <p>gst 里的“证书指纹”就是证书内容的 SHA-256。</p>
+</section>
+
+<section class="col">
+  <span class="no">04</span>
+  <h2>对称加密：AES-GCM</h2>
+  <p>双方已经有同一把密钥时，用它来加密数据。TLS 1.3 只允许 AEAD 算法，也就是加密和防篡改一起做。AES-GCM 由两部分组成。</p>
+  <h3>加密：AES 生成密钥流，再做异或</h3>
+  <p>AES 是一个带密钥的置换：输入 16 字节，输出看起来完全随机的 16 字节。AES-128 做 10 轮，每轮四步：查表替换每个字节（SubBytes），错开各行（ShiftRows），混合各列（MixColumns），异或轮密钥（AddRoundKey）。没有密钥就无法预测输出。</p>
+  <p>GCM 用它做计数器模式：从 <code>nonce‖2</code> 开始，对 <code>nonce‖2</code>、<code>nonce‖3</code>… 依次跑 AES，得到一条密钥流，再和明文异或。<code>nonce‖1</code> 留给下面的认证标签。</p>
+<pre>keystream = AES(key, nonce‖2) ‖ AES(key, nonce‖3) ‖ …
+ciphertext = plaintext XOR keystream
+plaintext  = ciphertext XOR keystream   <span class="c">异或两次还原，收方算同一条密钥流</span></pre>
+  <p>这里有一条铁律：<strong>同一把密钥下 nonce 绝不能重复</strong>。重复时两段密文的异或等于两段明文的异或，加密形同虚设。TLS 和 QUIC 用包序号生成 nonce，序号只增不减，自然不重复。</p>
+  <h3>防篡改：GHASH 认证标签</h3>
+  <p>异或本身不防改：翻转密文的一位，明文的同一位也跟着翻转。所以 GCM 还要算一个 16 字节的标签。令 <code>H = AES(key, 0)</code>，把附加数据和密文按 16 字节分块，当作系数代入一个以 H 为变量的多项式，在有限域 GF(2¹²⁸) 里求值，再和 <code>AES(key, nonce‖1)</code> 异或。不知道密钥就算不出 H，也就伪造不了标签。</p>
+  <p>收方先验标签，失败就整包丢弃。包头这种不能加密的内容作为“附加数据”也计入标签，所以同样改不了。</p>
+  <div class="demo">
+    <h4>试一下：真实的 AES-128-GCM</h4>
+    <label for="gmsg">明文</label>
+    <input type="text" id="gmsg" value="relay.open to homelab:22">
+    <div class="out" id="gout">需要浏览器的 WebCrypto 才能计算。</div>
+    <div class="row">
+      <button type="button" id="gflip">翻转密文的一个比特</button>
+      <button type="button" id="gkey">换一把错误的密钥</button>
+      <button type="button" id="greset">恢复</button>
+    </div>
+    <div class="out" id="gres"></div>
+  </div>
+  <p>另一个可选算法 ChaCha20-Poly1305 结构相同：ChaCha20 对 16 个 32 位字做 20 轮加法、异或、循环移位，生成密钥流；Poly1305 在模 2¹³⁰−5 下求多项式值，生成标签。它在没有 AES 硬件指令的机器上更快。</p>
+</section>
+
+<section class="col">
+  <span class="no">05</span>
+  <h2>密钥交换：公开说话，共享秘密</h2>
+  <p>对称加密的难题是：第一把密钥怎么来。Diffie-Hellman 的办法是让双方在公开信道上各说一个数，算出一个旁听者算不出的秘密。</p>
+  <p>可以想象调颜料：双方公开约定一种底色，各自偷偷加一种私有颜色，把混合结果公开交换，再加上自己的私有颜色。两边最后都得到“底色 + 甲 + 乙”。旁听者只看到混合后的颜料，而把混合颜料分离回原色很难。</p>
+  <p>数学上，“混色”换成模幂运算。正向 <code>g^a mod p</code> 很快；反过来已知结果求 <code>a</code>，叫离散对数，数字够大时算不出来。</p>
+  <div class="demo">
+    <h4>试一下：玩具版 Diffie-Hellman（p = 23，g = 5）</h4>
+    <div class="pair">
+      <div><label for="da">甲的私钥 a = <span id="dav" class="m"></span></label><input type="range" id="da" min="2" max="21" value="6"></div>
+      <div><label for="db">乙的私钥 b = <span id="dbv" class="m"></span></label><input type="range" id="db" min="2" max="21" value="15"></div>
+    </div>
+    <div class="dh">
+      <div><b>甲</b><span class="m" id="dA"></span></div>
+      <div><b>线路上公开可见</b><span class="m" id="dW"></span></div>
+      <div><b>乙</b><span class="m" id="dB"></span></div>
+    </div>
+    <div class="out" id="dE"></div>
+  </div>
+  <p>p = 23 时窃听者把 22 种可能全试一遍就破解了。真实算法的搜索空间大约是 2²⁵²，全世界的计算机加起来也试不完。</p>
+
+  <h3>X25519：换到椭圆曲线上</h3>
+  <p>X25519 是同样的思路，只是把“乘方”换成椭圆曲线上的“点的倍乘”。曲线是 Curve25519：</p>
+<pre>y² = x³ + 486662·x² + x   (mod 2²⁵⁵ − 19)     基点 G 的 x = 9</pre>
+  <p>曲线上的点可以按一条几何规则“相加”，结果还是曲线上的点。把 G 加自己 a 次得到 <code>a·G</code>，用倍加法只需约 255 步。反过来从 <code>a·G</code> 求 <code>a</code> 没有已知的快速算法。流程和上面的玩具完全对应：</p>
+<pre>甲：随机 a，发送 A = a·G          乙：随机 b，发送 B = b·G
+甲算 a·B = a·b·G                  乙算 b·A = b·a·G     <span class="o">结果相同</span></pre>
+  <p>公钥和私钥都只有 32 字节，比同等强度的传统 DH 小得多。</p>
+
+  <h3>前向保密：临时密钥的意义</h3>
+  <p>TLS 1.3 和 SSH 的 <code>a</code>、<code>b</code> 每条连接都重新随机生成，用完即销毁。这样就算攻击者录下全部流量，日后又偷走了机器上的长期密钥，也解不开过去的连接，因为算出会话密钥所需的 <code>a</code>、<code>b</code> 已经不存在。这个性质叫前向保密。</p>
+
+  <h3>ML-KEM：防备量子计算机</h3>
+  <p>足够大的量子计算机能用 Shor 算法解离散对数，X25519 会被攻破。今天录下的密文，将来可能被解开。ML-KEM（FIPS 203）基于另一类难题：带噪声的线性方程。</p>
+  <p>在普通线性方程 <code>t = A·s</code> 里，知道 A 和 t 用高斯消元就能解出 s。加上一点小噪声 <code>t = A·s + e</code> 之后，消元会把噪声放大，问题变得很难。这叫 LWE 问题，目前没有已知的量子快速算法。ML-KEM-768 用的元素是模 3329、256 次的多项式，矩阵是 3×3。</p>
+<pre><span class="k">生成</span>  甲：随机小的 s, e，公钥 t = A·s + e          <span class="c">发给乙 1184 字节</span>
+<span class="k">封装</span>  乙：随机小的 r, e₁, e₂ 和秘密 m
+      u = Aᵀ·r + e₁
+      v = tᵀ·r + e₂ + 放大(m)                    <span class="c">发回甲 1088 字节</span>
+<span class="k">解封</span>  甲：v − sᵀ·u = 放大(m) + 小噪声              <span class="c">四舍五入得到 m</span></pre>
+  <p>两端再由 <code>m</code> 哈希出 32 字节的共享秘密。注意这里的结构和 DH 不同：乙选定秘密，用甲的公钥“封”起来发回。</p>
+  <p>ML-KEM 比 X25519 年轻得多，所以实际部署把两者一起用：<code>X25519MLKEM768</code> 同时做两种交换，把两个秘密拼起来作为输入。攻击者必须把两种都攻破才行。</p>
+</section>
+
+<section class="col">
+  <span class="no">06</span>
+  <h2>签名：证明“我是我”</h2>
+  <p>密钥交换本身不知道对面是谁。中间人可以分别和两边做一次交换。所以要用签名把身份绑到这次交换上：一方用私钥对内容签名，任何人用公钥验证，而没有私钥的人造不出能通过验证的签名。</p>
+  <p>Ed25519 建立在另一条曲线（与 Curve25519 等价的 Edwards 形式）上，B 是基点，L 是群的阶（约 2²⁵²）。私钥是整数 <code>a</code>，公钥是点 <code>A = a·B</code>。</p>
+<pre><span class="k">签名</span>  r = SHA-512(私钥派生的前缀 ‖ M) mod L      <span class="c">一次性的随机数，由消息确定</span>
+      R = r·B
+      k = SHA-512(R ‖ A ‖ M) mod L
+      S = r + k·a  mod L
+      签名 = (R, S)                             <span class="c">共 64 字节</span>
+
+<span class="k">验证</span>  算 k，检查  S·B  ==  R + k·A</pre>
+  <p>验证为什么成立：把 S 展开，<code>S·B = (r + k·a)·B = r·B + k·(a·B) = R + k·A</code>。等式成立需要知道 <code>a</code> 才能造出 S，而 <code>k</code> 依赖 M，所以换一条消息，旧签名就失效了。<code>r</code> 起遮罩作用：没有它，从 S 能直接算出 a。</p>
+  <div class="note"><p>签名<strong>不是</strong>“用私钥加密”。这个说法只碰巧对 RSA 的教科书形式近似成立。Ed25519 这种签名算法根本不能加密任何东西，它只能证明。这一点在第 10 节会用到。</p></div>
+
+  <h3>HKDF：从一个秘密得到多把密钥</h3>
+  <p>共享秘密不能直接当密钥用，因为不同用途、不同方向都要各自的密钥。HKDF 建立在 HMAC 上，分两步：<code>Extract</code> 把不均匀的输入压成一把均匀的伪随机密钥；<code>Expand</code> 用不同的标签从它派生任意多把密钥。知道派生出的一把密钥，推不出其他密钥。</p>
+</section>
+
+<section>
+  <div class="col">
+  <span class="no">07</span>
+  <h2>TLS 1.3 握手全流程</h2>
+  <p>下面就是 gst 建立 direct link 时的完整握手，一共 1 个来回。gst 要求双向认证，所以比访问网站多出客户端证书这部分。laptop 是发起方，homelab 是接受方，两边都已经通过 SSH 拿到了对方的证书指纹。</p>
+  </div>
+  <div class="lanes"><span>laptop（客户端）</span><span>homelab（服务器）</span></div>
+
+  <div class="msg"><div class="h"><span class="dir">laptop → homelab</span><span class="name">ClientHello</span><span class="chip open">明文可读</span></div><div class="d">
+    <ul>
+      <li><code>random</code>：32 字节随机数，让每次握手都不同</li>
+      <li><code>cipher_suites</code>：支持的对称算法</li>
+      <li><code>supported_groups</code>、<code>signature_algorithms</code>：支持的交换和签名算法</li>
+      <li><code>key_share</code>：临时公钥，X25519MLKEM768 共 1216 字节，其中 ML-KEM 公钥 1184、X25519 公钥 32</li>
+      <li>ALPN <code>gst-direct</code>，以及 QUIC 传输参数</li>
+    </ul>
+  </div></div>
+
+  <div class="msg"><div class="h"><span class="dir toright">homelab → laptop</span><span class="name">ServerHello</span><span class="chip open">明文可读</span></div><div class="d">
+    <ul>
+      <li><code>random</code>：服务器的 32 字节随机数</li>
+      <li>选定的算法，例如 <code>TLS_AES_128_GCM_SHA256</code></li>
+      <li><code>key_share</code>：1120 字节，其中 ML-KEM 封装结果 1088、X25519 公钥 32</li>
+    </ul>
+  </div></div>
+
+  <div class="calc"><b>两端此刻各自计算，不经过网络</b>
+    <code>shared = ML-KEM 秘密 ‖ X25519 秘密</code>，共 64 字节。再用 HKDF 混入到目前为止两条消息的哈希，得到<strong>握手密钥</strong>。从这里开始，后面的握手消息全部加密。因为哈希包含了双方的随机数和公钥，每次握手的密钥都不同。</div>
+
+  <div class="msg"><div class="h"><span class="dir toright">homelab → laptop</span><span class="name">EncryptedExtensions<br>CertificateRequest</span><span class="chip hs">握手密钥加密</span></div><div class="d">确认 ALPN 和 QUIC 传输参数。<code>CertificateRequest</code> 要求客户端也出示证书，这是 gst 的 <code>ClientAuth: RequireAnyClientCert</code> 带来的。</div></div>
+
+  <div class="msg"><div class="h"><span class="dir toright">homelab → laptop</span><span class="name">Certificate</span><span class="chip hs">握手密钥加密</span></div><div class="d">服务器的证书，里面是 Ed25519 公钥。gst 的自签名证书只有大约 174 字节。</div></div>
+
+  <div class="msg"><div class="h"><span class="dir toright">homelab → laptop</span><span class="name">CertificateVerify</span><span class="chip hs">握手密钥加密</span></div><div class="d">防中间人的核心一步。服务器用证书对应的私钥签名：
+<pre style="margin:6px 0 0">64 个空格 ‖ "TLS 1.3, server CertificateVerify" ‖ 0x00
+‖ SHA-256(ClientHello … Certificate)</pre>
+    被签名的哈希覆盖了之前的所有消息，包括双方的 <code>key_share</code>。这就把“我的身份”和“这次的密钥交换”绑死了。</div></div>
+
+  <div class="msg"><div class="h"><span class="dir toright">homelab → laptop</span><span class="name">Finished</span><span class="chip hs">握手密钥加密</span></div><div class="d"><code>HMAC(finished_key, 到此为止所有消息的哈希)</code>。证明服务器确实掌握握手密钥，并且和客户端看到的是同一段对话。</div></div>
+
+  <div class="calc"><b>laptop 依次检查，任何一步失败就断开</b>
+    证书的 SHA-256 等于 SSH 送来的指纹吗？（gst 的 <code>VerifyPeerCertificate</code>）签名能用证书里的公钥验证通过吗？Finished 对得上吗？<strong>应用密钥</strong>由到 server Finished 为止的哈希派生：服务器发完 Finished 就能算出，laptop 在这些检查通过后算出。</div>
+
+  <div class="msg"><div class="h"><span class="dir">laptop → homelab</span><span class="name">Certificate<br>CertificateVerify<br>Finished</span><span class="chip hs">握手密钥加密</span></div><div class="d">客户端做同样的三件事。签名前缀换成 <code>TLS 1.3, client CertificateVerify</code>。homelab 用同样的方法验证：指纹、签名、Finished。至此双方都确认了对方身份。</div></div>
+
+  <div class="msg"><div class="h"><span class="dir">laptop ⇄ homelab</span><span class="name">应用数据</span><span class="chip app">应用密钥加密</span></div><div class="d">QUIC 流开始传数据，<code>relay.open</code> 和被转发的字节都在这里。每个方向各有一套密钥。</div></div>
+
+  <div class="col">
+  <h3>密钥派生的完整顺序</h3>
+<pre>0 ──────────── Extract ─▶ Early Secret
+                            │ derive("derived")
+ECDHE+ML-KEM ─ Extract ─▶ Handshake Secret
+                            ├─ "c hs traffic", H(CH..SH) ─▶ client handshake secret
+                            ├─ "s hs traffic", H(CH..SH) ─▶ server handshake secret
+                            │ derive("derived")
+0 ──────────── Extract ─▶ Master Secret
+                            ├─ "c ap traffic", H(CH..server Fin) ─▶ client app secret
+                            └─ "s ap traffic", H(CH..server Fin) ─▶ server app secret
+
+<span class="c">每个 secret 再 Expand 出：</span> "quic key"  "quic iv"  "quic hp"</pre>
+  <p>第一行的 Early Secret 给“用预共享密钥恢复会话”留位置。gst 关掉了会话恢复，所以这里输入是 0。</p>
+
+  <h3>TLS 放进 QUIC 之后</h3>
+  <p>普通 TLS 自己封装记录并跑在 TCP 上。QUIC（RFC 9001）只借用 TLS 的握手和密钥，握手消息放进 CRYPTO 帧，数据加密由 QUIC 逐包完成。一个 1-RTT 包长这样：</p>
+  </div>
+  <figure>
+    <div class="pkt">
+      <div class="mask"><b>Flags</b>低 5 位被掩码</div>
+      <div><b>Connection ID</b>明文，用于路由</div>
+      <div class="mask"><b>Packet No.</b>被掩码</div>
+      <div class="enc"><b>Payload</b>AEAD 加密：STREAM、ACK 等帧全在里面</div>
+      <div class="enc"><b>Tag</b>16 字节</div>
+    </div>
+    <figcaption>整个包头作为附加数据受标签保护。nonce 等于 <code>iv XOR 包序号</code>。包序号本身再用 <code>quic hp</code> 密钥从密文采样生成的掩码盖住，外部看不到序号递增。</figcaption>
+  </figure>
+  <div class="col">
+  <ul>
+    <li><strong>Initial 包不算保密。</strong>ClientHello 和 ServerHello 放在 Initial 包里，其密钥由明文的 Connection ID 和 RFC 公开的 salt 算出，任何人都能解开。所以路径上的设备能看到 ALPN <code>gst-direct</code>，但看不到证书，证书在握手密钥之下。</li>
+    <li><strong>长连接会换密钥。</strong>quic-go 默认每 10 万个包更新一次密钥，新密钥由旧 secret 经 HKDF 派生，旧的随即销毁。</li>
+    <li><strong>重放无效。</strong>接收方记录已处理的包序号，重放的旧包直接丢弃。</li>
+  </ul>
+  </div>
+</section>
+
+<section class="col">
+  <span class="no">08</span>
+  <h2>和 SSH 逐项对比</h2>
+  <p>SSH 传输层（RFC 4253）的握手和 TLS 1.3 几乎同构。下面是用 Curve25519 时的流程：</p>
+<pre><span class="k">1</span>  双方互发版本字符串 V_C, V_S              <span class="c">明文</span>
+<span class="k">2</span>  互发 KEXINIT I_C, I_S，列出支持的算法     <span class="c">明文</span>
+<span class="k">3</span>  客户端发临时公钥 Q_C                      <span class="c">明文</span>
+<span class="k">4</span>  服务器生成临时密钥，算出共享秘密 K，算
+     H = hash(V_C‖V_S‖I_C‖I_S‖K_S‖Q_C‖Q_S‖K)
+   发回 主机公钥 K_S、Q_S、用主机私钥对 H 的签名
+<span class="k">5</span>  客户端查 known_hosts 确认 K_S，算 K 和 H，验签
+<span class="k">6</span>  互发 NEWKEYS，密钥 = hash(K‖H‖"A".."F"‖session_id)
+<span class="k">7</span>  用户认证：客户端用 ~/.ssh/id_ed25519 对
+   session_id 和请求内容签名，服务器查 authorized_keys 验证   <span class="c">已加密</span></pre>
+  <p>第 4 步的 H 就相当于 TLS 的对话哈希，主机密钥的签名就相当于 <code>CertificateVerify</code>。第 7 步相当于客户端证书。对应关系如下：</p>
+  <div class="tw"><table>
+    <tr><th></th><th>TLS 1.3</th><th>SSH</th></tr>
+    <tr><td>会话密钥来源</td><td>临时密钥交换</td><td>临时密钥交换</td></tr>
+    <tr><td>数据加密</td><td>AES-GCM、ChaCha20-Poly1305</td><td>同类 AEAD，或 AES-CTR 加 HMAC</td></tr>
+    <tr><td>前向保密</td><td>有</td><td>有</td></tr>
+    <tr><td>抗量子交换</td><td><code>X25519MLKEM768</code></td><td><code>mlkem768x25519-sha256</code></td></tr>
+    <tr><td>服务器身份</td><td>证书，由 CA 背书</td><td>主机公钥，首次使用时记入 <code>known_hosts</code></td></tr>
+    <tr><td>客户端身份</td><td>可选，网站通常在应用层用密码</td><td>必须，常用公钥写入 <code>authorized_keys</code></td></tr>
+    <tr><td>长期密钥的用途</td><td>只签名</td><td>只签名</td></tr>
+    <tr><td>公钥的包装</td><td>X.509 证书</td><td>裸公钥</td></tr>
+    <tr><td>握手往返</td><td>1 次</td><td>多次</td></tr>
+    <tr><td>定位</td><td>给任意应用加密一条连接</td><td>远程登录，自带通道和端口转发</td></tr>
+  </table></div>
+  <p>所以把两者对立成“TLS 加密”和“公私钥方式”并不准确：TLS 也是公私钥方式。真正的差别只有一个问题：<strong>你凭什么相信这把公钥属于对方？</strong></p>
+</section>
+<div class="trust">
+  <div><b>CA 证书链（网站）</b><span class="q">陌生人之间，有第三方担保</span>浏览器内置约百家 CA 的公钥。CA 用私钥为 <code>example.com</code> 的证书签名，浏览器顺着签名链验证到内置的根，并检查域名和有效期。</div>
+  <div><b>首次信任（SSH）</b><span class="q">第一次连接时人工确认</span>第一次连接时弹出主机指纹，确认后写入 <code>known_hosts</code>。之后主机公钥一变就报警。用户公钥由管理员写进 <code>authorized_keys</code>。</div>
+  <div><b>带外固定（gst direct）</b><span class="q">已有一条可信通道</span>证书指纹经已认证的 SSH 链路送到。TLS 握手时只接受这一个指纹。没有 CA，也不用人工确认。</div>
+</div>
+
+<section class="col">
+  <span class="no">09</span>
+  <h2>gst 里的完整流程</h2>
+  <p>direct link 的信任来自 SSH。SSH 负责递送“对方是谁”，TLS 负责在 UDP 路径上建立加密。</p>
+</section>
+<figure>
+  <div class="stage">
+  <svg viewBox="0 0 900 300" role="img" aria-label="laptop 和 homelab 先经 SSH mesh 交换地址、token 和证书指纹，然后在 UDP 路径上探测，再用 QUIC 和 TLS 1.3 握手并核对指纹。">
+    <rect class="box" x="10" y="90" width="150" height="120" rx="4"/>
+    <text x="85" y="118" text-anchor="middle" class="b">laptop</text>
+    <text x="85" y="142" text-anchor="middle" class="sm">新 Ed25519 密钥</text>
+    <text x="85" y="160" text-anchor="middle" class="sm">私钥只在内存</text>
+    <text x="85" y="178" text-anchor="middle" class="sm">自签名证书</text>
+    <rect class="box" x="740" y="90" width="150" height="120" rx="4"/>
+    <text x="815" y="118" text-anchor="middle" class="b">homelab</text>
+    <text x="815" y="142" text-anchor="middle" class="sm">新 Ed25519 密钥</text>
+    <text x="815" y="160" text-anchor="middle" class="sm">私钥只在内存</text>
+    <text x="815" y="178" text-anchor="middle" class="sm">自签名证书</text>
+    <path class="ac" d="M160 112 C 260 30, 640 30, 740 112" marker-end="url(#arA)" marker-start="url(#arA)"/>
+    <text x="450" y="28" text-anchor="middle" class="b">① SSH mesh：direct.offer 和应答</text>
+    <text x="450" y="66" text-anchor="middle" class="mono">{ addresses, token, fingerprint = SHA-256(证书) }</text>
+    <line class="ln" x1="160" y1="150" x2="740" y2="150" stroke-dasharray="5 5" marker-end="url(#ar)" marker-start="url(#ar)"/>
+    <text x="450" y="140" text-anchor="middle" class="b">② UDP 探测：0x01/0x02 + token</text>
+    <text x="450" y="170" text-anchor="middle" class="sm">明文，只用来找路径，不提供任何安全保证</text>
+    <path class="okl" d="M160 192 C 260 270, 640 270, 740 192" marker-end="url(#arO)" marker-start="url(#arO)"/>
+    <text x="450" y="226" text-anchor="middle" class="b">③ 同一个 UDP socket：QUIC + TLS 1.3</text>
+    <text x="450" y="290" text-anchor="middle" class="sm">证书的 SHA-256 必须等于 ① 收到的指纹，之后所有数据走这里</text>
+  </svg>
+  </div>
+  <figcaption>① 走已有的加密 SSH，③ 自己建立加密，② 不需要保密。攻击者即使伪造探测包，最多让 gst 在一条错误的路径上发起握手，指纹对不上就失败了。</figcaption>
+</figure>
+<section class="col" style="padding-top:12px">
+  <h3>实际协商出的参数</h3>
+  <p>下表由 Go 1.26 按 gst 的 TLS 配置在本地实跑一次得到。这次是在内存管道上跑 <code>crypto/tls</code>，不经 quic-go，后者用的是同一份配置和同一个 TLS 库。</p>
+  <div class="tw"><table>
+    <tr><th>项目</th><th>值</th><th>作用</th></tr>
+    <tr><td>协议</td><td><code>TLS 1.3</code></td><td><code>MinVersion</code> 限定，QUIC 也只允许 1.3</td></tr>
+    <tr><td>密钥交换</td><td><code>X25519MLKEM768</code></td><td>Go 默认首选，gst 没有额外配置</td></tr>
+    <tr><td>数据加密</td><td><code>TLS_AES_128_GCM_SHA256</code></td><td>有 AES 硬件时的选择，否则可能是 ChaCha20-Poly1305</td></tr>
+    <tr><td>签名</td><td><code>Ed25519</code></td><td>证书和 CertificateVerify</td></tr>
+    <tr><td>证书大小</td><td>174 字节</td><td>不含名字，有效期 25 小时</td></tr>
+  </table></div>
+
+  <h3>配置逐行解读</h3>
+<pre>tls.Config{
+  Certificates:           []tls.Certificate{a.cert},  <span class="c">本次尝试的临时证书</span>
+  NextProtos:             []string{"gst-direct"},
+  MinVersion:             tls.VersionTLS13,
+  SessionTicketsDisabled: true,                       <span class="c">不恢复会话，每次完整交换</span>
+  ClientAuth:             tls.RequireAnyClientCert,   <span class="c">双向认证</span>
+  InsecureSkipVerify:     true,                       <span class="c">关掉 CA 链校验</span>
+  VerifyPeerCertificate:  核对指纹,                    <span class="c">换成指纹校验</span>
+}</pre>
+  <p><code>InsecureSkipVerify</code> 这个名字看着吓人，它只关闭 CA 证书链和域名的检查。这里没有 CA 也没有域名，这两项本来就无法通过。<code>VerifyPeerCertificate</code> 仍然会运行，它比 CA 校验更严格：全世界只有一张证书能通过。</p>
+  <p>CertificateVerify 的签名校验不受这个选项影响，由 TLS 库始终执行。所以攻击者把对方的证书原样转发也没用，他没有对应的私钥。</p>
+
+  <h3>谁能攻破什么</h3>
+  <div class="tw"><table>
+    <tr><th>攻击者</th><th>做法</th><th>结果</th><th>被什么挡住</th></tr>
+    <tr><td>路径上的窃听者</td><td>录下全部 UDP 包</td><td class="yes">失败</td><td>算不出共享秘密。能看到 IP、端口、流量大小和时间</td></tr>
+    <tr><td>路径上的中间人</td><td>替换 <code>key_share</code>，转发真证书</td><td class="yes">失败</td><td>两边对话哈希不同，CertificateVerify 验证不过</td></tr>
+    <tr><td>路径上的中间人</td><td>用自己的证书</td><td class="yes">失败</td><td>指纹不符</td></tr>
+    <tr><td>路径上的中间人</td><td>修改或重放数据包</td><td class="yes">失败</td><td>认证标签、包序号</td></tr>
+    <tr><td>事后偷走机器</td><td>解开以前录下的流量</td><td class="yes">失败</td><td>临时密钥已销毁，磁盘上也没有存过</td></tr>
+    <tr><td>未来的量子计算机</td><td>解开今天录下的流量</td><td class="yes">失败</td><td>ML-KEM 部分。指纹本来就不是秘密，SSH 记录被解开也不影响这一点</td></tr>
+    <tr><td>能拒绝服务的人</td><td>丢弃 UDP 包</td><td class="no-go">可以</td><td>加密防不住。gst 退回 SSH 路径，业务不中断</td></tr>
+    <tr><td>控制了某台 gst 节点</td><td>改写经过它的 offer 中的指纹</td><td class="no-go">可以</td><td>防不住。offer 在中继节点的进程里是明文，direct 的安全上限就是 mesh 的安全</td></tr>
+  </table></div>
+  <p>最后一行是这个设计的信任边界。中继节点是你自己的机器，能改写 offer 的节点本来就能读写所有经过它的 SSH 中继流量，所以 direct link 没有引入新的信任对象。</p>
+</section>
+
+<section class="col">
+  <span class="no">10</span>
+  <h2>direct 能用普通公私钥模式吗</h2>
+  <p>“公钥走 SSH tunnel 传递，然后信息经过这个加密”可以有三种理解，答案各不相同。</p>
+
+  <h3>理解一：公钥经 SSH 传递，用来确认身份</h3>
+  <p><strong>这就是 gst 现在的做法。</strong>证书里的核心内容只有一把 Ed25519 公钥，SSH 上传的是它的 SHA-256。传哈希和传公钥本身在安全上等价：公钥在握手时自己送来，比对哈希就知道是不是那一把。</p>
+  <p>之所以套一层证书，是因为 QUIC 强制使用 TLS，而 Go 的 <code>crypto/tls</code> 只认 X.509 证书。TLS 标准其实有裸公钥扩展（RFC 7250），但 Go 没有实现。这张 174 字节的证书只是个信封，没有 CA，也不带名字。</p>
+
+  <h3>理解二：用对方公钥直接加密每条消息</h3>
+  <p>这是教科书里的“公钥加密”，也是 TLS 1.2 及以前的 RSA 密钥传输模式所用的思路。TLS 1.3 把这种模式删掉了。逐条来看问题：</p>
+  <div class="tw"><table>
+    <tr><th>问题</th><th>说明</th></tr>
+    <tr><td>算法不支持</td><td>Ed25519 只能签名。要换成 RSA，或用 X25519 加对称算法拼出 ECIES，而后者已经回到密钥交换了</td></tr>
+    <tr><td>太慢、太小</td><td>RSA-2048 OAEP 一次最多加密 190 字节，私钥运算比 AES 慢几个数量级。转发流量要切成海量小块</td></tr>
+    <tr><td>没有前向保密</td><td>长期私钥一旦泄露，录下的全部历史流量都能解开。临时生成的 RSA 密钥能缓解，但生成 RSA 密钥本身很慢</td></tr>
+    <tr><td>不防篡改和重放</td><td>公钥是公开的，谁都能加密一条假消息发过来。还要另加签名、序号和重放窗口</td></tr>
+  </table></div>
+  <p>所以任何真实协议都只用公钥算法协商一把对称密钥。这条路不可取。</p>
+
+  <h3>理解三：经 SSH 交换临时公钥，算出对称密钥，自己加密 UDP 包</h3>
+  <p><strong>这在密码学上完全可行。</strong>做法是在 <code>direct.offer</code> 里放一把临时 X25519 公钥，代替指纹：</p>
+<pre>offer  { addresses, token, public: A = a·G }  <span class="c">经 SSH</span>
+answer { addresses,        public: B = b·G }  <span class="c">经 SSH</span>
+
+两端： secret = X25519(自己的私钥, 对方的公钥)
+       k_send, k_recv = HKDF(secret, token, 方向)
+之后每个 UDP 包： AEAD(k, nonce = 序号, 明文)</pre>
+  <p>因为 SSH 已经保证了公钥来自对方，密钥交换本身就完成了身份认证，签名和证书都可以省掉，UDP 上也不用再握手。WireGuard 就是这个思路：公钥事先通过带外渠道配置好，跑 Noise 协议算出密钥，用 ChaCha20-Poly1305 加密每个 UDP 包。</p>
+  <p>但这个方案有一个决定性的代价：<strong>QUIC 用不了了。</strong>QUIC 的规范把 TLS 1.3 写死，quic-go 的 <code>Transport.Dial</code> 也只接受 <code>*tls.Config</code>，没有换掉加密层的接口。而 gst 需要 QUIC 提供的东西：可靠重传、拥塞控制、流量控制、多路复用的流、保活。放弃它就要自己实现这些，或者在自制加密层上再跑 QUIC，等于加密两遍。</p>
+  <p>另外自制加密层还要自己处理 nonce 管理、重放窗口、密钥轮换，想抗量子还要自己把 ML-KEM 加进去。这些全是容易写出漏洞的地方，而 TLS 1.3 全都已经做好了。</p>
+
+  <h3>方案对比</h3>
+  <div class="tw"><table>
+    <tr><th></th><th>现状：指纹 + TLS</th><th>公钥直接加密</th><th>交换公钥 + 自制 AEAD</th></tr>
+    <tr><td>身份信任来源</td><td>SSH</td><td>SSH</td><td>SSH</td></tr>
+    <tr><td>前向保密</td><td class="yes">有</td><td class="no-go">无</td><td class="yes">有</td></tr>
+    <tr><td>抗量子</td><td class="yes">有</td><td class="no-go">无</td><td class="no-go">需自己加</td></tr>
+    <tr><td>UDP 上的握手</td><td>1 RTT</td><td>无</td><td>无</td></tr>
+    <tr><td>能用 QUIC</td><td class="yes">能</td><td class="no-go">不能</td><td class="no-go">不能</td></tr>
+    <tr><td>gst 要写的加密代码</td><td>约 40 行配置</td><td>完整协议</td><td>完整协议和传输层</td></tr>
+  </table></div>
+  <p>第三种方案省下的 1 RTT 对 gst 没有意义：direct link 在后台建立，业务先走 SSH，不等它。所以现状就是合适的选择：<strong>信任模型已经是“公钥经 SSH 传递”，TLS 只是 QUIC 要求的那部分实现。</strong>证书看起来复杂，实际只是一个信封。</p>
+</section>
+
+<section class="col">
+  <span class="no">11</span>
+  <h2>规范索引</h2>
+  <div class="tw"><table>
+    <tr><th>内容</th><th>规范</th><th>gst 代码</th></tr>
+    <tr><td>TLS 1.3</td><td>RFC 8446</td><td><code>tlsConfig</code>（<code>internal/direct/direct.go</code>）</td></tr>
+    <tr><td>QUIC 和它的 TLS 用法</td><td>RFC 9000、RFC 9001</td><td><code>quicConfig</code>、<code>Attempt.Dial</code>、<code>Attempt.Accept</code></td></tr>
+    <tr><td>Curve25519、Ed25519</td><td>RFC 7748、RFC 8032</td><td><code>newCertificate</code></td></tr>
+    <tr><td>ML-KEM</td><td>FIPS 203</td><td>Go 标准库默认启用</td></tr>
+    <tr><td>AES-GCM、HKDF</td><td>NIST SP 800-38D、RFC 5869</td><td>Go 标准库</td></tr>
+    <tr><td>SSH 传输层和认证</td><td>RFC 4253、RFC 4252</td><td><code>internal/sshconn</code></td></tr>
+    <tr><td>direct 信令</td><td><a href="mesh.md">mesh.md</a></td><td><code>internal/mesh/direct.go</code></td></tr>
+  </table></div>
+  <p>路径如何打通见 <a href="udp-hole-punching.html">UDP 打洞从零讲起</a>。</p>
+</section>
+</div>
+
+<script>
+(function () {
+  var subtle = window.crypto && window.crypto.subtle;
+  var enc = new TextEncoder();
+  function hex(bytes) { return Array.prototype.map.call(bytes, function (b) { return b.toString(16).padStart(2, "0"); }).join(""); }
+  function esc(s) { return s.replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  /* SHA-256 avalanche */
+  var h1 = document.getElementById("h1"), h2 = document.getElementById("h2"), hout = document.getElementById("hout");
+  async function hash() {
+    if (!subtle) return;
+    var a = new Uint8Array(await subtle.digest("SHA-256", enc.encode(h1.value)));
+    var b = new Uint8Array(await subtle.digest("SHA-256", enc.encode(h2.value)));
+    var bits = 0, marked = "";
+    for (var i = 0; i < a.length; i++) {
+      var x = a[i] ^ b[i];
+      for (var k = 0; k < 8; k++) bits += (x >> k) & 1;
+      var byte = b[i].toString(16).padStart(2, "0");
+      marked += x ? '<span class="diff">' + byte + "</span>" : byte;
+    }
+    hout.innerHTML = "A: " + hex(a) + "<br>B: " + marked + "<br>256 个比特中有 " + bits + " 个不同";
+  }
+  h1.addEventListener("input", hash); h2.addEventListener("input", hash); hash();
+
+  /* AES-128-GCM tamper */
+  var gmsg = document.getElementById("gmsg"), gout = document.getElementById("gout"), gres = document.getElementById("gres");
+  var key, wrong, iv = new Uint8Array(12), ct;
+  async function open(k, data, how) {
+    try {
+      var p = await subtle.decrypt({ name: "AES-GCM", iv: iv }, k, data);
+      gres.innerHTML = '<span class="verdict good">' + how + "解密成功：</span>" + esc(new TextDecoder().decode(p));
+    } catch (e) {
+      gres.innerHTML = '<span class="verdict bad">' + how + "认证标签校验失败，整包丢弃，没有输出任何明文。</span>";
+    }
+  }
+  async function seal() {
+    if (!subtle) return;
+    if (!key) {
+      key = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+      wrong = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+      window.crypto.getRandomValues(iv);
+    }
+    ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: iv }, key, enc.encode(gmsg.value)));
+    var raw = new Uint8Array(await subtle.exportKey("raw", key));
+    var body = ct.slice(0, ct.length - 16), tag = ct.slice(ct.length - 16);
+    gout.innerHTML = "密钥: " + hex(raw) + "<br>nonce: " + hex(iv) + "<br>密文: " + hex(body) + "<br>标签: " + hex(tag);
+    open(key, ct, "原样收到，");
+  }
+  gmsg.addEventListener("input", seal);
+  document.getElementById("gflip").addEventListener("click", function () {
+    if (!ct) return;
+    var bad = ct.slice(); bad[0] ^= 1; open(key, bad, "第一个字节翻转一位后，");
+  });
+  document.getElementById("gkey").addEventListener("click", function () { if (ct) open(wrong, ct, "用错误的密钥，"); });
+  document.getElementById("greset").addEventListener("click", function () { if (ct) open(key, ct, "原样收到，"); });
+  seal();
+
+  /* Toy Diffie-Hellman */
+  var P = 23, G = 5, da = document.getElementById("da"), db = document.getElementById("db");
+  function pow(b, e) { var r = 1; for (var i = 0; i < e; i++) r = r * b % P; return r; }
+  function dh() {
+    var a = +da.value, b = +db.value, A = pow(G, a), B = pow(G, b);
+    document.getElementById("dav").textContent = a;
+    document.getElementById("dbv").textContent = b;
+    document.getElementById("dA").innerHTML = "A = 5^" + a + " mod 23 = " + A + "<br>收到 B = " + B + "<br>K = " + B + "^" + a + " mod 23 = <strong>" + pow(B, a) + "</strong>";
+    document.getElementById("dB").innerHTML = "B = 5^" + b + " mod 23 = " + B + "<br>收到 A = " + A + "<br>K = " + A + "^" + b + " mod 23 = <strong>" + pow(A, b) + "</strong>";
+    document.getElementById("dW").innerHTML = "p = 23, g = 5<br>A = " + A + "<br>B = " + B;
+    var tries = 0, found = 0;
+    for (var x = 1; x < P; x++) { tries++; if (pow(G, x) === A) { found = x; break; } }
+    document.getElementById("dE").textContent = "窃听者暴力破解：试到 x = " + found + "（第 " + tries + " 次）时 5^x mod 23 = " + A + "，于是 K = " + B + "^" + found + " mod 23 = " + pow(B, found) + "。数字小才破得开。";
+  }
+  da.addEventListener("input", dh); db.addEventListener("input", dh); dh();
+})();
+</script>
+</body>
+</html>
