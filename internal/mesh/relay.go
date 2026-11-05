@@ -3,14 +3,11 @@ package mesh
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/hashicorp/yamux"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/relay"
@@ -35,6 +32,7 @@ func (n *Node) Dial(ctx context.Context, ref, network, address string) (net.Conn
 	if !dest.Reachable {
 		return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: no running links lead there; see gst status", dest.Name)
 	}
+	n.tryDirect(dest.ID)
 	ctx, cancel := context.WithTimeout(ctx, relayTimeout)
 	defer cancel()
 	return n.open(ctx, dest.Path, wire.Target{Network: network, Address: address})
@@ -67,22 +65,28 @@ func (n *Node) open(ctx context.Context, path []string, target wire.Target) (net
 		}
 		return conn, nil
 	}
-	session := n.sessionTo(path[1])
-	if session == nil {
-		return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see gst status", self.Name)
-	}
-	conn, err := call(ctx, session, wire.MethodRelayOpen, wire.RelayParams{Path: path[1:], Target: target}, nil)
-	if err != nil {
+	for {
+		session := n.sessionTo(path[1])
+		if session == nil {
+			return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see gst status", self.Name)
+		}
+		conn, err := call(ctx, session, wire.MethodRelayOpen, wire.RelayParams{Path: path[1:], Target: target}, nil)
+		if err == nil {
+			return conn, nil
+		}
 		var callErr *wire.Error
 		switch {
 		case errors.As(err, &callErr):
 			return nil, callErr
 		case ctx.Err() != nil:
 			return nil, wire.Errorf(wire.CodeFailed, "the relay timed out")
+		case closed(session) && n.sessionTo(path[1]) != nil:
+			// A direct link broke while it was the way to the next
+			// node, which another link also leads to.
+			continue
 		}
 		return nil, wire.Errorf(wire.CodeFailed, "the relay failed: %v", err)
 	}
-	return conn, nil
 }
 
 // callee returns a connection that carries calls to this node's peer
@@ -172,55 +176,26 @@ func (n *Node) serveRelay(ctx context.Context, conn net.Conn, p wire.RelayParams
 	return nil
 }
 
-// call opens a stream to the peer at the other end of session and calls
-// method on it; ctx bounds the call. The stream stays open for what
-// follows the answer, such as a relayed connection or pushed frames.
-func call(ctx context.Context, session *yamux.Session, method string, params, result any) (streamConn, error) {
-	stream, err := session.OpenStream()
+// call opens a stream to the peer at the other end of s and calls method
+// on it; ctx bounds the call. The stream stays open for what follows the
+// answer, such as a relayed connection or pushed frames.
+func call(ctx context.Context, s session, method string, params, result any) (net.Conn, error) {
+	conn, err := s.Open(ctx)
 	if err != nil {
-		return streamConn{}, errLinkLost
+		return nil, errLinkLost
 	}
-	conn := streamConn{stream, session}
-	// Closing a yamux stream only ends writing; a deadline ends the wait
-	// for the answer.
-	stop := context.AfterFunc(ctx, func() { stream.SetDeadline(time.Now()) })
+	// Closing a stream may only end writing; a deadline ends the wait for
+	// the answer.
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	err = wire.Call(conn, method, params, result)
 	if !stop() && err == nil {
 		err = ctx.Err()
 	}
 	if err != nil {
 		conn.Close()
-		return streamConn{}, err
+		return nil, err
 	}
 	return conn, nil
-}
-
-// streamConn is a connection over a yamux stream. CloseWrite ends
-// writing, as closing a yamux stream does, while Close also ends reading.
-// When the link is lost, reading fails rather than ending cleanly, so
-// that the relay at each end closes the connection instead of waiting for
-// the other direction, which would never end.
-type streamConn struct {
-	*yamux.Stream
-	session *yamux.Session
-}
-
-var errLinkLost = errors.New("the link closed")
-
-func (c streamConn) Read(p []byte) (int, error) {
-	n, err := c.Stream.Read(p)
-	if err == io.EOF && c.session.IsClosed() {
-		err = errLinkLost
-	}
-	return n, err
-}
-
-func (c streamConn) CloseWrite() error { return c.Stream.Close() }
-
-func (c streamConn) Close() error {
-	err := c.Stream.Close()
-	c.Stream.SetReadDeadline(time.Now())
-	return err
 }
 
 // FindNode finds a node of topo by ref: its id, its name, the name of a

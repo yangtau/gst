@@ -108,6 +108,7 @@ type TopoNode struct {
 	Exit      bool      `json:"exit"`
 	Reachable bool      `json:"reachable"`
 	Path      []string  `json:"path,omitempty"`   // node ids from this node, for reachable nodes
+	Direct    bool      `json:"direct,omitempty"` // this node has a direct link to it
 	Expires   time.Time `json:"expires,omitzero"` // when its record expires; zero for this node
 }
 
@@ -115,5 +116,7 @@ type TopoNode struct {
 type TopoEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-	Link string `json:"link"` // its name on From
+	Link string `json:"link"` // its name on From; empty for a direct link
+	// Direct says that the link is a direct link rather than one over SSH.
+	Direct bool `json:"direct,omitempty"`
 }

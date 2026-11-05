@@ -220,6 +220,20 @@ func TestStatusViaListsEveryMachineOnTheWay(t *testing.T) {
 	}
 }
 
+func TestStatusShowsDirectLinks(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	a, b := nodeID("aaaa1111"), nodeID("bbbb2222")
+	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
+		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
+		{ID: b, Name: "b", Reachable: true, Direct: true, Path: []string{a, b}},
+	}, Edges: []wire.TopoEdge{{From: a, To: b, Direct: true}, {From: a, To: b, Link: "b"}}}
+	want := []string{"aaaa1111 a - -", "bbbb2222 b - online; direct", "", "LINK", "a->b (direct)", "a->b"}
+	if got := lines(e.mustGst("status", "--all")); !slices.Equal(got, want) {
+		t.Fatalf("status --all\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestStatusWithoutLinks(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")

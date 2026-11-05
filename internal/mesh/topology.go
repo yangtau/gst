@@ -8,8 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -66,13 +64,15 @@ func (n *Node) publish(force bool) {
 	n.notify()
 }
 
-// edges describes the running links that this node opened; n.mu is held.
+// edges describes the running links; n.mu is held.
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
-		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
+		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID, Direct: l.direct && l.opened})
 	}
-	slices.SortFunc(edges, func(a, b wire.Edge) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer)) })
+	slices.SortFunc(edges, func(a, b wire.Edge) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer), boolOrder(a.Direct, b.Direct))
+	})
 	return edges
 }
 
@@ -172,9 +172,9 @@ func (n *Node) merge(recs []wire.Record) {
 // pushes until the session ends. When the exchange fails, sync closes the
 // session, so that the link starts over rather than staying up without
 // updates.
-func (n *Node) sync(ctx context.Context, session *yamux.Session) {
+func (n *Node) sync(ctx context.Context, s session) {
 	var recs wire.Records
-	conn, err := call(ctx, session, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
+	conn, err := call(ctx, s, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
 	if err == nil {
 		defer conn.Close()
 		defer context.AfterFunc(ctx, func() { conn.Close() })()
@@ -185,7 +185,7 @@ func (n *Node) sync(ctx context.Context, session *yamux.Session) {
 		err = wire.ReadFrame(conn, &recs)
 	}
 	if ctx.Err() == nil {
-		session.Close()
+		s.Close()
 	}
 }
 
@@ -262,11 +262,19 @@ func (n *Node) Topology() wire.Topology {
 		}
 	}
 	recs = append(recs, wire.Record{Node: self, Links: n.edges()})
+	direct := map[string]bool{}
+	for l := range n.links {
+		direct[l.peer.ID] = direct[l.peer.ID] || l.direct
+	}
 	n.mu.Unlock()
 	if self.ID == "" {
 		return wire.Topology{Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
 	}
-	return buildTopology(self.ID, recs, time.Now())
+	topo := buildTopology(self.ID, recs, time.Now())
+	for i := range topo.Nodes {
+		topo.Nodes[i].Direct = direct[topo.Nodes[i].ID]
+	}
+	return topo
 }
 
 // buildTopology joins the live records into nodes and the links between
@@ -293,7 +301,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 	edges := []wire.TopoEdge{}
 	for _, r := range live {
 		for _, e := range r.Links {
-			if e.Name == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
+			if e.Name == "" && !e.Direct || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
 				// Accepted links show as the opening node's; a link
 				// that the other end no longer lists is gone.
 				continue
@@ -302,7 +310,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 				// Its record has not arrived yet.
 				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}
 			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name})
+			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name, Direct: e.Direct})
 		}
 	}
 	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {

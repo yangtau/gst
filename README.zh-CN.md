@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，但只工作在第 4 层：只中转 TCP 连接和 Unix socket，不需要 root，直接使用你已有的 SSH 登录。支持 Linux 和 macOS。
+`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，但只工作在第 4 层：只中转 TCP 连接和 Unix socket，不需要 root，直接使用你已有的 SSH 登录。网络允许时，机器之间还会经 UDP 直连。支持 Linux 和 macOS。
 
 - 每台机器都运行 gst（link 的两端都需要 0.3 或更高版本）和一个小的后台 daemon。
 - **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `mini` 和 `devcn` 的 link 时，`mini` 经由 `laptop` 就能到达 `devcn`，不需要 `devcn` 的任何凭据。
@@ -123,6 +123,7 @@ gst map add /tmp/devcn-docker.sock devcn:/var/run/docker.sock
 
 - node 的名字用于显示和寻址，不要求唯一；id 是唯一的。用 `gst name laptop` 修改名字。名字和 link 名一样，由 1-32 个小写字母、数字或 `-` 组成。
 - link 是双向的：流量可以沿任一方向通过，所以 `devcn` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst add devcn`），在对端报告自己的名字之前，它也是对端机器的名字。
+- 网络允许时，连接在两台机器之间直连，即使它们之间没有 link：到某台机器的第一个连接在后台经 UDP 建立直连，之后的连接都走它。不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器继续走 link。`gst status` 在机器后面显示 `direct`。直连失败时，走它的连接随之中断，新连接重新走 link。直连建立后不再依赖 link，所以两台机器之间的机器休眠时直连继续运行；`gst remove` 之后如果已没有 link 通向某台机器，到它的直连也会断开。
 - 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst status` 都能看到整个 mesh；退出网络的机器会在 30 分钟内消失。路径只能经由运行中的 link 越过一台机器。
 
 ### 机器寻址
@@ -186,7 +187,7 @@ gst route add default devsg           # 其余所有主机
 
 ### 信任
 
-mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通过自己的 socket 接受它。mesh 中任何一台机器都可以请求任何一台机器连接**它自己的** `localhost` 端口和 Unix socket（本地数据库、Docker socket、ssh-agent）。exit 的范围更大：任何机器都可以连接 exit 所能到达的任何地方。只连接你信任的机器，只在需要的机器上开启 exit。`gst down` 让本机退出 mesh。
+mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通过自己的 socket 接受它。mesh 中任何一台机器都可以请求任何一台机器连接**它自己的** `localhost` 端口和 Unix socket（本地数据库、Docker socket、ssh-agent）。exit 的范围更大：任何机器都可以连接 exit 所能到达的任何地方。只连接你信任的机器，只在需要的机器上开启 exit。`gst down` 让本机退出 mesh。直连是加密的，两台机器凭经 link 交换的证书互相识别，所以直连的信任来自 link。
 
 ## 取代 ssh 转发
 
@@ -214,8 +215,8 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | --- | --- |
 | `gst add <name> [destination] [--remote-gst cmd]` | 添加 link 并在后台启动 |
 | `gst remove <name>...`（`rm`） | 停止并删除 link |
-| `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态；然后是本机的问题 |
-| `gst status --all` | 同时列出所有机器之间运行着的 link |
+| `gst status` | 列出本机所知道的 mesh 中所有机器：短 id、名字、gst 版本和状态（`online`、`via` 中间机器、`direct`、`exit`）；然后是本机的问题 |
+| `gst status --all` | 同时列出所有机器之间运行着的 link 和直连，例如 `laptop->mini (direct)` |
 | `gst status <machine>` | 显示某台机器的 link（含状态和目标）、代理、map 和 route，经由 mesh 查询 |
 | `gst ping <machine> [-c N]` | 让某台机器经由 mesh 每秒应答一次（默认 3 次），并显示每次应答的路径和耗时 |
 
@@ -228,6 +229,7 @@ devcn 上这种相当于 `-R` 的 map 之所以可行，是因为 mesh 中每台
 | `-` | 本机 |
 | `online` | 有运行中的 link 直接通向它 |
 | `online; via devcn` | 到它的连接经过所列的机器 |
+| `online; direct` | 到它的连接经 UDP 直连 |
 | `offline` | 没有运行中的 link 通向它 |
 
 exit 的状态后面带 `; exit`。link 显示为两端的机器，如 `m3->devsg`；link 名字和它通向的机器不同时，后面会带上 `gst remove` 用的名字，如 `m3->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及失败的代理或 map。link 的状态：`running`（两边的 daemon 已相连）、`connecting`、`down`（失败后正在重试；会显示最近一次错误，包括对方 gst 报告的错误的第一行）。失败的 link 5 秒后重试，之后每次翻倍，最长 5 分钟一次，进入 running 后重新计时。

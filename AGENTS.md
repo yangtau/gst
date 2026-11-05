@@ -1,6 +1,6 @@
 # AGENTS.md
 
-gst links a user's machines into a mesh over SSH: one background daemon per user and machine, installed as a user service (systemd on Linux, launchd on macOS), links to other machines' daemons and relays TCP and Unix socket connections between them. `README.md` (English) and `README.zh-CN.md` (Simplified Chinese) are the user guide; keep them about using gst, keep the two in sync, and update both whenever CLI behavior changes. Development notes belong here.
+gst links a user's machines into a mesh over SSH: one background daemon per user and machine, installed as a user service (systemd on Linux, launchd on macOS), links to other machines' daemons and relays TCP and Unix socket connections between them, directly over UDP when the network allows. `README.md` (English) and `README.zh-CN.md` (Simplified Chinese) are the user guide; keep them about using gst, keep the two in sync, and update both whenever CLI behavior changes. Development notes belong here.
 
 架构合理、设计合理、使用简单是我的最高优先级，为此当前已经有的任何功能、设计都可以更改、兼容性也无需保持。
 
@@ -21,7 +21,8 @@ gst links a user's machines into a mesh over SSH: one background daemon per user
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst add`.
 - `internal/daemon`: the daemon, which supervises the links, serves the proxy and the maps, and answers the control socket, and its client.
-- `internal/mesh`: the node: links (`gst peer-bridge` plus yamux), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, and relayed connections (`relay.open`) along source routes, with the exit check at the last hop.
+- `internal/mesh`: the node: links (`gst peer-bridge` plus yamux, or `internal/direct`, behind `session`), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, and relayed connections (`relay.open`) along source routes, with the exit check at the last hop.
+- `internal/direct`: direct links: one try at a UDP path between two daemons (probes, QUIC, pinned certificates) and the connection it yields. Signaling is `mesh`'s.
 - `internal/proxy`: the SOCKS5 and HTTP proxy.
 - `internal/relay`: copies bytes between two connections.
 - `internal/wire`: the gst protocol (frames, handshake, calls, and `Server`, which dispatches calls to registered methods) used by the control socket and links.
@@ -40,4 +41,4 @@ gst links a user's machines into a mesh over SSH: one background daemon per user
 
 ## Integration tests
 
-Read `integration/README.md` before running or changing them. They use a prepared sshd image and per-run node containers that run both sshd and gst and talk to each other by container IP (`integration/node_test.go`); nothing runs, listens, or connects on this machine. Network clients and servers inside the containers come from `integration/ithelper`. Tests run the CLI and daemons in the node containers (`startPair` for two, `start3` for three) with `GST_SSH_CONFIG=/dev/null` and the image's systemctl shim. Machine-specific settings such as `IT_APT_MIRROR` go in the git-ignored `integration/local.mk`, which the `Makefile` includes.
+Read `integration/README.md` before running or changing them. They use a prepared sshd image and per-run node containers that run both sshd and gst and talk to each other by container IP (`integration/node_test.go`); nothing runs, listens, or connects on this machine. Network clients and servers inside the containers come from `integration/ithelper`. Tests run the CLI and daemons in the node containers (`startPair` for two, `start3` for three) with `GST_SSH_CONFIG=/dev/null`, `GST_DIRECT=off` unless `node.direct` is set, and the image's systemctl shim. Machine-specific settings such as `IT_APT_MIRROR` go in the git-ignored `integration/local.mk`, which the `Makefile` includes.

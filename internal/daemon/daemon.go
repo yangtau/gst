@@ -14,6 +14,7 @@ import (
 	"log"
 	"maps"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,6 +41,9 @@ type Config struct {
 	// everything under it. Its errors are logged, so they must not quote
 	// addresses, users, or paths.
 	Connect func(ctx context.Context, name string, l *config.Link) (io.ReadWriteCloser, error)
+	// Addresses returns the local addresses that direct links use; direct
+	// links are off when it is nil.
+	Addresses func() []netip.Addr
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
 	RetryDelay time.Duration
@@ -113,6 +117,9 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	d.mu.Lock()
 	d.serveCtx = meshCtx
 	d.mu.Unlock()
+	if d.cfg.Addresses != nil {
+		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
+	}
 
 	if err := d.Reload(ctx); err != nil {
 		// Keep serving: a later reload, after the configuration is
@@ -253,15 +260,28 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	d.config.Store(f)
 	d.listen(f)
 	var stop []*supervisor
+	var removed []string
 	d.mu.Lock()
 	for name, s := range d.links {
-		if l := f.Links[name]; l == nil || *l != s.spec {
+		l := f.Links[name]
+		if l == nil {
+			removed = append(removed, name)
+		}
+		if l == nil || *l != s.spec {
 			stop = append(stop, s)
 			delete(d.links, name)
 		}
 	}
 	d.mu.Unlock()
+	var told sync.WaitGroup
+	for _, name := range removed {
+		told.Go(func() { d.mesh.Unlink(ctx, name) })
+	}
+	told.Wait()
 	stopAll(stop)
+	if len(removed) > 0 {
+		d.mesh.EndStrandedDirect()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for name, l := range f.Links {

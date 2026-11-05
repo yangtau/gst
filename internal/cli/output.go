@@ -19,8 +19,11 @@ func linkStateText(l wire.LinkState) string {
 
 // linkText shows a link as the machines at its ends, such as m3->devsg,
 // and adds the link's own name, which gst remove takes, when it differs
-// from the machine it leads to.
+// from the machine it leads to. A direct link has no name.
 func linkText(from, to, name string) string {
+	if name == "" {
+		return from + "->" + to + " (direct)"
+	}
 	if to == "" || to == name {
 		return from + "->" + name
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/daemon"
+	"github.com/yangtau/ssh-tunnel/internal/direct"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/service"
 )
@@ -54,12 +55,17 @@ func (a *app) daemonRunCommand() *cobra.Command {
 			if err != nil {
 				return fail(err)
 			}
+			addresses := direct.Addresses
+			if os.Getenv("GST_DIRECT") == "off" {
+				addresses = nil
+			}
 			d := daemon.New(daemon.Config{
 				ConfigPath: configPath,
 				Socket:     socket,
 				Software:   software,
 				Build:      build,
 				Connect:    a.connectLink,
+				Addresses:  addresses,
 			})
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)

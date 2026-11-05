@@ -79,6 +79,7 @@ function statusOf(id) {
 // linkText shows a link as the machines at its ends, as gst status does,
 // with the link's own name when it differs from the machine it leads to.
 function linkText(from, to, name) {
+  if (!name) return `${from}->${to} (direct)`;
   return !to || to === name ? `${from}->${name}` : `${from}->${to} (${name})`;
 }
 
@@ -325,6 +326,7 @@ function drawMachines(nodes, names) {
         found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
         route ? el("span", { class: "truncate", title: "via " + route }, "via " + route) : null,
         !n.reachable && n.id !== selfID() ? el("span", null, "offline") : null,
+        n.direct ? el("span", { class: "tag" }, "direct") : null,
         n.exit ? el("span", { class: "tag" }, "exit") : null));
     b.addEventListener("click", () => select(n.id));
     return b;

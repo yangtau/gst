@@ -5,7 +5,8 @@
 // session that carries one call per stream in both directions: who the
 // other node is (node.info), the link-state records that give every node
 // a view of the whole mesh (topology.sync), and connections relayed along
-// routes through it (relay.open).
+// routes through it (relay.open). Direct links carry the same calls over
+// UDP; see direct.go.
 package mesh
 
 import (
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"slices"
 	"sync"
 	"time"
@@ -39,13 +41,21 @@ type Node struct {
 	records  map[string]wire.Record // by node id, this node's included
 	changed  chan struct{}          // closed and replaced when records change
 	seqFloor uint64                 // the highest Seq seen on this node's own record
+
+	// Direct links; see EnableDirect. directCtx is nil while they are off.
+	directCtx   context.Context
+	directAddrs func() []netip.Addr
+	directTries map[string]*directTry // by node id
+	directWaits map[string]directWait // by node id
 }
 
 // link is a running link: the peer session with another node.
 type link struct {
-	name    string // the link's name, for links that this node opened
+	name    string // the link's name, for links over SSH that this node opened
 	peer    wire.NodeInfo
-	session *yamux.Session
+	session session
+	direct  bool // over UDP rather than SSH
+	opened  bool // this node opened it
 }
 
 // New returns a node without an identity, which refuses links until
@@ -59,10 +69,15 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 		links:    map[*link]struct{}{},
 		records:  map[string]wire.Record{},
 		changed:  make(chan struct{}),
+
+		directTries: map[string]*directTry{},
+		directWaits: map[string]directWait{},
 	}
 	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.Self(), nil })
 	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
 	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
+	wire.Handle(&n.peer, wire.MethodDirectOffer, n.serveOffer)
+	wire.Handle(&n.peer, wire.MethodLinkRemove, n.serveLinkRemove)
 	if status != nil {
 		wire.Handle(&n.peer, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return status(), nil })
 	}
@@ -126,7 +141,7 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.
 	if err != nil {
 		return
 	}
-	if err := n.run(ctx, "", session, nil); err != nil && ctx.Err() == nil {
+	if err := n.run(ctx, &link{session: yamuxSession{session}}, nil); err != nil && ctx.Err() == nil {
 		// The reason may quote the peer, so the log leaves it out.
 		n.log.Print("incoming link ended")
 	}
@@ -169,13 +184,14 @@ func (n *Node) Link(ctx context.Context, name string, conn io.ReadWriteCloser, o
 	if err != nil {
 		return err
 	}
-	return n.run(ctx, name, session, onUp)
+	return n.run(ctx, &link{name: name, opened: true, session: yamuxSession{session}}, onUp)
 }
 
 // run serves the peer's calls, learns who the peer is, and keeps the link
-// until the session ends, which it reports as an error unless ctx is done.
-// name is empty for links that the peer opened.
-func (n *Node) run(ctx context.Context, name string, session *yamux.Session, onUp func(wire.NodeInfo)) error {
+// l until its session ends, which it reports as an error unless ctx is
+// done.
+func (n *Node) run(ctx context.Context, l *link, onUp func(wire.NodeInfo)) error {
+	session := l.session
 	defer session.Close()
 	go n.serve(ctx, session)
 
@@ -186,13 +202,13 @@ func (n *Node) run(ctx context.Context, name string, session *yamux.Session, onU
 	if peer.ID == n.Self().ID {
 		// The opening side reports this and closes the link; the
 		// accepting side waits for that, so the report is not lost.
-		if name != "" {
+		if l.opened {
 			return errors.New("the other machine is this machine")
 		}
-		<-session.CloseChan()
+		<-session.Done()
 		return nil
 	}
-	l := &link{name: name, peer: peer, session: session}
+	l.peer = peer
 	n.mu.Lock()
 	n.links[l] = struct{}{}
 	n.mu.Unlock()
@@ -210,16 +226,16 @@ func (n *Node) run(ctx context.Context, name string, session *yamux.Session, onU
 	select {
 	case <-ctx.Done():
 		return nil
-	case <-session.CloseChan():
+	case <-session.Done():
 		return errors.New("the link closed")
 	}
 }
 
-func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeInfo, error) {
+func (n *Node) nodeInfo(ctx context.Context, s session) (wire.NodeInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 	var info wire.NodeInfo
-	conn, err := call(ctx, session, wire.MethodNodeInfo, nil, &info)
+	conn, err := call(ctx, s, wire.MethodNodeInfo, nil, &info)
 	if err != nil {
 		var refused *wire.Error
 		if errors.As(err, &refused) {
@@ -236,16 +252,15 @@ func (n *Node) nodeInfo(ctx context.Context, session *yamux.Session) (wire.NodeI
 
 // serve answers the calls that the peer opens streams for, until the
 // session ends. The context of each call ends with the session.
-func (n *Node) serve(ctx context.Context, session *yamux.Session) {
+func (n *Node) serve(ctx context.Context, s session) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	for {
-		stream, err := session.AcceptStream()
+		conn, err := s.Accept(ctx)
 		if err != nil {
 			return
 		}
 		go func() {
-			conn := streamConn{stream, session}
 			defer conn.Close()
 			defer context.AfterFunc(ctx, func() { conn.Close() })()
 			n.peer.Serve(ctx, conn)
@@ -253,23 +268,19 @@ func (n *Node) serve(ctx context.Context, session *yamux.Session) {
 	}
 }
 
-// sessionTo returns the session of a running link with node id.
-func (n *Node) sessionTo(id string) *yamux.Session {
+// sessionTo returns the session of a running link with node id, a direct
+// one if there is one.
+func (n *Node) sessionTo(id string) session {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	var found session
 	for l := range n.links {
-		if l.peer.ID == id && !l.session.IsClosed() {
-			return l.session
+		if l.peer.ID == id && !closed(l.session) {
+			if l.direct {
+				return l.session
+			}
+			found = l.session
 		}
 	}
-	return nil
-}
-
-func yamuxConfig() *yamux.Config {
-	cfg := yamux.DefaultConfig()
-	cfg.MaxStreamWindowSize = 2 * 1024 * 1024
-	cfg.LogOutput = io.Discard
-	cfg.KeepAliveInterval = 15 * time.Second
-	cfg.ConnectionWriteTimeout = 30 * time.Second
-	return cfg
+	return found
 }

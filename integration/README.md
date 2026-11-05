@@ -21,6 +21,7 @@ go test -tags integration -count=1 -v .
 | | `TestLinkRemoteGstMissing` | server 上没有 gst：状态 down 且错误提到 gst，`gst status` 列出该 link 的错误，删除后带 `--remote-gst` 重新添加修复后 running |
 | | `TestLinkRemoveIsSeenByServer` | link 删除后 server 不再认为 client 可达 |
 | `mesh_test.go` | `TestMesh` | 三个节点 a → b ← c：`gst status` 列出的机器与路径（`Topology`）；`gst connect` 的机器寻址（名称、`.gst`、link 名、id 前缀）和 TCP、Unix socket 目标（`Connect`）；`gst map`（`Maps`）；代理默认关闭，`gst proxy ADDR` 打开后 SOCKS5、HTTP CONNECT 和普通 HTTP 请求可用，以及改变代理地址和关闭（`Proxy`）；`gst route` 与 `gst exit`：c 不是 exit 时被拒绝，`gst exit on` 后允许，无路由时直连（`Exit`）；`gst status`：在 a 上查看两跳外 c 的 link（含连不上的）、map、route 和代理，以及 a 自己的，c 自己的 `gst status` 列出问题（`Status`）；`gst ping`：经 b 到 c 显示 `via b`，b 显示 `directly`，`--json`，没有应答时退出码 1（`Ping`） |
+| `direct_test.go` | `TestDirectLink` | a → b ← c，a 和 c 之间没有 link：第一个连接经 b 并建立 direct link，`gst status` 显示 `online; direct`，路径变为 a,c，之后的连接和 `gst ping` 走它，b 的 `gst status --all` 列出它；c 删除 link 后 direct link 随之断开。其他用例的节点以 `GST_DIRECT=off` 运行 |
 | `migrate_test.go` | `TestMigrateVersion2Config` | 版本 2 的配置在第一条命令时转换：tunnel 变成 link，`-L` 变成 map，`-R` 被丢弃并在 stderr 给出说明，link 运行且 map 可用 |
 | `daemon_test.go` | `TestDaemonRestartsAfterUpgrade` | 升级 gst 后下一条命令重启 daemon，没有升级则不重启 |
 | | `TestDownAndUp` | `gst down` 停止 daemon，其他节点的 `gst peer-bridge` 被拒绝（"gst is down"），`gst up` 后 link 恢复 |

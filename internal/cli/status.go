@@ -29,8 +29,8 @@ func (a *app) statusCommand() *cobra.Command {
 		Short: "Show the machines of the mesh, or what one machine runs",
 		Long: `Without a machine, show every machine of the mesh as this machine knows
 it, one per line: its id, name, and gst, and whether it is online, the
-machines that connections to it pass through, and whether it is an exit.
-Linked machines pass on what they know, so the list includes machines
+machines that connections to it pass through or that they go to it
+directly over UDP, and whether it is an exit. Linked machines pass on what they know, so the list includes machines
 several links away. Problems on this machine, such as a link that is
 down, follow the list; with --all, the running links between all the
 machines come first.
@@ -106,6 +106,8 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 				via[i] = names[id]
 			}
 			state = append(state, "online", "via "+strings.Join(via, ", "))
+		case n.Direct:
+			state = append(state, "online", "direct")
 		default:
 			state = append(state, "online")
 		}

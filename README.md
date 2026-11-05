@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`gst` (go ssh tunnel) links your machines into a private mesh over SSH. It feels like Tailscale, but works at layer 4: it carries TCP connections and Unix sockets only, needs no root, and uses the SSH logins you already have. It runs on Linux and macOS.
+`gst` (go ssh tunnel) links your machines into a private mesh over SSH. It feels like Tailscale, but works at layer 4: it carries TCP connections and Unix sockets only, needs no root, and uses the SSH logins you already have. When the network allows it, machines also connect directly over UDP. It runs on Linux and macOS.
 
 - Every machine runs gst (0.3 or later, on both ends of a link) and a small background daemon.
 - A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `mini` and `devcn`, then `mini` reaches `devcn` through `laptop`, without any credentials for `devcn`.
@@ -123,6 +123,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 
 - A node's name is for display and addressing, and need not be unique; its id is unique. Change the name with `gst name laptop`. Names, like link names, are 1-32 lowercase letters, digits, or `-`.
 - A link is bidirectional: traffic can pass through it either way, so `devcn` needs no link of its own to reach `laptop`. A link has a name (`gst add devcn`), which also names the machine at the other end until it reports its own name.
+- Connections go directly between two machines when the network allows it, even without a link between them: the first connection to a machine starts a direct connection over UDP in the background, and the ones after it use it. Nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address keep using the links. `gst status` shows `direct` next to the machine. If a direct connection fails, the connections on it break, and new ones go over the links again. A direct connection does not need the links once it runs, so it carries on when a machine between the two sleeps; `gst remove` does end it if no links then lead to the machine.
 - A started link runs in the background, starts at login, and reconnects after failures. Linked machines pass on what they know, so `gst status` on any machine shows the whole mesh; a machine that drops out disappears within 30 minutes. A route goes on past a machine only over running links.
 
 ### Machine addressing
@@ -186,7 +187,7 @@ By default, a machine connects, for the others, only to addresses on itself: `lo
 
 ### Trust
 
-Machines in the mesh trust each other. A link logs in as your user, and the daemon accepts it only through its own socket. Any machine in the mesh can ask any machine to connect to that machine's own `localhost` ports and Unix sockets (a local database, a Docker socket, an ssh-agent). Exits go further: any machine can connect anywhere an exit can. Link only machines you trust, and turn exit on only where you want it. `gst down` takes this machine out of the mesh.
+Machines in the mesh trust each other. A link logs in as your user, and the daemon accepts it only through its own socket. Any machine in the mesh can ask any machine to connect to that machine's own `localhost` ports and Unix sockets (a local database, a Docker socket, an ssh-agent). Exits go further: any machine can connect anywhere an exit can. Link only machines you trust, and turn exit on only where you want it. `gst down` takes this machine out of the mesh. Direct connections are encrypted, and the two machines recognize each other by certificates that they exchange over the links, so they trust what the links trust.
 
 ## Replacing ssh forwards
 
@@ -214,8 +215,8 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | --- | --- |
 | `gst add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
 | `gst remove <name>...` (`rm`) | Stop links and delete them |
-| `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state; then this machine's problems |
-| `gst status --all` | Also list the running links between all the machines |
+| `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, and state (`online`, `via` the machines in between, `direct`, `exit`); then this machine's problems |
+| `gst status --all` | Also list the running links between all the machines, and the direct connections, such as `laptop->mini (direct)` |
 | `gst status <machine>` | Show a machine's links (with state and destination), proxy, maps, and routes, asked through the mesh |
 | `gst ping <machine> [-c N]` | Ask a machine to answer through the mesh once a second (3 times by default), and print the path and time of each answer |
 
@@ -228,6 +229,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `-` | This machine |
 | `online` | A running link leads to it directly |
 | `online; via devcn` | Connections to it pass through the machines named |
+| `online; direct` | Connections to it go directly over UDP |
 | `offline` | No running links lead to it |
 
 `; exit` follows the state of an exit. Links show as the machines at their ends, such as `m3->devsg`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `m3->prod (db)`. A `# Problems:` section lists this machine's links that are not running and its proxy or maps that failed. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.

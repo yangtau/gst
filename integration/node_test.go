@@ -30,6 +30,7 @@ type node struct {
 	container string
 	ip        string
 	hostKey   ssh.PublicKey
+	direct    bool // its daemon uses direct links
 }
 
 const (
@@ -169,8 +170,14 @@ func (n *node) helper(args ...string) (string, error) {
 // of any other, and returns its exit code, stdout, and stderr.
 func (n *node) gst(args ...string) (int, string, string) {
 	n.t.Helper()
+	// Direct links are off unless a test wants them, so that connections
+	// between the containers stay on the links that it set up.
+	direct := "off"
+	if n.direct {
+		direct = "on"
+	}
 	cmd := exec.Command(containerRuntime, append([]string{"exec", "-u", nodeUser, n.container,
-		"env", "HOME=" + nodeHome, "GST_SSH_CONFIG=" + nodeSSHConfig, "gst"}, args...)...)
+		"env", "HOME=" + nodeHome, "GST_SSH_CONFIG=" + nodeSSHConfig, "GST_DIRECT=" + direct, "gst"}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -430,7 +437,12 @@ func (n *node) startEchoOn(addr string) {
 // It waits until a and c reach each other through b.
 func start3(t *testing.T) (a, b, c *node, ab, cb *pair) {
 	t.Helper()
-	a, b, c = startNode(t), startNode(t), startNode(t)
+	return link3(t, startNode(t), startNode(t), startNode(t))
+}
+
+// link3 links a and c to b, as start3 does.
+func link3(t *testing.T, a, b, c *node) (_, _, _ *node, ab, cb *pair) {
+	t.Helper()
 	ab, cb = trust(t, a, b), trust(t, c, b)
 	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
 		n.mustGst("name", name)
@@ -439,5 +451,5 @@ func start3(t *testing.T) (a, b, c *node, ab, cb *pair) {
 	c.mustGst("add", "tob", cb.destination())
 	a.waitReachable("c")
 	c.waitReachable("a")
-	return
+	return a, b, c, ab, cb
 }

@@ -16,6 +16,12 @@ const (
 	// MethodPeerStatus ("node.status") takes no params and returns the
 	// Status of the callee's daemon.
 	MethodPeerStatus = "node.status"
+	// MethodDirectOffer ("direct.offer") takes a DirectOffer and returns
+	// the callee's, after which the two nodes try a direct link.
+	MethodDirectOffer = "direct.offer"
+	// MethodLinkRemove ("link.remove") takes LinkRemove and returns
+	// nothing: the caller is about to remove the link for good.
+	MethodLinkRemove = "link.remove"
 )
 
 // FeatureYamux in a peer Hello says that the connection continues as a
@@ -76,4 +82,22 @@ type Record struct {
 type Edge struct {
 	Name string `json:"name"` // the link's name on the node
 	Peer string `json:"peer"` // the node id at its other end
+	// Direct marks a direct link, which has no name, that this node
+	// opened. A direct link that the other node opened has no marks.
+	Direct bool `json:"direct,omitempty"`
+}
+
+// LinkRemove names a link that its opener is removing.
+type LinkRemove struct {
+	Node string `json:"node"` // the caller's id
+	Link string `json:"link"` // the link's name, as in the caller's record
+}
+
+// DirectOffer is one node's side of a direct link: in the params of
+// direct.offer, the caller's, and in its result, the callee's.
+type DirectOffer struct {
+	Node        string   `json:"node,omitempty"`  // the caller's id; only in the params
+	Token       string   `json:"token,omitempty"` // proves that a probe belongs to this try; the caller's counts
+	Addresses   []string `json:"addresses"`       // IP:port to probe
+	Fingerprint string   `json:"fingerprint"`     // SHA-256 of the certificate that the node will present
 }
