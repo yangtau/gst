@@ -21,12 +21,11 @@ import (
 func (a *app) daemonRunCommand() *cobra.Command {
 	var logPath string
 	cmd := &cobra.Command{
-		Use:         "daemon",
-		Annotations: standalone,
-		Short:       "Run the gst daemon in the foreground",
-		Long:        "Run the gst daemon, which runs this machine's part of the mesh, in the foreground until it receives SIGINT or SIGTERM; SIGHUP reloads the configuration. The background service runs this command.",
-		Hidden:      true,
-		Args:        a.args(0, 0),
+		Use:    "daemon",
+		Short:  "Run the gst daemon in the foreground",
+		Long:   "Run the gst daemon, which runs this machine's part of the mesh, in the foreground until it receives SIGINT or SIGTERM; SIGHUP reloads the configuration. The background service runs this command.",
+		Hidden: true,
+		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if logPath != "" {
 				l, err := logfile.Open(logPath, []int{1, 2})

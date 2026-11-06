@@ -234,13 +234,18 @@ ssh -L 8370:localhost:8370 devbox   # 然后在你自己的机器上打开打印
 
 ## 从 0.3 升级
 
-gst 0.4 只经虚拟网络到达机器：`gst connect`、代理、map、route 和 exit 都已移除，direct link 也不再承载连接。配置会自动转换：第一个读取 0.3 配置的 gst 命令会改写它，保留 link 和 node。
+gst 0.4 只经虚拟网络到达机器：`gst connect`、代理、map、route 和 exit 都已移除，direct link 也不再承载连接。它不读取 0.3 的配置，每台机器都要重新开始：
 
-- 代理、每个 map 和每条 route 都被丢弃，并逐条在 stderr 列出，例如 `note: dropped map 127.0.0.1:15432 to localhost:5432 on devbox`。改用 `devbox.gst` 到达那台机器；只监听 loopback 或 Unix socket 的程序见[虚拟网络](#虚拟网络)中的“服务”。
-- 在每台机器上执行 `sudo gst install`。
-- 其他机器也需要 gst 0.4。gst 协议现在是版本 3，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.4 or later`。请把你连接的所有机器一起升级。
+```sh
+rm ~/.config/gst/config.json
+sudo gst install
+gst add devbox               # 在原来有 link 的机器上
+```
+
+- 第一次 `gst add` 会替换 0.3 的 daemon。每台机器得到新的身份，用 `gst name` 重新设置名字。
+- 原来用 map 或代理的地方，改用 `devbox.gst` 到达那台机器；只监听 loopback 或 Unix socket 的程序见[虚拟网络](#虚拟网络)中的“服务”。
+- 把你连接的所有机器一起升级。gst 协议现在是版本 3，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.4 or later`。
 - `gst net on`、`gst net off` 和 `gst net status` 都已移除：网络总是开启。`gst subnet` 取代 `--subnet`，`gst status --all` 显示 peer，`sudo gst install` 取代 `sudo gst net install`。
-- gst 0.4 不再读取 gst 0.2 或更早版本的配置：请删除该文件，重新添加 link。
 
 ## 排查问题
 
@@ -254,6 +259,7 @@ gst 0.4 只经虚拟网络到达机器：`gst connect`、代理、map、route �
 | link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devbox`，再 `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | link 为 `down`，错误是 `gst is down on this machine; run gst up there` | 在对方机器上执行 `gst up` |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.4） |
+| `config version 3 is too old` | 删除它指出的文件，重新添加 link（见[从 0.3 升级](#从-03-升级)） |
 | `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst status`（机器为 `offline` 或缺失，以及未运行的 link） |
 | `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行 0.4 或更新版本的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |

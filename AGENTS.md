@@ -17,7 +17,7 @@ gst links a user's machines into a private network over SSH: one background daem
 
 - `cmd/gst`: entry point.
 - `internal/cli`: cobra commands, output, and the error/hint contract; `gst ui` and its embedded page (`internal/cli/ui`).
-- `internal/config`: config file (locked, atomic writes; links, the network's subnet, this node) and the conversion of version 3 files (`legacy.go`).
+- `internal/config`: config file (locked, atomic writes; links, the network's subnet, this node).
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst add`.
 - `internal/daemon`: the daemon, which supervises the links, runs the virtual network, and answers the control socket, and its client.

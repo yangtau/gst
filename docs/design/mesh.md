@@ -67,7 +67,7 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 
 - link 的字段：`destination`（ssh destination，每次连接用 `ssh -G` 解析；地址、用户、私钥、known_hosts、超时和保活都来自 ssh 配置，link 不另设）、`remote_gst`（服务器上的 gst 命令，默认 `gst`）。要修改 link，删除后重新添加。
 - `net` 是用户用 `gst subnet` 选的网段和选择的时间，没选过时不存在。
-- **迁移**：读到版本 3 的配置时，保留 `node`（去掉 `exit`）和 `links`，丢弃 `proxy`、`maps`、`routes`、`net` 的开关，CLI 在 stderr 逐条列出被丢弃的内容。更旧的版本不再转换，报错说明要删除文件并重新添加 link。
+- **旧版本**：不转换。读到低于当前版本的配置时报错，说明要删除文件并重新添加 link。
 
 ## 机器寻址
 

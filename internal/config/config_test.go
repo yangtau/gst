@@ -35,17 +35,15 @@ func TestParseValidation(t *testing.T) {
 		{"proxy is gone", ok + `, "proxy": "127.0.0.1:1"`, "unknown field"},
 		{"unknown field", ok + `, "bogus": 1`, "unknown field"},
 		{"future version", `"version": 5`, "unsupported config version"},
-		{"old version", `"version": 2`, "too old"},
+		{"old version", `"version": 3`, "too old"},
+		{"no version", ``, "too old"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f, notes, err := parse([]byte("{" + tt.body + "}"))
+			f, err := parse([]byte("{" + tt.body + "}"))
 			if tt.want == "" {
 				if err != nil {
 					t.Fatalf("parse: %v", err)
-				}
-				if notes != nil {
-					t.Errorf("notes = %v for a current file", notes)
 				}
 				if f.Links == nil {
 					t.Errorf("links not initialized: %+v", f)
@@ -57,7 +55,7 @@ func TestParseValidation(t *testing.T) {
 			}
 		})
 	}
-	if _, _, err := parse([]byte("not json")); err == nil {
+	if _, err := parse([]byte("not json")); err == nil {
 		t.Error("invalid JSON accepted")
 	}
 }
@@ -176,89 +174,6 @@ func TestApply(t *testing.T) {
 	}
 	if err := Apply(path, func(*File) error { return fmt.Errorf("boom") }); err == nil {
 		t.Fatal("Apply dropped fn's error")
-	}
-}
-
-const legacyConfig = `{
-  "version": 3,
-  "node": {"id": "` + nodeID + `", "name": "laptop", "exit": true},
-  "proxy": "127.0.0.1:1080",
-  "links": {"myhost": {"destination": "myhost", "remote_gst": "/opt/gst"}},
-  "maps": [{"listen": "127.0.0.1:5432", "machine": "myhost", "target": "db.internal:5432"}],
-  "routes": [{"match": "default", "via": "myhost"}],
-  "net": {}
-}`
-
-func TestUpgrade(t *testing.T) {
-	dir := t.TempDir()
-
-	missing := filepath.Join(dir, "missing.json")
-	if up, notes, err := Upgrade(missing); up || notes != nil || err != nil {
-		t.Errorf("missing file: %v %v %v", up, notes, err)
-	}
-	if _, err := os.Stat(missing); err == nil {
-		t.Error("Upgrade created a missing file")
-	}
-
-	current := filepath.Join(dir, "current.json")
-	os.WriteFile(current, []byte(`{"version": 4}`), 0o600)
-	if up, notes, err := Upgrade(current); up || notes != nil || err != nil {
-		t.Errorf("current file: %v %v %v", up, notes, err)
-	}
-	if data, _ := os.ReadFile(current); string(data) != `{"version": 4}` {
-		t.Errorf("Upgrade rewrote a current file: %s", data)
-	}
-
-	invalid := filepath.Join(dir, "invalid.json")
-	os.WriteFile(invalid, []byte(`{"version": 3, "links": {"Bad Name": {"destination": "h"}}}`), 0o600)
-	if up, _, err := Upgrade(invalid); up || err == nil {
-		t.Errorf("invalid file: %v %v", up, err)
-	}
-
-	legacy := filepath.Join(dir, "legacy.json")
-	os.WriteFile(legacy, []byte(legacyConfig), 0o600)
-	// Load converts without writing.
-	f, err := Load(legacy)
-	if err != nil || len(f.Links) != 1 {
-		t.Fatalf("Load legacy = %+v, %v", f, err)
-	}
-	if data, _ := os.ReadFile(legacy); string(data) != legacyConfig {
-		t.Fatal("Load wrote the legacy file")
-	}
-	up, notes, err := Upgrade(legacy)
-	want := []string{"proxy 127.0.0.1:1080", "map 127.0.0.1:5432 to db.internal:5432 on myhost", "route default via myhost"}
-	if err != nil || !up || !reflect.DeepEqual(notes, want) {
-		t.Fatalf("Upgrade = %v %v %v", up, notes, err)
-	}
-	f, err = Load(legacy)
-	if err != nil || f.Version != Version || f.Node == nil || f.Node.ID != nodeID || f.Links["myhost"].RemoteGst != "/opt/gst" || f.Net != nil {
-		t.Fatalf("upgraded file = %+v, %v", f, err)
-	}
-	if up, notes, err := Upgrade(legacy); up || notes != nil || err != nil {
-		t.Errorf("second Upgrade = %v %v %v", up, notes, err)
-	}
-
-	// A file with nothing to drop still counts as upgraded, and keeps the
-	// subnet that the user chose.
-	bare := filepath.Join(dir, "bare.json")
-	os.WriteFile(bare, []byte(`{"version": 3, "links": {}, "net": {"subnet": "10.99.0.0/16", "since": 1}}`), 0o600)
-	if up, notes, err := Upgrade(bare); !up || len(notes) != 0 || err != nil {
-		t.Errorf("bare Upgrade = %v %v %v", up, notes, err)
-	}
-	if f, err := Load(bare); err != nil || f.Net == nil || f.Net.Subnet != "10.99.0.0/16" {
-		t.Errorf("bare file = %+v, %v", f, err)
-	}
-}
-
-func TestUpdateConvertsLegacy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(legacyConfig), 0o600)
-	if err := Update(path, func(f *File) error { f.Down = true; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	f, err := Load(path)
-	if err != nil || f.Version != Version || !f.Down || len(f.Links) != 1 || f.Node == nil {
-		t.Fatalf("Update of a legacy file gave %+v, %v", f, err)
 	}
 }
 

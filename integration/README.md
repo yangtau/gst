@@ -25,7 +25,6 @@ go test -tags integration -count=1 -v .
 | `net_test.go` | `TestNet` | a → b ← c，`GST_DIRECT=off`：`gst install` 后选出不与容器网络重叠的网段，地址唯一，路由指向 `gst0`；经 b 的 ICMP、TCP、UDP（`Protocols`）；`getent`、`ping c.gst`、daemon 的 DNS 回答 link 名，未知名字失败（`Names`）；`gst status`、`gst status c`、`gst status --all`（`Status`）；非法网段退出码 2，`gst subnet` 传播到所有机器且旧路由被删除，与容器网络重叠时退出码 1 带 hint 并出现在 `gst status`（`Subnet`）；`gst down` 删除网卡和名字，别的机器到不了它，`gst up` 后地址不变（`Down`） |
 | | `TestNetDirect` | 包走 UDP 路径（`gst status --all` 显示 `direct`），TCP 速率和按帧成批的 UDP 到达率；用 `iptables`/`ip6tables` 丢弃 UDP 后几秒内改走 SSH，恢复后回到 UDP |
 | | `TestNetHelper` | 没有 helper 时 `gst subnet` 退出码 1 并提示 `sudo gst install`，普通用户不能安装；安装后机器自动加入，之前选的网段生效；helper 的文件和 socket 权限；daemon 被杀后网卡消失，`gst up` 后地址不变；`gst uninstall` 后网卡消失 |
-| `migrate_test.go` | `TestMigrateVersion3Config` | 版本 3 的配置在第一条命令时转换：link 保留，代理、map、route 被丢弃并在 stderr 给出说明，说明只出现一次 |
 | `daemon_test.go` | `TestDaemonRestartsAfterUpgrade` | 升级 gst 后下一条命令重启 daemon，虚拟网络恢复，没有升级则不重启 |
 | | `TestDownAndUp` | `gst down` 停止 daemon，其他节点的 `gst peer-bridge` 被拒绝（"gst is down"），`gst up` 后 link 恢复 |
 | `ui_test.go` | `TestUI` | `gst ui`：没有 token 返回 401，`/api/state` 返回 links 和 topology，页面只读（没有 link 的 POST 接口） |

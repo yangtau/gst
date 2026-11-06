@@ -158,9 +158,8 @@ func asRoot(command string) error {
 func (a *app) installCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
-		Use:         "install",
-		Annotations: standalone,
-		Short:       "Put this machine on the virtual network (as root, once)",
+		Use:   "install",
+		Short: "Put this machine on the virtual network (as root, once)",
 		Long: `Install the system service that creates the interface of the virtual
 network, as root, for one user's daemon, which then joins the network by
 itself. Each machine needs it once. It runs a copy of this gst that root
@@ -201,11 +200,10 @@ update it. Run it with sudo; the user is the one who ran sudo, unless
 
 func (a *app) uninstallCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:         "uninstall",
-		Annotations: standalone,
-		Short:       "Take this machine off the virtual network (as root)",
-		Long:        "Remove the helper's service and its copy of gst. Without it this machine has no address on the virtual network, and only passes on what other machines send through it.",
-		Args:        a.args(0, 0),
+		Use:   "uninstall",
+		Short: "Take this machine off the virtual network (as root)",
+		Long:  "Remove the helper's service and its copy of gst. Without it this machine has no address on the virtual network, and only passes on what other machines send through it.",
+		Args:  a.args(0, 0),
 		RunE: run(func(*cobra.Command, []string) error {
 			if err := asRoot("uninstall"); err != nil {
 				return err
@@ -223,11 +221,10 @@ func (a *app) uninstallCommand() *cobra.Command {
 func (a *app) netHelperCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
-		Use:         "net-helper",
-		Annotations: standalone,
-		Short:       "Run the helper of the virtual network in the foreground",
-		Hidden:      true,
-		Args:        a.args(0, 0),
+		Use:    "net-helper",
+		Short:  "Run the helper of the virtual network in the foreground",
+		Hidden: true,
+		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			u, err := user.Lookup(userName)
 			if err != nil {

@@ -81,53 +81,42 @@ func empty() *File {
 }
 
 // Load reads and validates the configuration file. A missing file is an
-// empty configuration. A file of an earlier version is converted, as
-// Upgrade would, without writing it.
+// empty configuration.
 func Load(path string) (*File, error) {
-	f, _, err := load(path)
-	return f, err
-}
-
-// load is Load that also returns, for a converted file, the notes of
-// Upgrade, and nil notes otherwise.
-func load(path string) (*File, []string, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return empty(), nil, nil
+		return empty(), nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read config %s: %w", path, err)
+		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
-	f, notes, err := parse(data)
+	f, err := parse(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("config %s: %w", path, err)
+		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	return f, notes, nil
+	return f, nil
 }
 
 // parse decodes and validates a configuration document. Errors name the
 // link but not configured values, because the daemon logs them.
-func parse(data []byte) (*File, []string, error) {
+func parse(data []byte) (*File, error) {
 	var head struct {
 		Version int `json:"version"`
 	}
 	if err := json.Unmarshal(data, &head); err != nil {
-		return nil, nil, errors.New("invalid JSON")
+		return nil, errors.New("invalid JSON")
 	}
-	switch {
-	case head.Version == legacyVersion:
-		return parseLegacy(data)
-	case head.Version < legacyVersion:
-		return nil, nil, fmt.Errorf("config version %d is too old: remove the file and add the links again", head.Version)
+	if head.Version < Version {
+		return nil, fmt.Errorf("config version %d is too old: remove the file and add the links again", head.Version)
 	}
 	f := empty()
 	if err := decodeStrict(data, f); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := f.normalize(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return f, nil, nil
+	return f, nil
 }
 
 func decodeStrict(data []byte, v any) error {
@@ -181,46 +170,29 @@ func (f *File) validate() error {
 // each other's changes. Nothing is written if fn fails. The file always
 // gets a node identity.
 func Update(path string, fn func(*File) error) error {
-	_, err := update(path, fn)
-	return err
-}
-
-// Upgrade writes a configuration file of version 3 in the current format.
-// It returns whether it did and notes on what the current format has no
-// place for. Other files stay as they are.
-func Upgrade(path string) (upgraded bool, notes []string, err error) {
-	if _, notes, err := load(path); err != nil || notes == nil {
-		return false, nil, err
-	}
-	notes, err = update(path, func(*File) error { return nil })
-	// Another gst may have upgraded the file meanwhile.
-	return err == nil && notes != nil, notes, err
-}
-
-func update(path string, fn func(*File) error) ([]string, error) {
 	unlock, err := lock(path + ".lock")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer unlock()
-	f, notes, err := load(path)
+	f, err := Load(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := fn(f); err != nil {
-		return nil, err
+		return err
 	}
 	if f.Node == nil {
 		f.Node = &Node{ID: NewNodeID(), Name: DefaultNodeName()}
 	}
 	if err := f.normalize(); err != nil {
-		return nil, err
+		return err
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return notes, writeFileAtomic(path, append(data, '\n'))
+	return writeFileAtomic(path, append(data, '\n'))
 }
 
 // Apply runs fn on the configuration file under a lock of its own, so

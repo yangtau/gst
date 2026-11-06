@@ -567,3 +567,16 @@ func TestCompletesLinkNames(t *testing.T) {
 		t.Fatalf("completions %q", out)
 	}
 }
+
+func TestOldConfigIsRefused(t *testing.T) {
+	e := newEnv(t)
+	old := `{"version": 3, "links": {"myhost": {"destination": "myhost"}}}`
+	write(t, e.config, old)
+	code, _, stderr := e.gst("up")
+	if code != exitFailure || !strings.Contains(stderr, "config version 3 is too old") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if data, _ := os.ReadFile(e.config); string(data) != old {
+		t.Fatalf("the file changed: %s", data)
+	}
+}

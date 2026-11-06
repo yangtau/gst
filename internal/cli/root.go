@@ -39,12 +39,6 @@ report state accept --json.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})
-	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
-		if err := a.migrate(cmd); err != nil {
-			return &failure{err}
-		}
-		return nil
-	}
 	root.PersistentFlags().StringVar(&a.configFlag, "config", "", "configuration file (default: $GST_CONFIG, else ~/.config/gst/config.json)")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
 	root.SetUsageTemplate(strings.NewReplacer(
@@ -68,10 +62,9 @@ report state accept --json.`,
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
 	addGroup("network", a.installCommand(), a.uninstallCommand(), a.subnetCommand())
 	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
-		Use:         "version",
-		Annotations: standalone,
-		Short:       "Show the gst version",
-		Args:        a.args(0, 0),
+		Use:   "version",
+		Short: "Show the gst version",
+		Args:  a.args(0, 0),
 		Run: func(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},

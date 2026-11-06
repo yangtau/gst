@@ -234,13 +234,18 @@ The address ends with a random secret after `#`, which the page needs; anyone wi
 
 ## Upgrading from 0.3
 
-gst 0.4 reaches machines only over the virtual network: `gst connect`, the proxy, maps, routes, and exits are gone, and so are direct links as a way to carry connections. Its configuration converts itself: the first gst command that reads a 0.3 configuration rewrites it and keeps the links and the node.
+gst 0.4 reaches machines only over the virtual network: `gst connect`, the proxy, maps, routes, and exits are gone, and so are direct links as a way to carry connections. It does not read a 0.3 configuration, and starts over on each machine:
 
-- The proxy, each map, and each route are dropped, and listed on stderr, such as `note: dropped map 127.0.0.1:15432 to localhost:5432 on devbox`. Reach the machine as `devbox.gst` instead; see [Services](#virtual-network) for programs that listen only on loopback or a Unix socket.
-- Run `sudo gst install` on every machine.
-- The other machines need gst 0.4 as well. The gst protocol is now version 3, and gst refuses to talk to an older one: it reports `speaks an older gst protocol; upgrade gst there to 0.4 or later`. Upgrade every machine you link to together.
+```sh
+rm ~/.config/gst/config.json
+sudo gst install
+gst add devbox               # on the machines that had links
+```
+
+- The first `gst add` replaces the 0.3 daemon. Each machine gets a new identity; `gst name` sets its name again.
+- Reach a machine as `devbox.gst` where you had a map or the proxy; see [Services](#virtual-network) for programs that listen only on loopback or a Unix socket.
+- Upgrade every machine you link to together. The gst protocol is now version 3, and gst refuses to talk to an older one: it reports `speaks an older gst protocol; upgrade gst there to 0.4 or later`.
 - `gst net on`, `gst net off`, and `gst net status` are gone: the network is always on. `gst subnet` replaces `--subnet`, `gst status --all` shows the peers, and `sudo gst install` replaces `sudo gst net install`.
-- gst 0.4 no longer reads configurations of gst 0.2 or older: remove the file and add the links again.
 
 ## Troubleshooting
 
@@ -254,6 +259,7 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 | A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devbox`, then `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | A link is `down` with `gst is down on this machine; run gst up there` | Run `gst up` on the other machine |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | Upgrade gst on the machine it names (0.4 on both ends of every link) |
+| `config version 3 is too old` | Remove the file it names and add the links again ([Upgrading from 0.3](#upgrading-from-03)) |
 | `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst status` (a machine that is `offline` or missing, and links that are not running) |
 | `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst 0.4 or later with a running daemon; see `gst status` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
