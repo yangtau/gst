@@ -310,3 +310,25 @@ func TestBatchSplitsToFitFrames(t *testing.T) {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// People see the machines that can be reached now, not every record that
+// has yet to expire, nor the links of those records.
+func TestMachinesLeaveOutWhatCannotBeReached(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	ab, _ := linkUp(t, a, b, "b"), linkUp(t, b, c, "c")
+	waitFor(t, "a reaches c", func() bool { return reaches(a, "c", "a", "b", "c") })
+	if m := a.Machines(); len(m.Nodes) != 3 || len(m.Edges) != 2 {
+		t.Fatalf("machines: %+v", m)
+	}
+
+	ab.cut()
+	ab.wait(t)
+	waitFor(t, "a loses b", func() bool { n, _ := findTopo(a.Topology(), nid("b")); return !n.Reachable })
+	if topo := a.Topology(); len(topo.Nodes) != 3 {
+		t.Fatalf("the records should stay until they expire: %+v", topo)
+	}
+	m := a.Machines()
+	if len(m.Nodes) != 1 || m.Nodes[0].ID != nid("a") || len(m.Edges) != 0 {
+		t.Fatalf("machines: %+v", m)
+	}
+}

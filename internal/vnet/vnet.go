@@ -72,7 +72,7 @@ type Interface interface {
 type Config struct {
 	Mesh      Mesh
 	Log       *log.Logger
-	StatePath string // holds the private key and what the node settled on
+	StatePath string // holds this identity's private key and what the node settled on
 	// Open sets up the interface; the network cannot run when it is nil.
 	Open func(tun.Spec) (Interface, error)
 	// Networks returns the prefixes in use on this machine, without the
@@ -87,6 +87,7 @@ type Config struct {
 
 // state is what a node keeps between runs.
 type state struct {
+	Node       string `json:"node"` // the identity that the key and the address belong to
 	PrivateKey string `json:"private_key"`
 	Subnet     string `json:"subnet,omitempty"`
 	Since      int64  `json:"since,omitempty"`
@@ -222,7 +223,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 		st.Subnet, st.Address = m.state.Subnet, m.state.Address
 		m.status.Store(st)
 	}()
-	if err := m.load(); err != nil {
+	if err := m.load(self.ID); err != nil {
 		st.Error = err.Error()
 		return
 	}
@@ -275,31 +276,44 @@ func (m *Manager) conflict() error {
 	return nil
 }
 
-// load reads the state, making a private key when there is none.
-func (m *Manager) load() error {
-	if m.loaded {
+// load reads the state of identity id. The private key and the address
+// belong to one identity: records of the old one stay around for a while,
+// and two records with one key or address would be taken for one machine.
+// So a new identity gets its own, and keeps only the subnet, which belongs
+// to the network.
+func (m *Manager) load(id string) error {
+	if !m.loaded {
+		data, err := os.ReadFile(m.cfg.StatePath)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("read the state of the virtual network: %w", err)
+		}
+		if err == nil && json.Unmarshal(data, &m.state) != nil {
+			m.state = state{}
+		}
+	}
+	key, err := hex.DecodeString(m.state.PrivateKey)
+	if m.state.Node == id && err == nil && len(key) == 32 {
+		m.loaded = true
 		return nil
 	}
-	data, err := os.ReadFile(m.cfg.StatePath)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read the state of the virtual network: %w", err)
+	var private [32]byte
+	if _, err := rand.Read(private[:]); err != nil {
+		return err
 	}
-	if err == nil && json.Unmarshal(data, &m.state) != nil {
-		m.state = state{}
-	}
-	if key, err := hex.DecodeString(m.state.PrivateKey); err != nil || len(key) != 32 {
-		var private [32]byte
-		if _, err := rand.Read(private[:]); err != nil {
-			return err
-		}
-		private[0] &= 248
-		private[31] = private[31]&127 | 64
-		m.state.PrivateKey = hexKey(private)
-		if err := m.save(); err != nil {
-			return err
-		}
+	private[0] &= 248
+	private[31] = private[31]&127 | 64
+	m.state.Node, m.state.PrivateKey, m.state.Address = id, hexKey(private), ""
+	if err := m.save(); err != nil {
+		return err
 	}
 	m.loaded = true
+	if m.dev != nil {
+		if err := m.dev.IpcSet("private_key=" + m.state.PrivateKey + "\nreplace_peers=true\n"); err != nil {
+			m.down()
+			return fmt.Errorf("configure WireGuard: %w", err)
+		}
+		m.peers = map[string]peer{}
+	}
 	return nil
 }
 
@@ -602,10 +616,11 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 	topo := m.cfg.Mesh.Topology()
 	list := []wire.NetPeer{}
 	for key, p := range live.peers {
-		out := wire.NetPeer{Node: p.node, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node)}
-		if i := slices.IndexFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == p.node }); i >= 0 {
-			out.Name = topo.Nodes[i].Name
+		i := slices.IndexFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == p.node })
+		if i < 0 || !topo.Nodes[i].Reachable && !topo.Nodes[i].Direct {
+			continue // Only a record that has not expired yet.
 		}
+		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node)}
 		if c := seen[key]; c != nil {
 			out.Handshake, out.Received, out.Sent = c.handshake, c.rx, c.tx
 		}

@@ -99,7 +99,9 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 	return n
 }
 
-// Configure sets this node's identity. A new identity forgets what the node knew and closes its links.
+// Configure sets this node's identity. A new identity is a new machine: it
+// forgets what the node knew and closes its links and UDP paths, which the
+// other ends know by the old identity.
 func (n *Node) Configure(c *config.Node) {
 	defer n.Update()
 	var info wire.NodeInfo
@@ -111,10 +113,20 @@ func (n *Node) Configure(c *config.Node) {
 	if info.ID != n.info.ID {
 		clear(n.records)
 		n.seqFloor = 0
+		n.net = nil
 		n.notify()
 		for l := range n.links {
 			l.session.Close()
 		}
+		for _, try := range n.directTries {
+			try.cancel()
+		}
+		n.packets.Range(func(_, value any) bool {
+			if c := value.(*packetPeer).direct.Load(); c != nil {
+				c.Close()
+			}
+			return true
+		})
 	}
 	n.info = info
 }

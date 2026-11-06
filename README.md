@@ -70,7 +70,7 @@ Run `gst up` once on each machine: `laptop`, `devbox`, and `homelab`. Then, on `
 gst up                     # once on each machine
 gst add devbox             # the "devbox" entry of ~/.ssh/config
 gst add homelab
-gst status                 # every machine in the mesh, one per line
+gst status                 # the machines you can reach, one per line
 ```
 
 `gst status` prints something like (the first machine is this one, shown as `-`):
@@ -90,7 +90,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the network and prints `reply from devbox (10.87.61.7) over UDP in 12.3 ms`.
+Links connect in the background, and machines appear in the list when they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the network and prints `reply from devbox (10.87.61.7) over UDP in 12.3 ms`.
 
 Machine `homelab` now sees the same mesh: on `homelab`, `gst status` lists `laptop` and `devbox`, and `ping devbox.gst` works without a link to `devbox`.
 
@@ -108,7 +108,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 
 - A node's name is for display and addressing, and need not be unique; its id is unique. Change the name with `gst name laptop`. Names, like link names, are 1-32 lowercase letters, digits, or `-`.
 - A link is bidirectional: traffic can pass through it either way, so `devbox` needs no link of its own to reach `laptop`. A link has a name (`gst add devbox`), which also names the machine at the other end until it reports its own name.
-- A started link runs in the background, starts at login, and reconnects after failures. Linked machines pass on what they know, so `gst status` on any machine shows the whole mesh; a machine that drops out disappears within 30 minutes. A path goes on past a machine only over running links.
+- A started link runs in the background, starts at login, and reconnects after failures. Linked machines pass on what they know, so `gst status` on any machine shows the whole mesh; a machine that nothing leads to any more leaves the list at once. A path goes on past a machine only over running links.
 
 ### Machine addressing
 
@@ -131,7 +131,7 @@ The virtual network gives every machine an IP address in one private subnet and 
 - **Subnet.** The machines share one subnet. The first machine chooses a `/16` that overlaps nothing on the machines that answer, from their interfaces and routes. `gst subnet 10.99.0.0/16` sets another for the whole network: the latest choice wins, and all machines move to it, changing their addresses. It must be private (inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or `100.64.0.0/10`). If the subnet overlaps something on a machine, that machine reports it in `gst status`.
 - **Addresses.** A machine keeps its address across restarts. Only IPv4 is carried.
 - **Names.** `<machine>.gst` resolves for all programs, by the machine's name, the name of a link to it, or an id prefix. On macOS and with systemd-resolved, only `.gst` goes to the daemon. Elsewhere on Linux, the names go in `/etc/hosts` for as long as the network runs.
-- **Paths.** WireGuard encrypts each packet from end to end, so that machines on the way see only ciphertext. Packets start through the SSH links, and that traffic makes the two machines look for a UDP path, over the links: nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address stay on SSH. `gst status` shows `direct` next to the machine, and `gst status --all` shows the way of each. If UDP stops working, packets move to SSH within seconds, and programs keep their connections. A UDP path does not need the links once it runs, so it carries on when a machine between the two sleeps; `gst remove` does end it if no links then lead to the machine. Through SSH, TCP runs inside TCP, which works but slows down on lossy networks.
+- **Paths.** WireGuard encrypts each packet from end to end, so that machines on the way see only ciphertext. Packets start through the SSH links, and that traffic makes the two machines look for a UDP path, over the links: nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address stay on SSH. `gst status` shows `direct` next to the machine, and `gst status --all` shows the way of each. If UDP stops working, packets move to SSH within seconds, and programs keep their connections. A UDP path does not need the links once it runs, so it carries on when SSH drops or a machine between the two sleeps, for 20 to 30 minutes; after that the machine counts as gone and the path ends. `gst remove` ends it at once if no links then lead to the machine. Through SSH, TCP runs inside TCP, which works but slows down on lossy networks.
 - **MTU.** The interface has an MTU of 1168 bytes, which fits every UDP path. Programs that choose a packet size themselves should stay below it, or their packets are fragmented.
 - `gst down` undoes `gst up`: it removes the daemon's service, the interface, the route, the names, and the helper, which removes itself, so it takes no password, and `gst up` asks for one again. Only the configuration and logs stay, with the machine's address and links. If the daemon just stops, the interface, route, and names go too, and the helper stays.
 
@@ -164,7 +164,6 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `online` | A running link leads to it directly |
 | `online; via devbox` | The links to it pass through the machines named |
 | `online; direct` | Packets to it go directly over UDP |
-| `offline` | No running links lead to it |
 
 Links show as the machines at their ends, such as `laptop->gateway`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `laptop->prod (db)`. A `# Problems:` section lists this machine's links that are not running and what keeps it off the network. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
 
@@ -247,7 +246,7 @@ gst add devbox               # on the machines that had links
 
 ## Troubleshooting
 
-Work from the outside in: `gst status` shows whether the machine is `online` and lists this machine's links that are not running, each with its last error, and what keeps it off the network; `gst ping <machine>` checks that the path to it works, and `gst ping <machine> -v` shows why a UDP path does or does not come up; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `gst add` also checks the key and known_hosts first, and saves nothing if the check fails.
+Work from the outside in: `gst status` shows whether the machine can be reached and lists this machine's links that are not running, each with its last error, and what keeps it off the network; `gst ping <machine>` checks that the path to it works, and `gst ping <machine> -v` shows why a UDP path does or does not come up; the daemon log has the link events (`journalctl --user -u gst` on Linux, `~/Library/Logs/gst-daemon.log` on macOS); and `ssh -v <destination>` shows what ssh itself says about the login. `gst add` also checks the key and known_hosts first, and saves nothing if the check fails.
 
 | Symptom | Fix |
 | --- | --- |
@@ -258,7 +257,7 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 | A link is `down` with `gst is not up on this machine; run gst up there`, or `gst add` says so | Run `gst up` on the other machine, for example with `ssh -t <destination> gst up`; the link connects by itself |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | Upgrade gst on the machine it names (0.4 on both ends of every link) |
 | `config version 3 is too old` | Remove the file it names and add the links again ([Upgrading from 0.3](#upgrading-from-03)) |
-| `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst status` (a machine that is `offline` or missing, and links that are not running) |
+| `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst status` (a machine that is missing, and links that are not running) |
 | `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst 0.4 or later with a running daemon; see `gst status` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
 | A machine name matches several machines | Use its id or an id prefix from `gst status` |

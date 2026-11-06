@@ -236,7 +236,7 @@ function drawDetail(n, names) {
   if (!st) {
     const answer = answers.get(n.id);
     if (!n.reachable) {
-      detail.replaceChildren(blank(`${names[n.id]} is offline`, "No running link leads to it from this machine. Its last report stays in the mesh until it expires."));
+      detail.replaceChildren(blank(`${names[n.id]} cannot report`, "No running link leads to it now, so it cannot be asked. Its UDP path still carries packets."));
     } else if (answer && answer.error) {
       detail.replaceChildren(blank(`${names[n.id]} did not answer`, answer.error));
     } else {
@@ -255,7 +255,7 @@ function drawDetail(n, names) {
 
 function nodeMark(n) {
   if (n.id === selfID()) return state.status ? mark("ok", "this machine, running") : mark("off", "this machine, not running");
-  return n.reachable ? mark("ok", "online") : mark("off", "offline");
+  return mark("ok", "online");
 }
 
 function drawMachines(nodes, names) {
@@ -270,7 +270,6 @@ function drawMachines(nodes, names) {
       el("span", { class: "machine-meta" },
         found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
         route ? el("span", { class: "truncate", title: "via " + route }, "via " + route) : null,
-        !n.reachable && n.id !== selfID() ? el("span", null, "offline") : null,
         n.direct ? el("span", { class: "tag" }, "direct") : null));
     b.addEventListener("click", () => select(n.id));
     return b;
@@ -282,9 +281,8 @@ function drawMachines(nodes, names) {
 }
 
 function drawSummary(nodes) {
-  const online = nodes.filter((n) => n.reachable || n.id === selfID()).length;
   const found = nodes.reduce((sum, n) => sum + problems(statusOf(n.id)).length, 0);
-  const text = !state.status ? "not running" : online === nodes.length ? `${online} online` : `${online} of ${nodes.length} online`;
+  const text = !state.status ? "not running" : `${nodes.length} online`;
   $("summary").replaceChildren(text, ...(found ? [", ", el("span", { class: "bad" }, plural(found, "problem"))] : []));
 }
 
@@ -338,13 +336,12 @@ function drawRing(nodes, names) {
 
   const dots = nodes.map((n) => {
     const p = pos[n.id];
-    const online = n.reachable || n.id === selfID();
     const side = p.cos > 0.25 ? "start" : p.cos < -0.25 ? "end" : "middle";
     const dx = side === "start" ? 12 : side === "end" ? -12 : 0;
     const dy = side === "middle" ? (p.sin < 0 ? -12 : 20) : 4;
     const name = names[n.id].length > 12 ? names[n.id].slice(0, 11) + "…" : names[n.id];
-    const g = svg("g", { class: `ring-node ${online ? "online" : "offline"}${n.id === selected ? " picked" : ""}` },
-      svg("title", null, `${names[n.id]}${online ? "" : ", offline"}`),
+    const g = svg("g", { class: `ring-node online${n.id === selected ? " picked" : ""}` },
+      svg("title", null, names[n.id]),
       svg("circle", { class: "hit", cx: p.x, cy: p.y, r: 14 }),
       ...(n.id === selected ? [svg("circle", { class: "halo", cx: p.x, cy: p.y, r: 8.5 })] : []),
       svg("circle", { class: "dot", cx: p.x, cy: p.y, r: 4.5 }),
@@ -368,7 +365,7 @@ function drawProps(n, names, st) {
   const software = (st && st.software) || n.software;
   const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
   props.replaceChildren(
-    ...row("Status", isSelf ? (state.status ? "Running" : "Not running") : n.reachable ? "Online" : "Offline"),
+    ...row("Status", isSelf ? (state.status ? "Running" : "Not running") : "Online"),
     ...row("Path", route),
     ...row("Address", n.net && n.net.address),
     ...row("Version", software),

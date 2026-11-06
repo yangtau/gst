@@ -190,7 +190,11 @@ func (m *fakeMesh) setAlone(alone bool) {
 	m.world.changed()
 }
 
-func (m *fakeMesh) Self() wire.NodeInfo { return m.info }
+func (m *fakeMesh) Self() wire.NodeInfo {
+	m.world.mu.Lock()
+	defer m.world.mu.Unlock()
+	return m.info
+}
 func (m *fakeMesh) Topology() wire.Topology {
 	return m.world.topology(m.info.ID)
 }
@@ -546,6 +550,42 @@ func TestStateSurvivesARestart(t *testing.T) {
 	if after.Subnet != before.Subnet || after.Address != before.Address || published(&w, a.mesh).PublicKey != key {
 		t.Fatalf("%+v became %+v", before, after)
 	}
+}
+
+// A new identity is a new machine: records of the old one stay around for
+// a while, so it must not share their key or address. The subnet stays, as
+// it belongs to the network.
+func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
+	var w world
+	a := start(t, &w, "a0", "laptop")
+	b := start(t, &w, "b0", "devbox")
+	a.manager.Configure(t.Context(), &config.Net{})
+	b.manager.Configure(t.Context(), &config.Net{})
+	waitFor(t, "a is up", up(a, 1))
+	waitFor(t, "b is up", up(b, 1))
+	wantPacket(t, a, b, "before")
+	before := a.manager.Status()
+	key := published(&w, a.mesh).PublicKey
+
+	w.mu.Lock()
+	a.mesh.info.ID = "f" + strings.Repeat("0", 31)
+	w.mu.Unlock()
+	a.manager.Configure(t.Context(), &config.Net{})
+	waitFor(t, "a has a new key", func() bool { return published(&w, a.mesh).PublicKey != key })
+	if after := a.manager.Status(); after.Subnet != before.Subnet {
+		t.Fatalf("%+v became %+v", before, after)
+	}
+	data, err := os.ReadFile(filepath.Join(a.dir, "net.json"))
+	if err != nil || !strings.Contains(string(data), a.mesh.Self().ID) {
+		t.Fatalf("state: %s, %v", data, err)
+	}
+
+	// The two machines find each other again by the new key.
+	w.changed()
+	waitFor(t, "a is up", up(a, 1))
+	waitFor(t, "b knows the new key", up(b, 1))
+	wantPacket(t, a, b, "after")
+	wantPacket(t, b, a, "back")
 }
 
 func published(w *world, m *fakeMesh) *wire.NetInfo {

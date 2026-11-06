@@ -196,7 +196,6 @@ kbd {
 .ring-node { cursor: pointer; }
 .ring-node .hit { fill: transparent; }
 .ring-node .dot { fill: var(--ok); }
-.ring-node.offline .dot { fill: var(--bg); stroke: var(--faint); stroke-width: 1.5; }
 .ring-node .halo { fill: none; stroke: var(--accent); stroke-width: 1.5; }
 .ring-node text { fill: var(--sub); font-size: 15px; }
 .ring-node:hover text { fill: var(--text); }

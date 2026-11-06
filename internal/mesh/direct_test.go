@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -101,7 +102,8 @@ func TestDirectPathAcrossTheMesh(t *testing.T) {
 }
 
 // When the machine between two nodes goes away, as when it sleeps, their
-// UDP path carries on, and they keep each other's records past their end.
+// UDP path carries on, and they see each other still, but only until
+// their records expire: SSH links alone renew them.
 func TestDirectPathOutlivesSSH(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
@@ -119,14 +121,41 @@ func TestDirectPathOutlivesSSH(t *testing.T) {
 	a.SendPacket(nid("c"), wg("hello"))
 	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("hello"))) })
 
+	if n, ok := findTopo(a.Machines(), nid("c")); !ok || !n.Direct {
+		t.Fatalf("a does not list c: %+v", n)
+	}
+	a.prune()
+	if !hasDirect(a, nid("c")) {
+		t.Fatal("the path ended before the record expired")
+	}
+
 	a.mu.Lock()
 	r := a.records[nid("c")]
 	r.Expires = time.Now().Add(-time.Second)
 	a.records[nid("c")] = r
 	a.mu.Unlock()
 	a.prune()
-	if n, ok := findTopo(a.Topology(), nid("c")); !ok || !n.Direct {
-		t.Fatalf("a lost c: %+v", n)
+	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
+	if _, ok := findTopo(a.Machines(), nid("c")); ok {
+		t.Fatal("a still lists c")
+	}
+}
+
+// A new identity is a new machine: the other end knows its UDP paths by
+// the old one, so they end at once.
+func TestANewIdentityEndsDirect(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	enableDirect(t, a, c)
+	linkUp(t, a, c, "c")
+	goDirect(t, a, c)
+	a.SetNet(&wire.NetInfo{Address: "10.0.0.1"})
+
+	a.Configure(&config.Node{ID: nid("n"), Name: "a"})
+	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.net != nil {
+		t.Fatalf("the new identity took the old one's place in the network: %+v", a.net)
 	}
 }
 

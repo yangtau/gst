@@ -29,11 +29,14 @@ func (n *Node) Update() {
 }
 
 // Run publishes this node's record whenever it changes and before it
-// expires, and drops expired records, until ctx is done.
+// expires, and drops expired records soon after they expire, until ctx is
+// done.
 func (n *Node) Run(ctx context.Context) {
 	defer n.stop()
 	refresh := time.NewTicker(n.ttl / 3)
 	defer refresh.Stop()
+	sweep := time.NewTicker(n.ttl / 30)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -42,6 +45,7 @@ func (n *Node) Run(ctx context.Context) {
 			n.publish(false)
 		case <-refresh.C:
 			n.publish(true)
+		case <-sweep.C:
 			n.prune()
 		}
 	}
@@ -106,22 +110,21 @@ func (n *Node) notify() {
 	n.changed = make(chan struct{})
 }
 
-// prune drops expired records, and keeps the records of the nodes with a
-// UDP path: their packets still flow when the machine between the two
-// sleeps and no new record can arrive. Only this node's copy lasts longer;
-// it goes to no one, as its Seq stays.
+// prune drops expired records and ends the UDP paths to their nodes. Only
+// SSH links renew a record, so a UDP path outlives the links that led to
+// its node for as long as the record lasts, and no longer: the node may
+// never come back, and nothing tells that from a network that is down.
 func (n *Node) prune() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	now := time.Now()
 	for id, r := range n.records {
-		switch {
-		case id == n.info.ID:
-		case n.packetPeer(id).direct.Load() != nil:
-			r.Expires = now.Add(n.ttl)
-			n.records[id] = r
-		case !r.Expires.After(now):
-			delete(n.records, id)
+		if id == n.info.ID || r.Expires.After(now) {
+			continue
+		}
+		delete(n.records, id)
+		if c := n.packetPeer(id).direct.Load(); c != nil {
+			c.Close()
 		}
 	}
 }
@@ -318,6 +321,20 @@ func (n *Node) Topology() wire.Topology {
 	for i := range topo.Nodes {
 		topo.Nodes[i].Direct = n.packetPeer(topo.Nodes[i].ID).direct.Load() != nil
 	}
+	return topo
+}
+
+// Machines is Topology as people see it: the machines that can be reached
+// now, over SSH links or a UDP path, and the links between them. What
+// Topology holds beyond that is only a record that has not expired yet,
+// which may be of a machine that is gone.
+func (n *Node) Machines() wire.Topology {
+	topo := n.Topology()
+	topo.Nodes = slices.DeleteFunc(topo.Nodes, func(v wire.TopoNode) bool { return !v.Reachable && !v.Direct })
+	listed := func(id string) bool {
+		return slices.ContainsFunc(topo.Nodes, func(v wire.TopoNode) bool { return v.ID == id })
+	}
+	topo.Edges = slices.DeleteFunc(topo.Edges, func(e wire.TopoEdge) bool { return !listed(e.From) || !listed(e.To) })
 	return topo
 }
 

@@ -131,7 +131,7 @@ func TestStatusListsTheMachines(t *testing.T) {
 		"bbbb2222 devbox gst 0.4.0 online",
 		"cccc3333 far - online; via devbox",
 		"dddd4444 dup (dddd4444) gst 0.4.0 online; via devbox",
-		"eeee5555 dup (eeee5555) gst 0.4.0 offline",
+		"eeee5555 dup (eeee5555) gst 0.4.0 online; via devbox",
 	}
 	if got := lines(out); !slices.Equal(got, want) {
 		t.Fatalf("status\n got %q\nwant %q\noutput:\n%s", got, want, out)
@@ -153,25 +153,6 @@ func TestStatusAllListsTheLinks(t *testing.T) {
 	}
 	if code, _, stderr := e.gst("status", "--all", "devbox"); code != exitUsage || !strings.Contains(stderr, "--all") {
 		t.Fatalf("--all with a machine: exit %d, stderr %q", code, stderr)
-	}
-}
-
-func TestStatusMarksOfflineMachines(t *testing.T) {
-	e := newEnv(t)
-	e.mustGst("up")
-	self, gw, far := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333")
-	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{
-		{ID: self, Name: "laptop", Software: "gst 0.4.0", Reachable: true, Path: []string{self}},
-		{ID: gw, Name: "gw", Software: "gst 0.4.0"},
-		{ID: far, Name: "far", Software: "gst 0.4.0", Reachable: true, Path: []string{self, gw, far}},
-	}}
-	want := []string{
-		"aaaa1111 laptop gst 0.4.0 -",
-		"bbbb2222 gw gst 0.4.0 offline",
-		"cccc3333 far gst 0.4.0 online; via gw",
-	}
-	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
-		t.Fatalf("status\n got %q\nwant %q", got, want)
 	}
 }
 

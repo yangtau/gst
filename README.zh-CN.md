@@ -70,7 +70,7 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 gst up                     # 每台机器执行一次
 gst add devbox             # ~/.ssh/config 中的 "devbox"
 gst add homelab
-gst status                 # mesh 中的每台机器，每行一台
+gst status                 # 现在连得上的机器，每行一台
 ```
 
 `gst status` 的输出类似这样（第一台是本机，显示为 `-`）：
@@ -90,7 +90,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。`gst ping devbox` 检查网络，打印 `reply from devbox (10.87.61.7) over UDP in 12.3 ms`。
+link 在后台连接，连上后机器出现在列表里。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。`gst ping devbox` 检查网络，打印 `reply from devbox (10.87.61.7) over UDP in 12.3 ms`。
 
 现在 `homelab` 能看到同一个 mesh：在 `homelab` 上，`gst status` 列出 `laptop` 和 `devbox`，`ping devbox.gst` 不需要到 `devbox` 的 link 也能通。
 
@@ -108,7 +108,7 @@ link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `
 
 - node 的名字用于显示和寻址，不要求唯一；id 是唯一的。用 `gst name laptop` 修改名字。名字和 link 名一样，由 1-32 个小写字母、数字或 `-` 组成。
 - link 是双向的：流量可以沿任一方向通过，所以 `devbox` 不需要自己的 link 就能到达 `laptop`。link 有名字（`gst add devbox`），在对端报告自己的名字之前，它也是对端机器的名字。
-- 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst status` 都能看到整个 mesh；退出网络的机器会在 30 分钟内消失。路径只能经由运行中的 link 越过一台机器。
+- 已启动的 link 在后台运行，登录后自动启动，断线后自动重连。相连的机器会互相转告各自知道的信息，所以在任意一台机器上运行 `gst status` 都能看到整个 mesh；没有路径再通向的机器会立刻从列表消失。路径只能经由运行中的 link 越过一台机器。
 
 ### 机器寻址
 
@@ -131,7 +131,7 @@ link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `
 - **网段。** 所有机器共用一个网段。第一台机器根据能应答的机器上的网卡和路由，选一个不与它们重叠的 `/16`。`gst subnet 10.99.0.0/16` 为整个网络设置另一个网段：最新的选择胜出，所有机器都迁移过去，地址随之改变。它必须是私有网段（在 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 或 `100.64.0.0/10` 之内）。网段与某台机器上的其他网络重叠时，那台机器在 `gst status` 中报告。
 - **地址。** 机器重启后地址不变。只承载 IPv4。
 - **名字。** `<machine>.gst` 对所有程序生效，可以用机器的名字、到它的 link 的名字或 id 前缀。在 macOS 和使用 systemd-resolved 的 Linux 上，只有 `.gst` 交给 daemon 解析。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 中。
-- **路径。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 传送，这些流量让两台机器经 link 寻找 UDP 路径：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器继续走 SSH。`gst status` 在机器后面显示 `direct`，`gst status --all` 显示每台机器走哪条路。UDP 失效时，包在几秒内改走 SSH，程序的连接不断。UDP 路径建立后不再依赖 link，所以两台机器之间的机器休眠时它继续运行；`gst remove` 之后如果已没有 link 通向某台机器，到它的 UDP 路径也会断开。经 SSH 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
+- **路径。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 传送，这些流量让两台机器经 link 寻找 UDP 路径：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器继续走 SSH。`gst status` 在机器后面显示 `direct`，`gst status --all` 显示每台机器走哪条路。UDP 失效时，包在几秒内改走 SSH，程序的连接不断。UDP 路径建立后不再依赖 link，所以 SSH 断开或两台机器之间的机器休眠时，它还能继续运行 20 到 30 分钟；之后那台机器算作离开，路径结束。`gst remove` 之后如果已没有 link 通向某台机器，到它的 UDP 路径立刻断开。经 SSH 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
 - **MTU。** 网卡的 MTU 是 1168 字节，适合每条 UDP 路径。自己选择包大小的程序应该低于这个值，否则包会被分片。
 - `gst down` 撤销 `gst up`：删除 daemon 的服务、网卡、路由、名字和 helper。helper 自己删除自己，所以不需要密码，下次 `gst up` 会重新询问。只留下配置和日志，机器的地址和 link 都保留。daemon 只是意外停止时，网卡、路由和名字也会消失，helper 保留。
 
@@ -164,7 +164,6 @@ mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通
 | `online` | 有运行中的 link 直接通向它 |
 | `online; via devbox` | 到它的 link 经过列出的机器 |
 | `online; direct` | 到它的包经 UDP 直连 |
-| `offline` | 没有运行中的 link 通向它 |
 
 link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向的机器不同时，后面跟着 `gst remove` 要用的名字，例如 `laptop->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`（两边的 daemon 已相连）、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。
 
@@ -247,7 +246,7 @@ gst add devbox               # 在原来有 link 的机器上
 
 ## 排查问题
 
-由外向内排查：`gst status` 显示机器是否 `online`，并列出本机未运行的 link 及其最近一次错误，以及本机不能加入网络的原因；`gst ping <machine>` 检查到它的路径是否通，`gst ping <machine> -v` 显示 UDP 路径为什么建立或没建立；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
+由外向内排查：`gst status` 显示机器是否连得上，并列出本机未运行的 link 及其最近一次错误，以及本机不能加入网络的原因；`gst ping <machine>` 检查到它的路径是否通，`gst ping <machine> -v` 显示 UDP 路径为什么建立或没建立；daemon 日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
 
 | 现象 | 处理 |
 | --- | --- |
@@ -258,7 +257,7 @@ gst add devbox               # 在原来有 link 的机器上
 | link 为 `down`，错误是 `gst is not up on this machine; run gst up there`，或者 `gst add` 这样提示 | 在对方机器上执行 `gst up`，例如 `ssh -t <destination> gst up`；之后 link 自动连上 |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.4） |
 | `config version 3 is too old` | 删除它指出的文件，重新添加 link（见[从 0.3 升级](#从-03-升级)） |
-| `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst status`（机器为 `offline` 或缺失，以及未运行的 link） |
+| `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst status`（机器不在列表里，以及未运行的 link） |
 | `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行 0.4 或更新版本的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
 | 机器名匹配到多台机器 | 使用 `gst status` 中的 id 或 id 前缀 |

@@ -13,7 +13,7 @@ import (
 func nodeID(prefix string) string { return prefix + strings.Repeat("0", 32-len(prefix)) }
 
 // meshTopology is a mesh as seen from laptop: devbox is linked to it, far
-// and dup1 are behind devbox, dup2 shares dup1's name and is out of reach.
+// and the two machines called dup are behind devbox.
 func meshTopology() wire.Topology {
 	self, devbox, far, dup1, dup2 := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333"), nodeID("dddd4444"), nodeID("eeee5555")
 	return wire.Topology{
@@ -23,7 +23,7 @@ func meshTopology() wire.Topology {
 			{ID: devbox, Name: "devbox", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox}},
 			{ID: far, Name: "far", Reachable: true, Path: []string{self, devbox, far}},
 			{ID: dup1, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup1}},
-			{ID: dup2, Name: "dup", Software: "gst 0.4.0"},
+			{ID: dup2, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup2}},
 		},
 		Edges: []wire.TopoEdge{
 			{From: devbox, To: dup1, Link: "d1"},

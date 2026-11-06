@@ -182,7 +182,8 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - 在虚拟网络上的节点在记录里带 `net`（网卡起来之后才带，别的机器不会向答不了话的机器发包）：`{"subnet": …, "since": …, "address": …, "public_key": …}`，见[虚拟网络](#虚拟网络)。收到的记录中 `net` 不合法时整条丢弃。
 - 记录有效期 30 分钟，节点每 10 分钟刷新。每个节点最多保留 1024 条记录，每条记录最多 1024 条 link。
 - `Topology` 由查看方计算：`nodes`（id、name、software、reachable、`path`：从本节点出发的最短路径上的节点 id、`net`、`direct`：查看方有到该节点的 UDP 路径）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link。link 是双向的，路径可以沿任一方向经过。UDP 路径不在记录里，也不算路径：它只运送包。
-- 有 UDP 路径的节点，本地副本的记录不过期，SSH 断开后仍然保留公钥和地址，所以 WireGuard 可以继续用这条路径。
+- 只有 SSH link 能续期记录，UDP 路径不能。记录过期时，到那个节点的 UDP 路径随之关闭。
+- 人看到的（`mesh.nodes`、`gst status`、`gst ui`、`gst status --all` 的两张表）只有现在连得上的机器，也就是有 SSH 路径或运行中的 UDP 路径的机器，以及它们之间的 link。其余只是还没过期的记录，内部继续用来保留地址和解析名字，不显示。机器走了还是暂时断网分不清，所以没有 offline 这种状态；本机的 link 断了，由 `# Problems:` 报告。
 
 ### 中转
 
@@ -215,7 +216,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **选路**：发起方收到 answer 即证明路径可用，发 use，接受方回 used，这对 socket 和地址就是 `direct.Conn`，其余 socket 关闭。整次尝试限时 15 秒。
 - **认证**：token 只用来找路径，不用于认证。路径建好后只接受来自确认地址的包，身份和加密都是 WireGuard 的：对方拿不出记录里那把公钥对应的私钥，握手就不成立。
 - **维持**：路径上每秒发 beat，同时让 NAT 和防火墙的表项不过期。3 秒什么都没收到，路径结束，包回到 SSH，WireGuard 的会话不受影响，所以程序的连接不断。关闭时发 bye，对方立即知道。
-- **SSH 决定成员**：丢失 SSH link 不改变成员，UDP 路径继续运行，例如两个节点之间的机器休眠时。只有 `gst remove` 删除 link 才改变成员：打开方在停止 link 前调用 `link.remove`（最多等 3 秒），之后 link 两端各检查一次，不计这条 link 时只经 SSH link 能否到达路径的对端，到不了就关闭。对方没有收到 `link.remove`（link 当时已断）时，它的路径继续运行，直到自行结束。
+- **SSH 决定成员**：暂时丢失 SSH link 不改变成员，UDP 路径继续运行，例如 SSH 抖动或两个节点之间的机器休眠时，但只到对端的记录过期（断开后 20 到 30 分钟）：机器再也不回来和网络暂时断开分不清，所以必须有时限。`gst remove` 立刻改变成员：打开方在停止 link 前调用 `link.remove`（最多等 3 秒），之后 link 两端各检查一次，不计这条 link 时只经 SSH link 能否到达路径的对端，到不了就关闭，并发 bye。没有收到 `link.remove` 也没有收到 bye 的节点，路径继续运行，最多到记录过期。换身份等于移除：节点的 link 和 UDP 路径全部关闭，对端按旧 id 认识它们。
 - **过程记录**：每个节点在内存里保留与每个对端最近一次尝试的事件（提供的地址、听到的探测、被证明的路径、结果），新的尝试开始时清空，最多 200 条。记录含地址，只经 `mesh.direct` 和 `direct.trace` 交给发出请求的用户，不进日志。
 - `GST_DIRECT=off` 让 daemon 不发起也不接受 UDP 路径，集成测试用它固定路径。
 
@@ -233,7 +234,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **MTU**：网卡 MTU 是 1168，加上 WireGuard 的 32 字节是 1200 字节的 UDP 载荷，几乎所有路径都能承载，所以不需要路径 MTU 发现。
 - **网段**：每个节点把 `{subnet, since, address, public_key}` 放进自己的记录（`net` 字段）。`since` 最大的网段胜出，相同时取字符串较小的，所以所有节点独立算出同一个结果。`gst subnet` 把 `since` 写成当前时间；gst 自己选的网段写成当前时间的相反数，所以它让位给任何人选的网段，自己选的之间最早的留下：一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。第一个节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个不重叠的 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）。网段和本机其他网络重叠时不阻止运行，只报告。
 - **gst ping**：每个 daemon 在自己的网络地址上监听 UDP 端口 15354，把收到的包原样发回。发送方是普通的 UDP socket，所以包经过路由、网卡、WireGuard 和实际路径，和程序的包完全一样：有回复说明这些都通，时间就是程序感受到的延迟。标签来自回复时的路径。
-- **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。
+- **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。私钥和地址属于一个身份，`net.json` 记下这个 node id；id 变了就换新私钥、重选地址，只留下属于网络的网段，否则别的机器手里旧身份的记录会和新身份共用一把公钥。
 - **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 link 名和 id 前缀也能用），未知名字 NXDOMAIN，AAAA 返回空。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。
 - **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由系统服务（`gst net-helper --user NAME`）完成。`gst up` 用 `gst helper-version` 询问 root 那份 gst 的 `tun.HelperVersion`，这一步不需要 root；helper 缺失、版本不同或没有在监听时，它显示要执行的 `sudo <gst 的绝对路径> install --user NAME` 和这条命令的改动，询问后在当前终端执行，密码由 sudo 询问。版本号只在 helper 的代码或 daemon 对它的要求变化时提高，所以普通升级不需要 root。`gst down` 经同一个 socket 发 `Spec{Remove: true}`，不需要 root：这条消息没有参数，只能让 helper 删除固定路径上的服务和那份 gst。helper 先删文件，回复，最后让服务管理器停止自己，因为这一步会结束进程。helper 没有应答时，`gst down` 才说明并询问后用 `sudo <gst> uninstall`。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
 - **管理循环**：`vnet.Manager` 在拓扑变化、配置变化和每 5 秒时比较一遍：算网段和地址、发布记录、调 helper、同步 WireGuard 的 peer。`Configure` 等这一轮结束再返回，所以 `gst subnet` 看到的 `Status` 已经反映新配置。没有 helper 或网段重叠是 `NetState` 里的 `error` 和 `hint`，不是失败退出，装好 helper 后下一轮就启动。
@@ -243,5 +244,5 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 - `gst ui` 是前台进程，只监听 `127.0.0.1`（`--port`，默认任意空闲端口），启动时生成随机 token，打印 `http://127.0.0.1:<port>/#<token>` 并打开浏览器（`--no-open` 跳过）。daemon 只有 control socket 这一个控制入口，退出后不留监听。
 - 页面（`internal/cli/ui`，go:embed）以 `Authorization: Bearer <token>` 请求 `GET /api/state`；`Host` 不是 localhost 或回环地址时返回 403；响应带严格的 CSP 等安全头。页面用 DOM 文本节点渲染所有字段。
-- `/api/state` 返回本机 node、`Status`、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。页面只读：不能启动、停止或重启 link；daemon 不运行时，页面说明这一点。机器表的 Status 列显示 online、offline 或 online via …。
+- `/api/state` 返回本机 node、`Status`、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。页面只读：不能启动、停止或重启 link；daemon 不运行时，页面说明这一点。机器表的 Status 列显示 online 或 online via …。
 - `GET /api/nodes/{node}`（同样需要 token）返回 mesh 中任一机器的 `Status`，即 `mesh.status` 的结果，`{node}` 是机器的称呼（名称、id、id 前缀或 link 名）；出错时返回 502 和错误信息。页面选中某台机器时请求它。

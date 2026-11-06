@@ -99,7 +99,7 @@ func New(cfg Config) *Daemon {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
 	}
 	wire.Handle(&d.control, wire.MethodStatus, none(func() any { return d.Status() }))
-	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Topology() }))
+	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Machines() }))
 	wire.Handle(&d.control, wire.MethodReload, func(ctx context.Context, _ struct{}) (any, error) {
 		if err := d.Reload(ctx); err != nil {
 			return nil, err
@@ -248,7 +248,7 @@ func (d *Daemon) Status() wire.Status {
 // netPing sends a packet to the machine that ref names and back, over the
 // virtual network, and reports the way it went.
 func (d *Daemon) netPing(ctx context.Context, ref string) (wire.NetPing, error) {
-	topo := d.mesh.Topology()
+	topo := d.mesh.Machines()
 	dest, err := mesh.FindNode(topo, ref)
 	if err != nil {
 		return wire.NetPing{}, err

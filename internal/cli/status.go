@@ -31,11 +31,11 @@ func (a *app) statusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [machine]",
 		Short: "Show the machines of the mesh, or what one machine runs",
-		Long: `Without a machine, show every machine of the mesh as this machine knows
-it, one per line: its id, name, gst, and address, whether it is online,
-and how packets go to it: directly over UDP, or along the SSH links,
-through the machines that it names. Linked machines pass on what they
-know, so the list includes machines several links away. Problems on this
+		Long: `Without a machine, show the machines that this machine reaches now, one
+per line: its id, name, gst, and address, and how packets go to it:
+directly over UDP, or along the SSH links, through the machines that it
+names. Linked machines pass on what they know, so the list includes
+machines several links away. Problems on this
 machine, such as a link that is down, follow the list; with --all, the
 running links between all the machines and the traffic with each of them
 come first.
@@ -104,8 +104,6 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 			state = append(state, "-")
 		case n.Direct:
 			state = append(state, "online", "direct")
-		case !n.Reachable:
-			state = append(state, "offline")
 		case len(n.Path) > 2:
 			via := make([]string, len(n.Path)-2)
 			for i, id := range n.Path[1 : len(n.Path)-1] {
