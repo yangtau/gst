@@ -28,7 +28,13 @@ type system interface {
 	resolve(hosts map[string]netip.Addr) error
 	// unresolve undoes resolve.
 	unresolve()
+	// changes says what the helper does to this system, for people to read.
+	changes() []string
 }
+
+// Changes says what the helper does to this machine, for the person who
+// decides to install it.
+func Changes() []string { return newSystem().changes() }
 
 func runCommand(name string, args ...string) error {
 	out, err := exec.Command(name, args...).CombinedOutput()
@@ -81,6 +87,17 @@ func (d *darwin) resolve(map[string]netip.Addr) error {
 }
 
 func (d *darwin) unresolve() { os.Remove(d.resolver) }
+
+func (d *darwin) changes() []string {
+	return []string{
+		"creates a utun network interface and sets its address",
+		"routes the subnet of the network to that interface",
+		"writes " + d.resolver + ", which sends names under .gst, and only those, to the gst daemon",
+	}
+}
+
+// interfaceName is the interface on Linux.
+const interfaceName = "gst0"
 
 // linux configures Linux. systemd-resolved sends .gst to the daemon; on a
 // machine without it, nothing can do that for one domain alone, so the
@@ -140,6 +157,18 @@ func (l *linux) unresolve() {
 		return
 	}
 	writeHosts(l.hosts, nil)
+}
+
+func (l *linux) changes() []string {
+	names := "adds the names of the machines to " + l.hosts + ", between lines that mark them as gst's"
+	if l.usesResolved() {
+		names = "writes " + l.dropIn + " and restarts systemd-resolved, which sends names under .gst, and only those, to the gst daemon"
+	}
+	return []string{
+		"creates the network interface " + interfaceName + " and sets its address",
+		"routes the subnet of the network to that interface",
+		names,
+	}
 }
 
 const (

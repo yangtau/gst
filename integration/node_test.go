@@ -234,6 +234,7 @@ func trust(t *testing.T, client, server *node) *pair {
   ServerAliveInterval 1
   ServerAliveCountMax 2
 EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
+	p.server.mustGst("up")
 	return p
 }
 

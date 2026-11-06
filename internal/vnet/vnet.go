@@ -475,7 +475,7 @@ func (m *Manager) up(ctx context.Context) error {
 	iface, err := m.cfg.Open(tun.Spec{Subnet: m.state.Subnet, Address: m.state.Address})
 	if err != nil {
 		if errors.Is(err, tun.ErrNoHelper) {
-			return &hintError{"the helper of the virtual network does not run", "install it with `sudo gst install`"}
+			return &hintError{"the helper of the virtual network does not run", "run `gst up` on this machine"}
 		}
 		return fmt.Errorf("set up the interface: %w", err)
 	}

@@ -1,7 +1,7 @@
 // Package tun gives the gst daemon a network interface. Creating one,
 // and the addresses, routes, and name resolution that go with it, take
 // root, while the daemon runs as its user, so a small service does that
-// part: the helper, which `gst install` sets up. The daemon asks it for
+// part: the helper, which `gst up` sets up. The daemon asks it for
 // an interface with Dial, over a Unix socket that only its user can open,
 // and gets the open device back; everything that handles packets stays in
 // the daemon. The interface lives as long as that connection: when the
@@ -36,6 +36,11 @@ const (
 
 	// MaxHosts is how many hosts a Spec can hold.
 	MaxHosts = 4096
+
+	// HelperVersion is what `gst up` compares with the installed helper.
+	// Updating a helper takes root, so raise it only when the helper's
+	// code or what the daemon asks of it changes, not with every gst.
+	HelperVersion = 1
 )
 
 // Spec is what the interface should be.
@@ -45,6 +50,9 @@ type Spec struct {
 	// Hosts maps names under .gst to their addresses, for systems without
 	// a resolver that can ask the daemon.
 	Hosts map[string]string `json:"hosts,omitempty"`
+	// Remove asks the helper to remove itself instead, as gst down does.
+	// Everything else in the Spec is ignored.
+	Remove bool `json:"remove,omitempty"`
 }
 
 // Reply answers a Spec.

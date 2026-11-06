@@ -582,7 +582,7 @@ func TestProblemsAreReported(t *testing.T) {
 	waitFor(t, "the manager runs", m.running.Load)
 	m.Configure(t.Context(), &config.Net{})
 	st := m.Status()
-	if !strings.Contains(st.Hint, "sudo gst install") || st.Interface != "" {
+	if !strings.Contains(st.Hint, "gst up") || st.Interface != "" {
 		t.Fatalf("without the helper: %+v", st)
 	}
 	// The other machines must not send to a machine that cannot answer.

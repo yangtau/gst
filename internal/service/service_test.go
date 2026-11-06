@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -179,7 +180,7 @@ func TestHelperOnSystemd(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &systemd{dir: filepath.Join(dir, "system"), system: true, run: fake.run}
-	h := &Helper{filepath.Join(dir, "libexec", "gst-net"), systemdHelper{s}}
+	h := &Helper{binary: filepath.Join(dir, "libexec", "gst-net"), manager: systemdHelper{s}}
 
 	if err := h.Install(exe, "alice"); err != nil {
 		t.Fatal(err)
@@ -257,7 +258,7 @@ func TestHelperOnLaunchd(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := &launchd{agentsDir: filepath.Join(dir, "LaunchDaemons"), logPath: filepath.Join(dir, "gst-net.log"), domain: "system", run: fake.run}
-	h := &Helper{filepath.Join(dir, "tools", helperLabel), launchdHelper{l}}
+	h := &Helper{binary: filepath.Join(dir, "tools", helperLabel), manager: launchdHelper{l}}
 	if err := h.Install(exe, "alice"); err != nil {
 		t.Fatal(err)
 	}
@@ -287,5 +288,82 @@ func TestHelperOnLaunchd(t *testing.T) {
 	}
 	if fileExists(h.binary) || fileExists(l.plistPath(helperLabel)) {
 		t.Fatal("files are left")
+	}
+}
+
+func TestHelperCurrent(t *testing.T) {
+	dir := t.TempDir()
+	h := &Helper{binary: filepath.Join(dir, "gst-net")}
+	socket := filepath.Join(dir, "socket")
+	if h.Installed() || h.Current(2, socket) {
+		t.Fatal("a missing helper is installed or current")
+	}
+	script := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(h.binary, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script("echo 2")
+	if !h.Installed() {
+		t.Fatal("not installed")
+	}
+	if h.Current(2, socket) {
+		t.Fatal("a helper that does not listen is current")
+	}
+	if err := os.WriteFile(socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Current(2, socket) {
+		t.Fatal("the same version is not current")
+	}
+	if h.Current(3, socket) {
+		t.Fatal("another version is current")
+	}
+	script("exit 1") // a helper from before versions
+	if h.Current(2, socket) {
+		t.Fatal("a helper that cannot say is current")
+	}
+}
+
+func TestHelperDetach(t *testing.T) {
+	dir := t.TempDir()
+	var calls []string
+	run := func(name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return "", nil
+	}
+	for _, tt := range []struct {
+		name    string
+		manager helperManager
+		files   []string
+		want    []string
+	}{
+		{"systemd", systemdHelper{&systemd{dir: dir, system: true, run: run, notes: io.Discard}},
+			[]string{helperUnit}, []string{"systemctl disable " + helperUnit, "systemctl daemon-reload", "systemctl stop --no-block " + helperUnit}},
+		{"launchd", launchdHelper{&launchd{agentsDir: dir, logPath: filepath.Join(dir, "log"), domain: "system", run: run}},
+			[]string{helperLabel + ".plist", "log"}, []string{"launchctl bootout system/" + helperLabel}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls = nil
+			h := &Helper{binary: filepath.Join(dir, "gst-net"), manager: tt.manager}
+			for _, name := range append(tt.files, "gst-net") {
+				if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stop, err := h.Detach()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Everything is gone before the stop, which ends the helper.
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("left over: %v", entries)
+			}
+			stop()
+			if !slices.Equal(calls, tt.want) {
+				t.Fatalf("ran %v, want %v", calls, tt.want)
+			}
+		})
 	}
 }

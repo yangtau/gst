@@ -58,18 +58,18 @@ gst runs in the background, where it cannot type a passphrase or confirm an unkn
 
 3. **The machine's host key in known_hosts**: connect once with `ssh devbox`, then verify and accept the host key.
 
-4. **gst 0.4 or later on that machine.** It needs no links, configuration, or running daemon of its own: being linked to is enough, and gst starts there on the first link. To be on the virtual network, it needs `sudo gst install` once.
+4. **gst 0.4 or later on that machine, and `gst up` run there once.** It needs no links of its own. gst never sets up another machine: if `gst up` has not run there, `gst add` says so and gives the command, and the link connects by itself once it has.
 
-Only the machine that creates a link needs these; the machine that is linked to just needs gst and an sshd that runs commands (gst uses a login session, not port forwarding, so sshd's `AllowTcpForwarding` does not matter). A server that forces a fixed command on every session cannot be linked.
+Only the machine that creates a link needs these; the machine that is linked to just needs gst, `gst up`, and an sshd that runs commands (gst uses a login session, not port forwarding, so sshd's `AllowTcpForwarding` does not matter). A server that forces a fixed command on every session cannot be linked.
 
 ## Quick start
 
-On `laptop`, link to `devbox` and `homelab`, and put each machine on the network:
+Run `gst up` once on each machine: `laptop`, `devbox`, and `homelab`. Then, on `laptop`, link to the other two:
 
 ```bash
+gst up                     # once on each machine
 gst add devbox             # the "devbox" entry of ~/.ssh/config
 gst add homelab
-sudo gst install           # once on each machine: laptop, devbox, and homelab
 gst status                 # every machine in the mesh, one per line
 ```
 
@@ -102,7 +102,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | --- | --- | --- |
 | **node** | A machine that runs gst. It has a random 128-bit id and a name (default: the host name) | `gst name`, `gst status` |
 | **link** | An SSH connection from this machine to another gst machine, kept up in the background; the two daemons join each other's mesh over it | `gst add`, `gst remove` |
-| **virtual network** | A private subnet where each machine has an IP address and the name `<machine>.gst`, for every program and protocol | `gst install`, `gst subnet` |
+| **virtual network** | A private subnet where each machine has an IP address and the name `<machine>.gst`, for every program and protocol | `gst up`, `gst subnet` |
 
 ### Nodes and links
 
@@ -126,14 +126,14 @@ When names repeat, `gst status` tells the machines apart by id; use the id or an
 
 The virtual network gives every machine an IP address in one private subnet and the name `<machine>.gst`, so that any program can reach it with any protocol: TCP, UDP, and ping, such as a game stream or a screen sharing session. Programs need no setup.
 
-- **Root.** Creating an interface and a route takes root, and the daemon runs as your user. `sudo gst install` installs a small system service, which runs a copy of gst that root owns, and does only that for your daemon. The machine joins by itself once it is there; until then, `gst status` says what is missing. If `sudo` does not find gst, give its full path. Run the command again to update the helper after upgrading gst.
+- **Root.** Creating an interface and a route takes root, and the daemon runs as your user, so a small system service, the helper, does only that for your daemon, with a copy of gst that root owns. When the helper is missing or out of date, `gst up` shows the `sudo` command it would run and what that changes on this machine, and asks first, because `sudo` may not ask for a password. `sudo` then asks for your password itself; gst never sees it. Without a terminal `gst up` does not ask and runs nothing; `gst up --yes` goes ahead without asking and still shows the command. Running `gst up` on a machine that is up changes nothing, and after upgrading gst it needs root again only if the helper changed. The machine joins by itself; until then, `gst status` says what is missing.
 - **Services.** Other machines reach the ports that a program opens on all addresses or on this machine's `.gst` address. A program that listens only on `127.0.0.1`, or on a Unix socket, is not reachable from the network; change where it listens, or log in with `ssh <machine>.gst` and use it there.
 - **Subnet.** The machines share one subnet. The first machine chooses a `/16` that overlaps nothing on the machines that answer, from their interfaces and routes. `gst subnet 10.99.0.0/16` sets another for the whole network: the latest choice wins, and all machines move to it, changing their addresses. It must be private (inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or `100.64.0.0/10`). If the subnet overlaps something on a machine, that machine reports it in `gst status`.
 - **Addresses.** A machine keeps its address across restarts. Only IPv4 is carried.
 - **Names.** `<machine>.gst` resolves for all programs, by the machine's name, the name of a link to it, or an id prefix. On macOS and with systemd-resolved, only `.gst` goes to the daemon. Elsewhere on Linux, the names go in `/etc/hosts` for as long as the network runs.
 - **Paths.** WireGuard encrypts each packet from end to end, so that machines on the way see only ciphertext. Packets start through the SSH links, and that traffic makes the two machines look for a UDP path, over the links: nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address stay on SSH. `gst status` shows `direct` next to the machine, and `gst status --all` shows the way of each. If UDP stops working, packets move to SSH within seconds, and programs keep their connections. A UDP path does not need the links once it runs, so it carries on when a machine between the two sleeps; `gst remove` does end it if no links then lead to the machine. Through SSH, TCP runs inside TCP, which works but slows down on lossy networks.
 - **MTU.** The interface has an MTU of 1168 bytes, which fits every UDP path. Programs that choose a packet size themselves should stay below it, or their packets are fragmented.
-- `gst down` takes this machine off the network and removes the interface, the route, and the names, and `sudo gst uninstall` removes the helper. They also go away when the daemon stops.
+- `gst down` undoes `gst up`: it removes the daemon's service, the interface, the route, the names, and the helper, which removes itself, so it takes no password, and `gst up` asks for one again. Only the configuration and logs stay, with the machine's address and links. If the daemon just stops, the interface, route, and names go too, and the helper stays.
 
 ### Trust
 
@@ -174,8 +174,6 @@ Links show as the machines at their ends, such as `laptop->gateway`; when a link
 
 | Command | Purpose |
 | --- | --- |
-| `sudo gst install [--user <user>]` | Put this machine on the virtual network: install the helper that sets up the interface |
-| `sudo gst uninstall` | Take this machine off the virtual network: remove the helper |
 | `gst subnet [cidr]` | Show the subnet of the virtual network, or change it for all machines |
 
 ### This machine
@@ -183,8 +181,8 @@ Links show as the machines at their ends, such as `laptop->gateway`; when a link
 | Command | Purpose |
 | --- | --- |
 | `gst name [name]` | Show or change this machine's name and show its id |
-| `gst up` | Run the daemon now and at login |
-| `gst down` | Stop the daemon and keep it from starting; other machines cannot link to this one |
+| `gst up [--yes]` | Run the daemon now and at login; when the helper is missing or out of date, say what `sudo` will run, ask, and install it |
+| `gst down` | Undo `gst up`: stop the daemon, remove its service and the helper; other machines cannot link to this one |
 | `gst ui [--port N] [--no-open]` | Show this machine's status, the mesh, and any machine's links, in a browser |
 | `gst version` | Show the gst version |
 
@@ -211,7 +209,7 @@ Limitations:
 
 ## Running in the background
 
-- One background process per user, the gst daemon, runs every started link and the virtual network, and accepts links from other machines. It is a user service: a systemd user service `gst.service` on Linux, a launchd agent `local.gst` on macOS. gst installs it with the first change to its configuration, or when another machine first links to this one; you do not manage it yourself. `gst down` stops it and removes the service, and `gst up` brings it back.
+- One background process per user, the gst daemon, runs every started link and the virtual network, and accepts links from other machines. It is a user service: a systemd user service `gst.service` on Linux, a launchd agent `local.gst` on macOS. gst installs it with `gst up` or the first change to its configuration; you do not manage it yourself. Another machine that links to this one never installs it. `gst down` stops it and removes the service, and `gst up` brings it back.
 - gst commands talk to the daemon over a socket that only you can access: `~/.local/state/gst/gst.sock` on Linux (under `$XDG_STATE_HOME` when set), `~/Library/Application Support/gst/gst.sock` on macOS.
 - If the daemon itself exits, its service restarts it after 5 seconds.
 - The daemon's log, which also holds link events (connected, failed, reconnecting), goes to journald on Linux (`journalctl --user -u gst`) and to `~/Library/Logs/gst-daemon.log` on macOS.
@@ -238,14 +236,14 @@ gst 0.4 reaches machines only over the virtual network: `gst connect`, the proxy
 
 ```sh
 rm ~/.config/gst/config.json
-sudo gst install
+gst up
 gst add devbox               # on the machines that had links
 ```
 
-- The first `gst add` replaces the 0.3 daemon. Each machine gets a new identity; `gst name` sets its name again.
+- `gst up` replaces the 0.3 daemon. Each machine gets a new identity; `gst name` sets its name again.
 - Reach a machine as `devbox.gst` where you had a map or the proxy; see [Services](#virtual-network) for programs that listen only on loopback or a Unix socket.
 - Upgrade every machine you link to together. The gst protocol is now version 3, and gst refuses to talk to an older one: it reports `speaks an older gst protocol; upgrade gst there to 0.4 or later`.
-- `gst net on`, `gst net off`, and `gst net status` are gone: the network is always on. `gst subnet` replaces `--subnet`, `gst status --all` shows the peers, and `sudo gst install` replaces `sudo gst net install`.
+- `gst net on`, `gst net off`, and `gst net status` are gone: the network is always on. `gst subnet` replaces `--subnet`, `gst status --all` shows the peers, and `gst up` replaces `sudo gst net install`.
 
 ## Troubleshooting
 
@@ -257,14 +255,14 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 | `no host key for ...` | Connect once with `ssh <host>` to record the host key |
 | Host key mismatch | Once you have confirmed the machine's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
 | A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devbox`, then `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
-| A link is `down` with `gst is down on this machine; run gst up there` | Run `gst up` on the other machine |
+| A link is `down` with `gst is not up on this machine; run gst up there`, or `gst add` says so | Run `gst up` on the other machine, for example with `ssh -t <destination> gst up`; the link connects by itself |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | Upgrade gst on the machine it names (0.4 on both ends of every link) |
 | `config version 3 is too old` | Remove the file it names and add the links again ([Upgrading from 0.3](#upgrading-from-03)) |
 | `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst status` (a machine that is `offline` or missing, and links that are not running) |
 | `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst 0.4 or later with a running daemon; see `gst status` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
 | A machine name matches several machines | Use its id or an id prefix from `gst status` |
-| `the helper of the virtual network does not run` | Run `sudo gst install`; the machine then joins by itself |
+| `the helper of the virtual network does not run` | Run `gst up`; the machine then joins by itself |
 | `the subnet ... overlaps ... on this machine` | Choose another subnet with `gst subnet <cidr>`, on any machine of the network |
 | `HANDSHAKE` stays `never` in `gst status --all` | Traffic has to start it: try `ping <machine>.gst`. If it stays, check that `gst status` on the other machine shows no problem |
 | A program on a machine does not answer on its `.gst` name | It may listen only on `127.0.0.1` or a Unix socket; see [Services](#virtual-network) |

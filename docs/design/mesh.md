@@ -17,7 +17,7 @@ gst 把多台机器连成一个私有网络：每台机器跑一个 daemon，dae
 | **node**（机器） | 一台运行 gst 的机器，以 128 位随机 id 标识，名字只用于显示和寻址 | `gst name`、`gst status` |
 | **link** | 本机到另一台 gst 机器的 SSH 连接，承载两边 daemon 之间的 peer 会话 | `gst add`、`gst remove` |
 | **UDP 路径** | 两台机器之间打洞得到的一对 `IP:port`，只运送 WireGuard 的包，不是 link | `gst status` |
-| **虚拟网络** | 一个私有网段，每台机器有 IP 地址和 `<machine>.gst` | `gst install`、`gst subnet` |
+| **虚拟网络** | 一个私有网段，每台机器有 IP 地址和 `<machine>.gst` | `gst up`、`gst subnet` |
 
 ```
 laptop ──link──► homelab
@@ -28,9 +28,9 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 
 ## 决策
 
-- **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）；作为服务器第一次被 `gst peer-bridge` 连到时同样生成身份并启动 daemon。
-- **up / down**：`gst down` 在配置里写 `down: true`，停止 daemon 并删除服务；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它并启动 daemon。除 down 外，daemon 总在运行（即使没有 link），因为它要运行虚拟网络，并接受别人的 link。
-- **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`sudo gst install` 就是加入，`sudo gst uninstall` 就是离开，所以没有单独的开关。
+- **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）。别的机器绝不替它做设置：没有身份的机器拒绝 `gst peer-bridge`，要有人在那台机器上执行 `gst up`。
+- **up / down**：`gst down` 是 `gst up` 的逆操作：在配置里写 `down: true`，停止 daemon 并删除服务，再删除 helper；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它，启动 daemon，并处理 helper（见“虚拟网络”）。除 down 外，daemon 总在运行（即使没有 link），因为它要运行虚拟网络，并接受别人的 link。
+- **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`gst up` 装好 helper 就是加入，`gst down` 删除 helper 就是离开，所以没有单独的开关。
 - **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务到不了。
 - **只有一条数据链路**：应用的数据只走 WireGuard，没有按连接中转字节流的第二条路。mesh 的 `relay.open` 只为控制面服务：沿 link 调用 peer 方法，和运送 WireGuard 的包。
 - **SSH 决定成员**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
@@ -160,7 +160,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 ### link 的建立
 
 1. daemon 用 `ssh -G` 解析 destination，建立 SSH 连接（只信任 known_hosts 中的主机密钥），按 keepalive 设置探测。
-2. 在该连接上开 session，执行 `<remote_gst> peer-bridge`。peer-bridge 把标准输入输出接到服务器 daemon 的 control socket；服务器还没有 node 身份或 daemon 没在运行时，先生成身份并启动 daemon；服务器 `down` 时报错退出。
+2. 在该连接上开 session，执行 `<remote_gst> peer-bridge`。peer-bridge 把标准输入输出接到服务器 daemon 的 control socket；服务器还没有 node 身份或 `down` 时报错退出（`gst is not up on this machine`），`gst add` 看到这个错误后提示在那台机器上执行 `gst up`，并给出 `ssh -t` 的命令，但不替用户执行；link 保留，之后自动连上。daemon 只是意外停止或运行别的 gst 时，peer-bridge 重启它。
 3. 双方以 `peer` 角色握手（30 秒内完成），切换到 yamux，各调用一次 `node.info`；连到自己时报错断开。
 4. 双方各向对方调用一次 `topology.sync`。
 5. SSH 连接、session、yamux 会话任一结束，link 即结束，daemon 按退避重连。远端 gst 失败时，其 stderr 的第一行出现在 `Status` 的 error 中，不进日志。
@@ -233,7 +233,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **网段**：每个节点把 `{subnet, since, address, public_key}` 放进自己的记录（`net` 字段）。`since` 最大的网段胜出，相同时取字符串较小的，所以所有节点独立算出同一个结果。`gst subnet` 把 `since` 写成当前时间；gst 自己选的网段写成当前时间的相反数，所以它让位给任何人选的网段，自己选的之间最早的留下：一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。第一个节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个不重叠的 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）。网段和本机其他网络重叠时不阻止运行，只报告。
 - **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。
 - **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 link 名和 id 前缀也能用），未知名字 NXDOMAIN，AAAA 返回空。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。
-- **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由 `gst install` 安装的系统服务（`gst net-helper --user NAME`）完成。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
+- **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由系统服务（`gst net-helper --user NAME`）完成。`gst up` 用 `gst helper-version` 询问 root 那份 gst 的 `tun.HelperVersion`，这一步不需要 root；helper 缺失、版本不同或没有在监听时，它显示要执行的 `sudo <gst 的绝对路径> install --user NAME` 和这条命令的改动，询问后在当前终端执行，密码由 sudo 询问。版本号只在 helper 的代码或 daemon 对它的要求变化时提高，所以普通升级不需要 root。`gst down` 经同一个 socket 发 `Spec{Remove: true}`，不需要 root：这条消息没有参数，只能让 helper 删除固定路径上的服务和那份 gst。helper 先删文件，回复，最后让服务管理器停止自己，因为这一步会结束进程。helper 没有应答时，`gst down` 才说明并询问后用 `sudo <gst> uninstall`。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
 - **管理循环**：`vnet.Manager` 在拓扑变化、配置变化和每 5 秒时比较一遍：算网段和地址、发布记录、调 helper、同步 WireGuard 的 peer。`Configure` 等这一轮结束再返回，所以 `gst subnet` 看到的 `Status` 已经反映新配置。没有 helper 或网段重叠是 `NetState` 里的 `error` 和 `hint`，不是失败退出，装好 helper 后下一轮就启动。
 - **没有 IPv6**：网段只有 IPv4，AAAA 返回空。
 

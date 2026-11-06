@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -56,8 +59,8 @@ func TestSubnetRejects(t *testing.T) {
 
 func TestSubnetReportsWhatToDo(t *testing.T) {
 	e := newEnv(t)
-	e.back.net = &wire.NetState{Error: "the helper of the virtual network does not run", Hint: "install it with `sudo gst install`"}
-	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "error: the helper", "hint: install it with `sudo gst install`")
+	e.back.net = &wire.NetState{Error: "the helper of the virtual network does not run", Hint: "install it with `gst up`"}
+	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "error: the helper", "hint: install it with `gst up`")
 	if e.load().Net == nil {
 		t.Fatal("the choice should apply once the helper is there")
 	}
@@ -94,8 +97,8 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 		t.Fatalf("view: %+v", v.Self.Net)
 	}
 
-	e.back.net = &wire.NetState{Error: "the helper does not run", Hint: "install it with `sudo gst install`"}
-	contains(t, e.mustGst("status"), "# Problems:", "virtual network: the helper does not run; install it with `sudo gst install`")
+	e.back.net = &wire.NetState{Error: "the helper does not run", Hint: "install it with `gst up`"}
+	contains(t, e.mustGst("status"), "# Problems:", "virtual network: the helper does not run; install it with `gst up`")
 
 	e.back.net = runningNet()
 	contains(t, e.mustGst("status", "devbox"), "Address: 10.99.1.2 (subnet 10.99.0.0/16)")
@@ -115,6 +118,171 @@ func TestStatusOfAMachineWithOnlyAUDPPath(t *testing.T) {
 
 func TestInstallNeedsRoot(t *testing.T) {
 	e := newEnv(t)
-	e.expectError(exitFailure, []string{"install"}, "needs root", "sudo gst install")
-	e.expectError(exitFailure, []string{"uninstall"}, "needs root", "sudo gst uninstall")
+	e.expectError(exitFailure, []string{"install"}, "needs root", "gst up")
+	e.expectError(exitFailure, []string{"uninstall"}, "needs root", "gst down")
+}
+
+func TestUpLeavesACurrentHelperAlone(t *testing.T) {
+	e := newEnv(t)
+	e.terminal = true
+	code, _, stderr := e.gst("up")
+	if code != exitOK || stderr != "" || len(e.rootRuns) != 0 {
+		t.Fatalf("exit %d, stderr %q, ran %v", code, stderr, e.rootRuns)
+	}
+}
+
+func TestUpAsksBeforeSudo(t *testing.T) {
+	for _, tt := range []struct {
+		name, answer string
+		runs         bool
+	}{
+		{"yes", "y\n", true},
+		{"word", "YES\n", true},
+		{"no", "n\n", false},
+		{"enter", "\n", false},
+		{"end of input", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.helper = fakeHelper{}
+			e.terminal, e.stdin = true, tt.answer
+			code, stdout, stderr := e.gst("up")
+			if code != exitOK {
+				t.Fatalf("exit %d: %s", code, stderr)
+			}
+			contains(t, stdout, "gst is up")
+			contains(t, stderr, "needs root to put this machine", "sudo /usr/local/bin/gst install --user ", "copies gst",
+				"The service then does only this", "gst never sees it", "Run it? [y/N]")
+			if tt.runs != (len(e.rootRuns) == 1) {
+				t.Fatalf("ran %v", e.rootRuns)
+			}
+			if tt.runs && !strings.HasPrefix(e.rootRuns[0], "sudo /usr/local/bin/gst install --user ") {
+				t.Fatalf("ran %v", e.rootRuns)
+			}
+			if !tt.runs {
+				contains(t, stderr, "nothing was run")
+			}
+		})
+	}
+}
+
+func TestUpUpdatesAnOldHelper(t *testing.T) {
+	e := newEnv(t)
+	e.helper = fakeHelper{installed: true}
+	e.terminal, e.stdin = true, "y\n"
+	_, _, stderr := e.gst("up")
+	contains(t, stderr, "needs an update")
+	if len(e.rootRuns) != 1 {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+}
+
+func TestUpWithoutATerminalDoesNotRunSudo(t *testing.T) {
+	e := newEnv(t)
+	e.helper = fakeHelper{}
+	code, _, stderr := e.gst("up")
+	if code != exitOK || len(e.rootRuns) != 0 {
+		t.Fatalf("exit %d, ran %v", code, e.rootRuns)
+	}
+	contains(t, stderr, "gst asks first", "gst up --yes")
+}
+
+func TestUpYesStillSaysWhatItRuns(t *testing.T) {
+	e := newEnv(t)
+	e.helper = fakeHelper{}
+	code, _, stderr := e.gst("up", "--yes")
+	if code != exitOK || len(e.rootRuns) != 1 {
+		t.Fatalf("exit %d, ran %v", code, e.rootRuns)
+	}
+	contains(t, stderr, "sudo /usr/local/bin/gst install --user ", "copies gst")
+	if strings.Contains(stderr, "[y/N]") {
+		t.Fatalf("asked: %s", stderr)
+	}
+}
+
+func TestUpAsRootNeedsNoSudo(t *testing.T) {
+	e := newEnv(t)
+	e.helper, e.euid = fakeHelper{}, 0
+	e.gst("up", "-y")
+	if len(e.rootRuns) != 1 || !strings.HasPrefix(e.rootRuns[0], "/usr/local/bin/gst install --user ") {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+}
+
+func TestUpReportsAFailedSudo(t *testing.T) {
+	e := newEnv(t)
+	e.helper = fakeHelper{}
+	e.rootErr = errors.New("exit status 1")
+	code, stdout, stderr := e.gst("up", "--yes")
+	if code != exitFailure {
+		t.Fatalf("exit %d", code)
+	}
+	contains(t, stdout, "gst is up") // the links run all the same
+	contains(t, stderr, "failed", "try again with `gst up`")
+}
+
+func TestUpTwiceChangesNothing(t *testing.T) {
+	e := newEnv(t)
+	e.terminal = true
+	first := e.mustGst("up")
+	if second := e.mustGst("up"); second != first || len(e.rootRuns) != 0 {
+		t.Fatalf("%q then %q, ran %v", first, second, e.rootRuns)
+	}
+}
+
+func TestDownRemovesTheHelperWithoutRoot(t *testing.T) {
+	e := newEnv(t)
+	contains(t, e.mustGst("down"), "gst is down", "helper of the virtual network is removed")
+	if e.helper.installed || len(e.rootRuns) != 0 {
+		t.Fatalf("helper %+v, ran %v", e.helper, e.rootRuns)
+	}
+	// There is nothing left to remove, and gst up asks again.
+	if out := e.mustGst("down"); strings.Contains(out, "removed") {
+		t.Fatalf("gst down again: %q", out)
+	}
+	e.terminal, e.stdin = true, "y\n"
+	if _, _, stderr := e.gst("up"); !strings.Contains(stderr, "Run it? [y/N]") || !strings.Contains(stderr, "gst down removes all of this") {
+		t.Fatalf("gst up after gst down: %q", stderr)
+	}
+}
+
+func TestDownAsksWhenTheHelperDoesNotAnswer(t *testing.T) {
+	e := newEnv(t)
+	e.removeErr = errors.New("no answer")
+	e.expectError(exitFailure, []string{"down"}, "takes root", "gst down --yes")
+	if len(e.rootRuns) != 0 {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+
+	e.terminal, e.stdin = true, "n\n"
+	e.expectError(exitFailure, []string{"down"}, "still installed", "Run it? [y/N]")
+	if len(e.rootRuns) != 0 {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+
+	e.stdin = "y\n"
+	e.mustGst("down")
+	if want := []string{"sudo /usr/local/bin/gst uninstall"}; !slices.Equal(e.rootRuns, want) {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+}
+
+func TestAddTellsWhenTheOtherMachineIsNotUp(t *testing.T) {
+	e := newEnv(t)
+	e.back.linkStates["myhost"] = wire.LinkState{Name: "myhost", State: wire.StateDown, Error: "error: " + notUp + "; run `gst up` there"}
+	e.expectError(exitFailure, []string{"add", "myhost", "--remote-gst", "/opt/gst"},
+		"gst is not up on that machine", "`ssh -t myhost /opt/gst up`", "connects by itself")
+	if len(e.rootRuns) != 0 {
+		t.Fatalf("ran %v", e.rootRuns)
+	}
+	f, err := config.Load(e.config)
+	if err != nil || f.Links["myhost"] == nil {
+		t.Fatalf("the link is gone: %+v, %v", f, err)
+	}
+}
+
+func TestAddReturnsOnOtherFailures(t *testing.T) {
+	e := newEnv(t)
+	e.back.linkStates["myhost"] = wire.LinkState{Name: "myhost", State: wire.StateDown, Error: "connection refused"}
+	contains(t, e.mustGst("add", "myhost"), "Added link myhost")
 }

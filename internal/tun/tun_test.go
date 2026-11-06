@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -209,6 +210,8 @@ func (f *fakeSystem) resolve(hosts map[string]netip.Addr) error {
 
 func (f *fakeSystem) unresolve() { f.add("unresolve") }
 
+func (f *fakeSystem) changes() []string { return nil }
+
 func runHelper(t *testing.T, sys system) string {
 	t.Helper()
 	// The path of a socket has a short limit, which t.TempDir can exceed.
@@ -340,5 +343,46 @@ func TestDialWithoutHelper(t *testing.T) {
 	_, err := Dial(filepath.Join(t.TempDir(), "none.sock"), Spec{})
 	if !errors.Is(err, ErrNoHelper) {
 		t.Fatalf("Dial: %v", err)
+	}
+}
+
+func TestHelperRemovesItself(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "helper.sock")
+	stopped := make(chan struct{})
+	var fail atomic.Bool
+	h := &Helper{Socket: socket, UID: os.Getuid(), GID: os.Getgid(), Log: log.New(io.Discard, "", 0), sys: &fakeSystem{},
+		Remove: func() (func(), error) {
+			if fail.Load() {
+				return nil, errors.New("no such file")
+			}
+			return func() { close(stopped) }, nil
+		}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go h.Serve(ctx)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	fail.Store(true)
+	if err := Remove(socket); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("Remove = %v", err)
+	}
+	fail.Store(false)
+	if err := Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the helper did not stop")
+	}
+}
+
+func TestRemoveWithoutAHelper(t *testing.T) {
+	if err := Remove(filepath.Join(t.TempDir(), "none")); !errors.Is(err, ErrNoHelper) {
+		t.Fatalf("Remove = %v", err)
 	}
 }

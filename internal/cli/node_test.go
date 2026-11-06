@@ -91,7 +91,7 @@ func TestUpDown(t *testing.T) {
 	}
 
 	e.resetCalls()
-	if out := e.mustGst("down"); out != "gst is down; run gst up to start it again.\n" {
+	if out := e.mustGst("down"); !strings.HasPrefix(out, "gst is down; run gst up to start it again.\n") {
 		t.Fatalf("output %q", out)
 	}
 	if e.back.installed || e.back.command != nil || !e.load().Down || !slices.Equal(e.back.calls, []string{"sync (uninstall)"}) {

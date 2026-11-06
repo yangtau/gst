@@ -21,6 +21,10 @@ type Helper struct {
 	Socket   string
 	UID, GID int // the user whose daemon it serves
 	Log      *log.Logger
+	// Remove deletes the helper's service and files, and returns what stops
+	// it, which ends this process. The user asks for it without root: it
+	// takes nothing from the request, and can only undo the helper.
+	Remove func() (stop func(), err error)
 
 	sys system // this machine's, when nil
 }
@@ -93,6 +97,10 @@ func (s *session) serve() {
 		if err := wire.ReadFrame(s.conn, &spec); err != nil {
 			return
 		}
+		if spec.Remove {
+			s.remove()
+			return
+		}
 		first := s.file == nil
 		reply := Reply{}
 		if err := s.apply(spec); err != nil {
@@ -110,6 +118,22 @@ func (s *session) serve() {
 				return
 			}
 		}
+	}
+}
+
+// remove removes the helper and answers. Stopping is last and in the
+// background: it ends this process, which first waits for this session.
+func (s *session) remove() {
+	stop, err := s.helper.Remove()
+	reply := Reply{}
+	if err != nil {
+		reply.Error = err.Error()
+		s.helper.Log.Print("removing the helper failed")
+	}
+	wire.WriteFrame(s.conn, reply)
+	if err == nil {
+		s.helper.Log.Print("the helper is removed")
+		go stop()
 	}
 }
 
@@ -177,6 +201,30 @@ type Client struct {
 
 // ErrNoHelper says that the helper does not run.
 var ErrNoHelper = errors.New("the gst-net helper does not run")
+
+// Remove asks the helper at socket to remove itself. Any interface goes
+// with it.
+func Remove(socket string) error {
+	raw, err := net.Dial("unix", socket)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+			return ErrNoHelper
+		}
+		return err
+	}
+	defer raw.Close()
+	if err := wire.WriteFrame(raw, Spec{Remove: true}); err != nil {
+		return err
+	}
+	var reply Reply
+	if err := wire.ReadFrame(raw, &reply); err != nil {
+		return err
+	}
+	if reply.Error != "" {
+		return errors.New(reply.Error)
+	}
+	return nil
+}
 
 // Dial asks the helper at socket for an interface as spec says.
 func Dial(socket string, spec Spec) (*Client, error) {

@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"cmp"
+	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func (a *app) addCommand() *cobra.Command {
@@ -22,8 +27,9 @@ link runs in the background, starts at login, and reconnects after
 failures; gst status shows its state.
 
 The other machine needs gst 0.4 or later in the PATH of its login shell,
-or set with --remote-gst. It does not need its own links: being linked
-to is enough.
+or set with --remote-gst, and someone must have run gst up there: gst
+never sets up another machine. If it has not, this command says so and
+keeps the link, which connects by itself after gst up there.
 
 <name> uses 1-32 lowercase letters, digits, and '-', and also names the
 machine at the other end until it reports its own name. <destination> is
@@ -73,12 +79,47 @@ keys. To change a link, remove it and add it again.`,
 			if err := a.sync(cmd.Context()); err != nil {
 				return withHint(fmt.Errorf("link %s was added but did not start: %w", name, err), "retry with `gst up`")
 			}
+			if err := a.watchLink(cmd.Context(), name, l); err != nil {
+				return err
+			}
 			fmt.Fprintf(a.stdout, "Added link %s; it connects in the background. See it with: gst status\n", name)
 			return nil
 		}),
 	}
 	cmd.Flags().StringVar(&remoteGst, "remote-gst", "", "gst command on the server, when gst is not in the PATH of its login shell (default: gst)")
 	return cmd
+}
+
+// linkWatch bounds how long gst add watches a new link.
+const linkWatch = 10 * time.Second
+
+// watchLink watches a new link until it shows how it goes, and fails if
+// the other machine needs gst up. It only tells the person so: gst never
+// sets up another machine.
+func (a *app) watchLink(ctx context.Context, name string, l *config.Link) error {
+	ctx, cancel := context.WithTimeout(ctx, linkWatch)
+	defer cancel()
+	for {
+		st := a.status(ctx)
+		if st == nil {
+			return nil
+		}
+		for _, state := range st.Links {
+			switch {
+			case state.Name != name:
+			case strings.Contains(state.Error, notUp):
+				return withHint(fmt.Errorf("link %s was added, but gst is not up on that machine", name),
+					fmt.Sprintf("run `gst up` there, for example with `ssh -t %s %s up`; the link then connects by itself", l.Destination, cmp.Or(l.RemoteGst, "gst")))
+			case state.State == wire.StateRunning, state.Error != "":
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func (a *app) removeCommand() *cobra.Command {

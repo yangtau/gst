@@ -58,18 +58,18 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 
 3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devbox` 连接一次，核对并接受主机密钥。
 
-4. **那台机器上有 gst 0.4 或更高版本。** 它不需要自己的 link、配置或正在运行的 daemon：被连接就够了，gst 会在第一次 link 时在那里启动。要加入虚拟网络，需要执行一次 `sudo gst install`。
+4. **那台机器上有 gst 0.4 或更高版本，并在那里执行过一次 `gst up`。** 它不需要自己的 link。gst 绝不替别的机器做设置：那里没执行过 `gst up` 时，`gst add` 会说明并给出命令，执行之后 link 自动连上。
 
-这些只对创建 link 的机器有要求；被连接的机器只需要 gst 和能执行命令的 sshd（gst 使用登录会话而不是端口转发，所以 sshd 的 `AllowTcpForwarding` 不影响它）。对每个会话都强制执行固定命令的服务器无法被连接。
+这些只对创建 link 的机器有要求；被连接的机器只需要 gst、执行过 `gst up` 和能执行命令的 sshd（gst 使用登录会话而不是端口转发，所以 sshd 的 `AllowTcpForwarding` 不影响它）。对每个会话都强制执行固定命令的服务器无法被连接。
 
 ## 快速开始
 
-在 `laptop` 上连接 `devbox` 和 `homelab`，并让每台机器加入网络：
+在每台机器上执行一次 `gst up`：`laptop`、`devbox` 和 `homelab`。然后在 `laptop` 上连接另外两台：
 
 ```bash
+gst up                     # 每台机器执行一次
 gst add devbox             # ~/.ssh/config 中的 "devbox"
 gst add homelab
-sudo gst install           # 每台机器执行一次：laptop、devbox 和 homelab
 gst status                 # mesh 中的每台机器，每行一台
 ```
 
@@ -102,7 +102,7 @@ link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `
 | --- | --- | --- |
 | **node** | 一台运行 gst 的机器，有一个 128 位随机 id 和一个名字（默认是主机名） | `gst name`、`gst status` |
 | **link** | 从本机到另一台 gst 机器的 SSH 连接，在后台保持；两边的 daemon 通过它加入彼此的 mesh | `gst add`、`gst remove` |
-| **虚拟网络** | 一个私有网段，每台机器都有一个 IP 地址和名字 `<machine>.gst`，所有程序和协议都能用 | `gst install`、`gst subnet` |
+| **虚拟网络** | 一个私有网段，每台机器都有一个 IP 地址和名字 `<machine>.gst`，所有程序和协议都能用 | `gst up`、`gst subnet` |
 
 ### node 和 link
 
@@ -126,14 +126,14 @@ link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `
 
 虚拟网络让每台机器在一个私有网段里拥有 IP 地址和名字 `<machine>.gst`，任何程序都能用任何协议到达它：TCP、UDP 和 ping，例如游戏串流或屏幕共享。程序不需要任何设置。
 
-- **root。** 创建网卡和路由需要 root，而 daemon 以你的用户身份运行。`sudo gst install` 安装一个小的系统服务，它运行一份 root 拥有的 gst，只为你的 daemon 做这件事。装好后机器自动加入；在此之前，`gst status` 说明缺什么。如果 `sudo` 找不到 gst，请给出完整路径。升级 gst 后再执行一次这个命令，更新 helper。
+- **root。** 创建网卡和路由需要 root，而 daemon 以你的用户身份运行，所以由一个小的系统服务 helper 为你的 daemon 做这件事，它运行一份 root 拥有的 gst。helper 缺失或过期时，`gst up` 会显示它要执行的 `sudo` 命令，以及这条命令会改动本机的哪些内容，并先询问你，因为 `sudo` 不一定会要密码。之后 `sudo` 自己询问密码，gst 看不到密码。没有终端时 `gst up` 不询问，也什么都不执行；`gst up --yes` 不询问直接执行，但仍然显示命令。在已经 up 的机器上执行 `gst up` 不会改变任何东西，升级 gst 后也只有 helper 变了才需要再次使用 root。机器会自动加入；在此之前，`gst status` 说明缺什么。
 - **服务。** 其他机器能到达程序在所有地址或本机 `.gst` 地址上打开的端口。只监听 `127.0.0.1` 或 Unix socket 的程序从网络上到不了；请修改它的监听地址，或者用 `ssh <machine>.gst` 登录后在那里使用。
 - **网段。** 所有机器共用一个网段。第一台机器根据能应答的机器上的网卡和路由，选一个不与它们重叠的 `/16`。`gst subnet 10.99.0.0/16` 为整个网络设置另一个网段：最新的选择胜出，所有机器都迁移过去，地址随之改变。它必须是私有网段（在 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 或 `100.64.0.0/10` 之内）。网段与某台机器上的其他网络重叠时，那台机器在 `gst status` 中报告。
 - **地址。** 机器重启后地址不变。只承载 IPv4。
 - **名字。** `<machine>.gst` 对所有程序生效，可以用机器的名字、到它的 link 的名字或 id 前缀。在 macOS 和使用 systemd-resolved 的 Linux 上，只有 `.gst` 交给 daemon 解析。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 中。
 - **路径。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 传送，这些流量让两台机器经 link 寻找 UDP 路径：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器继续走 SSH。`gst status` 在机器后面显示 `direct`，`gst status --all` 显示每台机器走哪条路。UDP 失效时，包在几秒内改走 SSH，程序的连接不断。UDP 路径建立后不再依赖 link，所以两台机器之间的机器休眠时它继续运行；`gst remove` 之后如果已没有 link 通向某台机器，到它的 UDP 路径也会断开。经 SSH 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
 - **MTU。** 网卡的 MTU 是 1168 字节，适合每条 UDP 路径。自己选择包大小的程序应该低于这个值，否则包会被分片。
-- `gst down` 让本机离开网络，删除网卡、路由和名字，`sudo gst uninstall` 删除 helper。daemon 停止时它们也会消失。
+- `gst down` 撤销 `gst up`：删除 daemon 的服务、网卡、路由、名字和 helper。helper 自己删除自己，所以不需要密码，下次 `gst up` 会重新询问。只留下配置和日志，机器的地址和 link 都保留。daemon 只是意外停止时，网卡、路由和名字也会消失，helper 保留。
 
 ### 信任
 
@@ -174,8 +174,6 @@ link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向�
 
 | 命令 | 用途 |
 | --- | --- |
-| `sudo gst install [--user <user>]` | 让本机加入虚拟网络：安装设置网卡的 helper |
-| `sudo gst uninstall` | 让本机离开虚拟网络：删除 helper |
 | `gst subnet [cidr]` | 显示虚拟网络的网段，或为所有机器修改它 |
 
 ### 本机
@@ -183,8 +181,8 @@ link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向�
 | 命令 | 用途 |
 | --- | --- |
 | `gst name [name]` | 显示或修改本机名字，并显示 id |
-| `gst up` | 现在运行 daemon，并在登录时运行 |
-| `gst down` | 停止 daemon 并阻止它启动；其他机器不能连接本机 |
+| `gst up [--yes]` | 现在运行 daemon，并在登录时运行；helper 缺失或过期时，说明 `sudo` 要执行什么并询问后安装 |
+| `gst down` | 撤销 `gst up`：停止 daemon，删除它的服务和 helper；其他机器不能连接本机 |
 | `gst ui [--port N] [--no-open]` | 在浏览器中显示本机状态、mesh 和任意机器的 link |
 | `gst version` | 显示 gst 版本 |
 
@@ -211,7 +209,7 @@ link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重�
 
 ## 后台运行
 
-- 每个用户有一个后台进程，即 gst daemon，运行所有已启动的 link 和虚拟网络，并接受其他机器的 link。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。第一次修改配置时，或者另一台机器第一次连接本机时，gst 会安装它，不需要手动管理。`gst down` 停止它并删除服务，`gst up` 恢复。
+- 每个用户有一个后台进程，即 gst daemon，运行所有已启动的 link 和虚拟网络，并接受其他机器的 link。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。`gst up` 或第一次修改配置时，gst 会安装它，不需要手动管理。别的机器连接本机时绝不会安装它。`gst down` 停止它并删除服务，`gst up` 恢复。
 - gst 命令通过只有你能访问的 socket 与 daemon 通信：Linux 上是 `~/.local/state/gst/gst.sock`（设置了 `$XDG_STATE_HOME` 时在其下），macOS 上是 `~/Library/Application Support/gst/gst.sock`。
 - daemon 本身退出后，服务会在 5 秒后重启它。
 - daemon 的日志（也包含 link 的事件：已连接、失败、重连）：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。
@@ -238,14 +236,14 @@ gst 0.4 只经虚拟网络到达机器：`gst connect`、代理、map、route �
 
 ```sh
 rm ~/.config/gst/config.json
-sudo gst install
+gst up
 gst add devbox               # 在原来有 link 的机器上
 ```
 
-- 第一次 `gst add` 会替换 0.3 的 daemon。每台机器得到新的身份，用 `gst name` 重新设置名字。
+- `gst up` 会替换 0.3 的 daemon。每台机器得到新的身份，用 `gst name` 重新设置名字。
 - 原来用 map 或代理的地方，改用 `devbox.gst` 到达那台机器；只监听 loopback 或 Unix socket 的程序见[虚拟网络](#虚拟网络)中的“服务”。
 - 把你连接的所有机器一起升级。gst 协议现在是版本 3，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.4 or later`。
-- `gst net on`、`gst net off` 和 `gst net status` 都已移除：网络总是开启。`gst subnet` 取代 `--subnet`，`gst status --all` 显示 peer，`sudo gst install` 取代 `sudo gst net install`。
+- `gst net on`、`gst net off` 和 `gst net status` 都已移除：网络总是开启。`gst subnet` 取代 `--subnet`，`gst status --all` 显示 peer，`gst up` 取代 `sudo gst net install`。
 
 ## 排查问题
 
@@ -257,14 +255,14 @@ gst add devbox               # 在原来有 link 的机器上
 | `no host key for ...` | 用 `ssh <host>` 连接一次，记录主机密钥 |
 | 主机密钥不匹配 | 确认该机器的密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
 | link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devbox`，再 `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
-| link 为 `down`，错误是 `gst is down on this machine; run gst up there` | 在对方机器上执行 `gst up` |
+| link 为 `down`，错误是 `gst is not up on this machine; run gst up there`，或者 `gst add` 这样提示 | 在对方机器上执行 `gst up`，例如 `ssh -t <destination> gst up`；之后 link 自动连上 |
 | `speaks an older gst protocol; upgrade gst there to 0.4 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.4） |
 | `config version 3 is too old` | 删除它指出的文件，重新添加 link（见[从 0.3 升级](#从-03-升级)） |
 | `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst status`（机器为 `offline` 或缺失，以及未运行的 link） |
 | `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行 0.4 或更新版本的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
 | 机器名匹配到多台机器 | 使用 `gst status` 中的 id 或 id 前缀 |
-| `the helper of the virtual network does not run` | 执行 `sudo gst install`，之后机器会自动加入 |
+| `the helper of the virtual network does not run` | 执行 `gst up`，之后机器会自动加入 |
 | `the subnet ... overlaps ... on this machine` | 在网络中任意一台机器上用 `gst subnet <cidr>` 换一个网段 |
 | `gst status --all` 的 `HANDSHAKE` 一直是 `never` | 需要有流量才会开始：试试 `ping <machine>.gst`。如果还是这样，检查另一台机器的 `gst status` 有没有报告问题 |
 | 某台机器上的程序在它的 `.gst` 名字上没有应答 | 它可能只监听 `127.0.0.1` 或 Unix socket；见[虚拟网络](#虚拟网络)中的“服务” |

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"errors"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -147,30 +150,159 @@ func byteCount(n uint64) string {
 	return fmt.Sprintf("%.1f %ciB", value, "KMGT"[prefix])
 }
 
-// asRoot fails unless gst runs as root.
-func asRoot(command string) error {
-	if os.Geteuid() == 0 {
-		return nil
-	}
-	return withHint(errors.New("this command needs root"), "run it with `sudo gst "+command+"`")
+// helperService is the helper of the virtual network as seen without root.
+type helperService interface {
+	Installed() bool
+	Current(version int, socket string) bool
+	Installs() []string
+	Removes() []string
 }
 
+// rootPlan is a command that takes root, and what people need to know
+// before they agree to it.
+type rootPlan struct {
+	why   string   // why gst wants root
+	argv  []string // what runs; it starts with sudo unless gst runs as root
+	does  []string // what it does to this machine
+	then  []string // what the helper goes on to do; may be empty
+	undo  string   // how to undo it; may be empty
+	again string   // the gst command that tries this again
+}
+
+// asRoot returns the command line that runs args as root. The path of gst
+// is absolute and has no links, because sudo may not have gst in its PATH
+// and root should run the file that the person read here.
+func (a *app) asRoot(args ...string) ([]string, error) {
+	exe, err := a.executable()
+	if err != nil {
+		return nil, err
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	argv := append([]string{exe}, args...)
+	if a.geteuid() != 0 {
+		argv = append([]string{"sudo"}, argv...)
+	}
+	return argv, nil
+}
+
+// confirm tells what plan does, and returns whether to run it: gst never
+// runs anything as root that the person did not see, and sudo may not ask
+// for a password. yes takes the answer from the command line. It needs a
+// terminal to ask.
+func (a *app) confirm(plan rootPlan, yes bool) bool {
+	fmt.Fprintf(a.stderr, "%s It will run:\n\n  %s\n\nThat command:\n", plan.why, strings.Join(plan.argv, " "))
+	for _, line := range plan.does {
+		fmt.Fprintf(a.stderr, "  - %s\n", line)
+	}
+	if len(plan.then) > 0 {
+		fmt.Fprintln(a.stderr, "\nThe service then does only this, for your gst daemon:")
+		for _, line := range plan.then {
+			fmt.Fprintf(a.stderr, "  - %s\n", line)
+		}
+	}
+	fmt.Fprintln(a.stderr)
+	if plan.undo != "" {
+		fmt.Fprintln(a.stderr, plan.undo)
+	}
+	if plan.argv[0] == "sudo" {
+		fmt.Fprintln(a.stderr, "sudo may ask for your password; gst never sees it.")
+	}
+	if yes {
+		return true
+	}
+	fmt.Fprint(a.stderr, "Run it? [y/N] ")
+	line, _ := bufio.NewReader(a.stdin).ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
+// runPlan runs plan with this terminal.
+func (a *app) runPlan(plan rootPlan) error {
+	if err := a.runRoot(plan.argv); err != nil {
+		return withHint(fmt.Errorf("%s failed: %w", strings.Join(plan.argv, " "), err), "try again with `"+plan.again+"`")
+	}
+	return nil
+}
+
+// joinNetwork installs or updates the helper of the virtual network if
+// this machine needs it and the person agrees.
+func (a *app) joinNetwork(yes bool) error {
+	h, err := a.newHelper()
+	if err != nil {
+		return err
+	}
+	if h.Current(tun.HelperVersion, tun.Socket) {
+		return nil
+	}
+	if !yes && !a.interactive() {
+		fmt.Fprintln(a.stderr, "note: this machine is not on the virtual network: that takes root, and gst asks first")
+		fmt.Fprintln(a.stderr, "note: run `gst up` in a terminal to see what it does, or `gst up --yes` to go ahead")
+		return nil
+	}
+	u, err := user.Current()
+	if err != nil {
+		return err
+	}
+	argv, err := a.asRoot("install", "--user", u.Username)
+	if err != nil {
+		return err
+	}
+	why := "gst needs root to put this machine on the virtual network."
+	if h.Installed() {
+		why = "The helper of the virtual network needs an update, which takes root."
+	}
+	plan := rootPlan{why: why, argv: argv, does: h.Installs(), then: tun.Changes(), undo: "gst down removes all of this.", again: "gst up"}
+	if !a.confirm(plan, yes) {
+		fmt.Fprintln(a.stderr, "note: nothing was run; this machine stays off the virtual network until you agree to this with `gst up`")
+		return nil
+	}
+	return a.runPlan(plan)
+}
+
+// leaveNetwork removes the helper of the virtual network. It removes
+// itself when asked, which needs no root; one that does not answer takes
+// root, which gst asks for first, as it does in joinNetwork.
+func (a *app) leaveNetwork(yes bool) error {
+	h, err := a.newHelper()
+	if err != nil {
+		return err
+	}
+	if !h.Installed() {
+		return nil
+	}
+	if a.removeHelper() == nil {
+		fmt.Fprintln(a.stdout, "The helper of the virtual network is removed; gst up asks to install it again.")
+		return nil
+	}
+	if !yes && !a.interactive() {
+		return withHint(errors.New("the helper of the virtual network does not answer, and removing it takes root, which gst asks for first"),
+			"run `gst down` in a terminal, or `gst down --yes` to go ahead")
+	}
+	argv, err := a.asRoot("uninstall")
+	if err != nil {
+		return err
+	}
+	plan := rootPlan{why: "The helper of the virtual network does not answer, so removing it takes root.", argv: argv, does: h.Removes(), again: "gst down"}
+	if !a.confirm(plan, yes) {
+		return withHint(errors.New("the helper of the virtual network is still installed"), "remove it with `gst down`")
+	}
+	return a.runPlan(plan)
+}
+
+// installCommand is what gst up runs as root.
 func (a *app) installCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Put this machine on the virtual network (as root, once)",
-		Long: `Install the system service that creates the interface of the virtual
-network, as root, for one user's daemon, which then joins the network by
-itself. Each machine needs it once. It runs a copy of this gst that root
-owns, so upgrading gst does not change it; run this command again to
-update it. Run it with sudo; the user is the one who ran sudo, unless
---user says otherwise.`,
-		Example: "  sudo gst install",
-		Args:    a.args(0, 0),
+		Use:    "install",
+		Short:  "Install the helper of the virtual network, as root",
+		Long:   "Install the system service that creates the interface of the virtual network, as root, for one user's daemon. gst up runs this command, after saying what it does.",
+		Hidden: true,
+		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			if err := asRoot("install"); err != nil {
-				return err
+			if a.geteuid() != 0 {
+				return withHint(errors.New("this command needs root"), "run `gst up`, which says what it does first")
 			}
 			name := cmp.Or(userName, os.Getenv("SUDO_USER"))
 			if name == "" {
@@ -198,15 +330,18 @@ update it. Run it with sudo; the user is the one who ran sudo, unless
 	return cmd
 }
 
+// uninstallCommand is what gst down runs as root when the helper cannot
+// remove itself.
 func (a *app) uninstallCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "uninstall",
-		Short: "Take this machine off the virtual network (as root)",
-		Long:  "Remove the helper's service and its copy of gst. Without it this machine has no address on the virtual network, and only passes on what other machines send through it.",
-		Args:  a.args(0, 0),
+		Use:    "uninstall",
+		Short:  "Remove the helper of the virtual network, as root",
+		Long:   "Remove the helper's service and its copy of gst. gst down runs this command, after saying what it does, when the helper does not answer.",
+		Hidden: true,
+		Args:   a.args(0, 0),
 		RunE: run(func(*cobra.Command, []string) error {
-			if err := asRoot("uninstall"); err != nil {
-				return err
+			if a.geteuid() != 0 {
+				return withHint(errors.New("this command needs root"), "run `gst down`")
 			}
 			h, err := service.NewHelper()
 			if err != nil {
@@ -214,6 +349,20 @@ func (a *app) uninstallCommand() *cobra.Command {
 			}
 			return h.Uninstall()
 		}),
+	}
+}
+
+// helperVersionCommand prints the version of the helper in this gst, for
+// gst up to ask root's copy without root.
+func (a *app) helperVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "helper-version",
+		Short:  "Print the version of the helper in this gst",
+		Hidden: true,
+		Args:   a.args(0, 0),
+		Run: func(*cobra.Command, []string) {
+			fmt.Fprintln(a.stdout, tun.HelperVersion)
+		},
 	}
 }
 
@@ -240,7 +389,13 @@ func (a *app) netHelperCommand() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			h := tun.Helper{Socket: tun.Socket, UID: uid, GID: gid, Log: log.Default()}
+			h := tun.Helper{Socket: tun.Socket, UID: uid, GID: gid, Log: log.Default(), Remove: func() (func(), error) {
+				installed, err := service.NewHelper()
+				if err != nil {
+					return nil, err
+				}
+				return installed.Detach()
+			}}
 			return h.Serve(ctx)
 		}),
 	}

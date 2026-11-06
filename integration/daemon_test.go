@@ -49,10 +49,6 @@ func TestDownAndUp(t *testing.T) {
 	client, server := p.client, p.server
 	client.mustGst("add", "srv", p.destination())
 	client.waitLink("srv", "running")
-	if server.daemonPID() == "" {
-		t.Fatal("the link did not start the server's daemon")
-	}
-
 	if out := server.mustGst("down"); !strings.Contains(out, "gst is down") {
 		t.Fatalf("unexpected gst down output %q", out)
 	}
@@ -60,15 +56,15 @@ func TestDownAndUp(t *testing.T) {
 	client.waitLink("srv", "down")
 
 	// The link cannot come back: peer-bridge refuses, and says why.
-	eventually(t, 60*time.Second, "the link does not report that gst is down", func() bool {
-		return strings.Contains(client.links()["srv"].Error, "gst is down")
+	eventually(t, 60*time.Second, "the link does not report that gst is not up", func() bool {
+		return strings.Contains(client.links()["srv"].Error, "gst is not up")
 	})
 	if server.daemonPID() != "" {
 		t.Fatal("peer-bridge started a daemon on a machine that is down")
 	}
 	out := client.mustSh(`ssh -i "$1" -o UserKnownHostsFile="$2" -o BatchMode=yes "tunnel@$3" gst peer-bridge </dev/null 2>&1; true`,
 		p.identity, p.knownHosts, server.ip)
-	if !strings.Contains(out, "gst is down") {
+	if !strings.Contains(out, "gst is not up") {
 		t.Fatalf("gst peer-bridge on a machine that is down: %q", out)
 	}
 

@@ -26,14 +26,14 @@ machines pass on what they know, so every machine learns of every other
 one. Each gets an IP address and the name <machine>.gst, for every
 program and any protocol. WireGuard encrypts the traffic end to end; it
 goes directly over UDP where the network allows, and along the SSH links
-where not. The network interface needs root: run sudo gst install once on
-each machine.
+where not. Run gst up once on each machine: the network interface needs
+root, and gst says what it runs and asks first.
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
 report state accept --json.`,
-		Example: `  gst add devbox                        # link to the ssh config host "devbox"
-  sudo gst install                      # once on each machine
+		Example: `  gst up                                # once on each machine
+  gst add devbox                        # link to the ssh config host "devbox"
   gst status                            # every machine and its address
   ping devbox.gst`,
 		SilenceErrors: true,
@@ -60,7 +60,7 @@ report state accept --json.`,
 		}
 	}
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
-	addGroup("network", a.installCommand(), a.uninstallCommand(), a.subnetCommand())
+	addGroup("network", a.subnetCommand())
 	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:   "version",
 		Short: "Show the gst version",
@@ -69,7 +69,7 @@ report state accept --json.`,
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},
 	})
-	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.netHelperCommand())
+	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.installCommand(), a.uninstallCommand(), a.netHelperCommand(), a.helperVersionCommand())
 	setHelpColors(root)
 	return root
 }

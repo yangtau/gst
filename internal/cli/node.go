@@ -63,13 +63,22 @@ func (a *app) updateNode(ctx context.Context, fn func(*config.Node)) (config.Nod
 }
 
 func (a *app) upCommand() *cobra.Command {
-	return &cobra.Command{
+	var yes bool
+	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Run gst on this machine",
+		Short: "Run gst on this machine and put it on the virtual network",
 		Long: `Run the gst daemon in the background, now and at login: it runs the
 links, accepts links from other machines, and puts this machine on the
-virtual network. gst runs from the first change to its configuration, so
-this is needed only after gst down, or to check that gst runs.`,
+virtual network. Other machines can link to this one only after this
+command. Run it on each machine, and again after upgrading gst or gst
+down. On a machine that is up it changes nothing.
+
+The virtual network needs a small system service, its helper, which takes
+root to install. When it is missing or out of date, gst says what sudo
+would run and what that does, and asks first; sudo may then ask for your
+password. Without a terminal gst does not ask, and only says so.`,
+		Example: `  gst up
+  gst up --yes   # do not ask; gst still says what it runs`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if err := a.update(func(f *config.File) error { f.Down = false; return nil }); err != nil {
@@ -83,18 +92,23 @@ this is needed only after gst down, or to check that gst runs.`,
 				return err
 			}
 			fmt.Fprintf(a.stdout, "gst is up; this machine is %s (%s).\n", f.Node.Name, shortID(f.Node.ID))
-			return nil
+			return a.joinNetwork(yes)
 		}),
 	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask before running sudo; gst still says what it runs")
+	return cmd
 }
 
 func (a *app) downCommand() *cobra.Command {
-	return &cobra.Command{
+	var yes bool
+	cmd := &cobra.Command{
 		Use:   "down",
-		Short: "Stop gst on this machine",
-		Long: `Stop the gst daemon and keep it from starting at login: links stop,
-this machine leaves the virtual network, and other machines cannot link
-to it. The configuration stays; gst up runs gst again.`,
+		Short: "Stop gst on this machine and take it off the virtual network",
+		Long: `Undo gst up: stop the gst daemon and remove its service, so links stop
+and other machines cannot link to this one, and remove the helper of the
+virtual network, with its interface, routes, and names. This takes no
+password. The configuration stays, with the machine's address and links;
+gst up runs gst again, and asks to install the helper again.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if err := a.update(func(f *config.File) error { f.Down = true; return nil }); err != nil {
@@ -104,10 +118,15 @@ to it. The configuration stays; gst up runs gst again.`,
 				return err
 			}
 			fmt.Fprintln(a.stdout, "gst is down; run gst up to start it again.")
-			return nil
+			return a.leaveNetwork(yes)
 		}),
 	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask if removing the helper takes sudo; gst still says what it runs")
+	return cmd
 }
+
+// notUp is how a machine refuses a link until someone runs gst up there.
+const notUp = "gst is not up on this machine"
 
 // peerBridgeCommand connects its standard input and output to the gst
 // daemon on this machine. Another machine's daemon runs it over SSH to
@@ -116,7 +135,7 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:    "peer-bridge",
 		Short:  "Connect standard input and output to the gst daemon",
-		Long:   "Connect standard input and output to the gst daemon on this machine, for another machine's gst, which runs this command over SSH to link with this one. The daemon starts first if it does not run, or runs another gst.",
+		Long:   "Connect standard input and output to the gst daemon on this machine, for another machine's gst, which runs this command over SSH to link with this one. It refuses unless someone ran gst up here. The daemon restarts first if it stopped, or runs another gst.",
 		Hidden: true,
 		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -124,14 +143,10 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if f.Down {
-				return errors.New("gst is down on this machine; run `gst up` there")
-			}
-			if f.Node == nil {
-				// The first link gives this machine its identity.
-				if err := a.update(func(*config.File) error { return nil }); err != nil {
-					return err
-				}
+			// Another machine never sets up gst here: that is for a person
+			// on this one.
+			if f.Down || f.Node == nil {
+				return errors.New(notUp + "; run `gst up` there")
 			}
 			if err := a.sync(cmd.Context()); err != nil {
 				return err

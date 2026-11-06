@@ -16,7 +16,7 @@ import (
 const netInterface = "gst0"
 
 // installHelper installs the helper of the virtual network for the gst
-// user, as sudo gst install would.
+// user, as gst up runs it through sudo.
 func (n *node) installHelper() {
 	n.t.Helper()
 	if out, err := n.exec("root", "env", "HOME=/root", "gst", "install", "--user", nodeUser); err != nil {
@@ -25,6 +25,15 @@ func (n *node) installHelper() {
 	eventually(n.t, 10*time.Second, "the helper did not start", func() bool {
 		_, err := n.exec("root", "test", "-S", "/var/run/gst-net.sock")
 		return err == nil
+	})
+}
+
+// helperGone waits until nothing of the helper is left.
+func (n *node) helperGone() {
+	n.t.Helper()
+	eventually(n.t, 10*time.Second, "the helper still runs", func() bool {
+		out, _ := n.exec("root", "sh", "-c", "pgrep -x gst-net || ls /var/run/gst-net.sock /usr/local/libexec/gst-net /etc/systemd/system/gst-net.service 2>/dev/null; true")
+		return strings.TrimSpace(out) == ""
 	})
 }
 
@@ -232,9 +241,11 @@ func TestNet(t *testing.T) {
 		if a.pingable(addressOfC) {
 			t.Fatal("c still answers")
 		}
+		c.helperGone()
 
 		// It comes back with its address.
 		c.mustGst("up")
+		c.installHelper()
 		a.waitReachable("c")
 		a.waitPing(addressOfC)
 	})
@@ -339,14 +350,14 @@ func TestNetHelper(t *testing.T) {
 	n := p.client
 	n.mustGst("name", "laptop")
 	code, _, stderr := n.gst("subnet", "10.99.0.0/16")
-	if code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "sudo gst install") {
+	if code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "gst up") {
 		t.Fatalf("gst subnet without the helper: exit %d: %q", code, stderr)
 	}
 	eventually(t, 10*time.Second, "gst status does not report the missing helper", func() bool {
 		out := n.mustGst("status")
-		return strings.Contains(out, "virtual network") && strings.Contains(out, "sudo gst install")
+		return strings.Contains(out, "virtual network") && strings.Contains(out, "gst up")
 	})
-	if code, _, stderr := n.gst("install"); code != 1 || !strings.Contains(stderr, "sudo gst install") {
+	if code, _, stderr := n.gst("install"); code != 1 || !strings.Contains(stderr, "gst up") {
 		t.Fatalf("gst install as a user: exit %d: %q", code, stderr)
 	}
 
@@ -376,11 +387,56 @@ func TestNetHelper(t *testing.T) {
 		t.Fatalf("address %s became %s after a restart", address, got)
 	}
 
-	if out, err := n.exec("root", "env", "HOME=/root", "gst", "uninstall"); err != nil {
-		t.Fatalf("gst uninstall: %v: %s", err, out)
-	}
+	n.mustGst("down")
 	eventually(t, 15*time.Second, "the interface outlived the helper", func() bool { return !n.hasInterface() })
-	if _, err := n.exec("root", "test", "-e", "/usr/local/libexec/gst-net"); err == nil {
-		t.Fatal("gst uninstall left the helper's gst")
+	n.helperGone()
+}
+
+// gst up runs sudo only when told to, with a command that works as it is,
+// and leaves a helper of the current version alone. The image has no sudo,
+// so a stand-in records what would run, and the test runs that as root.
+func TestUpInstallsTheHelper(t *testing.T) {
+	t.Parallel()
+	n := startNode(t)
+	const record = "/tmp/sudo-args"
+	script := "#!/bin/sh\necho \"$@\" >" + record + "\n"
+	if out, err := n.exec("root", "sh", "-c", `printf '%s' "$1" >/usr/local/bin/sudo && chmod 755 /usr/local/bin/sudo`, "sh", script); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+
+	code, _, stderr := n.gst("up")
+	if code != 0 || !strings.Contains(stderr, "gst asks first") {
+		t.Fatalf("gst up without a terminal: exit %d: %q", code, stderr)
+	}
+	if _, err := n.exec("root", "test", "-e", record); err == nil {
+		t.Fatal("gst up ran sudo without being told to")
+	}
+
+	code, _, stderr = n.gst("up", "--yes")
+	if code != 0 || !strings.Contains(stderr, "sudo /usr/local/bin/gst install --user "+nodeUser) || !strings.Contains(stderr, "/etc/hosts") {
+		t.Fatalf("gst up --yes: exit %d: %q", code, stderr)
+	}
+	args, err := n.exec("root", "cat", record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := n.exec("root", append([]string{"env", "HOME=/root"}, strings.Fields(args)...)...); err != nil {
+		t.Fatalf("%s: %v: %s", args, err, out)
+	}
+	eventually(t, 10*time.Second, "the helper did not start", func() bool {
+		_, err := n.exec("root", "test", "-S", "/var/run/gst-net.sock")
+		return err == nil
+	})
+	n.waitNet(0)
+
+	if _, err := n.exec("root", "rm", record); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = n.gst("up", "--yes")
+	if code != 0 || stderr != "" {
+		t.Fatalf("gst up with a current helper: exit %d: %q", code, stderr)
+	}
+	if _, err := n.exec("root", "test", "-e", record); err == nil {
+		t.Fatal("gst up ran sudo for a current helper")
 	}
 }

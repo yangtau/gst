@@ -42,6 +42,7 @@ case "$1" in
 daemon-reload | enable) ;;
 start) start "$2" ;;
 restart) stop "$2"; start "$2" ;;
-disable) [ "$2" = --now ] && stop "$3" ;;
+stop) stop "$3" ;; # stop --no-block UNIT
+disable) if [ "$2" = --now ]; then stop "$3"; fi ;;
 *) echo "systemctl shim: unsupported command: $*" >&2; exit 1 ;;
 esac

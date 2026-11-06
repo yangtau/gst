@@ -8,8 +8,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const interfaceName = "gst0"
-
 // Linux hands over packets as they are (IFF_NO_PI).
 const packetHeader = 0
 

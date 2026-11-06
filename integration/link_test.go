@@ -9,16 +9,12 @@ import (
 
 // A link goes through its whole life between two containers: add, change
 // by removing and adding again, reconnect after the server's daemon dies,
-// and remove. The server needs no setup: the link's peer-bridge starts its
-// daemon.
+// and remove.
 func TestLinkLifecycle(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
 	client.mustGst("name", "cli")
-	if server.daemonPID() != "" {
-		t.Fatal("the server runs a daemon before the link")
-	}
 
 	out := client.mustGst("add", "srv", p.destination())
 	if !strings.Contains(out, "Added link srv") || !strings.Contains(out, "gst status") {
@@ -26,10 +22,6 @@ func TestLinkLifecycle(t *testing.T) {
 	}
 	link := client.waitLink("srv", "running")
 
-	// The peer-bridge started the server's daemon, which sees the client.
-	if server.daemonPID() == "" {
-		t.Fatal("the server has no daemon after the link came up")
-	}
 	cli, topo := server.waitReachable("cli")
 	srv := self(topo)
 	if link.Peer == nil || link.Peer.ID != srv.ID || link.Peer.Name != srv.Name || link.Peer.Software == "" || link.Destination != p.destination() {
@@ -142,4 +134,28 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 	if out := client.mustGst("status"); strings.Contains(out, "is down") {
 		t.Fatalf("gst status lists the link after the fix:\n%s", out)
 	}
+}
+
+// gst never sets up another machine: a link to one where nobody ran gst up
+// says what to run there, and connects by itself once someone has.
+func TestLinkToAMachineThatIsNotUp(t *testing.T) {
+	t.Parallel()
+	p := startPair(t)
+	client, server := p.client, p.server
+	server.mustGst("down")
+	server.mustSh(`rm -rf ~/.config/gst`)
+
+	code, _, stderr := client.gst("add", "srv", p.destination())
+	if code != 1 || !strings.Contains(stderr, "gst is not up on that machine") || !strings.Contains(stderr, "`ssh -t "+p.destination()+" gst up`") {
+		t.Fatalf("gst add: exit %d: %q", code, stderr)
+	}
+	if server.daemonPID() != "" {
+		t.Fatal("the link started a daemon on the server")
+	}
+	if _, err := server.sh(`test -e ~/.config/gst/config.json`); err == nil {
+		t.Fatal("the link gave the server a configuration")
+	}
+
+	server.mustGst("up")
+	client.waitLink("srv", "running")
 }

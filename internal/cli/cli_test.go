@@ -136,6 +136,13 @@ type testEnv struct {
 	known    string // a known_hosts file that records ssh.example.com
 	exe      string
 	stdin    string // standard input of the next commands
+
+	helper    fakeHelper
+	terminal  bool     // whether a person can answer
+	euid      int      // the user gst runs as
+	rootRuns  []string // what gst ran on the terminal
+	rootErr   error    // what those commands return
+	removeErr error    // what asking the helper to remove itself returns
 }
 
 // newEnv returns an environment where the destinations myhost, db, and
@@ -162,6 +169,8 @@ func newEnv(t *testing.T) *testEnv {
 		identity: filepath.Join(dir, "id_ed25519"),
 		known:    filepath.Join(dir, "known_hosts"),
 		exe:      "/usr/local/bin/gst",
+		euid:     1000,
+		helper:   fakeHelper{installed: true, current: true},
 	}
 	e.back = &fakeBackend{config: e.config, linkStates: map[string]wire.LinkState{}}
 	write(t, e.identity, string(pem.EncodeToMemory(block)))
@@ -210,8 +219,29 @@ func (e *testEnv) app(stdout, stderr io.Writer) *app {
 			return sshconfig.Host{}, errors.New("ssh -G " + destination + ": no such host")
 		},
 		executable: func() (string, error) { return e.exe, nil },
+		newHelper:  func() (helperService, error) { return &e.helper, nil },
+		removeHelper: func() error {
+			if e.removeErr == nil {
+				e.helper = fakeHelper{}
+			}
+			return e.removeErr
+		},
+		runRoot: func(argv []string) error {
+			e.rootRuns = append(e.rootRuns, strings.Join(argv, " "))
+			return e.rootErr
+		},
+		geteuid:     func() int { return e.euid },
+		interactive: func() bool { return e.terminal },
 	}
 }
+
+// fakeHelper is the helper as gst up sees it.
+type fakeHelper struct{ installed, current bool }
+
+func (h *fakeHelper) Installed() bool          { return h.installed }
+func (h *fakeHelper) Current(int, string) bool { return h.current }
+func (h *fakeHelper) Installs() []string       { return []string{"copies gst"} }
+func (h *fakeHelper) Removes() []string        { return []string{"deletes gst"} }
 
 func (e *testEnv) mustGst(args ...string) string {
 	e.t.Helper()

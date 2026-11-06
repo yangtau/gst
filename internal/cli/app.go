@@ -9,15 +9,19 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/service"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
 	"github.com/yangtau/ssh-tunnel/internal/sshconn"
+	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -38,13 +42,20 @@ const (
 // Execute runs gst with args and returns the process exit code.
 func Execute(args []string) int {
 	a := &app{
-		stdin:      os.Stdin,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		newBackend: func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
-		resolve:    sshconfig.Resolve,
-		executable: os.Executable,
-		openURL:    openBrowser,
+		stdin:        os.Stdin,
+		stdout:       os.Stdout,
+		stderr:       os.Stderr,
+		newBackend:   func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
+		resolve:      sshconfig.Resolve,
+		executable:   os.Executable,
+		openURL:      openBrowser,
+		newHelper:    func() (helperService, error) { return service.NewHelper() },
+		removeHelper: func() error { return tun.Remove(tun.Socket) },
+		runRoot:      runTerminal,
+		geteuid:      os.Geteuid,
+		interactive: func() bool {
+			return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+		},
 	}
 	return a.execute(context.Background(), args)
 }
@@ -56,6 +67,11 @@ type app struct {
 	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
 	executable     func() (string, error)
 	openURL        func(url string) error // nil opens nothing
+	newHelper      func() (helperService, error)
+	removeHelper   func() error              // asks the helper to remove itself
+	runRoot        func(argv []string) error // runs a command on this terminal
+	geteuid        func() int
+	interactive    func() bool // whether a person can answer
 
 	configFlag string
 	back       backend
@@ -226,6 +242,14 @@ func (a *app) preflight(ctx context.Context, l *config.Link) error {
 		return err
 	}
 	return nil
+}
+
+// runTerminal runs argv with this process's terminal, so that sudo can ask
+// for a password itself.
+func runTerminal(argv []string) error {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 // remoteGst returns the command that runs gst on l's server.
