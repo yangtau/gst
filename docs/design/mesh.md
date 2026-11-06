@@ -138,7 +138,8 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
 | `mesh.nodes` | 无 | `Topology` |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
-| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字, "direct": 布尔}`：经 mesh 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（有 link 直达时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间），`direct` 表示包走 UDP 路径；找不到或不可达时返回错误。`gst ping` 每秒调用一次 |
+| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 link 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（有 link 直达时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping -v` 用它检查 link |
+| `net.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 UDP 路径）、`trying`（有尝试在进行）、`path`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
 
 link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
@@ -206,7 +207,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 | `0x15` | beat | 心跳 |
 | `0x16` | bye | 关闭 |
 
-- **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 也会）。尝试不阻塞包。失败或路径结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。
+- **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 的包和 `-v` 也会）。尝试不阻塞包。失败或路径结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。
 - **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …]}`，响应是对方的 `addresses`。候选地址只出现在这次调用中，不进记录，不进日志。
 - **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的路径，说明它已失效，先关闭。
 - **socket**：每次尝试为每个本机地址绑定一个 UDP socket（每个地址族最多 8 个），跳过回环、link-local 和点对点接口（VPN、代理的 TUN，也包括 gst 自己的网卡）。必须绑定具体地址：通配 socket 回包的源地址不一定是对方发往的地址，默认路由被代理的 TUN 接管时回包还会被截走。socket 收发缓冲 4 MiB。
@@ -231,6 +232,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **路径**：`Node.SendPacket` 有 UDP 路径就直接发，否则放进队列，由一条 `net.packets` 流沿 mesh 运送（帧：2 字节大端长度加包，两个方向都走，1 分钟空闲关闭）。任何一方都可以开这条流。包在 mesh 上不需要保护：途中只有密文，丢了就是丢了。队列满时丢包，和拥塞的网络一样。
 - **MTU**：网卡 MTU 是 1168，加上 WireGuard 的 32 字节是 1200 字节的 UDP 载荷，几乎所有路径都能承载，所以不需要路径 MTU 发现。
 - **网段**：每个节点把 `{subnet, since, address, public_key}` 放进自己的记录（`net` 字段）。`since` 最大的网段胜出，相同时取字符串较小的，所以所有节点独立算出同一个结果。`gst subnet` 把 `since` 写成当前时间；gst 自己选的网段写成当前时间的相反数，所以它让位给任何人选的网段，自己选的之间最早的留下：一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。第一个节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个不重叠的 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）。网段和本机其他网络重叠时不阻止运行，只报告。
+- **gst ping**：每个 daemon 在自己的网络地址上监听 UDP 端口 15354，把收到的包原样发回。发送方是普通的 UDP socket，所以包经过路由、网卡、WireGuard 和实际路径，和程序的包完全一样：有回复说明这些都通，时间就是程序感受到的延迟。标签来自回复时的路径。
 - **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。
 - **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 link 名和 id 前缀也能用），未知名字 NXDOMAIN，AAAA 返回空。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。
 - **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由系统服务（`gst net-helper --user NAME`）完成。`gst up` 用 `gst helper-version` 询问 root 那份 gst 的 `tun.HelperVersion`，这一步不需要 root；helper 缺失、版本不同或没有在监听时，它显示要执行的 `sudo <gst 的绝对路径> install --user NAME` 和这条命令的改动，询问后在当前终端执行，密码由 sudo 询问。版本号只在 helper 的代码或 daemon 对它的要求变化时提高，所以普通升级不需要 root。`gst down` 经同一个 socket 发 `Spec{Remove: true}`，不需要 root：这条消息没有参数，只能让 helper 删除固定路径上的服务和那份 gst。helper 先删文件，回复，最后让服务管理器停止自己，因为这一步会结束进程。helper 没有应答时，`gst down` 才说明并询问后用 `sudo <gst> uninstall`。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。

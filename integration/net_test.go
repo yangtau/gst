@@ -3,8 +3,10 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -231,6 +233,28 @@ func TestNet(t *testing.T) {
 		a.waitPing(addressOfC)
 	})
 
+	// gst ping goes where programs' packets go, and says which way.
+	t.Run("Ping", func(t *testing.T) {
+		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\) over SSH via b in [0-9]+\.[0-9] ms$`)
+		for _, machine := range []string{"c", "c.gst", "C"} {
+			out := a.mustGst("ping", machine, "-c", "1")
+			if m := reply.FindStringSubmatch(strings.TrimSpace(out)); m == nil || m[1] != "c" {
+				t.Fatalf("gst ping %s: %q", machine, out)
+			}
+		}
+		var pings []wire.NetPing
+		if err := json.Unmarshal([]byte(a.mustGst("ping", "c", "-c", "1", "--json")), &pings); err != nil {
+			t.Fatal(err)
+		}
+		if len(pings) != 1 || pings[0].Node.Name != "c" || pings[0].Address != addressOfC || pings[0].Path != wire.PathSSH ||
+			len(pings[0].Via) != 1 || pings[0].Via[0].Name != "b" || pings[0].TimeMS <= 0 {
+			t.Fatalf("gst ping c --json: %+v", pings)
+		}
+		if out := a.mustGst("ping", "a", "-c", "1"); !strings.HasPrefix(out, "reply from a (") || strings.Contains(out, " over ") {
+			t.Fatalf("gst ping a: %q", out)
+		}
+	})
+
 	t.Run("Down", func(t *testing.T) {
 		c.mustGst("down")
 		eventually(t, 10*time.Second, "the interface outlived gst down", func() bool { return !c.hasInterface() })
@@ -357,6 +381,9 @@ func TestNetHelper(t *testing.T) {
 		out := n.mustGst("status")
 		return strings.Contains(out, "virtual network") && strings.Contains(out, "gst up")
 	})
+	if code, stdout, _ := n.gst("ping", "laptop", "-c", "1"); code != 1 || !strings.Contains(stdout, "this machine is not on the virtual network") {
+		t.Fatalf("gst ping without the helper: exit %d: %q", code, stdout)
+	}
 	if code, _, stderr := n.gst("install"); code != 1 || !strings.Contains(stderr, "gst up") {
 		t.Fatalf("gst install as a user: exit %d: %q", code, stderr)
 	}

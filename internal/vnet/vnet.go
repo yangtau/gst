@@ -80,6 +80,9 @@ type Config struct {
 	Networks func(skip string) []netip.Prefix
 	// DNS is the UDP address to answer on; no DNS when empty.
 	DNS string
+	// Echo is the UDP port on this machine's address that answers Ping;
+	// nothing answers when it is 0.
+	Echo int
 }
 
 // state is what a node keeps between runs.
@@ -101,14 +104,16 @@ type Manager struct {
 	ended   chan struct{} // closed when Run returns
 
 	// Owned by Run.
-	state   state
-	loaded  bool
-	bind    *bind
-	iface   Interface
-	name    string
-	dev     *device.Device
-	peers   map[string]peer // by public key; replaced, never changed
-	stopDNS context.CancelFunc
+	state    state
+	loaded   bool
+	bind     *bind
+	iface    Interface
+	name     string
+	dev      *device.Device
+	peers    map[string]peer // by public key; replaced, never changed
+	stopDNS  context.CancelFunc
+	echoing  string // the address that answers Ping
+	stopEcho context.CancelFunc
 
 	live atomic.Pointer[wireguard] // for Status
 }
@@ -232,6 +237,9 @@ func (m *Manager) reconcile(ctx context.Context) {
 		m.cfg.Mesh.SetNet(&wire.NetInfo{Subnet: m.state.Subnet, Since: m.state.Since, Address: m.state.Address, PublicKey: m.publicKey()})
 		topo = m.cfg.Mesh.Topology()
 		err = m.apply(self, topo)
+	}
+	if err == nil {
+		err = m.answerPings(ctx)
 	}
 	if err == nil {
 		err = m.conflict()
@@ -512,6 +520,7 @@ func (m *Manager) down() {
 		m.stopDNS()
 		m.stopDNS = nil
 	}
+	m.stopAnswering()
 	m.cfg.Mesh.HandlePackets(nil)
 	if m.dev != nil {
 		m.dev.Close()

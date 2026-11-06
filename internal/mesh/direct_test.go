@@ -283,12 +283,6 @@ func TestDirectReport(t *testing.T) {
 		}
 	}
 
-	if p, err := a.Ping(t.Context(), "c"); err != nil || !p.Direct {
-		t.Fatalf("ping: %+v, %v", p, err)
-	}
-	if p, err := a.Ping(t.Context(), "b"); err != nil || p.Direct {
-		t.Fatalf("ping over SSH: %+v, %v", p, err)
-	}
 	if _, err := a.DirectReport(t.Context(), "a"); err == nil {
 		t.Fatal("a report on this machine")
 	}

@@ -28,7 +28,9 @@ type backend interface {
 	// NodeStatus returns the status of the daemon on a machine of the
 	// mesh, asked through the mesh.
 	NodeStatus(ctx context.Context, node string) (wire.Status, error)
-	// Ping asks a machine of the mesh to answer through the mesh.
+	// NetPing sends a packet to a machine and back over the virtual network.
+	NetPing(ctx context.Context, node string) (wire.NetPing, error)
+	// Ping asks a machine of the mesh to answer through the links.
 	Ping(ctx context.Context, node string) (wire.Ping, error)
 	// Direct reports the UDP path to a machine of the mesh and how the
 	// latest try at one went.
@@ -182,6 +184,14 @@ func (b *daemonBackend) NodeStatus(ctx context.Context, node string) (st wire.St
 		return err
 	})
 	return st, err
+}
+
+func (b *daemonBackend) NetPing(ctx context.Context, node string) (p wire.NetPing, err error) {
+	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
+		p, err = c.NetPing(ctx, node)
+		return err
+	})
+	return p, err
 }
 
 func (b *daemonBackend) Ping(ctx context.Context, node string) (p wire.Ping, err error) {

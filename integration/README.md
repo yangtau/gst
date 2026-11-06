@@ -20,11 +20,13 @@ go test -tags integration -count=1 -v .
 | | `TestLinkDownIsAProblem` | 连不上的 link 状态为 down，`gst status` 在 `# Problems:` 中列出 |
 | | `TestLinkRemoteGstMissing` | server 上没有 gst：状态 down 且错误提到 gst，`gst status` 列出该 link 的错误，删除后带 `--remote-gst` 重新添加修复后 running |
 | | `TestLinkRemoveIsSeenByServer` | link 删除后 server 不再认为 client 可达 |
-| `mesh_test.go` | `TestMesh` | 三个节点 a → b ← c：`gst status` 列出的机器与路径（`Topology`）；`gst ping`：经 b 到 c 显示 `via b`，b 显示 `over SSH`，机器的各种称呼，`--json`，没有应答时退出码 1（`Ping`）；在 a 上查看两跳外 c 的 link（含连不上的），c 自己的 `gst status` 列出问题（`Status`） |
+| | `TestLinkToAMachineThatIsNotUp` | server 没执行过 `gst up`：`gst add` 退出码 1 并给出 `ssh -t` 命令，server 上没有 daemon 和配置；在 server 上执行 `gst up` 后 link 自动 running |
+| `mesh_test.go` | `TestMesh` | 三个节点 a → b ← c：`gst status` 列出的机器与路径（`Topology`）；`gst ping -v` 同时显示经 b 的回复和 SSH link 的检查，不存在的机器失败并给 hint（`Ping`）；在 a 上查看两跳外 c 的 link（含连不上的），c 自己的 `gst status` 列出问题（`Status`） |
 | `direct_test.go` | `TestUDPPath` | a → b ← c，a 和 c 之间没有 link：流量触发 UDP 路径，`gst status` 显示 `online; direct`，mesh 的路径仍是 a,b,c，`gst ping -v` 显示过程；b `gst down` 后路径继续；c 删除 link 后路径断开。其他用例的节点以 `GST_DIRECT=off` 运行 |
-| `net_test.go` | `TestNet` | a → b ← c，`GST_DIRECT=off`：`gst install` 后选出不与容器网络重叠的网段，地址唯一，路由指向 `gst0`；经 b 的 ICMP、TCP、UDP（`Protocols`）；`getent`、`ping c.gst`、daemon 的 DNS 回答 link 名，未知名字失败（`Names`）；`gst status`、`gst status c`、`gst status --all`（`Status`）；非法网段退出码 2，`gst subnet` 传播到所有机器且旧路由被删除，与容器网络重叠时退出码 1 带 hint 并出现在 `gst status`（`Subnet`）；`gst down` 删除网卡和名字，别的机器到不了它，`gst up` 后地址不变（`Down`） |
+| `net_test.go` | `TestNet` | a → b ← c，`GST_DIRECT=off`：helper 装好后选出不与容器网络重叠的网段，地址唯一，路由指向 `gst0`；经 b 的 ICMP、TCP、UDP（`Protocols`）；`getent`、`ping c.gst`、daemon 的 DNS 回答 link 名，未知名字失败（`Names`）；`gst status`、`gst status c`、`gst status --all`（`Status`）；`gst ping` 经虚拟网络回复，显示地址和 `over SSH via b`，`--json`，ping 本机不显示路径（`Ping`）；非法网段退出码 2，`gst subnet` 传播到所有机器且旧路由被删除，与容器网络重叠时退出码 1 带 hint 并出现在 `gst status`（`Subnet`）；`gst down` 删除网卡和名字，别的机器到不了它，`gst up` 后地址不变（`Down`） |
 | | `TestNetDirect` | 包走 UDP 路径（`gst status --all` 显示 `direct`），TCP 速率和按帧成批的 UDP 到达率；用 `iptables`/`ip6tables` 丢弃 UDP 后几秒内改走 SSH，恢复后回到 UDP |
-| | `TestNetHelper` | 没有 helper 时 `gst subnet` 退出码 1 并提示 `sudo gst install`，普通用户不能安装；安装后机器自动加入，之前选的网段生效；helper 的文件和 socket 权限；daemon 被杀后网卡消失，`gst up` 后地址不变；`gst uninstall` 后网卡消失 |
+| | `TestNetHelper` | 没有 helper 时 `gst subnet` 和 `gst ping` 退出码 1 并提示 `gst up`，普通用户不能直接执行 `gst install`；安装后机器自动加入，之前选的网段生效；helper 的文件和 socket 权限；daemon 被杀后网卡消失，`gst up` 后地址不变；`gst down` 后网卡消失，helper 的进程、socket、服务文件和那份 gst 都不在了 |
+| | `TestUpInstallsTheHelper` | 镜像里没有 sudo，用只记录参数的替身：没有终端时 `gst up` 不运行 sudo，`--yes` 时显示并运行 `sudo <gst> install --user`，以 root 执行记录下的命令后机器加入网络；helper 版本相同时不再运行 sudo |
 | `daemon_test.go` | `TestDaemonRestartsAfterUpgrade` | 升级 gst 后下一条命令重启 daemon，虚拟网络恢复，没有升级则不重启 |
 | | `TestDownAndUp` | `gst down` 停止 daemon，其他节点的 `gst peer-bridge` 被拒绝（"gst is not up"），`gst up` 后 link 恢复 |
 | `ui_test.go` | `TestUI` | `gst ui`：没有 token 返回 401，`/api/state` 返回 links 和 topology，页面只读（没有 link 的 POST 接口） |

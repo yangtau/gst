@@ -296,10 +296,9 @@ func TestStatusWithoutDaemon(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	e := newEnv(t)
-	devbox := peerOf("devbox")
 
 	out := e.mustGst("ping", "devbox", "-c", "1")
-	if want := "pong from devbox (" + shortID(devbox.ID) + ") over SSH in 1.5 ms\n"; out != want {
+	if want := "reply from devbox (10.99.3.4) over UDP in 1.5 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	if want := []string{"ping devbox"}; !slices.Equal(e.back.calls, want) {
@@ -307,11 +306,19 @@ func TestPing(t *testing.T) {
 	}
 
 	// Machines on the way are named in order.
-	e.back.ping = func(node string) (wire.Ping, error) {
-		return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{peerOf("a"), peerOf("b")}, TimeMS: 12.345}, nil
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Path: wire.PathSSH, Via: []wire.NodeInfo{peerOf("a"), peerOf("b")}, TimeMS: 12.345}, nil
 	}
 	out = e.mustGst("ping", "far", "--count", "1")
-	if want := "pong from far (" + shortID(peerOf("far").ID) + ") via a, b in 12.3 ms\n"; out != want {
+	if want := "reply from far (10.99.5.6) over SSH via a, b in 12.3 ms\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+
+	// This machine has no way to name.
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.1.2", TimeMS: 0.1}, nil
+	}
+	if out, want := e.mustGst("ping", "laptop", "-c", "1"), "reply from laptop (10.99.1.2) in 0.1 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 
@@ -326,21 +333,21 @@ func TestPing(t *testing.T) {
 
 func TestPingJSON(t *testing.T) {
 	e := newEnv(t)
-	e.back.ping = func(node string) (wire.Ping, error) {
-		return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{peerOf("gw")}, TimeMS: 4.25}, nil
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Path: wire.PathSSH, Via: []wire.NodeInfo{peerOf("gw")}, TimeMS: 4.25}, nil
 	}
 	out := e.mustGst("ping", "far", "-c", "1", "--json")
-	got := decode[[]wire.Ping](t, out)
-	if len(got) != 1 || got[0].Node != peerOf("far") || len(got[0].Via) != 1 || got[0].Via[0] != peerOf("gw") || got[0].TimeMS != 4.25 {
+	got := decode[[]wire.NetPing](t, out)
+	if len(got) != 1 || got[0].Node != peerOf("far") || got[0].Path != wire.PathSSH || len(got[0].Via) != 1 || got[0].Via[0] != peerOf("gw") || got[0].TimeMS != 4.25 {
 		t.Fatalf("json = %+v", got)
 	}
-	contains(t, out, `"node": {`, `"via": [`, `"time_ms": 4.25`)
-	if strings.Contains(out, "pong") {
+	contains(t, out, `"node": {`, `"address": "10.99.5.6"`, `"path": "ssh"`, `"via": [`, `"time_ms": 4.25`)
+	if strings.Contains(out, "reply") {
 		t.Fatalf("--json printed text:\n%s", out)
 	}
 
 	// With no answer, the list is empty and the command fails.
-	e.back.ping = func(string) (wire.Ping, error) { return wire.Ping{}, errors.New("timed out") }
+	e.back.ping = func(string) (wire.NetPing, error) { return wire.NetPing{}, errors.New("timed out") }
 	code, stdout, stderr := e.gst("ping", "far", "-c", "1", "--json")
 	if code != exitFailure || strings.TrimSpace(stdout) != "[]" || !strings.Contains(stderr, "error: far did not answer: timed out\n") {
 		t.Fatalf("code %d, stdout %q, stderr %q", code, stdout, stderr)
@@ -349,14 +356,14 @@ func TestPingJSON(t *testing.T) {
 
 func TestPingNoAnswer(t *testing.T) {
 	e := newEnv(t)
-	e.back.ping = func(node string) (wire.Ping, error) {
-		return wire.Ping{}, errors.New(`no machine "` + node + `" in the mesh; see gst status`)
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		return wire.NetPing{}, errors.New(`no machine "` + node + `" in the mesh; see gst status`)
 	}
 	code, stdout, stderr := e.gst("ping", "nowhere", "-c", "1")
 	if code != exitFailure {
 		t.Fatalf("code %d", code)
 	}
-	if want := "no answer: no machine \"nowhere\" in the mesh; see gst status\n"; stdout != want {
+	if want := "no reply: no machine \"nowhere\" in the mesh; see gst status\n"; stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
 	if want := "error: nowhere did not answer: no machine \"nowhere\" in the mesh; see gst status\nhint: see the machines of the mesh with `gst status`\n"; stderr != want {
@@ -439,9 +446,6 @@ func TestPingVerbose(t *testing.T) {
 		return wire.DirectEvent{Time: start.Add(after), Text: text}
 	}
 	asked := 0
-	e.back.ping = func(node string) (wire.Ping, error) {
-		return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 1.5, Direct: true}, nil
-	}
 	e.back.direct = func(node string) (wire.DirectReport, error) {
 		asked++
 		return wire.DirectReport{
@@ -457,7 +461,8 @@ func TestPingVerbose(t *testing.T) {
 		t.Fatalf("asked %d times, want 2", asked)
 	}
 	for _, want := range []string{
-		"over SSH in 1.5 ms; packets go over UDP\n",
+		"over UDP in 1.5 ms\n",
+		"SSH links: devbox answered in 74.1 ms\n",
 		"UDP path to devbox: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
 		"This machine:\n    0.000s  offering\n    1.500s  up\n",
 		"devbox:\n  no try yet\n",

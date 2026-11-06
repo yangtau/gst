@@ -96,9 +96,9 @@ func (n *Node) Call(ctx context.Context, ref, method string, params, result any)
 	return nil
 }
 
-// Ping calls node.info on the machine that ref names, along the mesh,
-// and reports the machines on the way and the time the answer took. It
-// also tries a UDP path to the machine.
+// Ping calls node.info on the machine that ref names, along the links, and
+// reports the machines on the way and the time the answer took. It checks
+// the links, not the virtual network, and also tries a UDP path.
 func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 	topo := n.Topology()
 	dest, err := FindNode(topo, ref)
@@ -107,19 +107,25 @@ func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 	}
 	n.tryDirect(dest.ID)
 	start := time.Now()
-	p := wire.Ping{Direct: n.packetPeer(dest.ID).direct.Load() != nil}
+	var p wire.Ping
 	if err := n.Call(ctx, dest.ID, wire.MethodNodeInfo, nil, &p.Node); err != nil {
 		return wire.Ping{}, err
 	}
 	p.TimeMS = float64(time.Since(start).Microseconds()) / 1000
-	p.Via = []wire.NodeInfo{}
+	p.Via = Via(topo, dest)
+	return p, nil
+}
+
+// Via returns the machines between this node and dest along the links.
+func Via(topo wire.Topology, dest wire.TopoNode) []wire.NodeInfo {
+	via := []wire.NodeInfo{}
 	for _, id := range dest.Path[1:max(1, len(dest.Path)-1)] {
 		if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
 			t := topo.Nodes[i]
-			p.Via = append(p.Via, wire.NodeInfo{ID: t.ID, Name: t.Name, Software: t.Software})
+			via = append(via, wire.NodeInfo{ID: t.ID, Name: t.Name, Software: t.Software})
 		}
 	}
-	return p, nil
+	return via
 }
 
 // serveRelay answers relay.open and then carries the stream's bytes until

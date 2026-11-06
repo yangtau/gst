@@ -51,6 +51,7 @@ type Config struct {
 	// vnet.LocalNetworks finds it.
 	OpenNet  func(tun.Spec) (vnet.Interface, error)
 	NetDNS   string
+	NetEcho  int // the UDP port that answers gst ping
 	Networks func(skip string) []netip.Prefix
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
@@ -91,6 +92,7 @@ func New(cfg Config) *Daemon {
 		Open:      cfg.OpenNet,
 		Networks:  cfg.Networks,
 		DNS:       cfg.NetDNS,
+		Echo:      cfg.NetEcho,
 	})
 	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
@@ -110,6 +112,9 @@ func New(cfg Config) *Daemon {
 	})
 	wire.Handle(&d.control, wire.MethodPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		return m.Ping(ctx, p.Node)
+	})
+	wire.Handle(&d.control, wire.MethodNetPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		return d.netPing(ctx, p.Node)
 	})
 	wire.Handle(&d.control, wire.MethodDirect, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		return m.DirectReport(ctx, p.Node)
@@ -238,6 +243,39 @@ func (d *Daemon) Status() wire.Status {
 		st.Links = append(st.Links, state)
 	}
 	return st
+}
+
+// netPing sends a packet to the machine that ref names and back, over the
+// virtual network, and reports the way it went.
+func (d *Daemon) netPing(ctx context.Context, ref string) (wire.NetPing, error) {
+	topo := d.mesh.Topology()
+	dest, err := mesh.FindNode(topo, ref)
+	if err != nil {
+		return wire.NetPing{}, err
+	}
+	if st := d.net.Status(); st == nil || st.Interface == "" {
+		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "this machine is not on the virtual network; run `gst up`")
+	}
+	if dest.Net == nil {
+		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%s is not on the virtual network; run `gst up` there", dest.Name)
+	}
+	rtt, err := d.net.Ping(ctx, dest.Net.Address)
+	if err != nil {
+		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%v", err)
+	}
+	p := wire.NetPing{
+		Node:    wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software},
+		Address: dest.Net.Address,
+		Via:     []wire.NodeInfo{},
+		TimeMS:  float64(rtt.Microseconds()) / 1000,
+	}
+	if dest.ID != topo.Self {
+		// The path now is the one the reply took.
+		if p.Path = d.mesh.PacketPath(dest.ID); p.Path == wire.PathSSH {
+			p.Via = mesh.Via(topo, dest)
+		}
+	}
+	return p, nil
 }
 
 // Reload reads the configuration and applies it: the node's identity and

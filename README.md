@@ -90,7 +90,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the mesh and prints `pong from devbox (3f2a9c10) over SSH in 12.3 ms; packets go over UDP`.
+Links connect in the background; machines show `offline` until they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the network and prints `reply from devbox (10.87.61.7) over UDP in 12.3 ms`.
 
 Machine `homelab` now sees the same mesh: on `homelab`, `gst status` lists `laptop` and `devbox`, and `ping devbox.gst` works without a link to `devbox`.
 
@@ -152,7 +152,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, address, and state; then this machine's problems |
 | `gst status --all` | Also list the running links between all the machines, and how packets go to each machine, with their last handshake and the bytes received and sent |
 | `gst status <machine>` | Show a machine's address and links (with state and destination), asked through the mesh |
-| `gst ping <machine> [-c N] [-v]` | Ask a machine to answer over the SSH links once a second (3 times by default), and print the path and time of each answer; `-v` also shows the UDP path to it, or why there is none, and what both machines did in their latest try at one |
+| `gst ping <machine> [-c N] [-v]` | Send a packet to a machine and back over the virtual network once a second (3 times by default), and print the way it went and the time; `-v` also shows the UDP path to it, or why there is none, and what both machines did in their latest try at one |
 
 `destination` is `host`, `user@host`, or `ssh://user@host:port`, and defaults to the link name. `--remote-gst <command>` names the gst command on the machine, when gst is not in the `PATH` of its login shell, such as `~/.nix-profile/bin/gst`. Everything else about the SSH connection comes from your ssh configuration (see [ssh configuration](#ssh-configuration)). To change a link, remove it and add it again. `gst add` checks first that a usable key without a passphrase exists and that known_hosts records the server, and saves nothing if not.
 
@@ -168,7 +168,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 
 Links show as the machines at their ends, such as `laptop->gateway`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `laptop->prod (db)`. A `# Problems:` section lists this machine's links that are not running and what keeps it off the network. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
 
-`gst ping` prints, for example, `pong from gateway (1a2b3c4d) via devbox in 41.3 ms`, and adds `; packets go over UDP` when they do. It measures the links; the time includes setting up the way through each machine on it. To measure the network itself, use `ping <machine>.gst`. It exits with status 1 if no answer came.
+`gst ping` prints, for example, `reply from devbox (10.87.61.7) over UDP in 12.3 ms`, or `reply from gateway (10.87.2.9) over SSH via devbox in 41.3 ms`. The packet goes the way of every program's packets, through the interface and WireGuard, so `over UDP` means that the UDP path works, and the time is about what `ping <machine>.gst` shows. Traffic is what starts a UDP path, so the first replies may come over SSH. `-v` also checks the SSH links, which carry the control of the network: `SSH links: gateway answered via devbox in 41.3 ms`. That time is higher, as it includes setting up the way through each machine. The command exits with status 1 if no reply came.
 
 ### Virtual network
 
@@ -271,7 +271,7 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 ## Scripts and agents
 
 - Results go to stdout. Errors go to stderr, start with `error:`, and usually come with a `hint:` line naming the next command to run. Notes that are not errors start with `note:`.
-- Exit status: `0` success, `1` the work failed (including a `gst ping` with no answer), `2` invalid arguments.
+- Exit status: `0` success, `1` the work failed (including a `gst ping` with no reply), `2` invalid arguments.
 - `--json` fields are stable on `status` and `ping`.
 - No command prompts for input.
 

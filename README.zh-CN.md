@@ -90,7 +90,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。`gst ping devbox` 检查 mesh，打印 `pong from devbox (3f2a9c10) over SSH in 12.3 ms; packets go over UDP`。
+link 在后台连接，连上之前机器显示为 `offline`。列表下方的 `# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。`gst ping devbox` 检查网络，打印 `reply from devbox (10.87.61.7) over UDP in 12.3 ms`。
 
 现在 `homelab` 能看到同一个 mesh：在 `homelab` 上，`gst status` 列出 `laptop` 和 `devbox`，`ping devbox.gst` 不需要到 `devbox` 的 link 也能通。
 
@@ -152,7 +152,7 @@ mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通
 | `gst status` | 列出本机所知的 mesh 中的每台机器：短 id、名字、gst 版本、地址和状态；然后是本机的问题 |
 | `gst status --all` | 再列出所有机器之间运行中的 link，以及到每台机器的包走哪条路、最近一次握手和收发字节数 |
 | `gst status <machine>` | 经 mesh 查询，显示一台机器的地址和 link（含状态和目标） |
-| `gst ping <machine> [-c N] [-v]` | 每秒请求一台机器经 SSH link 应答一次（默认 3 次），打印每次应答的路径和时间；`-v` 还显示到它的 UDP 路径或没有的原因，以及双方最近一次尝试的过程 |
+| `gst ping <machine> [-c N] [-v]` | 每秒经虚拟网络向一台机器发一个包并收回（默认 3 次），打印走的路和时间；`-v` 还显示到它的 UDP 路径或没有的原因，以及双方最近一次尝试的过程 |
 
 `destination` 是 `host`、`user@host` 或 `ssh://user@host:port`，默认是 link 名。gst 不在对方登录 shell 的 `PATH` 中时，用 `--remote-gst <command>` 指定那台机器上的 gst 命令，例如 `~/.nix-profile/bin/gst`。SSH 连接的其他设置都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。要修改 link，请删除后重新添加。`gst add` 先检查是否有可用的无口令私钥、known_hosts 是否记录了服务器，不通过时不保存。
 
@@ -168,7 +168,7 @@ mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通
 
 link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向的机器不同时，后面跟着 `gst remove` 要用的名字，例如 `laptop->prod (db)`。`# Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`（两边的 daemon 已相连）、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。
 
-`gst ping` 的输出例如 `pong from gateway (1a2b3c4d) via devbox in 41.3 ms`，包走 UDP 时再加上 `; packets go over UDP`。它测量的是 link，时间包括经过每台机器时建立通路的时间。要测量网络本身，用 `ping <machine>.gst`。没有收到应答时退出码为 1。
+`gst ping` 的输出例如 `reply from devbox (10.87.61.7) over UDP in 12.3 ms`，或者 `reply from gateway (10.87.2.9) over SSH via devbox in 41.3 ms`。这个包和所有程序的包走同一条路，经过网卡和 WireGuard，所以 `over UDP` 说明 UDP 路径是通的，时间和 `ping <machine>.gst` 差不多。UDP 路径由流量触发，所以最初几次回复可能走 SSH。`-v` 还会检查承载网络控制的 SSH link：`SSH links: gateway answered via devbox in 41.3 ms`。这个时间更长，因为包括经过每台机器时建立通路的时间。没有收到回复时退出码为 1。
 
 ### 虚拟网络
 
@@ -271,7 +271,7 @@ gst add devbox               # 在原来有 link 的机器上
 ## 在脚本和 agent 中使用
 
 - 结果输出到 stdout；错误输出到 stderr，以 `error:` 开头，通常还带一行 `hint:`，给出下一步该执行的命令。不是错误的提示以 `note:` 开头。
-- 退出码：`0` 成功，`1` 执行失败（包括 `gst ping` 没有收到应答），`2` 参数无效。
+- 退出码：`0` 成功，`1` 执行失败（包括 `gst ping` 没有收到回复），`2` 参数无效。
 - `status` 和 `ping` 的 `--json` 字段是稳定的。
 - 所有命令都不需要交互输入。
 

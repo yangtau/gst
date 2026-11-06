@@ -40,7 +40,8 @@ type fakeBackend struct {
 
 	linkStates map[string]wire.LinkState // replaces the state of a running link
 	nodeStatus func(node string) (wire.Status, error)
-	ping       func(node string) (wire.Ping, error)
+	ping       func(node string) (wire.NetPing, error)
+	links      func(node string) (wire.Ping, error)
 	direct     func(node string) (wire.DirectReport, error)
 	topology   wire.Topology
 	net        *wire.NetState // what the daemon reports of the network
@@ -103,12 +104,20 @@ func (f *fakeBackend) NodeStatus(ctx context.Context, node string) (wire.Status,
 	return st, nil
 }
 
-func (f *fakeBackend) Ping(_ context.Context, node string) (wire.Ping, error) {
+func (f *fakeBackend) NetPing(_ context.Context, node string) (wire.NetPing, error) {
 	f.calls = append(f.calls, "ping "+node)
 	if f.ping != nil {
 		return f.ping(node)
 	}
-	return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+	return wire.NetPing{Node: peerOf(node), Address: "10.99.3.4", Path: wire.PathDirect, Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+}
+
+func (f *fakeBackend) Ping(_ context.Context, node string) (wire.Ping, error) {
+	f.calls = append(f.calls, "links "+node)
+	if f.links != nil {
+		return f.links(node)
+	}
+	return wire.Ping{Node: peerOf(node), Via: []wire.NodeInfo{}, TimeMS: 74.1}, nil
 }
 
 func (f *fakeBackend) Direct(_ context.Context, node string) (wire.DirectReport, error) {

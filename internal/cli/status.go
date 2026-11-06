@@ -212,15 +212,19 @@ func (a *app) pingCommand() *cobra.Command {
 	var asJSON, verbose bool
 	cmd := &cobra.Command{
 		Use:   "ping <machine>",
-		Short: "Check that a machine answers over the SSH links",
-		Long: `Ask a machine of the mesh to answer through the SSH links that lead to
-it, once a second, and print each answer with the machines it passed and
-the time it took, which includes setting up the relay at each machine on
-the way. Exit status is 1 if no answer came. To check the virtual network
-itself, use ping <machine>.gst.
+		Short: "Check that a machine answers over the virtual network",
+		Long: `Send a packet to a machine and back over the virtual network, once a
+second, and print each reply: the machine's address, the way the packet
+went, and the time it took. It goes the way of every program's packets,
+through the interface and WireGuard, so the time is what programs get.
+over UDP means that it went directly; over SSH, along the SSH links, through
+the machines that it names. Exit status is 1 if no reply came.
 
-Traffic to a machine tries a UDP path to it, and so does this command.
-With -v, after the answers and any try still running, show that path, or
+Traffic to a machine tries a UDP path to it, so the first replies may come
+over SSH and the next over UDP.
+
+With -v, after the replies and any try still running, also check the SSH
+links, which carry the control of the network, and show the UDP path, or
 why there is none, and what both machines did in their latest try: the
 addresses they offered and the probes they heard.`,
 		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -v",
@@ -237,7 +241,7 @@ addresses they offered and the probes they heard.`,
 			if err != nil {
 				return err
 			}
-			var pings []wire.Ping
+			var pings []wire.NetPing
 			var last error
 			for i := range count {
 				if i > 0 {
@@ -247,11 +251,11 @@ addresses they offered and the probes they heard.`,
 					case <-time.After(time.Second):
 					}
 				}
-				p, err := b.Ping(cmd.Context(), machine)
+				p, err := b.NetPing(cmd.Context(), machine)
 				if err != nil {
 					last = err
 					if !asJSON {
-						fmt.Fprintf(a.stdout, "no answer: %v\n", err)
+						fmt.Fprintf(a.stdout, "no reply: %v\n", err)
 					}
 					continue
 				}
@@ -261,19 +265,29 @@ addresses they offered and the probes they heard.`,
 				}
 			}
 			if pings == nil {
-				pings = []wire.Ping{}
+				pings = []wire.NetPing{}
 			}
 			switch {
 			case verbose:
+				links, linksErr := b.Ping(cmd.Context(), machine)
 				report, err := directReport(cmd.Context(), b, machine)
 				if err != nil {
 					fmt.Fprintf(a.stderr, "no report on the UDP path: %v\n", err)
-				} else if asJSON {
-					if err := writeJSON(a.stdout, verbosePing{pings, report}); err != nil {
+				}
+				switch {
+				case asJSON && err == nil:
+					v := verbosePing{Pings: pings, Direct: report}
+					if linksErr == nil {
+						v.Links = &links
+					}
+					if err := writeJSON(a.stdout, v); err != nil {
 						return err
 					}
-				} else {
-					writeDirect(a.stdout, report)
+				case !asJSON:
+					writeLinks(a.stdout, links, linksErr)
+					if err == nil {
+						writeDirect(a.stdout, report)
+					}
 				}
 			case asJSON:
 				if err := writeJSON(a.stdout, pings); err != nil {
@@ -295,7 +309,8 @@ addresses they offered and the probes they heard.`,
 // verbosePing is what gst ping -v --json prints. Its JSON form is part of
 // the command line interface.
 type verbosePing struct {
-	Pings  []wire.Ping       `json:"pings"`
+	Pings  []wire.NetPing    `json:"pings"`
+	Links  *wire.Ping        `json:"links,omitempty"` // the answer over the SSH links
 	Direct wire.DirectReport `json:"direct"`
 }
 
@@ -316,7 +331,6 @@ func directReport(ctx context.Context, b backend, machine string) (wire.DirectRe
 }
 
 func writeDirect(out io.Writer, r wire.DirectReport) {
-	fmt.Fprintln(out)
 	switch {
 	case r.Path != nil:
 		fmt.Fprintf(out, "UDP path to %s: up, %s -> %s\n", r.Node.Name, r.Path.Local, r.Path.Remote)
@@ -347,18 +361,34 @@ func writeTrace(out io.Writer, machine string, t wire.DirectTrace, failure strin
 	}
 }
 
-func writePing(out io.Writer, p wire.Ping) {
-	path := "over SSH"
-	if len(p.Via) > 0 {
-		via := make([]string, len(p.Via))
-		for i, n := range p.Via {
-			via[i] = n.Name
-		}
-		path = "via " + strings.Join(via, ", ")
+func writePing(out io.Writer, p wire.NetPing) {
+	way := ""
+	switch p.Path {
+	case wire.PathDirect:
+		way = " over UDP"
+	case wire.PathSSH:
+		way = " over SSH" + viaText(p.Via)
 	}
-	note := ""
-	if p.Direct {
-		note = "; packets go over UDP"
+	fmt.Fprintf(out, "reply from %s (%s)%s in %.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
+}
+
+func viaText(machines []wire.NodeInfo) string {
+	if len(machines) == 0 {
+		return ""
 	}
-	fmt.Fprintf(out, "pong from %s (%s) %s in %.1f ms%s\n", p.Node.Name, shortID(p.Node.ID), path, p.TimeMS, note)
+	names := make([]string, len(machines))
+	for i, n := range machines {
+		names[i] = n.Name
+	}
+	return " via " + strings.Join(names, ", ")
+}
+
+// writeLinks reports the check of the SSH links in gst ping -v.
+func writeLinks(out io.Writer, p wire.Ping, err error) {
+	fmt.Fprintln(out)
+	if err != nil {
+		fmt.Fprintf(out, "SSH links: no answer: %v\n", err)
+		return
+	}
+	fmt.Fprintf(out, "SSH links: %s answered%s in %.1f ms\n", p.Node.Name, viaText(p.Via), p.TimeMS)
 }

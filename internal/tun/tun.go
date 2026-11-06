@@ -32,7 +32,10 @@ const (
 	// helper points the system's resolver.
 	DNSAddress = "127.0.0.1:15353"
 	dnsHost    = "127.0.0.1"
-	dnsPort    = "15353"
+	// EchoPort is the UDP port on a machine's address in the network where
+	// its daemon answers gst ping.
+	EchoPort = 15354
+	dnsPort  = "15353"
 
 	// MaxHosts is how many hosts a Spec can hold.
 	MaxHosts = 4096

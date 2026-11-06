@@ -4,7 +4,6 @@ package integration
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -68,37 +67,16 @@ func TestMesh(t *testing.T) {
 		}
 	})
 
-	// gst ping asks a machine to answer through the mesh and names the
-	// machines on the way.
+	// gst ping -v also checks the links, and a machine that does not exist
+	// fails with a hint.
 	t.Run("Ping", func(t *testing.T) {
 		a.waitReachable("c")
-		pong := regexp.MustCompile(`^pong from (\w+) \([0-9a-f]{8}\) (over SSH|via [\w, ]+) in [0-9]+\.[0-9] ms$`)
-		for _, tc := range []struct{ machine, path string }{{"c", "via b"}, {"b", "over SSH"}, {"c.gst", "via b"}} {
-			out := a.mustGst("ping", tc.machine, "-c", "1")
-			m := pong.FindStringSubmatch(strings.TrimSpace(out))
-			if m == nil || m[1] != strings.TrimSuffix(tc.machine, ".gst") || m[2] != tc.path {
-				t.Fatalf("gst ping %s: %q, want an answer %s", tc.machine, out, tc.path)
-			}
+		if out := a.mustGst("ping", "c", "-c", "1", "-v"); !strings.Contains(out, "over SSH via b in ") || !strings.Contains(out, "SSH links: c answered via b in ") {
+			t.Fatalf("gst ping c -v: %q", out)
 		}
 
-		var pings []wire.Ping
-		if err := json.Unmarshal([]byte(a.mustGst("ping", "c", "-c", "1", "--json")), &pings); err != nil {
-			t.Fatal(err)
-		}
-		cNode, _ := find(a.nodes(), "c")
-		if len(pings) != 1 || pings[0].Node.ID != cNode.ID || pings[0].Node.Name != "c" ||
-			len(pings[0].Via) != 1 || pings[0].Via[0].Name != "b" || pings[0].TimeMS <= 0 {
-			t.Fatalf("gst ping c --json: %+v", pings)
-		}
-
-		// A machine is named by its link, or by an id prefix.
-		for _, machine := range []string{"tob", "C", cNode.ID[:8], cNode.ID[:4] + ".gst"} {
-			a.mustGst("ping", machine, "-c", "1")
-		}
-
-		// Without an answer, the command says so and fails with a hint.
 		code, stdout, stderr := a.gst("ping", "nowhere", "-c", "1")
-		if code != 1 || !strings.Contains(stdout, "no answer:") || !strings.Contains(stderr, "error: nowhere did not answer") || !strings.Contains(stderr, "hint:") {
+		if code != 1 || !strings.Contains(stdout, "no reply:") || !strings.Contains(stderr, "error: nowhere did not answer") || !strings.Contains(stderr, "hint:") {
 			t.Fatalf("gst ping nowhere: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 		}
 	})

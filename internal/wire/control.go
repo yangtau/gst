@@ -13,6 +13,9 @@ const (
 	// MethodPing ("mesh.ping") takes NodeParams, calls node.info on that
 	// machine through the mesh, and returns Ping.
 	MethodPing = "mesh.ping"
+	// MethodNetPing ("net.ping") takes NodeParams and returns NetPing: a
+	// packet to that machine and back over the virtual network.
+	MethodNetPing = "net.ping"
 	// MethodDirect ("mesh.direct") takes NodeParams and returns
 	// DirectReport.
 	MethodDirect = "mesh.direct"
@@ -90,7 +93,17 @@ type Ping struct {
 	Node   NodeInfo   `json:"node"`
 	Via    []NodeInfo `json:"via"`
 	TimeMS float64    `json:"time_ms"`
-	Direct bool       `json:"direct,omitempty"` // packets go to the machine over UDP
+}
+
+// NetPing is a reply over the virtual network: it took the way that every
+// program's packets take, through the interface and WireGuard.
+type NetPing struct {
+	Node    NodeInfo `json:"node"`
+	Address string   `json:"address"`
+	// Path is PathDirect or PathSSH, and empty for this machine.
+	Path   string     `json:"path,omitempty"`
+	Via    []NodeInfo `json:"via"` // the machines on the way, over SSH
+	TimeMS float64    `json:"time_ms"`
 }
 
 // DirectReport is the UDP path to a machine, or why there is none, and
