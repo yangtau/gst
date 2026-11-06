@@ -230,7 +230,8 @@ func (m *fakeMesh) HandlePackets(handle func(string, []byte)) {
 	defer m.world.mu.Unlock()
 	m.handle = handle
 }
-func (m *fakeMesh) PacketPath(string) string { return wire.PathSSH }
+func (m *fakeMesh) PacketPath(string) string     { return wire.PathSSH }
+func (m *fakeMesh) PacketEndpoint(string) string { return "" }
 func (m *fakeMesh) Call(_ context.Context, ref, method string, _, result any) error {
 	if method != wire.MethodNetNetworks {
 		return errors.New("unknown method")

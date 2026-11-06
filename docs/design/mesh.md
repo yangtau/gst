@@ -139,7 +139,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `mesh.nodes` | 无 | `Topology` |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
 | `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 link 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（有 link 直达时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping -v` 用它检查 link |
-| `net.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
+| `net.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "endpoint": UDP 路径对端的 IP:port, "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 UDP 路径）、`trying`（有尝试在进行）、`path`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
 
 link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。

@@ -279,7 +279,7 @@ func TestPing(t *testing.T) {
 	e := newEnv(t)
 
 	out := e.mustGst("ping", "devbox", "-c", "1")
-	if want := "reply from devbox (10.99.3.4) over UDP in 1.5 ms\n"; out != want {
+	if want := "reply from devbox (10.99.3.4) via 192.0.2.2:6000 in 1.5 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	if want := []string{"ping devbox"}; !slices.Equal(e.back.calls, want) {
@@ -291,7 +291,7 @@ func TestPing(t *testing.T) {
 		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Path: wire.PathSSH, Via: []wire.NodeInfo{peerOf("a"), peerOf("b")}, TimeMS: 12.345}, nil
 	}
 	out = e.mustGst("ping", "far", "--count", "1")
-	if want := "reply from far (10.99.5.6) over SSH via a, b in 12.3 ms\n"; out != want {
+	if want := "reply from far (10.99.5.6) via SSH (a, b) in 12.3 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 
@@ -442,7 +442,7 @@ func TestPingVerbose(t *testing.T) {
 		t.Fatalf("asked %d times, want 2", asked)
 	}
 	for _, want := range []string{
-		"over UDP in 1.5 ms\n",
+		"via 192.0.2.2:6000 in 1.5 ms\n",
 		"SSH links: devbox answered in 74.1 ms\n",
 		"UDP path to devbox: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
 		"This machine:\n    0.000s  offering\n    1.500s  up\n",

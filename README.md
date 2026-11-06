@@ -90,7 +90,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-Links connect in the background, and machines appear in the list when they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the network and prints `reply from devbox (10.87.61.7) over UDP in 12.3 ms`.
+Links connect in the background, and machines appear in the list when they do. Below the list, a `# Problems:` section names this machine's links that are not running, and what keeps it off the network. `gst ping devbox` checks the network and prints `reply from devbox (10.87.61.7) via 203.0.113.7:41642 in 12.3 ms`.
 
 Machine `homelab` now sees the same mesh: on `homelab`, `gst status` lists `laptop` and `devbox`, and `ping devbox.gst` works without a link to `devbox`.
 
@@ -150,7 +150,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst add <name> [destination] [--remote-gst cmd]` | Add a link and start it in the background |
 | `gst remove <name>...` (`rm`) | Stop links and delete them |
 | `gst status` | List every machine of the mesh as this machine knows it: short id, name, gst version, address, and state; then this machine's problems |
-| `gst status --all` | Also list the running links between all the machines, and how packets go to each machine, with their last handshake and the bytes received and sent |
+| `gst status --all` | Also list the running links between all the machines, and how packets go to each machine (`ssh`, or `direct` and the `ip:port`), with their last handshake and the bytes received and sent |
 | `gst status <machine>` | Show a machine's address and links (with state and destination), asked through the mesh |
 | `gst ping <machine> [-c N] [-v]` | Send a packet to a machine and back over the virtual network once a second (3 times by default), and print the way it went and the time; `-v` also shows the UDP path to it, or why there is none, and what both machines did in their latest try at one |
 
@@ -167,7 +167,7 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 
 Links show as the machines at their ends, such as `laptop->gateway`; when a link's name differs from the machine it leads to, the name that `gst remove` takes follows, as in `laptop->prod (db)`. A `# Problems:` section lists this machine's links that are not running and what keeps it off the network. A link is `running` (the two daemons are linked), `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
 
-`gst ping` prints, for example, `reply from devbox (10.87.61.7) over UDP in 12.3 ms`, or `reply from gateway (10.87.2.9) over SSH via devbox in 41.3 ms`. The packet goes the way of every program's packets, through the interface and WireGuard, so `over UDP` means that the UDP path works, and the time is about what `ping <machine>.gst` shows. Traffic is what starts a UDP path, so the first replies may come over SSH. `-v` also checks the SSH links, which carry the control of the network: `SSH links: gateway answered via devbox in 41.3 ms`. That time is higher, as it includes setting up the way through each machine. The command exits with status 1 if no reply came.
+`gst ping` prints, for example, `reply from devbox (10.87.61.7) via 203.0.113.7:41642 in 12.3 ms`, or `reply from gateway (10.87.2.9) via SSH (devbox) in 41.3 ms`. The packet goes the way of every program's packets, through the interface and WireGuard, so an `ip:port` means that the UDP path to that address works, and the time is about what `ping <machine>.gst` shows. Traffic is what starts a UDP path, so the first replies may come over SSH. `-v` also checks the SSH links, which carry the control of the network: `SSH links: gateway answered via devbox in 41.3 ms`. That time is higher, as it includes setting up the way through each machine. The command exits with status 1 if no reply came.
 
 ### Virtual network
 

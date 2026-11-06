@@ -274,6 +274,7 @@ func (d *Daemon) netPing(ctx context.Context, ref string) (wire.NetPing, error) 
 		if p.Path = d.mesh.PacketPath(dest.ID); p.Path == wire.PathSSH {
 			p.Via = mesh.Via(topo, dest)
 		}
+		p.Endpoint = d.mesh.PacketEndpoint(dest.ID)
 	}
 	return p, nil
 }

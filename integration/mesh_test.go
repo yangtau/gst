@@ -71,7 +71,7 @@ func TestMesh(t *testing.T) {
 	// fails with a hint.
 	t.Run("Ping", func(t *testing.T) {
 		a.waitReachable("c")
-		if out := a.mustGst("ping", "c", "-c", "1", "-v"); !strings.Contains(out, "over SSH via b in ") || !strings.Contains(out, "SSH links: c answered via b in ") {
+		if out := a.mustGst("ping", "c", "-c", "1", "-v"); !strings.Contains(out, "via SSH (b) in ") || !strings.Contains(out, "SSH links: c answered via b in ") {
 			t.Fatalf("gst ping c -v: %q", out)
 		}
 

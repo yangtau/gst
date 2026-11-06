@@ -58,6 +58,7 @@ type Mesh interface {
 	SendPacket(node string, packet []byte)
 	HandlePackets(func(node string, packet []byte))
 	PacketPath(node string) string
+	PacketEndpoint(node string) string
 	Call(ctx context.Context, ref, method string, params, result any) error
 }
 
@@ -620,7 +621,7 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 		if i < 0 || !topo.Nodes[i].Reachable && !topo.Nodes[i].Direct {
 			continue // Only a record that has not expired yet.
 		}
-		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node)}
+		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node), Endpoint: m.cfg.Mesh.PacketEndpoint(p.node)}
 		if c := seen[key]; c != nil {
 			out.Handshake, out.Received, out.Sent = c.handshake, c.rx, c.tx
 		}

@@ -36,7 +36,7 @@ func TestUDPPath(t *testing.T) {
 		t.Fatalf("a reaches c by %s, want a,b,c", got)
 	}
 	out := a.mustGst("ping", "c", "-c", "1", "-v")
-	for _, want := range []string{"over UDP in ", "SSH links: c answered via b in ", "UDP path to c: up, ", "the path works", "offering over SSH"} {
+	for _, want := range []string{") via ", "SSH links: c answered via b in ", "UDP path to c: up, ", "the path works", "offering over SSH"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("gst ping c -v lacks %q: %q", want, out)
 		}

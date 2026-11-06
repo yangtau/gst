@@ -62,6 +62,7 @@ type NetPeer struct {
 	Name      string    `json:"name"`
 	Address   string    `json:"address"`
 	Path      string    `json:"path"`               // PathDirect or PathSSH
+	Endpoint  string    `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
 	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
 	Received  uint64    `json:"received"`           // bytes
 	Sent      uint64    `json:"sent"`               // bytes
@@ -101,9 +102,10 @@ type NetPing struct {
 	Node    NodeInfo `json:"node"`
 	Address string   `json:"address"`
 	// Path is PathDirect or PathSSH, and empty for this machine.
-	Path   string     `json:"path,omitempty"`
-	Via    []NodeInfo `json:"via"` // the machines on the way, over SSH
-	TimeMS float64    `json:"time_ms"`
+	Path     string     `json:"path,omitempty"`
+	Endpoint string     `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
+	Via      []NodeInfo `json:"via"`                // the machines on the way, over SSH
+	TimeMS   float64    `json:"time_ms"`
 }
 
 // DirectReport is the UDP path to a machine, or why there is none, and

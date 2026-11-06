@@ -215,8 +215,9 @@ func (a *app) pingCommand() *cobra.Command {
 second, and print each reply: the machine's address, the way the packet
 went, and the time it took. It goes the way of every program's packets,
 through the interface and WireGuard, so the time is what programs get.
-over UDP means that it went directly; over SSH, along the SSH links, through
-the machines that it names. Exit status is 1 if no reply came.
+via an IP:port means that it went directly over UDP, to that address; via
+SSH, along the SSH links, through the machines that it names. Exit status
+is 1 if no reply came.
 
 Traffic to a machine tries a UDP path to it, so the first replies may come
 over SSH and the next over UDP.
@@ -363,9 +364,12 @@ func writePing(out io.Writer, p wire.NetPing) {
 	way := ""
 	switch p.Path {
 	case wire.PathDirect:
-		way = " over UDP"
+		way = " via " + cmp.Or(p.Endpoint, "UDP") // The path may have just ended.
 	case wire.PathSSH:
-		way = " over SSH" + viaText(p.Via)
+		way = " via SSH"
+		if len(p.Via) > 0 {
+			way += " (" + strings.Join(nodeNames(p.Via), ", ") + ")"
+		}
 	}
 	fmt.Fprintf(out, "reply from %s (%s)%s in %.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
 }
@@ -374,11 +378,15 @@ func viaText(machines []wire.NodeInfo) string {
 	if len(machines) == 0 {
 		return ""
 	}
+	return " via " + strings.Join(nodeNames(machines), ", ")
+}
+
+func nodeNames(machines []wire.NodeInfo) []string {
 	names := make([]string, len(machines))
 	for i, n := range machines {
 		names[i] = n.Name
 	}
-	return " via " + strings.Join(names, ", ")
+	return names
 }
 
 // writeLinks reports the check of the SSH links in gst ping -v.

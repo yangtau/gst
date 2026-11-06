@@ -15,7 +15,7 @@ func runningNet() *wire.NetState {
 	return &wire.NetState{
 		Subnet: "10.99.0.0/16", Address: "10.99.1.2", Interface: "gst0",
 		Peers: []wire.NetPeer{
-			{Node: peerOf("devbox").ID, Name: "devbox", Address: "10.99.3.4", Path: wire.PathDirect, Handshake: time.Now().Add(-time.Minute), Received: 2048, Sent: 5},
+			{Node: peerOf("devbox").ID, Name: "devbox", Address: "10.99.3.4", Path: wire.PathDirect, Endpoint: "192.0.2.2:6000", Handshake: time.Now().Add(-time.Minute), Received: 2048, Sent: 5},
 			{Node: peerOf("homelab").ID, Name: "homelab", Address: "10.99.5.6", Path: wire.PathSSH},
 		},
 	}
@@ -86,7 +86,7 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 	found := false
 	for _, row := range rows(all) {
 		if len(row) > 2 && row[0] == "devbox" && row[1] == "10.99.3.4" {
-			found = row[2] == "direct"
+			found = row[2] == "direct" && row[3] == "192.0.2.2:6000"
 		}
 	}
 	if !found {

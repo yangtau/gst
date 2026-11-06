@@ -97,6 +97,15 @@ func (n *Node) PacketPath(id string) string {
 	return wire.PathSSH
 }
 
+// PacketEndpoint returns the IP:port that packets to node id go to, when
+// they go over UDP. It holds an address, so it stays out of the log.
+func (n *Node) PacketEndpoint(id string) string {
+	if c := n.packetPeer(id).direct.Load(); c != nil {
+		return c.Remote()
+	}
+	return ""
+}
+
 // dialPackets opens a stream to p's node along the mesh.
 func (n *Node) dialPackets(p *packetPeer) {
 	defer p.dialing.Store(false)

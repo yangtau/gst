@@ -109,7 +109,7 @@ func (f *fakeBackend) NetPing(_ context.Context, node string) (wire.NetPing, err
 	if f.ping != nil {
 		return f.ping(node)
 	}
-	return wire.NetPing{Node: peerOf(node), Address: "10.99.3.4", Path: wire.PathDirect, Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+	return wire.NetPing{Node: peerOf(node), Address: "10.99.3.4", Path: wire.PathDirect, Endpoint: "192.0.2.2:6000", Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
 }
 
 func (f *fakeBackend) Ping(_ context.Context, node string) (wire.Ping, error) {

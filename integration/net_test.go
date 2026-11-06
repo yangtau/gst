@@ -235,7 +235,7 @@ func TestNet(t *testing.T) {
 
 	// gst ping goes where programs' packets go, and says which way.
 	t.Run("Ping", func(t *testing.T) {
-		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\) over SSH via b in [0-9]+\.[0-9] ms$`)
+		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\) via SSH \(b\) in [0-9]+\.[0-9] ms$`)
 		for _, machine := range []string{"c", "c.gst", "C"} {
 			out := a.mustGst("ping", machine, "-c", "1")
 			if m := reply.FindStringSubmatch(strings.TrimSpace(out)); m == nil || m[1] != "c" {
