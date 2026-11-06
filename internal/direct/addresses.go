@@ -5,13 +5,13 @@ import (
 	"net/netip"
 )
 
-// maxPerFamily bounds the sockets of an attempt, for machines with many
+// maxPerFamily bounds the addresses of an offer, for machines with many
 // temporary IPv6 addresses.
 const maxPerFamily = 8
 
-// Addresses returns this machine's addresses that a direct connection can
-// use. It leaves out point-to-point interfaces, which are VPNs and proxies
-// rather than a way of their own to the other machine.
+// Addresses returns this machine's addresses to offer. Any of them may
+// turn out to be a way, a VPN's included; only the virtual network's own
+// must stay out, which the Transport's skip sees to.
 func Addresses() []netip.Addr {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -19,7 +19,7 @@ func Addresses() []netip.Addr {
 	}
 	var v4, v6 []netip.Addr
 	for _, i := range interfaces {
-		if i.Flags&net.FlagUp == 0 || i.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
+		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		addrs, err := i.Addrs()

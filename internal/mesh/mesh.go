@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/direct"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -49,10 +50,12 @@ type Node struct {
 
 	// UDP paths; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
-	directAddrs func() []netip.Addr
+	udp         *direct.Transport
 	directTries map[string]*directTry         // by node id
 	directWaits map[string]directWait         // by node id
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
+
+	subnet atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
 
 	// Packets of the virtual network; see packets.go.
 	onPacket atomic.Pointer[func(node string, packet []byte)]
@@ -114,6 +117,7 @@ func (n *Node) Configure(c *config.Node) {
 		clear(n.records)
 		n.seqFloor = 0
 		n.net = nil
+		n.subnet.Store(nil)
 		n.notify()
 		for l := range n.links {
 			l.session.Close()

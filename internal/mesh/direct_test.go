@@ -279,6 +279,24 @@ func TestDirectOfferInvalid(t *testing.T) {
 	}
 }
 
+// Addresses of the virtual network are no way to a machine, once this
+// node is on it.
+func TestAddressesOfTheNetworkAreSkipped(t *testing.T) {
+	a := newNode(t, "a")
+	addr := netip.MustParseAddr("10.99.0.7")
+	if a.onNetwork(addr) {
+		t.Fatal("off the network, no address is in it")
+	}
+	a.SetNet(&wire.NetInfo{Subnet: "10.99.0.0/16", Address: "10.99.0.1"})
+	if !a.onNetwork(addr) || a.onNetwork(netip.MustParseAddr("192.0.2.1")) {
+		t.Fatal("the subnet decides")
+	}
+	a.SetNet(nil)
+	if a.onNetwork(addr) {
+		t.Fatal("off the network again")
+	}
+}
+
 // A node reports the addresses of a path, and what both ends did to set
 // it up.
 func TestDirectReport(t *testing.T) {
@@ -301,12 +319,12 @@ func TestDirectReport(t *testing.T) {
 	if !slices.ContainsFunc(opener, hasText("offering")) {
 		opener, other = other, opener // c offered.
 	}
-	for _, want := range []string{"offering", "the answer offers", "the path works", "the other side confirmed"} {
+	for _, want := range []string{"offering", "the answer offers", "the path works", "up: using "} {
 		if !slices.ContainsFunc(opener, hasText(want)) {
 			t.Fatalf("the offering side's trace lacks %q: %v", want, opener)
 		}
 	}
-	for _, want := range []string{"offer over SSH", "answering with", "probe from", "the other side picked"} {
+	for _, want := range []string{"offer over SSH", "answering with", "probe from", "up: using "} {
 		if !slices.ContainsFunc(other, hasText(want)) {
 			t.Fatalf("the answering side's trace lacks %q: %v", want, other)
 		}

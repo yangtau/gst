@@ -81,6 +81,11 @@ func (n *Node) SetNet(info *wire.NetInfo) {
 	n.mu.Lock()
 	n.net = info
 	n.mu.Unlock()
+	if info == nil {
+		n.subnet.Store(nil)
+	} else if subnet, err := netip.ParsePrefix(info.Subnet); err == nil {
+		n.subnet.Store(&subnet)
+	}
 	n.Update()
 }
 

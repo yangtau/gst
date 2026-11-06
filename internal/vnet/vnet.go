@@ -303,8 +303,10 @@ func (m *Manager) load(id string) error {
 	}
 	private[0] &= 248
 	private[31] = private[31]&127 | 64
+	old := m.state
 	m.state.Node, m.state.PrivateKey, m.state.Address = id, hexKey(private), ""
 	if err := m.save(); err != nil {
+		m.state = old // For the next look to try again, with WireGuard too.
 		return err
 	}
 	m.loaded = true
@@ -506,6 +508,11 @@ func (m *Manager) up(ctx context.Context) error {
 	m.name, _ = iface.Device().Name()
 	m.bind = newBind(m.cfg.Mesh.SendPacket)
 	m.dev = device.NewDevice(iface.Device(), m.bind, device.NewLogger(device.LogLevelSilent, ""))
+	// An endpoint is a node id, set from the records, and stays right
+	// wherever a machine moves. The node that a packet seems to come from
+	// is less sure: two machines behind one NAT can have the same source
+	// on the shared UDP socket.
+	m.dev.DisableSomeRoamingForBrokenMobileSemantics()
 	if err := m.dev.IpcSet("private_key=" + m.state.PrivateKey + "\n"); err != nil {
 		m.down()
 		return fmt.Errorf("start WireGuard: %w", err)

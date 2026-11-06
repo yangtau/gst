@@ -22,7 +22,7 @@ gst links a user's machines into a private network over SSH: one background daem
 - `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst add`.
 - `internal/daemon`: the daemon, which supervises the links, runs the virtual network, and answers the control socket, and its client.
 - `internal/mesh`: the node: links (`gst peer-bridge` plus yamux, behind `session`), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, calls to any node along source routes (`relay.open`), and the two ways of packets: a UDP path, or a stream along the links (`packets.go`). Signaling for UDP paths is here (`direct.go`).
-- `internal/direct`: UDP paths: one try at a path between two daemons (probes on each local address, then use and used) and the `Conn` it yields, which carries raw packets and beats. No encryption: that is WireGuard's. Signaling is `mesh`'s.
+- `internal/direct`: UDP paths: `Transport`, one wildcard socket per IP family on one port that all paths share, and `Path`, one per node, which probes the node's addresses, sends to the fastest, and carries raw packets. No encryption: that is WireGuard's. Signaling is `mesh`'s.
 - `internal/vnet`: the virtual network, in the daemon, and the only data path: wireguard-go over the mesh (`bind`), the choice of subnet and addresses, and DNS for `.gst`. `mesh` carries its packets (`packets.go`).
 - `internal/tun`: the root helper that creates the interface and sets addresses, routes, and name resolution, and the daemon's client of it. Commands that take root stay here; `internal/service` installs it.
 - `internal/relay`: copies bytes between two connections, for `relay.open`.

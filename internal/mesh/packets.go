@@ -36,7 +36,7 @@ const (
 // packetPeer is what this node keeps for sending packets to one node.
 type packetPeer struct {
 	id      string
-	direct  atomic.Pointer[direct.Conn] // the UDP path; nil while there is none
+	direct  atomic.Pointer[direct.Path] // the UDP path; nil while there is none
 	queue   chan []byte                 // for the streams
 	streams atomic.Int32                // running
 	dialing atomic.Bool
@@ -212,14 +212,14 @@ func (n *Node) runPackets(p *packetPeer, conn net.Conn) {
 	}
 }
 
-// attachPackets makes packets to node id take conn, and hands on what
+// attachPackets makes packets to node id take path, and hands on what
 // arrives on it.
-func (n *Node) attachPackets(id string, conn *direct.Conn) {
-	conn.HandlePackets(func(packet []byte) { n.deliver(id, packet) })
-	n.packetPeer(id).direct.Store(conn)
+func (n *Node) attachPackets(id string, path *direct.Path) {
+	path.HandlePackets(func(packet []byte) { n.deliver(id, packet) })
+	n.packetPeer(id).direct.Store(path)
 }
 
-// detachPackets undoes attachPackets when conn ended.
-func (n *Node) detachPackets(id string, conn *direct.Conn) {
-	n.packetPeer(id).direct.CompareAndSwap(conn, nil)
+// detachPackets undoes attachPackets when path ended.
+func (n *Node) detachPackets(id string, path *direct.Path) {
+	n.packetPeer(id).direct.CompareAndSwap(path, nil)
 }

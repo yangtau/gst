@@ -30,16 +30,31 @@ const (
 // A path is no link: no calls run on it, and the records say nothing of
 // it. It is a shortcut for packets, and only the mesh can start one, as
 // SSH links decide which machines belong to it. Losing SSH links does not
-// change that, so a path outlives them, as when the machine between its
-// two nodes sleeps. Removing an SSH link does: both of its ends then end
-// the paths to nodes that SSH links no longer lead to.
+// change that at once, so a path outlives them, as when the machine
+// between its two nodes sleeps, until the record of the other node
+// expires. Removing an SSH link does: both of its ends then end the paths
+// to nodes that SSH links no longer lead to.
 
 // EnableDirect lets this node find and accept UDP paths until ctx is
-// done. addrs returns the local addresses to use.
+// done. addrs returns the local addresses to offer.
 func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
+	udp, err := direct.Listen(direct.Port, addrs, n.onNetwork)
+	if err != nil {
+		n.log.Print("UDP paths are off: no socket")
+		return
+	}
+	context.AfterFunc(ctx, udp.Close)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.directCtx, n.directAddrs = ctx, addrs
+	n.directCtx, n.udp = ctx, udp
+}
+
+// onNetwork reports whether addr is in the virtual network. Such an
+// address is no way to a machine: packets to it would take the very path
+// that they make up.
+func (n *Node) onNetwork(addr netip.Addr) bool {
+	subnet := n.subnet.Load()
+	return subnet != nil && subnet.Contains(addr)
 }
 
 // Unlink tells the node at the other end of the link called name, if the
@@ -202,37 +217,36 @@ func (n *Node) tryDirect(id string) {
 // finds one to the node that answers.
 func (n *Node) offerDirect(ctx context.Context, id string, try *directTry) {
 	defer n.endDirect(id, try)
-	conn, err := n.connectDirect(ctx, id)
+	path, err := n.connectDirect(ctx, id)
 	if err != nil {
 		n.directFailed(ctx, id, err.Error())
 		return
 	}
-	n.runDirect(id, conn, try)
+	n.runDirect(id, path, try)
 }
 
 // connectDirect offers a path to node id and finds one. Its errors are
 // logged, so they leave out what the other machine reports.
-func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Conn, error) {
-	attempt, err := direct.New(n.directAddrs())
+func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Path, error) {
+	path, err := n.udp.Start(func(text string) { n.trace(id, "%s", text) })
 	if err != nil {
-		return nil, errors.New("no local address")
+		return nil, err
 	}
-	defer attempt.Close()
-	attempt.Trace = func(text string) { n.trace(id, "%s", text) }
-	offer := attempt.Offer()
+	offer := path.Offer()
 	offer.Node = n.Self().ID
 	n.trace(id, "offering over SSH: %s", strings.Join(offer.Addresses, ", "))
 	var answer wire.DirectOffer
 	if err := n.Call(ctx, id, wire.MethodDirectOffer, offer, &answer); err != nil {
 		n.trace(id, "the offer failed: %v", err)
+		path.Close()
 		return nil, errors.New("the other machine did not take the offer")
 	}
 	n.trace(id, "the answer offers: %s", strings.Join(answer.Addresses, ", "))
-	conn, err := attempt.Dial(ctx, answer)
-	if err != nil {
+	if err := path.Connect(ctx, answer); err != nil {
+		path.Close()
 		return nil, errors.New("no path")
 	}
-	return conn, nil
+	return path, nil
 }
 
 // directFailed logs why a try failed, unless a newer try replaced it,
@@ -268,50 +282,48 @@ func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error
 	if try := n.directTries[offer.Node]; try != nil && try.offering && n.info.ID < offer.Node {
 		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a path itself", n.info.Name)
 	}
-	attempt, err := direct.New(n.directAddrs())
+	path, err := n.udp.Join(offer, func(text string) { n.trace(offer.Node, "%s", text) })
 	if err != nil {
-		return nil, wire.Errorf(wire.CodeFailed, "%s has no local address for a path", n.info.Name)
+		return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
 	}
 	// The other node has no path, or it would not offer one. If this one
 	// thinks there is, that path is gone.
 	if old != nil {
 		old.Close()
 	}
-	answer := attempt.Offer()
+	answer := path.Offer()
+	answer.Token = ""
 	ctx, try := n.startDirect(offer.Node, false)
 	go func() {
 		defer n.endDirect(offer.Node, try)
-		attempt.Trace = func(text string) { n.trace(offer.Node, "%s", text) }
 		n.trace(offer.Node, "offer over SSH: %s", strings.Join(offer.Addresses, ", "))
 		n.trace(offer.Node, "answering with: %s", strings.Join(answer.Addresses, ", "))
-		conn, err := attempt.Accept(ctx, offer)
-		attempt.Close()
-		if err != nil {
+		if err := path.Connect(ctx, offer); err != nil {
+			path.Close()
 			n.directFailed(ctx, offer.Node, "no path")
 			return
 		}
-		n.runDirect(offer.Node, conn, try)
+		n.runDirect(offer.Node, path, try)
 	}()
 	return answer, nil
 }
 
-// runDirect makes packets to node id take conn until it ends. The try
+// runDirect makes packets to node id take path until it ends. The try
 // ends once the path runs, so that there is always one or the other.
-func (n *Node) runDirect(id string, conn *direct.Conn, try *directTry) {
+func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	n.mu.Lock()
 	delete(n.directWaits, id)
 	ctx := n.directCtx
 	n.mu.Unlock()
-	n.attachPackets(id, conn)
-	defer n.detachPackets(id, conn)
-	defer conn.Close()
+	n.attachPackets(id, path)
+	defer n.detachPackets(id, path)
+	defer path.Close()
 	n.endDirect(id, try)
 	n.log.Printf("UDP path to %s: up", n.nodeName(id))
-	n.trace(id, "up: %s -> %s", conn.Local(), conn.Remote())
 	n.Update()
 	select {
 	case <-ctx.Done():
-	case <-conn.Done():
+	case <-path.Done():
 		n.log.Printf("UDP path to %s: ended", n.nodeName(id))
 		n.trace(id, "ended")
 		n.backOff(id)

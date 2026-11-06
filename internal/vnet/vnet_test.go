@@ -1,6 +1,7 @@
 package vnet
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -179,7 +180,8 @@ type fakeMesh struct {
 	changed  chan struct{}
 	handle   func(string, []byte)
 	networks []string
-	alone    bool // sees no other node, and none sees it
+	alone    bool   // sees no other node, and none sees it
+	sendAs   string // the id that packets seem to come from, when not empty
 }
 
 // setAlone cuts the node off the others, or joins it to them.
@@ -220,9 +222,10 @@ func (m *fakeMesh) SendPacket(node string, packet []byte) {
 			handle = n.handle
 		}
 	}
+	from := cmp.Or(m.sendAs, m.info.ID)
 	m.world.mu.Unlock()
 	if handle != nil {
-		handle(m.info.ID, packet)
+		handle(from, packet)
 	}
 }
 func (m *fakeMesh) HandlePackets(handle func(string, []byte)) {
@@ -587,6 +590,67 @@ func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
 	waitFor(t, "b knows the new key", up(b, 1))
 	wantPacket(t, a, b, "after")
 	wantPacket(t, b, a, "back")
+}
+
+// A failure to save the new identity's key leaves everything as it was,
+// and the next look tries again, so that the key in the record is always
+// the one that WireGuard has.
+func TestANewIdentityThatCannotBeSaved(t *testing.T) {
+	var w world
+	a := start(t, &w, "a0", "laptop")
+	b := start(t, &w, "b0", "devbox")
+	a.manager.Configure(t.Context(), &config.Net{})
+	b.manager.Configure(t.Context(), &config.Net{})
+	waitFor(t, "a is up", up(a, 1))
+	waitFor(t, "b is up", up(b, 1))
+	key := published(&w, a.mesh).PublicKey
+
+	if err := os.Chmod(a.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(a.dir, 0o700) })
+	w.mu.Lock()
+	a.mesh.info.ID = "f" + strings.Repeat("0", 31)
+	w.mu.Unlock()
+	a.manager.Configure(t.Context(), &config.Net{})
+	if st := a.manager.Status(); st.Error == "" {
+		t.Fatalf("no error: %+v", st)
+	}
+	if got := published(&w, a.mesh).PublicKey; got != key {
+		t.Fatal("the record has a key that was not saved")
+	}
+
+	if err := os.Chmod(a.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a.manager.Configure(t.Context(), &config.Net{})
+	waitFor(t, "a has a new key", func() bool { return published(&w, a.mesh).PublicKey != key })
+	w.changed()
+	waitFor(t, "a is up", up(a, 1))
+	waitFor(t, "b knows the new key", up(b, 1))
+	wantPacket(t, a, b, "after")
+	wantPacket(t, b, a, "back")
+}
+
+// The node that a packet seems to come from may be wrong: two machines
+// behind one NAT can have the same source. The answers still go to the
+// machine that WireGuard knows, not to that node.
+func TestPacketsFromTheWrongNode(t *testing.T) {
+	var w world
+	a := start(t, &w, "a0", "laptop")
+	b := start(t, &w, "b0", "devbox")
+	c := start(t, &w, "c0", "homelab")
+	for _, n := range []*testNode{a, b, c} {
+		n.manager.Configure(t.Context(), &config.Net{})
+	}
+	for _, n := range []*testNode{a, b, c} {
+		waitFor(t, "the machine is up", up(n, 2))
+	}
+	w.mu.Lock()
+	a.mesh.sendAs = c.mesh.info.ID
+	w.mu.Unlock()
+	wantPacket(t, a, b, "ping")
+	wantPacket(t, b, a, "pong")
 }
 
 func published(w *world, m *fakeMesh) *wire.NetInfo {

@@ -101,12 +101,197 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 每条连接上，发起方先发 `Hello`，接收方回 `Hello`：
 
 ```json
-{"protocol": 3, "software": "gst 0.4.0", "role": "control", "build": "sha256:…", "features": []}
+{"protocol": 4, "software": "gst 0.4.0", "role": "control", "build": "sha256:…", "features": []}
 ```
 
 | 字段 | 含义 |
 | --- | --- |
-| `protocol` | 发送方的协议版本。当前为 3；接收方拒绝低于 3 的版本 |
+| `protocol` | 发送方的协议版本。当前为 4；接收方拒绝低于 4 的版本 |
+| `software` | 人类可读的软件版本 |
+| `role` | `control`（CLI → 本机 daemon）或 `peer`（daemon ↔ daemon） |
+| `build` | 可执行文件标识，CLI 用它判断 daemon 是否需要重启 |
+| `features` | 可选能力；`peer` 连接必须带 `yamux` |
+| `error` | 仅出现在回复中：拒绝原因，随后连接关闭 |
+
+### 请求与响应
+
+握手之后，一个**流**承载一次调用：
+
+```
+请求：  {"method": "link.restart", "params": {"names": ["devbox"]}}
+响应：  {"result": {...}}
+     或 {"error": {"code": "not_found", "message": "link devbox is not started"}}
+```
+
+- `control` 连接本身就是一个流，可以顺序发多次请求。
+- `peer` 连接握手后切换为 yamux 会话，双方都可以开子流，每个子流以一个请求开始。
+- **流式方法**在成功响应之后接管该流：`relay.open` 之后是到路径末端的流，`topology.sync` 之后是连续的帧，`net.packets` 之后是包。
+- 未知方法返回 `unsupported_method`。
+
+错误码：`unsupported_method`、`unsupported_role`、`unsupported_protocol`、`invalid_params`、`not_found`（节点、link 或路径不存在）、`failed`。
+
+### control 方法
+
+| 方法 | 参数 | 结果 |
+| --- | --- | --- |
+| `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`links`（配置中的每条 link：name、`destination`、state、since、error、reconnects、对端 `peer`；按名字排序）、`net`（`NetState`：subnet、address、interface、error、hint、`peers`；daemon 不能运行网络时没有） |
+| `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
+| `mesh.nodes` | 无 | `Topology` |
+| `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
+| `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 link 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（有 link 直达时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping -v` 用它检查 link |
+| `net.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "endpoint": UDP 路径对端的 IP:port, "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
+| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 UDP 路径）、`trying`（有尝试在进行）、`path`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
+
+link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
+
+### peer 方法
+
+| 方法 | 参数 | 结果 / 后续 |
+| --- | --- | --- |
+| `node.info` | 无 | `NodeInfo`：`id`、`name`、`software` |
+| `topology.sync` | `{"known": {节点 id: seq}}` | `{"records": [...]}`：比调用方新的记录；之后该流持续推送 `{"records": [...]}`，每次变化一帧 |
+| `relay.open` | `{"path": [节点 id...]}` | 成功后该流通到路径末端的节点，由它继续处理 peer 方法，见下文 |
+| `node.status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同）；不提供状态的节点返回 `unsupported_method` |
+| `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方寻找 UDP 路径，见下文 |
+| `link.remove` | `{"node": 调用方 id, "link": link 名}` | 无；调用方即将删除这条 link，见 UDP 路径一节 |
+| `direct.trace` | `{"node": 调用方 id}` | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次寻找 UDP 路径的过程 |
+| `net.packets` | `{"node": 调用方 id}` | 无；之后该流双向运送虚拟网络的包，见[虚拟网络](#虚拟网络)。被调方不在虚拟网络上时返回 `failed` |
+| `net.networks` | 无 | `{"prefixes": ["10.0.0.0/24", …]}`：被调方在用的 IPv4 网段，供选择网段时避开 |
+
+### link 的建立
+
+1. daemon 用 `ssh -G` 解析 destination，建立 SSH 连接（只信任 known_hosts 中的主机密钥），按 keepalive 设置探测。
+2. 在该连接上开 session，执行 `<remote_gst> peer-bridge`。peer-bridge 把标准输入输出接到服务器 daemon 的 control socket；服务器还没有 node 身份或 `down` 时报错退出（`gst is not up on this machine`），`gst add` 看到这个错误后提示在那台机器上执行 `gst up`，并给出 `ssh -t` 的命令，但不替用户执行；link 保留，之后自动连上。daemon 只是意外停止或运行别的 gst 时，peer-bridge 重启它。
+3. 双方以 `peer` 角色握手（30 秒内完成），切换到 yamux，各调用一次 `node.info`；连到自己时报错断开。
+4. 双方各向对方调用一次 `topology.sync`。
+5. SSH 连接、session、yamux 会话任一结束，link 即结束，daemon 按退避重连。远端 gst 失败时，其 stderr 的第一行出现在 `Status` 的 error 中，不进日志。
+
+### link-state 记录
+
+```json
+{
+  "node": {"id": "…", "name": "laptop", "software": "gst 0.4.0"},
+  "seq": 1793700000000000000,
+  "expires": "2026-11-03T12:00:00Z",
+  "links": [{"name": "devbox", "peer": "…devbox 的 id…"}]
+}
+```
+
+- 每个节点只发布自己的记录，`links` 是它处于 running 的 link：自己发起的带 `name`，接受的 `name` 为空。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`；若收到自己旧进程发布的更大 `seq`，立即以更大的 `seq` 重新发布。
+- 节点信息或 link 变化时立即重新发布；收到更大 `seq` 的记录就替换，并经各条 `topology.sync` 流推送给其他 peer（洪泛）。
+- 在虚拟网络上的节点在记录里带 `net`（网卡起来之后才带，别的机器不会向答不了话的机器发包）：`{"subnet": …, "since": …, "address": …, "public_key": …}`，见[虚拟网络](#虚拟网络)。收到的记录中 `net` 不合法时整条丢弃。
+- 记录有效期 30 分钟，节点每 10 分钟刷新。每个节点最多保留 1024 条记录，每条记录最多 1024 条 link。
+- `Topology` 由查看方计算：`nodes`（id、name、software、reachable、`path`：从本节点出发的最短路径上的节点 id、`net`、`direct`：查看方有到该节点的 UDP 路径）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link。link 是双向的，路径可以沿任一方向经过。UDP 路径不在记录里，也不算路径：它只运送包。
+- 只有 SSH link 能续期记录，UDP 路径不能。记录过期时，到那个节点的 UDP 路径随之关闭。
+- 人看到的（`mesh.nodes`、`gst status`、`gst ui`、`gst status --all` 的两张表）只有现在连得上的机器，也就是有 SSH 路径或运行中的 UDP 路径的机器，以及它们之间的 link。其余只是还没过期的记录，内部继续用来保留地址和解析名字，不显示。机器走了还是暂时断网分不清，所以没有 offline 这种状态；本机的 link 断了，由 `# Problems:` 报告。
+
+### 中转
+
+- 发起方根据自己的 `Topology` 计算最短路径（源路由），最多 16 个节点。`relay.open` 的 `path` 以被调方开头，每个节点检查 `path[0]` 是自己，然后：
+  - 只剩自己：在该流上继续处理 peer 方法，一个接一个，直到发起方关闭流。
+  - 否则在与 `path[1]` 的 peer 会话上开新流，把 `path[1:]` 交给它，之后两边对拷字节。
+- 发起方用它调用任意节点的 peer 方法：`mesh.status` 经此调用 `node.status`，`mesh.ping` 调用 `node.info`，`direct.offer` 和 `net.packets` 也一样。调用自己时在进程内完成。
+- 失败时错误沿路径原样传回发起方。
+
+### UDP 路径
+
+两个节点之间可以有一条 UDP 路径（`internal/direct`），即使两者没有 SSH link。不需要配置、标记或 STUN 服务器。[`udp-hole-punching.html`](udp-hole-punching.html) 从 UDP 包头讲起，解释防火墙、NAT 和打洞，并带逐步的模拟器。
+
+路径上没有 QUIC、TLS 或流，只有 WireGuard 的包和下面这几种自己的小包，靠首字节区分：WireGuard 的首字节是 1 到 4，gst 的是 `0x11` 起，后面跟 16 字节 token。
+
+| 首字节 | 名字 | 内容 | 含义 |
+| --- | --- | --- | --- |
+| `0x11` | probe | 发送方 id（8 字节）、时间（8 字节）、目标地址（18 字节） | 探测 |
+| `0x12` | answer | probe 的时间和目标地址、看到的来源地址（18 字节） | 回应探测，证明这条路通，并告诉对方它的来源 |
+| `0x13` | bye | 无 | 关闭 |
+
+地址是 16 字节 IP 加 2 字节端口。
+
+- **socket**：daemon 启动时开 IPv4 和 IPv6 各一个通配 socket（`direct.Transport`），所有路径共用，端口默认 15355，被占用时由系统分配，每次 offer 都带上，所以不用记住。不绑定具体地址，也不选网卡：发包完全听系统路由，走别的 VPN 也可以，只要能通。socket 收发缓冲 4 MiB。
+- **区分对端**：probe、answer、bye 靠 token 找到路径。WireGuard 的包靠来源 `IP:port` 找到路径，只有用 token 证明过的来源才放行，其余丢弃。这个归属不一定准：同一个 NAT 后的两台机器访问本机不同的 IP 时，来源可能相同。所以 WireGuard 关掉了 roaming，endpoint 始终是记录里的 node id，包的来源只用于投递；解密靠 WireGuard 自己的索引，回包不会被这种归属带偏。
+- **候选地址**：本机所有接口上的地址（跳过回环和 link-local，每个地址族最多 8 个），加上最近 10 分钟别的节点看到的本机地址（最多 4 个）。只排除 gst 网段里的地址，否则包会钻进它自己组成的路径：提供、收到和从来包学到的地址都过滤。
+- **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 的包和 `-v` 也会）。尝试不阻塞包。失败或路径结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。
+- **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …]}`，响应是对方的 `addresses`。候选地址只出现在这次调用中，不进记录，不进日志。
+- **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的路径，说明它已失效，先关闭。
+- **探测**：双方每 200 ms 向对方所有地址发 probe，收到后回 answer。收到 probe 时，把来源地址也加入探测目标：NAT 后的节点不知道自己的公网地址，但只要一方能到达另一方，另一方就从来包学到地址。双方都有状态防火墙时，同时发包也让两边放行对方。发送方 id 让 daemon 认出自己的 probe：两台机器可能有相同的地址（比如容器网桥）和相同的端口，probe 会回到自己。
+- **公网地址**：answer 带着对方看到的来源。NAT 对一个 socket 保持同一个公网端口时，这个地址对所有节点都有效，所以写进之后给别的节点的 offer，两台都在 NAT 后的机器也有机会打通。不需要 STUN 服务器。
+- **选路**：两端各自选，不用协商，来回可以走不同的路。第一个回 answer 的地址证明路径可用，开始承载包。成绩记在 probe 的目标地址上，不看 answer 从哪个地址来，多地址的机器不一定从收到探测的地址回复。之后持续比较来回时间（平滑后）：新地址至少测过 3 次，比当前的低 2 ms 以上且低一成才切换。路径刚建好后的 1 秒，以及之后每 30 秒，向所有地址探测 1 秒。切换不换 socket，WireGuard 不用重新握手。整次尝试限时 15 秒。
+- **认证**：token 只用来找路径，不用于认证。身份和加密都是 WireGuard 的：对方拿不出记录里那把公钥对应的私钥，握手就不成立。
+- **维持**：每秒向在用的地址发 probe，同时让 NAT 和防火墙的表项不过期。在用的地址 2 秒没有 answer，就重新探测所有地址，有回应的地址立刻顶替，所以一端换了网络时路径不用重建。3 秒什么都没收到（answer 和 WireGuard 的包都算），路径结束，包回到 SSH，WireGuard 的会话不受影响，所以程序的连接不断。关闭时发 bye，对方立即知道。
+- **SSH 决定成员**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
+- **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
+
+## 单进程 daemon
+
+- 每个用户一个服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd agent `local.gst`，命令行为 `gst [--config path] daemon`。
+- 文件位置：
+
+  | | Linux | macOS |
+  | --- | --- | --- |
+  | 配置 | `$XDG_CONFIG_HOME/gst/config.json`（默认 `~/.config/gst/config.json`） | 同左 |
+  | 状态目录 | `$XDG_STATE_HOME/gst`（默认 `~/.local/state/gst`） | `~/Library/Application Support/gst` |
+  | control socket | `<状态目录>/gst.sock` | 同左 |
+  | daemon 日志 | journald（`journalctl --user -u gst`） | `~/Library/Logs/gst-daemon.log` |
+
+- daemon 通过 `<socket>.lock` 上的 flock 保证单实例。
+- 配置文件是唯一事实来源。CLI 修改配置后调用 `daemon.reload`：daemon 更新 node 身份，启动新的 link、停止已删除的 link、重启配置改变的 link，把网段的选择交给虚拟网络。
+- CLI 每次同步时比较 daemon 的 build（可执行文件的 SHA-256），不同就重启服务，让升级生效。
+
+## 配置文件
+
+```json
+{
+  "version": 4,
+  "node": {"id": "3f2a9c10…（32 位十六进制）", "name": "laptop"},
+  "links": {
+    "devbox": {"destination": "devbox", "remote_gst": ""}
+  },
+  "net": {"subnet": "10.99.0.0/16", "since": 1793700000000000000}
+}
+```
+
+- link 的字段：`destination`（ssh destination，每次连接用 `ssh -G` 解析；地址、用户、私钥、known_hosts、超时和保活都来自 ssh 配置，link 不另设）、`remote_gst`（服务器上的 gst 命令，默认 `gst`）。要修改 link，删除后重新添加。
+- `net` 是用户用 `gst subnet` 选的网段和选择的时间，没选过时不存在。
+- **旧版本**：不转换。读到低于当前版本的配置时报错，说明要删除文件并重新添加 link。
+
+## 机器寻址
+
+命令里的 `<machine>` 和 DNS 里的 `<machine>.gst` 按顺序解析：
+
+1. 去掉末尾的 `.gst`；
+2. 节点 id；
+3. 节点名（唯一时）；
+4. link 名：某条 link 的名字，指向该 link 对端的节点（任意节点发布的 link 都算，唯一时）；
+5. 至少 4 位的 id 前缀（唯一时）。
+
+所以 `devbox.gst`、`devbox`（laptop 上 link 的名字，或 devbox 自己的节点名）在整个 mesh 中都能用。
+
+## gst 协议
+
+CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `internal/wire`。帧格式固定，扩展只靠新增方法、新增字段、新增错误码和 feature。
+
+### 帧
+
+```
++----------------+---------------------------+
+| length: uint32 | payload: JSON (length 字节) |
+|  big-endian    |                           |
++----------------+---------------------------+
+```
+
+`length` 不超过 1 MiB；超出即为协议错误。接收方忽略未知 JSON 字段。删除字段或改变字段含义必须提升协议版本。
+
+### 握手
+
+每条连接上，发起方先发 `Hello`，接收方回 `Hello`：
+
+```json
+{"protocol": 4, "software": "gst 0.4.0", "role": "control", "build": "sha256:…", "features": []}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `protocol` | 发送方的协议版本。当前为 4；接收方拒绝低于 4 的版本 |
 | `software` | 人类可读的软件版本 |
 | `role` | `control`（CLI → 本机 daemon）或 `peer`（daemon ↔ daemon） |
 | `build` | 可执行文件标识，CLI 用它判断 daemon 是否需要重启 |
