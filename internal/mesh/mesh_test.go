@@ -198,7 +198,7 @@ func TestLinkEndsWhenConnectionIsLost(t *testing.T) {
 		t.Fatal("Link returned nil for a lost connection")
 	}
 	waitFor(t, "a drops the link", func() bool { return len(a.Topology().Edges) == 0 && !reaches(a, "b") })
-	waitFor(t, "b drops the link", func() bool { return b.sessionTo(nid("a")) == nil })
+	waitFor(t, "b drops the link", func() bool { _, ok := b.sessionTo(nid("a")); return !ok })
 
 	// A new link works again.
 	linkUp(t, a, b, "ab2")
@@ -210,7 +210,7 @@ func TestLinkStaleEdgeAfterLoss(t *testing.T) {
 	l := linkUp(t, a, b, "ab")
 	waitFor(t, "b reaches a", func() bool { return reaches(b, "a") })
 	l.cut()
-	waitFor(t, "b drops the link", func() bool { return b.sessionTo(nid("a")) == nil })
+	waitFor(t, "b drops the link", func() bool { _, ok := b.sessionTo(nid("a")); return !ok })
 	if reaches(b, "a") {
 		t.Fatal("b still reaches a without a link")
 	}
@@ -355,8 +355,8 @@ func TestConfigure(t *testing.T) {
 		if len(topo.Nodes) != 0 || len(topo.Edges) != 0 || topo.Nodes == nil || topo.Edges == nil {
 			t.Fatalf("topology = %+v", topo)
 		}
-		n.Configure(&config.Node{ID: nid("a"), Name: "a", Exit: true})
-		if got := n.Self(); got.ID != nid("a") || got.Name != "a" || !got.Exit || got.Software != "gst test" {
+		n.Configure(&config.Node{ID: nid("a"), Name: "a"})
+		if got := n.Self(); got.ID != nid("a") || got.Name != "a" || got.Software != "gst test" {
 			t.Fatalf("self = %+v", got)
 		}
 		n.Configure(nil)
@@ -368,11 +368,11 @@ func TestConfigure(t *testing.T) {
 	t.Run("same identity keeps links and publishes changes", func(t *testing.T) {
 		a, b := newNode(t, "a"), newNode(t, "b")
 		l := linkUp(t, a, b, "ab")
-		b.Configure(&config.Node{ID: nid("b"), Name: "b2", Exit: true})
+		b.Configure(&config.Node{ID: nid("b"), Name: "b2"})
 		waitFor(t, "a sees the new name and exit", func() bool {
 			// a's own view of b comes from b's record.
 			n, ok := findTopo(a.Topology(), nid("b"))
-			return ok && n.Name == "b2" && n.Exit && n.Reachable
+			return ok && n.Name == "b2" && n.Reachable
 		})
 		select {
 		case err := <-l.done:

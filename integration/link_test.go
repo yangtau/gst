@@ -40,7 +40,7 @@ func TestLinkLifecycle(t *testing.T) {
 	}
 
 	// gst status lists both machines, each online for the other.
-	if out := client.mustGst("status"); !strings.Contains(out, srv.Name) || !strings.Contains(out, "online") || strings.Contains(out, "# Problems") {
+	if out := client.mustGst("status"); !strings.Contains(out, srv.Name) || !strings.Contains(out, "online") || strings.Contains(out, "is down") {
 		t.Fatalf("gst status on the client:\n%s", out)
 	}
 	if out := server.mustGst("status"); !strings.Contains(out, "cli") || !strings.Contains(out, "online") {
@@ -139,7 +139,7 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 	client.mustGst("remove", "srv")
 	client.mustGst("add", "srv", p.destination(), "--remote-gst", "/opt/gst")
 	client.waitLink("srv", "running")
-	if out := client.mustGst("status"); strings.Contains(out, "# Problems") {
-		t.Fatalf("gst status lists problems after the fix:\n%s", out)
+	if out := client.mustGst("status"); strings.Contains(out, "is down") {
+		t.Fatalf("gst status lists the link after the fix:\n%s", out)
 	}
 }

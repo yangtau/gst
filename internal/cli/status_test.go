@@ -14,90 +14,61 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// devcnStatus is the status of the machine devbox, with what every table can show.
-func devcnStatus() wire.Status {
+// devboxStatus is the status of the machine devbox, with what every table can show.
+func devboxStatus() wire.Status {
 	peer := peerOf("bastion")
 	return wire.Status{
-		Software: "gst 0.3.0",
-		Node:     wire.NodeInfo{ID: nodeID("bbbb2222"), Name: "devbox", Exit: true},
-		Proxy:    wire.Listener{Listen: "127.0.0.1:1080"},
+		Software: "gst 0.4.0",
+		Node:     wire.NodeInfo{ID: nodeID("bbbb2222"), Name: "devbox"},
 		Links: []wire.LinkState{
 			{Name: "bastion", Destination: "bastion.example.com", State: wire.StateRunning, Since: time.Now(), Peer: &peer},
 			{Name: "flaky", Destination: "myhost", State: wire.StateDown, Error: "connection refused"},
 			{Name: "off", Destination: "db", State: wire.StateConnecting},
 		},
-		Maps: []wire.MapState{
-			{Listener: wire.Listener{Listen: "127.0.0.1:15432"}, Machine: "bastion", Target: "localhost:5432"},
-			{Listener: wire.Listener{Listen: "/run/app.sock", Error: "socket in use"}, Machine: "far", Target: "/run/x.sock"},
-		},
-		Routes: []wire.Route{{Match: "example.com", Via: "bastion"}, {Match: "default", Via: "far"}},
 	}
 }
 
 func TestStatusOfAnotherMachine(t *testing.T) {
 	e := newEnv(t)
-	e.back.nodeStatus = func(node string) (wire.Status, error) { return devcnStatus(), nil }
+	e.back.nodeStatus = func(node string) (wire.Status, error) { return devboxStatus(), nil }
 
 	out := e.mustGst("status", "devbox")
-	header, rest, _ := strings.Cut(out, "\n")
-	if want := "devbox (bbbb2222), gst 0.3.0, an exit"; header != want {
+	header, links, _ := strings.Cut(out, "\n\n")
+	if want := "devbox (bbbb2222), gst 0.4.0"; header != want {
 		t.Fatalf("header %q, want %q", header, want)
 	}
-	proxy, tables, _ := strings.Cut(rest, "\n\n")
-	if proxy != "Proxy: 127.0.0.1:1080 (listening)" {
-		t.Fatalf("proxy line %q", proxy)
+	want := [][]string{
+		{"LINK", "STATUS", "DESTINATION"},
+		{"devbox->bastion", "running", "bastion.example.com"},
+		{"devbox->flaky", "down", "(last", "error:", "connection", "refused)", "myhost"},
+		{"devbox->off", "connecting", "db"},
 	}
-	links, tables, _ := strings.Cut(tables, "\n\n")
-	maps, routes, _ := strings.Cut(tables, "\n\n")
-	for _, tt := range []struct {
-		name string
-		got  string
-		want [][]string
-	}{
-		{"links", links, [][]string{
-			{"LINK", "STATUS", "DESTINATION"},
-			{"devbox->bastion", "running", "bastion.example.com"},
-			{"devbox->flaky", "down", "(last", "error:", "connection", "refused)", "myhost"},
-			{"devbox->off", "connecting", "db"},
-		}},
-		{"maps", maps, [][]string{
-			{"MAP", "TARGET", "STATUS"},
-			{"127.0.0.1:15432", "localhost:5432", "on", "bastion", "listening"},
-			{"/run/app.sock", "/run/x.sock", "on", "far", "failed:", "socket", "in", "use"},
-		}},
-		{"routes", routes, [][]string{
-			{"ROUTE", "VIA"},
-			{"example.com", "bastion"},
-			{"default", "far"},
-		}},
-	} {
-		if got := rows(tt.got); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%s\n got %q\nwant %q", tt.name, got, tt.want)
-		}
+	if got := rows(links); !reflect.DeepEqual(got, want) {
+		t.Errorf("links\n got %q\nwant %q", got, want)
 	}
 
 	// The same status as JSON, with the stable field names.
 	got := decode[wire.Status](t, e.mustGst("status", "devbox", "--json"))
-	if want := devcnStatus(); got.Node != want.Node || !reflect.DeepEqual(got.Maps, want.Maps) || !reflect.DeepEqual(got.Routes, want.Routes) || len(got.Links) != 3 {
+	if want := devboxStatus(); got.Node != want.Node || len(got.Links) != 3 {
 		t.Fatalf("json = %+v", got)
 	}
-	contains(t, e.mustGst("status", "devbox", "--json"), `"destination": "bastion.example.com"`, `"state": "connecting"`, `"machine": "bastion"`, `"via": "far"`)
+	contains(t, e.mustGst("status", "devbox", "--json"), `"destination": "bastion.example.com"`, `"state": "connecting"`)
 }
 
 func TestStatusOfAMachineWithNothingConfigured(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(string) (wire.Status, error) {
-		return wire.Status{Software: "gst 0.3.0", Node: wire.NodeInfo{ID: nodeID("cccc3333"), Name: "far"}}, nil
+		return wire.Status{Software: "gst 0.4.0", Node: wire.NodeInfo{ID: nodeID("cccc3333"), Name: "far"}}, nil
 	}
-	want := "far (cccc3333), gst 0.3.0, not an exit\nProxy: off\n\nNo links.\n\nNo maps.\n\nNo routes.\n"
+	want := "far (cccc3333), gst 0.4.0\n\nNo links.\n"
 	if out := e.mustGst("status", "far"); out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 	// The lists are empty in JSON too, not null, when the machine says so.
 	e.back.nodeStatus = func(string) (wire.Status, error) {
-		return wire.Status{Links: []wire.LinkState{}, Maps: []wire.MapState{}, Routes: []wire.Route{}}, nil
+		return wire.Status{Links: []wire.LinkState{}}, nil
 	}
-	contains(t, e.mustGst("status", "far", "--json"), `"links": []`, `"maps": []`, `"routes": []`)
+	contains(t, e.mustGst("status", "far", "--json"), `"links": []`)
 }
 
 func TestStatusMachineReference(t *testing.T) {
@@ -156,11 +127,11 @@ func TestStatusListsTheMachines(t *testing.T) {
 	}
 	// One line per machine, this one first, without a header or an edge table.
 	want := []string{
-		"aaaa1111 laptop gst 0.3.0 -",
-		"bbbb2222 devbox gst 0.3.0 online; exit",
+		"aaaa1111 laptop gst 0.4.0 -",
+		"bbbb2222 devbox gst 0.4.0 online",
 		"cccc3333 far - online; via devbox",
-		"dddd4444 dup (dddd4444) gst 0.3.0 online; via devbox",
-		"eeee5555 dup (eeee5555) gst 0.3.0 offline",
+		"dddd4444 dup (dddd4444) gst 0.4.0 online; via devbox",
+		"eeee5555 dup (eeee5555) gst 0.4.0 offline",
 	}
 	if got := lines(out); !slices.Equal(got, want) {
 		t.Fatalf("status\n got %q\nwant %q\noutput:\n%s", got, want, out)
@@ -185,19 +156,19 @@ func TestStatusAllListsTheLinks(t *testing.T) {
 	}
 }
 
-func TestStatusExitMarksOfflineMachines(t *testing.T) {
+func TestStatusMarksOfflineMachines(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	self, gw, far := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333")
 	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{
-		{ID: self, Name: "laptop", Software: "gst 0.3.0", Exit: true, Reachable: true, Path: []string{self}},
-		{ID: gw, Name: "gw", Software: "gst 0.3.0", Exit: true},
-		{ID: far, Name: "far", Software: "gst 0.3.0", Reachable: true, Path: []string{self, gw, far}},
+		{ID: self, Name: "laptop", Software: "gst 0.4.0", Reachable: true, Path: []string{self}},
+		{ID: gw, Name: "gw", Software: "gst 0.4.0"},
+		{ID: far, Name: "far", Software: "gst 0.4.0", Reachable: true, Path: []string{self, gw, far}},
 	}}
 	want := []string{
-		"aaaa1111 laptop gst 0.3.0 -; exit",
-		"bbbb2222 gw gst 0.3.0 offline; exit",
-		"cccc3333 far gst 0.3.0 online; via gw",
+		"aaaa1111 laptop gst 0.4.0 -",
+		"bbbb2222 gw gst 0.4.0 offline",
+		"cccc3333 far gst 0.4.0 online; via gw",
 	}
 	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
 		t.Fatalf("status\n got %q\nwant %q", got, want)
@@ -220,17 +191,18 @@ func TestStatusViaListsEveryMachineOnTheWay(t *testing.T) {
 	}
 }
 
-func TestStatusShowsDirectLinks(t *testing.T) {
+func TestStatusShowsUDPPaths(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
-	a, b := nodeID("aaaa1111"), nodeID("bbbb2222")
+	a, b, c := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333")
 	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
 		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
-		{ID: b, Name: "b", Reachable: true, Direct: true, Path: []string{a, b}},
-	}, Edges: []wire.TopoEdge{{From: a, To: b, Direct: true, Local: "192.0.2.1:5000", Remote: "192.0.2.2:6000"}, {From: a, To: b, Link: "b"}}}
-	want := []string{"aaaa1111 a - -", "bbbb2222 b - online; direct", "", "LINK", "a->b (direct) 192.0.2.1:5000 -> 192.0.2.2:6000", "a->b"}
-	if got := lines(e.mustGst("status", "--all")); !slices.Equal(got, want) {
-		t.Fatalf("status --all\n got %q\nwant %q", got, want)
+		{ID: b, Name: "b", Reachable: true, Path: []string{a, b}},
+		{ID: c, Name: "c", Reachable: true, Direct: true, Path: []string{a, b, c}},
+	}}
+	want := []string{"aaaa1111 a - -", "bbbb2222 b - online", "cccc3333 c - online; direct"}
+	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
+		t.Fatalf("status\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -258,14 +230,9 @@ func TestStatusListsProblems(t *testing.T) {
 	e.mustGst("add", "web", "myhost")
 	e.mustGst("add", "db")
 	e.mustGst("add", "cache", "devbox")
-	e.mustGst("proxy", "1081")
-	e.mustGst("map", "add", "15432", "devbox:5432")
-	e.mustGst("map", "add", "15433", "devbox:5433")
 	e.back.topology = meshTopology()
 	e.back.linkStates["web"] = wire.LinkState{Name: "web", State: wire.StateDown, Error: "SSH keepalive timed out"}
 	e.back.linkStates["db"] = wire.LinkState{Name: "db", State: wire.StateConnecting}
-	e.back.listenErrors["127.0.0.1:1081"] = "address already in use"
-	e.back.listenErrors["127.0.0.1:15432"] = "permission denied"
 
 	out := e.mustGst("status")
 	machines, problems, found := strings.Cut(out, "\n# Problems:\n")
@@ -278,14 +245,12 @@ func TestStatusListsProblems(t *testing.T) {
 	want := []string{
 		"#   - link laptop->db is connecting",
 		"#   - link laptop->web is down (last error: SSH keepalive timed out)",
-		"#   - proxy 127.0.0.1:1081 failed: address already in use",
-		"#   - map 127.0.0.1:15432 failed: permission denied",
 	}
 	if got := strings.Split(strings.TrimRight(problems, "\n"), "\n"); !slices.Equal(got, want) {
 		t.Fatalf("problems\n got %q\nwant %q", got, want)
 	}
-	// The running link and the map that listens are not problems.
-	if strings.Contains(problems, "cache") || strings.Contains(problems, "15433") {
+	// The running link is no problem.
+	if strings.Contains(problems, "cache") {
 		t.Fatalf("problems list what works:\n%s", problems)
 	}
 }
@@ -294,8 +259,6 @@ func TestStatusJSON(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
 	e.mustGst("add", "web", "myhost")
-	e.mustGst("map", "add", "15432", "devbox:5432")
-	e.back.listenErrors["127.0.0.1:15432"] = "address in use"
 	e.back.topology = meshTopology()
 	e.resetCalls()
 
@@ -305,8 +268,7 @@ func TestStatusJSON(t *testing.T) {
 		t.Fatalf("json = %q, %v; want the keys self and mesh", out, err)
 	}
 	got := decode[meshStatus](t, out)
-	if got.Self.Node.Name != "laptop" || len(got.Self.Links) != 1 || got.Self.Links[0].Name != "web" ||
-		len(got.Self.Maps) != 1 || got.Self.Maps[0].Machine != "devbox" || got.Self.Maps[0].Error != "address in use" {
+	if got.Self.Node.Name != "laptop" || len(got.Self.Links) != 1 || got.Self.Links[0].Name != "web" {
 		t.Fatalf("self = %+v", got.Self)
 	}
 	if !reflect.DeepEqual(got.Mesh, e.back.topology) {
@@ -353,7 +315,7 @@ func TestPing(t *testing.T) {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 
-	// Machines are named like for gst connect.
+	// Machines are named by any of their names.
 	e.resetCalls()
 	e.mustGst("ping", "DevBox.GST", "-c", "1")
 	e.mustGst("ping", "cccc3333", "-c", "1")
@@ -435,7 +397,7 @@ func TestUINodeStatus(t *testing.T) {
 		if node == "nowhere" {
 			return wire.Status{}, errors.New(`no machine "nowhere" in the mesh`)
 		}
-		return devcnStatus(), nil
+		return devboxStatus(), nil
 	}
 	c := newUIClient(t, e)
 
@@ -453,7 +415,7 @@ func TestUINodeStatus(t *testing.T) {
 	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("%s %q: %s", res.Status, res.Header.Get("Content-Type"), body)
 	}
-	if st := decode[wire.Status](t, string(body)); st.Node.Name != "devbox" || len(st.Links) != 3 || len(st.Maps) != 2 || len(st.Routes) != 2 || st.Proxy.Listen != "127.0.0.1:1080" {
+	if st := decode[wire.Status](t, string(body)); st.Node.Name != "devbox" || len(st.Links) != 3 {
 		t.Fatalf("status = %+v", st)
 	}
 	if !slices.Equal(asked, []string{"devbox"}) {
@@ -485,7 +447,7 @@ func TestPingVerbose(t *testing.T) {
 		return wire.DirectReport{
 			Node:   peerOf(node),
 			Trying: asked == 1, // A try still running is waited for.
-			Link:   &wire.DirectLink{Local: "192.0.2.1:5000", Remote: "192.0.2.2:6000"},
+			Path:   &wire.DirectPath{Local: "192.0.2.1:5000", Remote: "192.0.2.2:6000"},
 			Local:  wire.DirectTrace{Events: []wire.DirectEvent{event(0, "offering"), event(1500*time.Millisecond, "up")}},
 			Peer:   wire.DirectTrace{},
 		}, nil
@@ -495,8 +457,8 @@ func TestPingVerbose(t *testing.T) {
 		t.Fatalf("asked %d times, want 2", asked)
 	}
 	for _, want := range []string{
-		"over a direct link in 1.5 ms\n",
-		"Direct link with devbox: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
+		"over SSH in 1.5 ms; packets go over UDP\n",
+		"UDP path to devbox: up, 192.0.2.1:5000 -> 192.0.2.2:6000\n",
 		"This machine:\n    0.000s  offering\n    1.500s  up\n",
 		"devbox:\n  no try yet\n",
 	} {
@@ -505,12 +467,12 @@ func TestPingVerbose(t *testing.T) {
 		}
 	}
 
-	// Without a link, it says when the next try is.
+	// Without a path, it says when the next try is.
 	e.back.direct = func(node string) (wire.DirectReport, error) {
 		return wire.DirectReport{Node: peerOf(node), Next: time.Now().Add(time.Minute), PeerError: "no way"}, nil
 	}
 	out = e.mustGst("ping", "devbox", "-c", "1", "-v")
-	for _, want := range []string{"Direct link with devbox: none, next try in 1m0s\n", "no answer: no way\n"} {
+	for _, want := range []string{"UDP path to devbox: none, next try in 1m0s\n", "no answer: no way\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q lacks %q", out, want)
 		}

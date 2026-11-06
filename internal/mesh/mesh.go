@@ -4,9 +4,10 @@
 // protocol in the peer role, and the connection continues as a yamux
 // session that carries one call per stream in both directions: who the
 // other node is (node.info), the link-state records that give every node
-// a view of the whole mesh (topology.sync), and connections relayed along
-// routes through it (relay.open). Direct links carry the same calls over
-// UDP; see direct.go.
+// a view of the whole mesh (topology.sync), and calls relayed to other
+// nodes along routes through it (relay.open). All of that stays on SSH.
+// It sets up the virtual network, whose packets take a UDP path where the
+// network allows one (direct.go) and the links where not (packets.go).
 package mesh
 
 import (
@@ -46,7 +47,7 @@ type Node struct {
 	seqFloor uint64                 // the highest Seq seen on this node's own record
 	net      *wire.NetInfo          // this node's part in the virtual network; see SetNet
 
-	// Direct links; see EnableDirect. directCtx is nil while they are off.
+	// UDP paths; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
 	directAddrs func() []netip.Addr
 	directTries map[string]*directTry         // by node id
@@ -60,13 +61,10 @@ type Node struct {
 
 // link is a running link: the peer session with another node.
 type link struct {
-	name    string // the link's name, for links over SSH that this node opened
+	name    string // the link's name, for links that this node opened
 	peer    wire.NodeInfo
 	session session
-	direct  bool   // over UDP rather than SSH
-	opened  bool   // this node opened it
-	local   string // the addresses of a direct link
-	remote  string
+	opened  bool // this node opened it
 }
 
 // New returns a node without an identity, which refuses links until
@@ -101,13 +99,12 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 	return n
 }
 
-// Configure sets this node's identity and whether it is an exit. A new
-// identity forgets what the node knew and closes its links.
+// Configure sets this node's identity. A new identity forgets what the node knew and closes its links.
 func (n *Node) Configure(c *config.Node) {
 	defer n.Update()
 	var info wire.NodeInfo
 	if c != nil {
-		info = wire.NodeInfo{ID: c.ID, Name: c.Name, Software: n.software, Exit: c.Exit}
+		info = wire.NodeInfo{ID: c.ID, Name: c.Name, Software: n.software}
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -158,11 +155,11 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.
 	if wire.Answer(conn, theirs, n.hello(), refusal) != nil {
 		return
 	}
-	session, err := yamux.Server(conn, yamuxConfig())
+	yamuxed, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
 		return
 	}
-	if err := n.run(ctx, &link{session: yamuxSession{session}}, nil); err != nil && ctx.Err() == nil {
+	if err := n.run(ctx, &link{session: session{yamuxed}}, nil); err != nil && ctx.Err() == nil {
 		// The reason may quote the peer, so the log leaves it out.
 		n.log.Print("incoming link ended")
 	}
@@ -199,24 +196,24 @@ func (n *Node) Link(ctx context.Context, name string, conn io.ReadWriteCloser, o
 		if failed, ok := conn.(interface{ Failure() string }); ok && failed.Failure() != "" {
 			return &RemoteError{"the remote gst failed: " + failed.Failure()}
 		}
-		return errors.New("the remote gst did not answer; is gst 0.3 or later installed there?")
+		return errors.New("the remote gst did not answer; is gst 0.4 or later installed there?")
 	}
-	session, err := yamux.Client(conn, yamuxConfig())
+	yamuxed, err := yamux.Client(conn, yamuxConfig())
 	if err != nil {
 		return err
 	}
-	return n.run(ctx, &link{name: name, opened: true, session: yamuxSession{session}}, onUp)
+	return n.run(ctx, &link{name: name, opened: true, session: session{yamuxed}}, onUp)
 }
 
 // run serves the peer's calls, learns who the peer is, and keeps the link
 // l until its session ends, which it reports as an error unless ctx is
 // done.
 func (n *Node) run(ctx context.Context, l *link, onUp func(wire.NodeInfo)) error {
-	session := l.session
-	defer session.Close()
-	go n.serve(ctx, session)
+	s := l.session
+	defer s.Close()
+	go n.serve(ctx, s)
 
-	peer, err := n.nodeInfo(ctx, session)
+	peer, err := n.nodeInfo(ctx, s)
 	if err != nil {
 		return err
 	}
@@ -226,7 +223,7 @@ func (n *Node) run(ctx context.Context, l *link, onUp func(wire.NodeInfo)) error
 		if l.opened {
 			return errors.New("the other machine is this machine")
 		}
-		<-session.Done()
+		<-s.done()
 		return nil
 	}
 	l.peer = peer
@@ -243,11 +240,11 @@ func (n *Node) run(ctx context.Context, l *link, onUp func(wire.NodeInfo)) error
 	if onUp != nil {
 		onUp(peer)
 	}
-	go n.sync(ctx, session)
+	go n.sync(ctx, s)
 	select {
 	case <-ctx.Done():
 		return nil
-	case <-session.Done():
+	case <-s.done():
 		return errors.New("the link closed")
 	}
 }
@@ -277,7 +274,7 @@ func (n *Node) serve(ctx context.Context, s session) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	for {
-		conn, err := s.Accept(ctx)
+		conn, err := s.accept()
 		if err != nil {
 			return
 		}
@@ -289,19 +286,14 @@ func (n *Node) serve(ctx context.Context, s session) {
 	}
 }
 
-// sessionTo returns the session of a running link with node id, a direct
-// one if there is one.
-func (n *Node) sessionTo(id string) session {
+// sessionTo returns the session of a running link with node id.
+func (n *Node) sessionTo(id string) (session, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	var found session
 	for l := range n.links {
-		if l.peer.ID == id && !closed(l.session) && n.usable(l) {
-			if l.direct {
-				return l.session
-			}
-			found = l.session
+		if l.peer.ID == id && !l.session.IsClosed() {
+			return l.session, true
 		}
 	}
-	return found
+	return session{}, false
 }

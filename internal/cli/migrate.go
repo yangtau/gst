@@ -23,11 +23,11 @@ func (a *app) migrate(cmd *cobra.Command) error {
 		// A broken configuration is reported by the command itself.
 		return nil
 	}
-	if f, err := a.load(); err == nil && len(f.Links)+len(f.Maps)+len(notes) > 0 {
-		fmt.Fprintln(a.stderr, "note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst status and gst map list)")
+	if len(notes) > 0 {
+		fmt.Fprintln(a.stderr, "note: gst 0.4 reaches machines over the virtual network instead: <machine>.gst from any program (see gst install)")
 	}
 	for _, note := range notes {
-		fmt.Fprintf(a.stderr, "note: dropped %s; recreate it with gst map on the other machine, or with gst route\n", note)
+		fmt.Fprintf(a.stderr, "note: dropped %s\n", note)
 	}
 	if err := a.sync(cmd.Context()); err != nil {
 		return withHint(fmt.Errorf("apply the upgraded configuration: %w", err), "retry with `gst up`")

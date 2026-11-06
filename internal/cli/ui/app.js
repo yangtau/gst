@@ -56,7 +56,7 @@ const selfID = () => (topology() && topology().self) || (state && state.node && 
 function machines() {
   const topo = topology();
   if (topo && topo.nodes.length > 0) return topo.nodes;
-  if (state && state.node) return [{ id: state.node.id, name: state.node.name, exit: state.node.exit, reachable: false }];
+  if (state && state.node) return [{ id: state.node.id, name: state.node.name, reachable: false }];
   return [];
 }
 
@@ -79,18 +79,7 @@ function statusOf(id) {
 // linkText shows a link as the machines at its ends, as gst status does,
 // with the link's own name when it differs from the machine it leads to.
 function linkText(from, to, name) {
-  if (!name) return `${from}->${to} (direct)`;
   return !to || to === name ? `${from}->${name}` : `${from}->${to} (${name})`;
-}
-
-// addresses shows the ends of a direct link, as the machine that opened it
-// sees them.
-const addresses = (e) => (e.local ? `${e.local} → ${e.remote}` : "");
-
-// directEdges lists the direct links of the mesh.
-function directEdges() {
-  const topo = topology();
-  return topo ? topo.edges.filter((e) => e.direct) : [];
 }
 
 // problems names what does not work on a machine, as gst status does.
@@ -98,12 +87,11 @@ function problems(st) {
   if (!st) return [];
   const found = [];
   for (const l of st.links || []) if (l.state !== "running") found.push(`link ${linkText(st.node.name, l.peer && l.peer.name, l.name)} is ${l.state}`);
-  if (st.proxy && st.proxy.error) found.push(`proxy ${st.proxy.listen} failed`);
-  for (const m of st.maps || []) if (m.error) found.push(`map ${m.listen} failed`);
+  if (st.net && st.net.error) found.push(`virtual network: ${st.net.error}`);
   return found;
 }
 
-// findMachine finds the machine that a map or a route names, as far as the
+// findMachine finds the machine that a report names, as far as the
 // page can tell: by its name, the name of a link to it, or an id prefix.
 function findMachine(ref) {
   const nodes = machines();
@@ -142,7 +130,6 @@ function mark(kind, title) {
 }
 
 const linkMark = (l) => mark({ running: "ok", connecting: "wait" }[l.state] || "bad", l.state);
-const listenMark = (l) => (l.error ? mark("bad", "failed") : mark("ok", "listening"));
 
 // jump names a machine and selects it when clicked, if the mesh knows it.
 function jump(ref, cls, text) {
@@ -202,7 +189,7 @@ function linksGroup(st, isSelf) {
 // which only the mesh knows.
 function linkedFromGroup(id, names) {
   const topo = topology();
-  const edges = topo ? topo.edges.filter((e) => e.to === id && !e.direct) : [];
+  const edges = topo ? topo.edges.filter((e) => e.to === id) : [];
   if (edges.length === 0) return null;
   const rows = edges.map((e) => el("li", { class: "row" },
     mark("ok", "running"),
@@ -210,81 +197,17 @@ function linkedFromGroup(id, names) {
   return group("Linked from", count(edges.length), rows);
 }
 
-// directGroup lists the direct links of this machine, whichever end
-// opened them.
-function directGroup(id, names) {
-  const edges = directEdges().filter((e) => e.from === id || e.to === id);
-  if (edges.length === 0) return null;
-  const rows = edges.map((e) => {
-    const other = e.from === id ? e.to : e.from;
-    return el("li", { class: "row" },
-      mark("ok", "running"),
-      jump(names[other] || shortID(other), "row-name", linkText(names[e.from] || shortID(e.from), names[e.to] || shortID(e.to), "")),
-      el("span", { class: "cell mono sub row-wide", title: addresses(e) }, addresses(e)));
-  });
-  return group("Direct links", count(edges.length), rows);
-}
-
-// proxyEnv is the line that gst proxy prints, for an address that clients
-// can connect to.
-function proxyEnv(listen) {
-  const i = listen.lastIndexOf(":");
-  let host = listen.slice(0, i);
-  if (host === "0.0.0.0" || host === "" || host === "::" || host === "[::]") host = "127.0.0.1";
-  const a = `${host}:${listen.slice(i + 1)}`;
-  return `export ALL_PROXY=socks5h://${a} http_proxy=http://${a} https_proxy=http://${a}`;
-}
-
-function proxyGroup(st, isSelf) {
-  const p = st.proxy || {};
-  if (!p.listen) {
-    return group("Proxy", count("off"), [], isSelf && ["Turn it on with ", el("code", null, "gst proxy 127.0.0.1:1080")]);
-  }
-  const env = proxyEnv(p.listen);
-  const row = el("li", { class: "row" },
-    listenMark(p),
-    el("span", { class: "cell mono" }, p.listen),
-    isSelf ? el("span", { class: "cell mono faint row-wide", title: env }, env) : el("span", { class: "row-wide" }),
-    p.error ? el("span", { class: "row-end bad" }, "failed") : isSelf ? el("span", { class: "row-end" }, copyButton(env, "Copy")) : el("span"),
-    p.error ? el("p", { class: "row-error" }, p.error) : null);
-  return group("Proxy", null, [row]);
-}
-
-function mapsGroup(st, isSelf) {
-  const maps = st.maps || [];
-  const failed = maps.filter((m) => m.error).length;
-  const rows = maps.map((m) => el("li", { class: "row" },
-    listenMark(m),
-    el("span", { class: "cell mono", title: m.listen }, m.listen),
-    el("span", { class: "cell mono sub", title: m.target }, m.target),
-    jump(m.machine),
-    m.error ? el("span", { class: "row-end bad" }, "failed") : el("span"),
-    m.error ? el("p", { class: "row-error" }, m.error) : null));
-  return group("Maps", count(failed ? `${maps.length - failed} of ${maps.length} listening` : maps.length, failed), rows,
-    isSelf && ["Add one with ", el("code", null, "gst map add <listen> <machine>:<target>")]);
-}
-
-// routeNote says what the mesh shows about the machine a route goes through.
-function routeNote(via) {
-  if (!topology()) return "";
-  const n = findMachine(via);
-  if (!n) return "not in the mesh";
-  return n.exit ? "" : "not an exit";
-}
-
-function routesGroup(st, isSelf) {
-  const routes = st.routes || [];
-  const rows = routes.map((r) => {
-    const note = routeNote(r.via);
-    return el("li", { class: "row" },
-      note ? mark("off", note) : mark("ok", "goes out through " + r.via),
-      el("span", { class: "cell mono", title: r.match }, r.match),
-      el("span"),
-      jump(r.via),
-      note ? el("span", { class: "row-end warn" }, note) : el("span"));
-  });
-  return group("Routes", count(routes.length), rows,
-    isSelf && ["Add one with ", el("code", null, "gst route add <match> <machine>")]);
+// peersGroup lists the other machines of the virtual network, with how
+// packets go to each.
+function peersGroup(st) {
+  const peers = (st.net && st.net.peers) || [];
+  if (peers.length === 0) return null;
+  const rows = peers.map((p) => el("li", { class: "row" },
+    p.handshake ? mark("ok", "WireGuard confirmed its key") : mark("off", "no handshake yet"),
+    jump(p.name, "row-name"),
+    el("span", { class: "cell mono sub row-wide", title: p.address }, p.address),
+    el("span", { class: "row-end" }, p.path === "direct" ? "UDP" : "SSH")));
+  return group("Network", count(peers.length), rows);
 }
 
 function blank(title, ...text) {
@@ -297,7 +220,6 @@ function drawHead(n, names, st) {
   $("head").replaceChildren(...[
     el("h1", { class: "truncate" }, n ? names[n.id] : "This machine"),
     isSelf && el("span", { class: "tag" }, "this machine"),
-    n && n.exit && el("span", { class: "tag" }, "exit"),
     found.length > 0 && el("span", { class: "head-problems", title: found.join("\n") }, plural(found.length, "problem")),
   ].filter(Boolean));
 }
@@ -324,11 +246,8 @@ function drawDetail(n, names) {
   }
   detail.replaceChildren(...[
     linksGroup(st, isSelf),
-    n && directGroup(n.id, names),
     n && linkedFromGroup(n.id, names),
-    proxyGroup(st, isSelf),
-    mapsGroup(st, isSelf),
-    routesGroup(st, isSelf),
+    peersGroup(st),
   ].filter(Boolean));
 }
 
@@ -352,8 +271,7 @@ function drawMachines(nodes, names) {
         found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
         route ? el("span", { class: "truncate", title: "via " + route }, "via " + route) : null,
         !n.reachable && n.id !== selfID() ? el("span", null, "offline") : null,
-        n.direct ? el("span", { class: "tag" }, "direct") : null,
-        n.exit ? el("span", { class: "tag" }, "exit") : null));
+        n.direct ? el("span", { class: "tag" }, "direct") : null));
     b.addEventListener("click", () => select(n.id));
     return b;
   }));
@@ -410,8 +328,8 @@ function drawRing(nodes, names) {
     };
     const p = away(a, 9), q = away(b, 12);
     const on = e.from === selected || e.to === selected ? " on" : "";
-    links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + (e.direct ? " direct" : "") + on },
-      svg("title", null, [linkText(names[e.from], names[e.to], e.link), addresses(e)].filter(Boolean).join("\n"))));
+    links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
+      svg("title", null, linkText(names[e.from], names[e.to], e.link))));
     // The arrowhead, along the line's last stretch.
     const angle = Math.atan2(q.y - c.y, q.x - c.x);
     const at = (d, turn) => `${q.x + d * Math.cos(angle + turn)},${q.y + d * Math.sin(angle + turn)}`;
@@ -439,17 +357,6 @@ function drawRing(nodes, names) {
   ring.replaceChildren(...links, ...tips, ...dots);
 }
 
-// drawDirects lists every direct link of the mesh, beside the ring that
-// draws them dashed.
-function drawDirects(names) {
-  const box = $("directs");
-  const edges = directEdges();
-  box.toggleAttribute("hidden", edges.length === 0);
-  box.replaceChildren(el("h2", null, "Direct links"), ...edges.map((e) => el("p", null,
-    el("span", { class: "direct-name" }, `${names[e.from] || shortID(e.from)} → ${names[e.to] || shortID(e.to)}`),
-    el("span", { class: "mono sub direct-addr" }, addresses(e)))));
-}
-
 function drawProps(n, names, st) {
   const props = $("props");
   if (!n) {
@@ -463,7 +370,7 @@ function drawProps(n, names, st) {
   props.replaceChildren(
     ...row("Status", isSelf ? (state.status ? "Running" : "Not running") : n.reachable ? "Online" : "Offline"),
     ...row("Path", route),
-    ...row("Exit", n.exit ? "Yes, connects out for others" : "No"),
+    ...row("Address", n.net && n.net.address),
     ...row("Version", software),
     ...row("ID", el("span", null, el("span", { class: "mono" }, shortID(n.id)), " ", copyButton(n.id, "Copy"))));
 }
@@ -524,7 +431,6 @@ function draw() {
   drawHead(n, names, st);
   drawDetail(n, names);
   drawRing(nodes, names);
-  drawDirects(names);
   drawProps(n, names, st);
 }
 

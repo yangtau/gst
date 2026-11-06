@@ -11,20 +11,21 @@ const (
 	// until either side closes it.
 	MethodTopologySync = "topology.sync"
 	// MethodRelayOpen ("relay.open") takes RelayParams. On success the
-	// stream carries the bytes of a connection to the target.
+	// stream leads to the node at the end of the path, and carries calls
+	// to its peer methods, one after another.
 	MethodRelayOpen = "relay.open"
 	// MethodPeerStatus ("node.status") takes no params and returns the
 	// Status of the callee's daemon.
 	MethodPeerStatus = "node.status"
 	// MethodDirectOffer ("direct.offer") takes a DirectOffer and returns
-	// the callee's, after which the two nodes try a direct link.
+	// the callee's, after which the two nodes look for a UDP path.
 	MethodDirectOffer = "direct.offer"
 	// MethodLinkRemove ("link.remove") takes LinkRemove and returns
 	// nothing: the caller is about to remove the link for good.
 	MethodLinkRemove = "link.remove"
 	// MethodDirectTrace ("direct.trace") takes DirectTraceParams and
 	// returns DirectTrace: what the callee did in its latest try at a
-	// direct link with that node.
+	// UDP path with that node.
 	MethodDirectTrace = "direct.trace"
 	// MethodNetPackets ("net.packets") takes PacketsParams. On success the
 	// stream carries the packets of the virtual network in both
@@ -41,32 +42,17 @@ const (
 const FeatureYamux = "yamux"
 
 // RelayParams are the params of relay.open. Path lists the nodes that
-// the connection passes, starting with the callee and ending with the
-// node that connects to the target.
+// the stream passes, starting with the callee and ending with the node
+// that answers the calls.
 type RelayParams struct {
-	Path   []string `json:"path"`
-	Target Target   `json:"target"`
+	Path []string `json:"path"`
 }
-
-// Target is an address to connect to: network "tcp" with host:port,
-// "unix" with a socket path, or NetworkGst.
-type Target struct {
-	Network string `json:"network"`
-	Address string `json:"address"`
-}
-
-// NetworkGst, with no address, is the gst node at the end of the path
-// itself: the connection carries peer calls to it, one after another.
-const NetworkGst = "gst"
 
 // NodeInfo identifies a gst node.
 type NodeInfo struct {
 	ID       string `json:"id"`   // random and stable
 	Name     string `json:"name"` // chosen by the node's user; not unique
 	Software string `json:"software"`
-	// Exit says that the node connects to addresses that are not on
-	// its machine for others.
-	Exit bool `json:"exit,omitempty"`
 }
 
 // SyncParams are the params of topology.sync: the sequence number of
@@ -98,7 +84,7 @@ type Record struct {
 // one with the highest Since counts.
 type NetInfo struct {
 	Subnet    string `json:"subnet"`     // CIDR prefix
-	Since     int64  `json:"since"`      // when the subnet was chosen, in Unix nanoseconds
+	Since     int64  `json:"since"`      // when a person chose the subnet, in Unix nanoseconds; negated when gst chose it
 	Address   string `json:"address"`    // the node's IP address in Subnet
 	PublicKey string `json:"public_key"` // its WireGuard key, in hexadecimal
 }
@@ -117,13 +103,6 @@ type Networks struct {
 type Edge struct {
 	Name string `json:"name"` // the link's name on the node
 	Peer string `json:"peer"` // the node id at its other end
-	// Direct marks a direct link, which has no name, that this node
-	// opened. A direct link that the other node opened has no marks.
-	Direct bool `json:"direct,omitempty"`
-	// Local and Remote are the addresses of a direct link as the node
-	// that opened it sees them, each an IP:port.
-	Local  string `json:"local,omitempty"`
-	Remote string `json:"remote,omitempty"`
 }
 
 // LinkRemove names a link that its opener is removing.
@@ -132,28 +111,27 @@ type LinkRemove struct {
 	Link string `json:"link"` // the link's name, as in the caller's record
 }
 
-// DirectTraceParams name the node at the other end of a direct link.
+// DirectTraceParams name the node at the other end of a UDP path.
 type DirectTraceParams struct {
 	Node string `json:"node"` // its id
 }
 
-// DirectTrace is what a node did in its latest try at a direct link, in
+// DirectTrace is what a node did in its latest try at a UDP path, in
 // order. It holds addresses, so it stays out of the daemon log.
 type DirectTrace struct {
 	Events []DirectEvent `json:"events"`
 }
 
-// DirectEvent is one thing that a try at a direct link did.
+// DirectEvent is one thing that a try at a UDP path did.
 type DirectEvent struct {
 	Time time.Time `json:"time"`
 	Text string    `json:"text"`
 }
 
-// DirectOffer is one node's side of a direct link: in the params of
+// DirectOffer is one node's side of a try at a UDP path: in the params of
 // direct.offer, the caller's, and in its result, the callee's.
 type DirectOffer struct {
-	Node        string   `json:"node,omitempty"`  // the caller's id; only in the params
-	Token       string   `json:"token,omitempty"` // proves that a probe belongs to this try; the caller's counts
-	Addresses   []string `json:"addresses"`       // IP:port to probe
-	Fingerprint string   `json:"fingerprint"`     // SHA-256 of the certificate that the node will present
+	Node      string   `json:"node,omitempty"`  // the caller's id; only in the params
+	Token     string   `json:"token,omitempty"` // proves that a probe belongs to this try; the caller's counts
+	Addresses []string `json:"addresses"`       // IP:port to probe
 }

@@ -1,7 +1,6 @@
 package mesh
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net"
@@ -16,43 +15,26 @@ import (
 // stream fails rather than ending cleanly, so that the relay at each end
 // closes the connection instead of waiting for the other direction, which
 // would never end.
-type session interface {
-	Open(ctx context.Context) (net.Conn, error)
-	Accept(ctx context.Context) (net.Conn, error)
-	Close() error
-	Done() <-chan struct{} // closed when the session ends
-}
+type session struct{ *yamux.Session }
 
-// closed reports whether s has ended.
-func closed(s session) bool {
-	select {
-	case <-s.Done():
-		return true
-	default:
-		return false
-	}
-}
-
-// yamuxSession is the session of a link over SSH.
-type yamuxSession struct{ *yamux.Session }
-
-func (s yamuxSession) Open(context.Context) (net.Conn, error) {
-	stream, err := s.Session.OpenStream()
+func (s session) open() (net.Conn, error) {
+	stream, err := s.OpenStream()
 	if err != nil {
 		return nil, err
 	}
 	return streamConn{stream, s.Session}, nil
 }
 
-func (s yamuxSession) Accept(context.Context) (net.Conn, error) {
-	stream, err := s.Session.AcceptStream()
+func (s session) accept() (net.Conn, error) {
+	stream, err := s.AcceptStream()
 	if err != nil {
 		return nil, err
 	}
 	return streamConn{stream, s.Session}, nil
 }
 
-func (s yamuxSession) Done() <-chan struct{} { return s.Session.CloseChan() }
+// done is closed when the session ends.
+func (s session) done() <-chan struct{} { return s.CloseChan() }
 
 func yamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()

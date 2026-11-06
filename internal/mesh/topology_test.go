@@ -162,7 +162,6 @@ func TestBuildTopologyNeedsBothEnds(t *testing.T) {
 
 func TestBuildTopologySortsAndCarriesNodeInfo(t *testing.T) {
 	r := rec("zed")
-	r.Node.Exit = true
 	topo := buildTopology(nid("zed"), accepted([]wire.Record{rec("bob", "alice"), rec("alice"), r}), now)
 	var names []string
 	for _, n := range topo.Nodes {
@@ -171,7 +170,7 @@ func TestBuildTopologySortsAndCarriesNodeInfo(t *testing.T) {
 	if !slices.Equal(names, []string{"zed", "alice", "bob"}) {
 		t.Fatalf("order = %v, want self first, then by name", names)
 	}
-	if !topo.Nodes[0].Exit || topo.Nodes[1].Software != "gst test" || topo.Nodes[1].Expires.IsZero() {
+	if topo.Nodes[1].Software != "gst test" || topo.Nodes[1].Expires.IsZero() {
 		t.Fatalf("nodes = %+v", topo.Nodes)
 	}
 	if e := topo.Edges[0]; e.From != nid("bob") || e.To != nid("alice") || e.Link != "to-alice" {
@@ -264,6 +263,7 @@ func TestMergeWithoutIdentityIgnoresRecords(t *testing.T) {
 
 func TestNewerSendsEachRecordOnce(t *testing.T) {
 	n := newNode(t, "a")
+	waitFor(t, "own record", func() bool { return n.known()[nid("a")] != 0 })
 	n.merge([]wire.Record{rec("b"), rec("c")})
 	sent := map[string]uint64{nid("b"): 1} // the caller has b already
 	recs, _ := n.newer(sent)
@@ -272,7 +272,7 @@ func TestNewerSendsEachRecordOnce(t *testing.T) {
 		names = append(names, r.Node.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"c"}) && !slices.Equal(names, []string{"a", "c"}) {
+	if !slices.Equal(names, []string{"a", "c"}) {
 		t.Fatalf("sent %v", names)
 	}
 	if again, _ := n.newer(sent); len(again) != 0 {

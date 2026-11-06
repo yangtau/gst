@@ -11,26 +11,15 @@ import (
 
 const legacyID = "0123456789abcdef0123456789abcdef"
 
-// legacyConfig is a configuration of gst 0.2 (version 2): tunnels with
-// forwards, one of them through the mesh.
+// legacyConfig is a configuration of gst 0.3 (version 3), with a proxy, a
+// map, and a route.
 const legacyConfig = `{
-  "version": 2,
-  "mesh": {"id": "` + legacyID + `", "name": "laptop"},
-  "tunnels": {
-    "myhost": {
-      "destination": "myhost",
-      "keepalive_interval_seconds": 30,
-      "forwards": [
-        {"direction": "local", "listen": "127.0.0.1:15432", "target": "127.0.0.1:5432"},
-        {"direction": "remote", "listen": "127.0.0.1:2222", "target": "localhost:22"},
-        {"direction": "dynamic", "listen": "127.0.0.1:1081"}
-      ]
-    },
-    "viamesh": {
-      "destination": "mesh:devbox",
-      "forwards": [{"direction": "local", "listen": "127.0.0.1:8080", "target": "localhost:80"}]
-    }
-  }
+  "version": 3,
+  "node": {"id": "` + legacyID + `", "name": "laptop", "exit": true},
+  "proxy": "127.0.0.1:1081",
+  "links": {"myhost": {"destination": "myhost"}},
+  "maps": [{"listen": "127.0.0.1:15432", "machine": "myhost", "target": "/run/app.sock"}],
+  "routes": [{"match": "default", "via": "myhost"}]
 }
 `
 
@@ -43,19 +32,17 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	for _, w := range []string{
-		"note: gst 0.3 replaced tunnels with links and their -L forwards with maps (see gst status and gst map list)\n",
-		"note: dropped tunnel myhost: -R 127.0.0.1:2222:localhost:22; recreate it with gst map on the other machine, or with gst route\n",
-		"note: dropped tunnel myhost: -D 127.0.0.1:1081; recreate it with gst map on the other machine, or with gst route\n",
+		"note: gst 0.4 reaches machines over the virtual network instead: <machine>.gst from any program (see gst install)\n",
+		"note: dropped proxy 127.0.0.1:1081\n",
+		"note: dropped map 127.0.0.1:15432 to /run/app.sock on myhost\n",
+		"note: dropped route default via myhost\n",
 	} {
 		if !strings.Contains(stderr, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, stderr)
 		}
 	}
-	if n := strings.Count(stderr, "note: dropped"); n != 2 {
-		t.Errorf("%d notes about dropped forwards, want 2:\n%s", n, stderr)
-	}
 	if self := decode[meshStatus](t, stdout).Self; len(self.Links) != 1 || self.Links[0].Name != "myhost" {
-		t.Fatalf("the upgrade keeps the SSH tunnels as links and tunnels through the mesh as maps:\n%s", stdout)
+		t.Fatalf("the upgrade keeps the links:\n%s", stdout)
 	}
 
 	f := e.load()
@@ -65,13 +52,6 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 	if l := f.Links["myhost"]; l == nil || *l != (config.Link{Destination: "myhost"}) || len(f.Links) != 1 {
 		t.Fatalf("links %+v", f.Links)
 	}
-	wantMaps := []config.Map{
-		{Listen: "127.0.0.1:15432", Machine: "myhost", Target: "127.0.0.1:5432"},
-		{Listen: "127.0.0.1:8080", Machine: "devbox", Target: "localhost:80"},
-	}
-	if !slices.Equal(f.Maps, wantMaps) {
-		t.Fatalf("maps\n got %+v\nwant %+v", f.Maps, wantMaps)
-	}
 	if len(e.back.calls) == 0 || e.back.calls[0] != "sync" || !e.back.installed {
 		t.Fatalf("the upgraded configuration was not applied: calls %v", e.back.calls)
 	}
@@ -80,7 +60,7 @@ func TestMigrationUpgradesOnFirstCommand(t *testing.T) {
 func TestMigrationHappensOnce(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, legacyConfig)
-	e.mustGst("map", "list")
+	e.mustGst("name")
 	upgraded, err := os.ReadFile(e.config)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +71,7 @@ func TestMigrationHappensOnce(t *testing.T) {
 	}
 
 	e.resetCalls()
-	for _, args := range [][]string{{"status"}, {"status", "--json"}, {"map", "list", "--json"}, {"proxy"}, {"route", "list"}} {
+	for _, args := range [][]string{{"status"}, {"status", "--json"}} {
 		_, _, stderr := e.gst(args...)
 		if strings.Contains(stderr, "note:") {
 			t.Errorf("gst %v: stderr %q", args, stderr)
@@ -115,16 +95,16 @@ func TestMigrationHappensOnce(t *testing.T) {
 
 func TestMigrationLeavesCurrentConfigAlone(t *testing.T) {
 	e := newEnv(t)
-	current := `{"version":3,"links":{},"maps":[],"routes":[]}` + "\n"
+	current := `{"version":4,"links":{}}` + "\n"
 	write(t, e.config, current)
-	_, _, stderr := e.gst("map", "list")
-	if stderr != "" {
+	_, _, stderr := e.gst("status")
+	if strings.Contains(stderr, "note:") {
 		t.Fatalf("stderr %q", stderr)
 	}
 	if got, _ := os.ReadFile(e.config); string(got) != current {
 		t.Fatalf("a current configuration was rewritten: %s", got)
 	}
-	if len(e.back.calls) != 0 {
+	if slices.Contains(e.back.calls, "sync") {
 		t.Fatalf("calls %v", e.back.calls)
 	}
 }
@@ -147,7 +127,7 @@ func TestMigrationFailureToApply(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, legacyConfig)
 	e.back.syncErr = os.ErrPermission
-	e.expectError(exitFailure, []string{"map", "list"}, "error: apply the upgraded configuration: ", "hint: retry with `gst up`\n")
+	e.expectError(exitFailure, []string{"name"}, "error: apply the upgraded configuration: ", "hint: retry with `gst up`\n")
 	// The file is upgraded all the same, so the daemon is applied by gst up.
 	if e.load().Version != config.Version {
 		t.Fatal("the configuration was not upgraded")

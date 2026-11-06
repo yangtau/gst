@@ -2,9 +2,7 @@
 package relay
 
 import (
-	"errors"
 	"io"
-	"net"
 	"sync"
 )
 
@@ -40,14 +38,4 @@ func copyThenCloseWrite(dst io.WriteCloser, src io.Reader) error {
 		return hc.CloseWrite()
 	}
 	return dst.Close()
-}
-
-// DialError drops the "dial tcp …:" prefix of a dial error, which repeats
-// the address.
-func DialError(err error) error {
-	var op *net.OpError
-	if errors.As(err, &op) && op.Err != nil {
-		return op.Err
-	}
-	return err
 }

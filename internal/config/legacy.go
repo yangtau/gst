@@ -4,64 +4,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
-	"strings"
 )
 
-// legacyFile is the configuration of gst 0.2 and earlier: tunnels with
-// forwards in the manner of ssh -L, -R, and -D.
+// legacyVersion is the configuration format that gst still converts: that
+// of gst 0.3, with a proxy, maps to machines' ports and sockets, and routes.
+const legacyVersion = 3
+
+// legacyFile is a configuration of legacyVersion.
 type legacyFile struct {
-	Mesh    *Node                    `json:"mesh"`
-	Tunnels map[string]*legacyTunnel `json:"tunnels"`
+	Node *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"node"`
+	Down  bool             `json:"down"`
+	Proxy string           `json:"proxy"`
+	Links map[string]*Link `json:"links"`
+	Maps  []struct {
+		Listen  string `json:"listen"`
+		Machine string `json:"machine"`
+		Target  string `json:"target"`
+	} `json:"maps"`
+	Routes []struct {
+		Match string `json:"match"`
+		Via   string `json:"via"`
+	} `json:"routes"`
+	Net *Net `json:"net"`
 }
 
-type legacyTunnel struct {
-	Link
-	Forwards []struct {
-		Direction string `json:"direction"`
-		Listen    string `json:"listen"`
-		Target    string `json:"target"`
-	} `json:"forwards"`
-}
-
-// parseLegacy converts a configuration of an earlier version: the mesh
-// identity becomes the node; each SSH tunnel becomes a link of the same
-// name; and each -L forward becomes a map to the tunnel's machine, which
-// for a tunnel to mesh:<machine> is that machine. Other forwards have no
-// place in the current format and are dropped, with a note each. The
-// notes are not nil.
+// parseLegacy converts a configuration of legacyVersion. Its identity and
+// links stay; the proxy, the maps, and the routes have no place in the
+// current format and go, with a note each. The notes are not nil.
 func parseLegacy(data []byte) (*File, []string, error) {
 	var old legacyFile
 	if err := json.Unmarshal(data, &old); err != nil {
 		return nil, nil, errors.New("invalid JSON")
 	}
 	f := empty()
-	if old.Mesh != nil {
-		f.Node = &Node{ID: old.Mesh.ID, Name: old.Mesh.Name}
+	f.Down = old.Down
+	f.Links = old.Links
+	if old.Node != nil {
+		f.Node = &Node{ID: old.Node.ID, Name: old.Node.Name}
+	}
+	if old.Net != nil && old.Net.Subnet != "" {
+		f.Net = old.Net
 	}
 	notes := []string{}
-	for _, name := range slices.Sorted(maps.Keys(old.Tunnels)) {
-		t := old.Tunnels[name]
-		if t == nil {
-			continue
-		}
-		machine, through := strings.CutPrefix(t.Destination, "mesh:")
-		if !through {
-			l := t.Link
-			f.Links[name] = &l
-			machine = name
-		}
-		for _, fwd := range t.Forwards {
-			m := Map{Listen: fwd.Listen, Machine: machine, Target: fwd.Target}
-			if fwd.Direction == "local" && m.validate() == nil && !slices.ContainsFunc(f.Maps, func(e Map) bool { return e.Listen == m.Listen }) {
-				f.Maps = append(f.Maps, m)
-				continue
-			}
-			flag := map[string]string{"remote": "-R", "local": "-L", "dynamic": "-D"}[fwd.Direction]
-			spec := strings.TrimSuffix(fwd.Listen+":"+fwd.Target, ":")
-			notes = append(notes, fmt.Sprintf("tunnel %s: %s %s", name, flag, spec))
-		}
+	if old.Proxy != "" {
+		notes = append(notes, "proxy "+old.Proxy)
+	}
+	for _, m := range old.Maps {
+		notes = append(notes, fmt.Sprintf("map %s to %s on %s", m.Listen, m.Target, m.Machine))
+	}
+	for _, r := range old.Routes {
+		notes = append(notes, fmt.Sprintf("route %s via %s", r.Match, r.Via))
 	}
 	if err := f.normalize(); err != nil {
 		return nil, nil, err

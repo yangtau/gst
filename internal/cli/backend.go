@@ -30,12 +30,9 @@ type backend interface {
 	NodeStatus(ctx context.Context, node string) (wire.Status, error)
 	// Ping asks a machine of the mesh to answer through the mesh.
 	Ping(ctx context.Context, node string) (wire.Ping, error)
-	// Direct reports the direct link with a machine of the mesh and how
-	// the latest try at one went.
+	// Direct reports the UDP path to a machine of the mesh and how the
+	// latest try at one went.
 	Direct(ctx context.Context, node string) (wire.DirectReport, error)
-	// Connect connects to target on a machine of the mesh through the
-	// daemon.
-	Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error)
 }
 
 const software = "gst " + version
@@ -201,22 +198,4 @@ func (b *daemonBackend) Direct(ctx context.Context, node string) (r wire.DirectR
 		return err
 	})
 	return r, err
-}
-
-// Connect connects through the mesh. The connection is set up within
-// connectTimeout, which leaves the mesh its own relay timeout.
-func (b *daemonBackend) Connect(ctx context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
-	const connectTimeout = 40 * time.Second
-	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
-	defer cancel()
-	c, err := daemon.Dial(ctx, b.socket, software, "")
-	if err != nil {
-		return nil, fmt.Errorf("the gst daemon does not answer: %w", err)
-	}
-	conn, err := c.Connect(ctx, node, target)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	return conn, nil
 }

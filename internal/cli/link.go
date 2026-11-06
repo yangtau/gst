@@ -16,12 +16,12 @@ func (a *app) addCommand() *cobra.Command {
 		Short:      "Link this machine with another machine over SSH",
 		Long: `Add a link: an SSH connection from this machine to another machine that
 also runs gst. Over it, the gst daemons of the two machines join each
-other's mesh: each learns every machine that the other knows, and
-connections can pass through it in both directions. A link runs in the
-background, starts at login, and reconnects after failures; gst status
-shows its state.
+other's mesh: each learns every machine that the other knows, and the
+traffic of the virtual network can pass through it in both directions. A
+link runs in the background, starts at login, and reconnects after
+failures; gst status shows its state.
 
-The other machine needs gst 0.3 or later in the PATH of its login shell,
+The other machine needs gst 0.4 or later in the PATH of its login shell,
 or set with --remote-gst. It does not need its own links: being linked
 to is enough.
 

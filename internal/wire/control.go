@@ -16,9 +16,6 @@ const (
 	// MethodDirect ("mesh.direct") takes NodeParams and returns
 	// DirectReport.
 	MethodDirect = "mesh.direct"
-	// MethodConnect ("mesh.connect") takes ConnectParams; on success the
-	// control connection carries the bytes of a connection to the target.
-	MethodConnect = "mesh.connect"
 )
 
 // Link states reported by the daemon.
@@ -35,11 +32,8 @@ type Status struct {
 	PID      int         `json:"pid"`
 	Config   string      `json:"config"`
 	Node     NodeInfo    `json:"node"`
-	Proxy    Listener    `json:"proxy"` // Listen is empty when the proxy is off
 	Links    []LinkState `json:"links"`
-	Maps     []MapState  `json:"maps"`
-	Routes   []Route     `json:"routes"`
-	Net      *NetState   `json:"net,omitempty"` // nil while the virtual network is off
+	Net      *NetState   `json:"net,omitempty"` // nil while this daemon cannot run the network
 }
 
 // NetState is this machine's part in the virtual network. Error says why
@@ -56,7 +50,7 @@ type NetState struct {
 // Ways that packets take to a peer.
 const (
 	PathDirect = "direct" // over UDP
-	PathMesh   = "mesh"   // along the links of the mesh
+	PathSSH    = "ssh"    // along the SSH links of the mesh
 )
 
 // NetPeer is another machine of the virtual network.
@@ -64,31 +58,10 @@ type NetPeer struct {
 	Node      string    `json:"node"` // its id
 	Name      string    `json:"name"`
 	Address   string    `json:"address"`
-	Path      string    `json:"path"`               // PathDirect or PathMesh
+	Path      string    `json:"path"`               // PathDirect or PathSSH
 	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
 	Received  uint64    `json:"received"`           // bytes
 	Sent      uint64    `json:"sent"`               // bytes
-}
-
-// Listener is the state of one of the daemon's listeners, identified by
-// its listen address. Error says why it does not listen.
-type Listener struct {
-	Listen string `json:"listen"`
-	Error  string `json:"error,omitempty"`
-}
-
-// MapState is a map and the state of its listener.
-type MapState struct {
-	Listener
-	Machine string `json:"machine"`
-	Target  string `json:"target"`
-}
-
-// Route sends the proxy's connections to the hosts that Match matches
-// through the machine Via.
-type Route struct {
-	Match string `json:"match"`
-	Via   string `json:"via"`
 }
 
 // LinkState is a configured link and its state. Error is the last
@@ -109,24 +82,25 @@ type NodeParams struct {
 	Node string `json:"node"`
 }
 
-// Ping is a machine's answer through the mesh: the machine, the machines
-// in between, in order, and how long the answer took, in milliseconds,
-// which includes setting up the relay at each machine on the way.
+// Ping is a machine's answer over the SSH links of the mesh: the machine,
+// the machines in between, in order, and how long the answer took, in
+// milliseconds, which includes setting up the relay at each machine on the
+// way.
 type Ping struct {
 	Node   NodeInfo   `json:"node"`
 	Via    []NodeInfo `json:"via"`
 	TimeMS float64    `json:"time_ms"`
-	Direct bool       `json:"direct,omitempty"` // it went over a direct link
+	Direct bool       `json:"direct,omitempty"` // packets go to the machine over UDP
 }
 
-// DirectReport is the direct link with a machine, or why there is none,
-// and what this node and that machine did in their latest try at one.
+// DirectReport is the UDP path to a machine, or why there is none, and
+// what this node and that machine did in their latest try at one.
 type DirectReport struct {
 	Node NodeInfo `json:"node"`
-	// Off says that direct links are off on this machine.
+	// Off says that UDP paths are off on this machine.
 	Off    bool        `json:"off,omitempty"`
 	Trying bool        `json:"trying,omitempty"` // a try is running
-	Link   *DirectLink `json:"link,omitempty"`   // the running link
+	Path   *DirectPath `json:"path,omitempty"`   // the running path
 	// Next is when a new try can start, after a failure.
 	Next  time.Time   `json:"next,omitzero"`
 	Local DirectTrace `json:"local"`
@@ -135,18 +109,11 @@ type DirectReport struct {
 	PeerError string `json:"peer_error,omitempty"`
 }
 
-// DirectLink is a running direct link as this node sees it: the IP:port
-// at each end.
-type DirectLink struct {
+// DirectPath is a running UDP path as this node sees it: the IP:port at
+// each end.
+type DirectPath struct {
 	Local  string `json:"local"`
 	Remote string `json:"remote"`
-}
-
-// ConnectParams name a machine of the mesh, as the user refers to it, and
-// the target address on it.
-type ConnectParams struct {
-	Node   string `json:"node"`
-	Target Target `json:"target"`
 }
 
 // Topology is the mesh as one node knows it.
@@ -161,10 +128,9 @@ type TopoNode struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Software  string    `json:"software,omitempty"`
-	Exit      bool      `json:"exit"`
 	Reachable bool      `json:"reachable"`
 	Path      []string  `json:"path,omitempty"`   // node ids from this node, for reachable nodes
-	Direct    bool      `json:"direct,omitempty"` // this node has a direct link to it
+	Direct    bool      `json:"direct,omitempty"` // this node has a UDP path to it
 	Expires   time.Time `json:"expires,omitzero"` // when its record expires; zero for this node
 	Net       *NetInfo  `json:"net,omitempty"`    // its part in the virtual network
 }
@@ -173,11 +139,5 @@ type TopoNode struct {
 type TopoEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-	Link string `json:"link"` // its name on From; empty for a direct link
-	// Direct says that the link is a direct link rather than one over SSH.
-	Direct bool `json:"direct,omitempty"`
-	// Local and Remote are the addresses of a direct link as From sees
-	// them, each an IP:port.
-	Local  string `json:"local,omitempty"`
-	Remote string `json:"remote,omitempty"`
+	Link string `json:"link"` // its name on From
 }

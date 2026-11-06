@@ -4,7 +4,6 @@ go 1.26.8
 
 require (
 	github.com/hashicorp/yamux v0.1.2
-	github.com/quic-go/quic-go v0.65.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.60.0

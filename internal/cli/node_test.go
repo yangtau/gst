@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"regexp"
 	"slices"
@@ -20,11 +19,11 @@ func meshTopology() wire.Topology {
 	return wire.Topology{
 		Self: self,
 		Nodes: []wire.TopoNode{
-			{ID: self, Name: "laptop", Software: "gst 0.3.0", Reachable: true, Path: []string{self}},
-			{ID: devbox, Name: "devbox", Software: "gst 0.3.0", Exit: true, Reachable: true, Path: []string{self, devbox}},
+			{ID: self, Name: "laptop", Software: "gst 0.4.0", Reachable: true, Path: []string{self}},
+			{ID: devbox, Name: "devbox", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox}},
 			{ID: far, Name: "far", Reachable: true, Path: []string{self, devbox, far}},
-			{ID: dup1, Name: "dup", Software: "gst 0.3.0", Reachable: true, Path: []string{self, devbox, dup1}},
-			{ID: dup2, Name: "dup", Software: "gst 0.3.0"},
+			{ID: dup1, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup1}},
+			{ID: dup2, Name: "dup", Software: "gst 0.4.0"},
 		},
 		Edges: []wire.TopoEdge{
 			{From: devbox, To: dup1, Link: "d1"},
@@ -34,69 +33,7 @@ func meshTopology() wire.Topology {
 	}
 }
 
-// --- connect ---
-
-func TestConnect(t *testing.T) {
-	e := newEnv(t)
-	for _, tc := range []struct {
-		args []string
-		call string
-	}{
-		{[]string{"devbox", "5432"}, "connect devbox tcp localhost:5432"},
-		{[]string{"devbox.gst", "5432"}, "connect devbox tcp localhost:5432"},
-		{[]string{"DevBox.GST", "db.internal:5432"}, "connect devbox tcp db.internal:5432"},
-		{[]string{"devbox", "127.0.0.1:22"}, "connect devbox tcp 127.0.0.1:22"},
-		{[]string{"devbox", "/run/app.sock"}, "connect devbox unix /run/app.sock"},
-		{[]string{"cccc3333", "80"}, "connect cccc3333 tcp localhost:80"},
-	} {
-		e.resetCalls()
-		e.back.sent.Reset()
-		e.stdin = "request for " + tc.args[0]
-		out := e.mustGst(append([]string{"connect"}, tc.args...)...)
-		if want := "hello from " + strings.Split(strings.ToLower(tc.call), " ")[1]; out != want {
-			t.Errorf("gst connect %v: output %q, want %q", tc.args, out, want)
-		}
-		if !slices.Equal(e.back.calls, []string{tc.call}) {
-			t.Errorf("gst connect %v: calls %v, want %q", tc.args, e.back.calls, tc.call)
-		}
-		if got := e.back.sent.String(); got != e.stdin {
-			t.Errorf("gst connect %v: sent %q, want %q", tc.args, got, e.stdin)
-		}
-	}
-}
-
-func TestConnectWithoutStdin(t *testing.T) {
-	e := newEnv(t)
-	var stdout, stderr strings.Builder
-	a := e.app(&stdout, &stderr)
-	a.stdin = nil
-	if code := a.execute(context.Background(), []string{"--config", e.config, "connect", "devbox", "22"}); code != exitOK {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if stdout.String() != "hello from devbox" {
-		t.Fatalf("output %q", stdout.String())
-	}
-}
-
-func TestConnectErrors(t *testing.T) {
-	e := newEnv(t)
-	e.expectError(exitFailure, []string{"connect", "nowhere", "22"}, `error: no machine "nowhere" in the mesh`)
-	for _, args := range [][]string{
-		{"connect", "Bad_Name", "22"},
-		{"connect", "dev cn", "22"},
-		{"connect", "devbox", "0"},
-		{"connect", "devbox", "http"},
-		{"connect", "devbox", "relative.sock/x"},
-		{"connect", "devbox", "22", "extra"},
-	} {
-		if stderr := e.expectCode(exitUsage, args...); !strings.Contains(stderr, "usage: gst connect") {
-			t.Errorf("gst %v: %q", args, stderr)
-		}
-	}
-	e.expectError(exitUsage, []string{"connect"}, "error: missing argument <machine>\n")
-}
-
-// --- name and exit ---
+// --- name ---
 
 func TestName(t *testing.T) {
 	e := newEnv(t)
@@ -136,38 +73,6 @@ func TestName(t *testing.T) {
 	if e.load().Node.Name != "laptop" {
 		t.Fatal("a rejected name was saved")
 	}
-}
-
-func TestExit(t *testing.T) {
-	e := newEnv(t)
-	out := e.mustGst("exit")
-	contains(t, out, " is not an exit: other machines connect through it only to its own ports and sockets.\n")
-	if len(e.back.calls) != 0 {
-		t.Fatalf("showing reached the daemon: %v", e.back.calls)
-	}
-	e.mustGst("name", "laptop")
-
-	e.resetCalls()
-	if out := e.mustGst("exit", "on"); out != "laptop is an exit: other machines can connect through it to any address.\n" {
-		t.Fatalf("output %q", out)
-	}
-	if !e.load().Node.Exit || !slices.Equal(e.back.calls, []string{"sync"}) {
-		t.Fatalf("exit %v, calls %v", e.load().Node.Exit, e.back.calls)
-	}
-	e.resetCalls()
-	contains(t, e.mustGst("exit", "on"), "laptop is an exit")
-	contains(t, e.mustGst("exit"), "laptop is an exit")
-	if len(e.back.calls) != 0 {
-		t.Fatalf("no change must not sync: %v", e.back.calls)
-	}
-	if out := e.mustGst("exit", "off"); out != "laptop is not an exit: other machines connect through it only to its own ports and sockets.\n" {
-		t.Fatalf("output %q", out)
-	}
-	if e.load().Node.Exit || !slices.Equal(e.back.calls, []string{"sync"}) {
-		t.Fatalf("exit %v, calls %v", e.load().Node.Exit, e.back.calls)
-	}
-	e.expectError(exitUsage, []string{"exit", "yes"}, `error: invalid argument "yes": use on or off`)
-	e.expectCode(exitUsage, "exit", "on", "off")
 }
 
 // --- up and down ---
@@ -223,7 +128,7 @@ func TestChangesWhileDown(t *testing.T) {
 		t.Fatal("the change was not saved")
 	}
 
-	_, _, stderr = e.gst("map", "add", "15432", "devbox:5432")
+	_, _, stderr = e.gst("name", "laptop")
 	contains(t, stderr, "note: gst is down on this machine")
 
 	e.mustGst("up")
@@ -231,7 +136,7 @@ func TestChangesWhileDown(t *testing.T) {
 		t.Fatal("up did not start the daemon")
 	}
 	// Only the changes made while down print the note.
-	if _, _, stderr := e.gst("route", "add", "default", "devbox"); strings.Contains(stderr, "gst is down") {
+	if _, _, stderr := e.gst("name", "devbox"); strings.Contains(stderr, "gst is down") {
 		t.Fatalf("stderr %q", stderr)
 	}
 }

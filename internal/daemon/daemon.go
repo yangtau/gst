@@ -1,7 +1,7 @@
 // Package daemon runs the gst daemon: one background process per user
-// that is this machine's node in the mesh. It runs the started links of
-// the configuration file, accepts the links of other machines, serves the
-// proxy and the maps, and answers gst commands on a Unix control socket
+// that is this machine's node in the mesh. It runs the links of the
+// configuration file, accepts the links of other machines, runs the
+// virtual network, and answers gst commands on a Unix control socket
 // using the gst protocol (internal/wire).
 package daemon
 
@@ -25,7 +25,6 @@ import (
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
-	"github.com/yangtau/ssh-tunnel/internal/relay"
 	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/vnet"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
@@ -43,8 +42,8 @@ type Config struct {
 	// everything under it. Its errors are logged, so they must not quote
 	// addresses, users, or paths.
 	Connect func(ctx context.Context, name string, l *config.Link) (io.ReadWriteCloser, error)
-	// Addresses returns the local addresses that direct links use; direct
-	// links are off when it is nil.
+	// Addresses returns the local addresses that UDP paths use; they are
+	// off when it is nil.
 	Addresses func() []netip.Addr
 	// OpenNet sets up the interface of the virtual network, which cannot
 	// run when it is nil; NetDNS is the UDP address to answer for .gst on,
@@ -60,7 +59,7 @@ type Config struct {
 	Log *log.Logger
 }
 
-// Daemon runs links, listeners, and control connections.
+// Daemon runs links, the virtual network, and control connections.
 type Daemon struct {
 	cfg Config
 
@@ -69,12 +68,9 @@ type Daemon struct {
 	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
-	ops      sync.Mutex // serializes reloads and restarts
-	mu       sync.Mutex // guards links and listeners
-	links    map[string]*supervisor
-	proxy    *listener
-	maps     map[string]*listener // by listen address
-	serveCtx context.Context      // the listeners' context, which ends with Serve
+	ops   sync.Mutex // serializes reloads and restarts
+	mu    sync.Mutex // guards links
+	links map[string]*supervisor
 }
 
 // New returns a daemon for cfg.
@@ -85,7 +81,7 @@ func New(cfg Config) *Daemon {
 	if cfg.Log == nil {
 		cfg.Log = log.Default()
 	}
-	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}, maps: map[string]*listener{}, serveCtx: context.Background()}
+	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}}
 	m := mesh.New(cfg.Software, cfg.Log, d.Status)
 	d.mesh = m
 	d.net = vnet.New(vnet.Config{
@@ -118,7 +114,6 @@ func New(cfg Config) *Daemon {
 	wire.Handle(&d.control, wire.MethodDirect, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		return m.DirectReport(ctx, p.Node)
 	})
-	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
 	wire.Handle(m.Peer(), wire.MethodNetNetworks, none(func() any { return d.net.Networks() }))
 	return d
 }
@@ -136,9 +131,6 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	meshCtx, stopMesh := context.WithCancel(ctx)
 	defer stopMesh()
 	go d.mesh.Run(meshCtx)
-	d.mu.Lock()
-	d.serveCtx = meshCtx
-	d.mu.Unlock()
 	if d.cfg.Addresses != nil {
 		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
 	}
@@ -228,35 +220,15 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 	}
 }
 
-// connect answers mesh.connect and then carries the bytes of the
-// connection until either side ends.
-func (d *Daemon) connect(ctx context.Context, conn net.Conn, p wire.ConnectParams, accept func(any) error) error {
-	target, err := d.mesh.Dial(ctx, p.Node, p.Target.Network, p.Target.Address)
-	if err != nil {
-		return err
-	}
-	if err := accept(nil); err != nil {
-		target.Close()
-		return err
-	}
-	relay.Pipe(conn, target)
-	return nil
-}
-
 // Status reports the daemon and what it runs, sorted.
 func (d *Daemon) Status() wire.Status {
 	f := d.config.Load()
 	st := wire.Status{
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
-		Node: d.mesh.Self(), Proxy: wire.Listener{Listen: f.Proxy},
-		Links: []wire.LinkState{}, Maps: []wire.MapState{}, Routes: []wire.Route{},
-		Net: d.net.Status(),
+		Node: d.mesh.Self(), Links: []wire.LinkState{}, Net: d.net.Status(),
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.proxy != nil {
-		st.Proxy = d.proxy.state()
-	}
 	for _, name := range slices.Sorted(maps.Keys(f.Links)) {
 		l := f.Links[name]
 		state := wire.LinkState{Name: name, Destination: l.Destination, State: wire.StateDown}
@@ -265,22 +237,12 @@ func (d *Daemon) Status() wire.Status {
 		}
 		st.Links = append(st.Links, state)
 	}
-	for _, m := range f.Maps {
-		state := wire.MapState{Listener: wire.Listener{Listen: m.Listen}, Machine: m.Machine, Target: m.Target}
-		if l := d.maps[m.Listen]; l != nil {
-			state.Listener = l.state()
-		}
-		st.Maps = append(st.Maps, state)
-	}
-	for _, r := range f.Routes {
-		st.Routes = append(st.Routes, wire.Route{Match: r.Match, Via: r.Via})
-	}
 	return st
 }
 
-// Reload reads the configuration and applies it: the node's identity,
-// the proxy, the maps, and the routes; new links start, and links that
-// are gone or changed stop, the changed ones to start again.
+// Reload reads the configuration and applies it: the node's identity and
+// the subnet; new links start, and links that are gone or changed stop,
+// the changed ones to start again.
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
@@ -291,7 +253,6 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	d.mesh.Configure(f.Node)
 	d.config.Store(f)
 	d.net.Configure(ctx, f.Net)
-	d.listen(f)
 	var stop []*supervisor
 	var removed []string
 	d.mu.Lock()
@@ -328,7 +289,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	return nil
 }
 
-// stopAll stops every link and listener.
+// stopAll stops every link.
 func (d *Daemon) stopAll() {
 	d.mu.Lock()
 	all := make([]*supervisor, 0, len(d.links))
@@ -336,17 +297,8 @@ func (d *Daemon) stopAll() {
 		all = append(all, s)
 		delete(d.links, name)
 	}
-	listeners := slices.Collect(maps.Values(d.maps))
-	if d.proxy != nil {
-		listeners = append(listeners, d.proxy)
-	}
-	clear(d.maps)
-	d.proxy = nil
 	d.mu.Unlock()
 	stopAll(all)
-	for _, l := range listeners {
-		l.close()
-	}
 }
 
 func stopAll(list []*supervisor) {

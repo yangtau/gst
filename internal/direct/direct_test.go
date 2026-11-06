@@ -3,7 +3,6 @@ package direct
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -57,39 +56,23 @@ func within(t *testing.T, d time.Duration) context.Context {
 	return ctx
 }
 
-// exchange checks that a stream carries data both ways and half-closes.
+// exchange checks that packets go both ways.
 func exchange(t *testing.T, a, b *Conn) {
 	t.Helper()
-	ctx := within(t, 5*time.Second)
-	out, err := a.Open(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	if _, err := out.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	if err := out.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	in, err := b.Accept(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer in.Close()
-	got, err := io.ReadAll(in)
-	if err != nil || string(got) != "ping" {
-		t.Fatalf("read %q, %v", got, err)
-	}
-	if _, err := in.Write([]byte("pong")); err != nil {
-		t.Fatal(err)
-	}
-	if err := in.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	got, err = io.ReadAll(out)
-	if err != nil || string(got) != "pong" {
-		t.Fatalf("read %q, %v", got, err)
+	for _, ends := range [][2]*Conn{{a, b}, {b, a}} {
+		got := make(chan string, 16)
+		ends[1].HandlePackets(func(p []byte) { got <- string(p) })
+		if err := ends[0].WritePacket([]byte("\x04ping")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case p := <-got:
+			if p != "\x04ping" {
+				t.Fatalf("got %q", p)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the packet did not arrive")
+		}
 	}
 }
 
@@ -110,8 +93,7 @@ func TestConnect(t *testing.T) {
 	exchange(t, s, c)
 }
 
-// Packets of another protocol share the socket with QUIC, in bursts that
-// no queue of quic-go's would hold, and leave its streams alone.
+// Bursts of packets arrive, as the frames of a video do.
 func TestPackets(t *testing.T) {
 	client, server := attempt(t), attempt(t)
 	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
@@ -128,7 +110,6 @@ func TestPackets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exchange(t, c, s)
 	seen := map[string]bool{}
 	deadline := time.After(5 * time.Second)
 	for len(seen) < burst*9/10 {
@@ -138,6 +119,38 @@ func TestPackets(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("%d of %d packets arrived", len(seen), burst)
 		}
+	}
+}
+
+// What is not WireGuard's stays out, and so does what comes from another
+// address.
+func TestStrayPackets(t *testing.T) {
+	client, server := attempt(t), attempt(t)
+	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 16)
+	s.HandlePackets(func(p []byte) { got <- string(p) })
+	stranger, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(loopback[0], 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stranger.Close()
+	to, err := netip.ParseAddrPort(s.Local())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger.WriteToUDPAddrPort([]byte("\x04stranger"), to)
+	c.WritePacket([]byte("\x7fnot wireguard"))
+	c.WritePacket([]byte("\x04mine"))
+	select {
+	case p := <-got:
+		if p != "\x04mine" {
+			t.Fatalf("got %q", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the packet did not arrive")
 	}
 }
 
@@ -160,25 +173,6 @@ func TestPathFromProbes(t *testing.T) {
 				t.Fatal(err)
 			}
 			exchange(t, c, s)
-		})
-	}
-}
-
-func TestWrongCertificate(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		wrong func(offer, answer *wire.DirectOffer)
-	}{
-		{"client", func(offer, _ *wire.DirectOffer) { offer.Fingerprint = "00" }},
-		{"server", func(_, answer *wire.DirectOffer) { answer.Fingerprint = "00" }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client, server := attempt(t), attempt(t)
-			offer, answer := client.Offer(), server.Offer()
-			tc.wrong(&offer, &answer)
-			if _, _, err := connect(within(t, 2*time.Second), t, client, server, offer, answer); err == nil {
-				t.Fatal("connected with a wrong certificate")
-			}
 		})
 	}
 }
@@ -213,78 +207,52 @@ func TestNoAddress(t *testing.T) {
 	}
 }
 
-// When the connection ends, reading a stream fails rather than ending
-// cleanly, and writing that was waiting ends.
-func TestConnectionLost(t *testing.T) {
+// Closing a path tells the other side at once.
+func TestClose(t *testing.T) {
 	client, server := attempt(t), attempt(t)
 	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := within(t, 5*time.Second)
-	out, err := c.Open(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out.Write([]byte("x"))
-	in, err := s.Accept(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	in.Read(make([]byte, 1))
 	c.Close()
-	in.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := in.Read(make([]byte, 1)); err == nil || err == io.EOF {
-		t.Fatalf("read after losing the connection: %v", err)
-	}
 	select {
 	case <-s.Done():
-	case <-time.After(5 * time.Second):
+	case <-time.After(silenceLimit / 2):
 		t.Fatal("the other side did not notice")
 	}
 }
 
-// Close ends a write that waits for the other side, as a relay that
-// breaks down needs.
-func TestCloseDuringWrite(t *testing.T) {
+// A path whose other end stopped answering ends by itself.
+func TestSilence(t *testing.T) {
 	client, server := attempt(t), attempt(t)
-	c, _, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
+	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Open(within(t, 5*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrote := make(chan error, 1)
-	go func() {
-		chunk := make([]byte, 1<<20)
-		for {
-			if _, err := out.Write(chunk); err != nil {
-				wrote <- err
-				return
-			}
-		}
-	}()
-	time.Sleep(100 * time.Millisecond)
-	closed := make(chan struct{})
-	go func() {
-		out.Close()
-		close(closed)
-	}()
+	s.end() // Without a word to the other side.
 	select {
-	case <-closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("close did not return")
-	}
-	select {
-	case <-wrote:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the write did not end")
+	case <-c.Done():
+	case <-time.After(2 * silenceLimit):
+		t.Fatal("the path did not end")
 	}
 }
 
-var _ net.Conn = (*stream)(nil)
+// A path keeps running while the two ends hear each other.
+func TestBeats(t *testing.T) {
+	client, server := attempt(t), attempt(t)
+	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-c.Done():
+		t.Fatal("the path ended")
+	case <-s.Done():
+		t.Fatal("the path ended")
+	case <-time.After(silenceLimit + beatInterval):
+	}
+	exchange(t, c, s)
+}
 
 func TestAddresses(t *testing.T) {
 	for _, addr := range Addresses() {

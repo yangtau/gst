@@ -30,7 +30,7 @@ type node struct {
 	container string
 	ip        string
 	hostKey   ssh.PublicKey
-	direct    bool // its daemon uses direct links
+	direct    bool // its daemon tries UDP paths
 }
 
 const (
@@ -171,8 +171,8 @@ func (n *node) helper(args ...string) (string, error) {
 // of any other, and returns its exit code, stdout, and stderr.
 func (n *node) gst(args ...string) (int, string, string) {
 	n.t.Helper()
-	// Direct links are off unless a test wants them, so that connections
-	// between the containers stay on the links that it set up.
+	// UDP paths are off unless a test wants them, so that packets between
+	// the containers stay on the links that it set up.
 	direct := "off"
 	if n.direct {
 		direct = "on"
@@ -260,21 +260,6 @@ func (p *pair) deadEnd() string {
   ConnectTimeout 10
 EOF`, nodeSSHConfig, alias, p.server.ip, p.identity, p.knownHosts)
 	return alias
-}
-
-// startEcho starts an echo server on 127.0.0.1:port; see gst-it.
-func (n *node) startEcho(port int) {
-	n.t.Helper()
-	n.mustSh(`setsid gst-it echo-server "127.0.0.1:$1" </dev/null >/dev/null 2>&1 &`, fmt.Sprint(port))
-	n.waitListening(port)
-}
-
-func (n *node) waitListening(port int) {
-	n.t.Helper()
-	eventually(n.t, 5*time.Second, fmt.Sprintf("nothing listens on port %d", port), func() bool {
-		_, err := n.sh(`nc -z 127.0.0.1 "$1"`, fmt.Sprint(port))
-		return err == nil
-	})
 }
 
 // roundtrip sends payloads to echo servers through addrs; see gst-it.
@@ -422,15 +407,11 @@ func (n *node) waitUnreachable(name string) {
 	})
 }
 
-// startEchoOn starts an echo server on addr, a host:port or a socket path.
+// startEchoOn starts an echo server on addr, a host:port.
 func (n *node) startEchoOn(addr string) {
 	n.t.Helper()
 	n.mustSh(`setsid gst-it echo-server "$1" </dev/null >/dev/null 2>&1 &`, addr)
 	eventually(n.t, 5*time.Second, "echo server on "+addr+" did not start", func() bool {
-		if strings.HasPrefix(addr, "/") {
-			_, err := n.sh(`test -S "$1"`, addr)
-			return err == nil
-		}
 		host, port, _ := net.SplitHostPort(addr)
 		_, err := n.sh(`nc -z "$1" "$2"`, host, port)
 		return err == nil

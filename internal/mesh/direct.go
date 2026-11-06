@@ -15,27 +15,26 @@ import (
 )
 
 const (
-	directTimeout = 15 * time.Second // to set up a direct link
-	directRetry   = time.Minute      // first wait after a direct link fails or ends
-	directMaxWait = 30 * time.Minute
+	directTimeout = 15 * time.Second // to find a UDP path
+	directRetry   = 5 * time.Second  // first wait after a try fails or a path ends
+	directMaxWait = 5 * time.Minute
 	removeTimeout = 3 * time.Second // to tell a peer that its link is being removed
 	maxTrace      = 200             // events kept of a try
 )
 
-// A direct link is a link over UDP (internal/direct) between two nodes,
-// which may have no SSH link between them. Nodes set one up when a
-// connection first goes to a node, signaling through the mesh, so the
-// connection that started it keeps its way, and the ones after it take
-// the direct link. It runs like any other link, and when it fails,
-// connections go over the other links again.
+// A UDP path (internal/direct) carries the WireGuard packets between two
+// nodes, which may have no SSH link between them. Traffic to a node starts
+// a try at one, signaling over the mesh, and takes the links until the
+// path is up, and again after it ends.
 //
-// Direct links are shortcuts: only the mesh can start one, and SSH links
-// decide which machines belong to it. Losing SSH links does not change
-// that, so a direct link outlives them, as when the machine between its
+// A path is no link: no calls run on it, and the records say nothing of
+// it. It is a shortcut for packets, and only the mesh can start one, as
+// SSH links decide which machines belong to it. Losing SSH links does not
+// change that, so a path outlives them, as when the machine between its
 // two nodes sleeps. Removing an SSH link does: both of its ends then end
-// the direct links to nodes that SSH links no longer lead to.
+// the paths to nodes that SSH links no longer lead to.
 
-// EnableDirect lets this node open and accept direct links until ctx is
+// EnableDirect lets this node find and accept UDP paths until ctx is
 // done. addrs returns the local addresses to use.
 func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
 	n.mu.Lock()
@@ -45,18 +44,19 @@ func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
 
 // Unlink tells the node at the other end of the link called name, if the
 // link runs, that the link is being removed, before it stops. A node that
-// does not hear it keeps its direct links until they end by themselves.
+// does not hear it keeps its UDP paths until they end by themselves.
 func (n *Node) Unlink(ctx context.Context, name string) {
 	n.mu.Lock()
 	var s session
+	found := false
 	for l := range n.links {
-		if l.opened && !l.direct && l.name == name {
-			s = l.session
+		if l.opened && l.name == name {
+			s, found = l.session, true
 		}
 	}
 	self := n.info.ID
 	n.mu.Unlock()
-	if s == nil {
+	if !found {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, removeTimeout)
@@ -72,8 +72,8 @@ func (n *Node) serveLinkRemove(_ context.Context, p wire.LinkRemove) (any, error
 	return nil, nil
 }
 
-// EndStrandedDirect ends the direct links to nodes that SSH links do not
-// lead to, after this node removed a link.
+// EndStrandedDirect ends the UDP paths to nodes that SSH links do not lead
+// to, after this node removed a link.
 func (n *Node) EndStrandedDirect() {
 	n.endStrandedDirect(func(wire.TopoEdge) bool { return false })
 }
@@ -81,21 +81,16 @@ func (n *Node) EndStrandedDirect() {
 // endStrandedDirect is EndStrandedDirect without the links that gone
 // reports, which are about to stop.
 func (n *Node) endStrandedDirect(gone func(wire.TopoEdge) bool) {
-	var overSSH []wire.TopoEdge
 	topo := n.Topology()
-	for _, e := range topo.Edges {
-		if !e.Direct && !gone(e) {
-			overSSH = append(overSSH, e)
+	reached := reach(slices.DeleteFunc(slices.Clone(topo.Edges), gone), topo.Self)
+	n.packets.Range(func(id, value any) bool {
+		if _, ok := reached[id.(string)]; !ok {
+			if c := value.(*packetPeer).direct.Load(); c != nil {
+				c.Close()
+			}
 		}
-	}
-	reached := reach(overSSH, topo.Self)
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	for l := range n.links {
-		if _, ok := reached[l.peer.ID]; l.direct && !ok {
-			l.session.Close()
-		}
-	}
+		return true
+	})
 }
 
 // trace records what the try with node id did. The trace holds addresses,
@@ -114,8 +109,8 @@ func (n *Node) serveTrace(_ context.Context, p wire.DirectTraceParams) (any, err
 	return wire.DirectTrace{Events: slices.Clone(n.directTrace[p.Node])}, nil
 }
 
-// DirectReport reports the direct link with the machine that ref names,
-// and what this node and that machine did in their latest try at one.
+// DirectReport reports the UDP path to the machine that ref names, and
+// what this node and that machine did in their latest try at one.
 func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport, error) {
 	dest, err := FindNode(n.Topology(), ref)
 	if err != nil {
@@ -124,17 +119,17 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	if dest.ID == n.Self().ID {
 		return wire.DirectReport{}, wire.Errorf(wire.CodeInvalidParams, "%s is this machine", dest.Name)
 	}
-	r := wire.DirectReport{Node: wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software, Exit: dest.Exit}}
+	r := wire.DirectReport{Node: wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software}}
 	if err := n.Call(ctx, dest.ID, wire.MethodDirectTrace, wire.DirectTraceParams{Node: n.Self().ID}, &r.Peer); err != nil {
 		r.PeerError = err.Error()
+	}
+	if c := n.packetPeer(dest.ID).direct.Load(); c != nil {
+		r.Path = &wire.DirectPath{Local: c.Local(), Remote: c.Remote()}
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	r.Off = n.directCtx == nil
 	r.Trying = n.directTries[dest.ID] != nil
-	if l := n.directLink(dest.ID); l != nil {
-		r.Link = &wire.DirectLink{Local: l.local, Remote: l.remote}
-	}
 	if next := n.directWaits[dest.ID].next; next.After(time.Now()) {
 		r.Next = next
 	}
@@ -142,7 +137,7 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	return r, nil
 }
 
-// directTry is a direct link being set up with a node.
+// directTry is a try at a UDP path to a node.
 type directTry struct {
 	offering bool
 	cancel   context.CancelFunc
@@ -187,23 +182,14 @@ func (n *Node) backOff(id string) {
 	n.directWaits[id] = w
 }
 
-// directLink returns the running direct link with node id; n.mu is held.
-func (n *Node) directLink(id string) *link {
-	for l := range n.links {
-		if l.direct && l.peer.ID == id && !closed(l.session) {
-			return l
-		}
-	}
-	return nil
-}
-
-// tryDirect sets up a direct link with node id in the background, unless
-// there is one, or it failed recently.
+// tryDirect looks for a UDP path to node id in the background, unless
+// there is one, or a try failed recently.
 func (n *Node) tryDirect(id string) {
+	path := n.packetPeer(id).direct.Load()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	switch {
-	case n.directCtx == nil, id == n.info.ID, n.directTries[id] != nil, n.directLink(id) != nil:
+	case n.directCtx == nil, id == n.info.ID, n.directTries[id] != nil, path != nil, n.onPacket.Load() == nil:
 		return
 	case time.Now().Before(n.directWaits[id].next):
 		return
@@ -212,8 +198,8 @@ func (n *Node) tryDirect(id string) {
 	go n.offerDirect(ctx, id, try)
 }
 
-// offerDirect is the side of a direct link that starts it: it offers the
-// link and connects to the node that answers.
+// offerDirect is the side of a try that starts it: it offers a path and
+// finds one to the node that answers.
 func (n *Node) offerDirect(ctx context.Context, id string, try *directTry) {
 	defer n.endDirect(id, try)
 	conn, err := n.connectDirect(ctx, id)
@@ -221,11 +207,11 @@ func (n *Node) offerDirect(ctx context.Context, id string, try *directTry) {
 		n.directFailed(ctx, id, err.Error())
 		return
 	}
-	n.runDirect(id, conn, true, try)
+	n.runDirect(id, conn, try)
 }
 
-// connectDirect offers a direct link to node id and connects to it. Its
-// errors are logged, so they leave out what the other machine reports.
+// connectDirect offers a path to node id and finds one. Its errors are
+// logged, so they leave out what the other machine reports.
 func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Conn, error) {
 	attempt, err := direct.New(n.directAddrs())
 	if err != nil {
@@ -235,7 +221,7 @@ func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Conn, erro
 	attempt.Trace = func(text string) { n.trace(id, "%s", text) }
 	offer := attempt.Offer()
 	offer.Node = n.Self().ID
-	n.trace(id, "offering through the mesh: %s", strings.Join(offer.Addresses, ", "))
+	n.trace(id, "offering over SSH: %s", strings.Join(offer.Addresses, ", "))
 	var answer wire.DirectOffer
 	if err := n.Call(ctx, id, wire.MethodDirectOffer, offer, &answer); err != nil {
 		n.trace(id, "the offer failed: %v", err)
@@ -255,71 +241,78 @@ func (n *Node) directFailed(ctx context.Context, id, reason string) {
 	if ctx.Err() == context.Canceled {
 		return
 	}
-	n.log.Printf("direct link with %s: %s", n.nodeName(id), reason)
+	n.log.Printf("UDP path to %s: %s", n.nodeName(id), reason)
 	n.trace(id, "failed: %s", reason)
 	n.backOff(id)
 }
 
-// serveOffer answers direct.offer: it sets up its end and connects when
-// the other node does. When both nodes offer at once, the offer of the
-// node with the lower id goes on.
+// serveOffer answers direct.offer: it helps the other node find a path.
+// When both nodes offer at once, the offer of the node with the lower id
+// goes on.
 func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error) {
+	if n.onPacket.Load() == nil {
+		return nil, wire.Errorf(wire.CodeFailed, "%s is not on the virtual network", n.Self().Name)
+	}
+	if !config.ValidNodeID(offer.Node) {
+		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the offer")
+	}
+	old := n.packetPeer(offer.Node).direct.Load()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	switch {
 	case n.directCtx == nil:
-		return nil, wire.Errorf(wire.CodeFailed, "direct links are off on %s", n.info.Name)
-	case !config.ValidNodeID(offer.Node) || offer.Node == n.info.ID:
+		return nil, wire.Errorf(wire.CodeFailed, "UDP paths are off on %s", n.info.Name)
+	case offer.Node == n.info.ID:
 		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the offer")
 	}
 	if try := n.directTries[offer.Node]; try != nil && try.offering && n.info.ID < offer.Node {
-		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a direct link itself", n.info.Name)
+		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a path itself", n.info.Name)
 	}
 	attempt, err := direct.New(n.directAddrs())
 	if err != nil {
-		return nil, wire.Errorf(wire.CodeFailed, "%s has no local address for a direct link", n.info.Name)
+		return nil, wire.Errorf(wire.CodeFailed, "%s has no local address for a path", n.info.Name)
 	}
-	// The other node has no direct link, or it would not offer one. If
-	// this one thinks there is, that link is gone.
-	if old := n.directLink(offer.Node); old != nil {
-		old.session.Close()
+	// The other node has no path, or it would not offer one. If this one
+	// thinks there is, that path is gone.
+	if old != nil {
+		old.Close()
 	}
 	answer := attempt.Offer()
 	ctx, try := n.startDirect(offer.Node, false)
 	go func() {
 		defer n.endDirect(offer.Node, try)
 		attempt.Trace = func(text string) { n.trace(offer.Node, "%s", text) }
-		n.trace(offer.Node, "offer through the mesh: %s", strings.Join(offer.Addresses, ", "))
+		n.trace(offer.Node, "offer over SSH: %s", strings.Join(offer.Addresses, ", "))
 		n.trace(offer.Node, "answering with: %s", strings.Join(answer.Addresses, ", "))
 		conn, err := attempt.Accept(ctx, offer)
 		attempt.Close()
 		if err != nil {
-			n.directFailed(ctx, offer.Node, "no connection arrived")
+			n.directFailed(ctx, offer.Node, "no path")
 			return
 		}
-		n.runDirect(offer.Node, conn, false, try)
+		n.runDirect(offer.Node, conn, try)
 	}()
 	return answer, nil
 }
 
-// runDirect runs a direct link until it ends. The try ends once the link
-// runs, so that there is always one or the other. The node that opened
-// the link publishes it, as with links over SSH.
-func (n *Node) runDirect(id string, conn *direct.Conn, opened bool, try *directTry) {
+// runDirect makes packets to node id take conn until it ends. The try
+// ends once the path runs, so that there is always one or the other.
+func (n *Node) runDirect(id string, conn *direct.Conn, try *directTry) {
 	n.mu.Lock()
 	delete(n.directWaits, id)
 	ctx := n.directCtx
 	n.mu.Unlock()
-	l := &link{session: conn, direct: true, opened: opened, local: conn.Local(), remote: conn.Remote()}
+	n.attachPackets(id, conn)
 	defer n.detachPackets(id, conn)
-	err := n.run(ctx, l, func(wire.NodeInfo) {
-		n.attachPackets(id, conn)
-		n.endDirect(id, try)
-		n.log.Printf("direct link with %s: up", n.nodeName(id))
-		n.trace(id, "up: %s -> %s", l.local, l.remote)
-	})
-	if err != nil && ctx.Err() == nil {
-		n.log.Printf("direct link with %s: ended", n.nodeName(id))
+	defer conn.Close()
+	n.endDirect(id, try)
+	n.log.Printf("UDP path to %s: up", n.nodeName(id))
+	n.trace(id, "up: %s -> %s", conn.Local(), conn.Remote())
+	n.Update()
+	select {
+	case <-ctx.Done():
+	case <-conn.Done():
+		n.log.Printf("UDP path to %s: ended", n.nodeName(id))
 		n.trace(id, "ended")
 		n.backOff(id)
 	}

@@ -20,36 +20,27 @@ const (
 	packetIdle     = time.Minute      // a stream that carries nothing for this long ends
 	packetRetry    = time.Second      // after a failure to open a stream
 	packetTimeout  = 10 * time.Second // to write a packet to a stream
-	directInterval = 5 * time.Second  // how often traffic may ask for a direct link
-	heartbeat      = time.Second      // how often a direct link says it works
-	directSilence  = 3 * time.Second  // a direct link this quiet carries no packets
+	directInterval = 5 * time.Second  // how often traffic may ask for a UDP path
 	maxPacketSize  = 1<<16 - 1
 )
 
 // The virtual network sends packets between nodes that may have no link
-// between them. Packets take the direct link with the node when there is
-// one, on the same UDP socket, and otherwise a stream along the links of
-// the mesh, which works wherever connections do. They need no protection
-// from the mesh: WireGuard encrypts them end to end, so the machines on
-// the way see only ciphertext, and packets lost here count as lost on a
-// network. Either side may open a stream, and either way it carries
-// packets both ways; traffic also asks for a direct link, as a connection
-// does, so that a path through the mesh moves to UDP as soon as it can.
-//
-// Heartbeats on a direct link tell within seconds that UDP stopped working.
-// The connections on the link can wait for it to recover, but packets and
-// new connections cannot: while it is silent, this node treats it as gone
-// and uses its other links.
+// between them. Packets take the UDP path to the node when there is one,
+// and otherwise a stream along the SSH links, which works wherever the
+// mesh does. They need no protection from the mesh: WireGuard encrypts
+// them end to end, so the machines on the way see only ciphertext, and
+// packets lost here count as lost on a network. Either side may open a
+// stream, and either way it carries packets both ways; traffic also asks
+// for a UDP path, so that packets move to UDP as soon as they can.
 
 // packetPeer is what this node keeps for sending packets to one node.
 type packetPeer struct {
 	id      string
-	direct  atomic.Pointer[direct.Conn]
-	heard   atomic.Int64 // when the direct link last brought anything, in Unix nanoseconds; 0 for not yet
-	queue   chan []byte  // for the streams
-	streams atomic.Int32 // running
+	direct  atomic.Pointer[direct.Conn] // the UDP path; nil while there is none
+	queue   chan []byte                 // for the streams
+	streams atomic.Int32                // running
 	dialing atomic.Bool
-	asked   atomic.Int64 // when traffic last asked for a direct link, in Unix nanoseconds
+	asked   atomic.Int64 // when traffic last asked for a UDP path, in Unix nanoseconds
 }
 
 func (n *Node) packetPeer(id string) *packetPeer {
@@ -81,9 +72,7 @@ func (n *Node) deliver(node string, packet []byte) {
 // keep packet.
 func (n *Node) SendPacket(id string, packet []byte) {
 	p := n.packetPeer(id)
-	if c := p.directConn(); c != nil {
-		// When this fails for long, heartbeats fail too. A stream opened
-		// now would run over this link, and stall with it.
+	if c := p.direct.Load(); c != nil {
 		c.WritePacket(packet)
 		return
 	}
@@ -102,30 +91,10 @@ func (n *Node) SendPacket(id string, packet []byte) {
 
 // PacketPath tells how packets go to node id now.
 func (n *Node) PacketPath(id string) string {
-	if n.packetPeer(id).directConn() != nil {
+	if n.packetPeer(id).direct.Load() != nil {
 		return wire.PathDirect
 	}
-	return wire.PathMesh
-}
-
-// directConn returns the direct link, unless it is silent.
-func (p *packetPeer) directConn() *direct.Conn {
-	if p.silent() {
-		return nil
-	}
-	return p.direct.Load()
-}
-
-// silent reports whether the direct link stopped bringing anything. A
-// link that never did has a peer without heartbeats, and tells nothing.
-func (p *packetPeer) silent() bool {
-	heard := p.heard.Load()
-	return heard != 0 && time.Now().UnixNano()-heard > int64(directSilence)
-}
-
-// usable reports whether l can carry new connections now.
-func (n *Node) usable(l *link) bool {
-	return !l.direct || !n.packetPeer(l.peer.ID).silent()
+	return wire.PathSSH
 }
 
 // dialPackets opens a stream to p's node along the mesh.
@@ -151,7 +120,7 @@ func (n *Node) dialPackets(p *packetPeer) {
 func (n *Node) openPackets(id string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(n.life, relayTimeout)
 	defer cancel()
-	conn, err := n.Dial(ctx, id, wire.NetworkGst, "")
+	conn, err := n.Dial(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -234,45 +203,14 @@ func (n *Node) runPackets(p *packetPeer, conn net.Conn) {
 	}
 }
 
-// attachPackets makes packets to node id take conn, a direct link, and
-// hands on what arrives on it.
+// attachPackets makes packets to node id take conn, and hands on what
+// arrives on it.
 func (n *Node) attachPackets(id string, conn *direct.Conn) {
-	p := n.packetPeer(id)
-	p.heard.Store(0)
-	p.direct.Store(conn)
-	conn.HandlePackets(func(packet []byte) {
-		p.heard.Store(time.Now().UnixNano())
-		if len(packet) > len(heartbeatPacket) {
-			n.deliver(id, packet)
-		}
-	})
-	go func() {
-		tick := time.NewTicker(heartbeat)
-		defer tick.Stop()
-		silent := false
-		for {
-			select {
-			case <-conn.Done():
-				return
-			case <-tick.C:
-				conn.WritePacket(heartbeatPacket)
-				if now := p.silent(); now != silent {
-					silent = now
-					n.Update()
-				}
-			}
-		}
-	}()
+	conn.HandlePackets(func(packet []byte) { n.deliver(id, packet) })
+	n.packetPeer(id).direct.Store(conn)
 }
-
-// heartbeatPacket has a first byte that QUIC and WireGuard leave alone,
-// and fewer bytes than any packet of theirs.
-var heartbeatPacket = []byte{0}
 
 // detachPackets undoes attachPackets when conn ended.
 func (n *Node) detachPackets(id string, conn *direct.Conn) {
-	p := n.packetPeer(id)
-	if p.direct.CompareAndSwap(conn, nil) {
-		p.heard.Store(0)
-	}
+	n.packetPeer(id).direct.CompareAndSwap(conn, nil)
 }

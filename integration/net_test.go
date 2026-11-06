@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -17,11 +16,11 @@ import (
 const netInterface = "gst0"
 
 // installHelper installs the helper of the virtual network for the gst
-// user, as sudo gst net install would.
+// user, as sudo gst install would.
 func (n *node) installHelper() {
 	n.t.Helper()
-	if out, err := n.exec("root", "env", "HOME=/root", "gst", "net", "install", "--user", nodeUser); err != nil {
-		n.t.Fatalf("gst net install: %v: %s", err, out)
+	if out, err := n.exec("root", "env", "HOME=/root", "gst", "install", "--user", nodeUser); err != nil {
+		n.t.Fatalf("gst install: %v: %s", err, out)
 	}
 	eventually(n.t, 10*time.Second, "the helper did not start", func() bool {
 		_, err := n.exec("root", "test", "-S", "/var/run/gst-net.sock")
@@ -29,25 +28,19 @@ func (n *node) installHelper() {
 	})
 }
 
-// netView is what gst net status --json prints.
-type netView struct {
-	On bool `json:"on"`
-	wire.NetState
-}
-
-func (n *node) net() netView {
+// net returns the network as gst status reports it.
+func (n *node) net() wire.NetState {
 	n.t.Helper()
-	var v netView
-	if err := json.Unmarshal([]byte(n.mustGst("net", "status", "--json")), &v); err != nil {
-		n.t.Fatal(err)
+	if st := n.meshStatus().Self.Net; st != nil {
+		return *st
 	}
-	return v
+	return wire.NetState{}
 }
 
 // waitNet waits until n's network is up with peers others, and returns it.
-func (n *node) waitNet(peers int) netView {
+func (n *node) waitNet(peers int) wire.NetState {
 	n.t.Helper()
-	var v netView
+	var v wire.NetState
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		v = n.net()
@@ -101,12 +94,8 @@ func TestNet(t *testing.T) {
 	nodes := []*node{a, b, c}
 	for _, n := range nodes {
 		n.installHelper()
-		out := n.mustGst("net", "on")
-		if !strings.Contains(out, "on "+netInterface) {
-			t.Fatalf("gst net on: %q", out)
-		}
 	}
-	view := map[*node]netView{}
+	view := map[*node]wire.NetState{}
 	seen := map[string]bool{}
 	for _, n := range nodes {
 		view[n] = n.waitNet(2)
@@ -152,8 +141,8 @@ func TestNet(t *testing.T) {
 			t.Fatalf("UDP: %q, %v", out, err)
 		}
 		for _, p := range a.net().Peers {
-			if p.Path != wire.PathMesh {
-				t.Fatalf("path to %s is %q without direct links", p.Name, p.Path)
+			if p.Path != wire.PathSSH {
+				t.Fatalf("path to %s is %q without UDP paths", p.Name, p.Path)
 			}
 		}
 	})
@@ -179,24 +168,23 @@ func TestNet(t *testing.T) {
 		if out := a.mustGst("status"); !strings.Contains(out, addressOfC) {
 			t.Fatalf("gst status lacks %s: %q", addressOfC, out)
 		}
-		if out := a.mustGst("status", "c"); !strings.Contains(out, "Net: "+addressOfC) {
+		if out := a.mustGst("status", "c"); !strings.Contains(out, "Address: "+addressOfC) {
 			t.Fatalf("gst status c: %q", out)
 		}
-		if out := a.mustGst("net", "status"); !strings.Contains(out, "c ") || !strings.Contains(out, " ago") {
-			t.Fatalf("gst net status shows no handshake with c: %q", out)
+		if out := a.mustGst("status", "--all"); !strings.Contains(out, "HANDSHAKE") || !strings.Contains(out, " ago") {
+			t.Fatalf("gst status --all shows no handshake with c: %q", out)
 		}
 	})
 
 	t.Run("Subnet", func(t *testing.T) {
 		for _, bad := range []string{"8.8.8.0/24", "10.0.0.0/7", "10.1.2.3/30", "nonsense"} {
-			if code, _, stderr := a.gst("net", "on", "--subnet", bad); code != 2 || !strings.Contains(stderr, "usage:") {
-				t.Fatalf("gst net on --subnet %s: exit %d: %q", bad, code, stderr)
+			if code, _, stderr := a.gst("subnet", bad); code != 2 || !strings.Contains(stderr, "usage:") {
+				t.Fatalf("gst subnet %s: exit %d: %q", bad, code, stderr)
 			}
 		}
 		const chosen = "10.99.0.0/16"
-		out := a.mustGst("net", "on", "--subnet", chosen)
-		if !strings.Contains(out, chosen) {
-			t.Fatalf("gst net on --subnet: %q", out)
+		if out := a.mustGst("subnet", chosen); !strings.Contains(out, chosen) {
+			t.Fatalf("gst subnet: %q", out)
 		}
 		next := netip.MustParsePrefix(chosen)
 		eventually(t, 30*time.Second, "the others did not follow the subnet", func() bool {
@@ -218,14 +206,14 @@ func TestNet(t *testing.T) {
 		// which says what to do.
 		ip := netip.MustParseAddr(a.ip)
 		taken, _ := ip.Prefix(24)
-		code, _, stderr := a.gst("net", "on", "--subnet", taken.String())
+		code, _, stderr := a.gst("subnet", taken.String())
 		if code != 1 || !strings.Contains(stderr, "overlaps") || !strings.Contains(stderr, "hint:") {
-			t.Fatalf("gst net on --subnet %s: exit %d: %q", taken, code, stderr)
+			t.Fatalf("gst subnet %s: exit %d: %q", taken, code, stderr)
 		}
 		if out := a.mustGst("status"); !strings.Contains(out, "overlaps") {
 			t.Fatalf("gst status does not report the overlap: %q", out)
 		}
-		a.mustGst("net", "on", "--subnet", chosen)
+		a.mustGst("subnet", chosen)
 		a.waitNet(2)
 		eventually(t, 30*time.Second, "the others did not return to the subnet", func() bool {
 			return c.net().Subnet == chosen && b.net().Subnet == chosen
@@ -234,29 +222,26 @@ func TestNet(t *testing.T) {
 		a.waitPing(addressOfC)
 	})
 
-	t.Run("Off", func(t *testing.T) {
-		c.mustGst("net", "off")
-		if c.hasInterface() {
-			t.Fatal("the interface is left after gst net off")
-		}
+	t.Run("Down", func(t *testing.T) {
+		c.mustGst("down")
+		eventually(t, 10*time.Second, "the interface outlived gst down", func() bool { return !c.hasInterface() })
 		if out, _ := c.exec("root", "cat", "/etc/hosts"); strings.Contains(out, ".gst") {
-			t.Fatalf("names are left after gst net off: %q", out)
+			t.Fatalf("names are left after gst down: %q", out)
 		}
-		if out := c.mustGst("net", "status"); !strings.Contains(out, "off") {
-			t.Fatalf("gst net status after gst net off: %q", out)
-		}
-		a.waitNet(1)
+		a.waitUnreachable("c")
 		if a.pingable(addressOfC) {
 			t.Fatal("c still answers")
 		}
-		if out, _ := a.exec("root", "getent", "hosts", "c.gst"); out != "" {
-			t.Fatalf("c.gst still resolves: %q", out)
-		}
+
+		// It comes back with its address.
+		c.mustGst("up")
+		a.waitReachable("c")
+		a.waitPing(addressOfC)
 	})
 }
 
-// Packets take UDP when a direct link comes up, fall back to the mesh
-// within seconds when UDP stops working, and return when it works again.
+// Packets take UDP when a UDP path comes up, fall back to SSH within
+// seconds when UDP stops working, and return when it works again.
 func TestNetDirect(t *testing.T) {
 	t.Parallel()
 	client, server := startNode(t), startNode(t)
@@ -268,7 +253,6 @@ func TestNetDirect(t *testing.T) {
 	client.waitReachable("devbox")
 	for _, n := range []*node{client, server} {
 		n.installHelper()
-		n.mustGst("net", "on")
 	}
 	var address string
 	eventually(t, 30*time.Second, "the machines did not agree on a subnet", func() bool {
@@ -296,7 +280,7 @@ func TestNetDirect(t *testing.T) {
 		return mbps
 	}
 	if rate("UDP") < 10 {
-		t.Fatal("the direct path is too slow")
+		t.Fatal("the UDP path is too slow")
 	}
 	// Video comes in a burst per frame, which must not overrun the queues
 	// on the way.
@@ -314,7 +298,7 @@ func TestNetDirect(t *testing.T) {
 
 	drop := func(flag string) {
 		t.Helper()
-		// Direct links may run over either IP version.
+		// UDP paths may run over either IP version.
 		for _, tables := range []string{"iptables", "ip6tables"} {
 			for _, chain := range []string{"INPUT", "OUTPUT"} {
 				if _, err := server.exec("root", tables, flag, chain, "-p", "udp", "-j", "DROP"); err != nil {
@@ -325,11 +309,11 @@ func TestNetDirect(t *testing.T) {
 	}
 	drop("-A")
 	start := time.Now()
-	eventually(t, 15*time.Second, "packets did not fall back to the mesh", func() bool { return client.pingable(address) })
+	eventually(t, 15*time.Second, "packets did not fall back to SSH", func() bool { return client.pingable(address) })
 	t.Logf("packets back after %s without UDP", time.Since(start).Round(time.Millisecond))
-	client.waitPath("devbox", wire.PathMesh, 5*time.Second)
-	if rate("the mesh") < 1 {
-		t.Fatal("the mesh path is too slow")
+	client.waitPath("devbox", wire.PathSSH, 5*time.Second)
+	if rate("SSH") < 1 {
+		t.Fatal("packets over SSH are too slow")
 	}
 
 	drop("-D")
@@ -343,7 +327,7 @@ func TestNetDirect(t *testing.T) {
 		}
 		return false
 	})
-	t.Logf("direct again after %s", time.Since(start).Round(time.Millisecond))
+	t.Logf("UDP again after %s", time.Since(start).Round(time.Millisecond))
 	client.waitPing(address)
 }
 
@@ -354,19 +338,22 @@ func TestNetHelper(t *testing.T) {
 	p := startPair(t)
 	n := p.client
 	n.mustGst("name", "laptop")
-	code, _, stderr := n.gst("net", "on")
-	if code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "sudo gst net install") {
-		t.Fatalf("gst net on without the helper: exit %d: %q", code, stderr)
+	code, _, stderr := n.gst("subnet", "10.99.0.0/16")
+	if code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "sudo gst install") {
+		t.Fatalf("gst subnet without the helper: exit %d: %q", code, stderr)
 	}
-	if out := n.mustGst("status"); !strings.Contains(out, "virtual network") {
-		t.Fatalf("gst status does not report the missing helper: %q", out)
-	}
-	if code, _, stderr := n.gst("net", "install"); code != 1 || !strings.Contains(stderr, "sudo gst net install") {
-		t.Fatalf("gst net install as a user: exit %d: %q", code, stderr)
+	eventually(t, 10*time.Second, "gst status does not report the missing helper", func() bool {
+		out := n.mustGst("status")
+		return strings.Contains(out, "virtual network") && strings.Contains(out, "sudo gst install")
+	})
+	if code, _, stderr := n.gst("install"); code != 1 || !strings.Contains(stderr, "sudo gst install") {
+		t.Fatalf("gst install as a user: exit %d: %q", code, stderr)
 	}
 
 	n.installHelper()
-	n.waitNet(0)
+	if v := n.waitNet(0); v.Subnet != "10.99.0.0/16" {
+		t.Fatalf("the choice of subnet was lost: %+v", v)
+	}
 	if !n.hasInterface() {
 		t.Fatal("no interface")
 	}
@@ -389,11 +376,11 @@ func TestNetHelper(t *testing.T) {
 		t.Fatalf("address %s became %s after a restart", address, got)
 	}
 
-	if out, err := n.exec("root", "env", "HOME=/root", "gst", "net", "uninstall"); err != nil {
-		t.Fatalf("gst net uninstall: %v: %s", err, out)
+	if out, err := n.exec("root", "env", "HOME=/root", "gst", "uninstall"); err != nil {
+		t.Fatalf("gst uninstall: %v: %s", err, out)
 	}
 	eventually(t, 15*time.Second, "the interface outlived the helper", func() bool { return !n.hasInterface() })
 	if _, err := n.exec("root", "test", "-e", "/usr/local/libexec/gst-net"); err == nil {
-		t.Fatal("gst net uninstall left the helper's gst")
+		t.Fatal("gst uninstall left the helper's gst")
 	}
 }

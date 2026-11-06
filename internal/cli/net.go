@@ -23,61 +23,35 @@ import (
 )
 
 const (
-	netWait = 15 * time.Second       // for gst net on to see the network up
+	netWait = 15 * time.Second       // for gst subnet to see the network up
 	netPoll = 200 * time.Millisecond // how often it looks
 )
 
-func (a *app) netCommand() *cobra.Command {
-	cmd := asGroup(&cobra.Command{
-		Use:   "net",
-		Short: "Give the machines IP addresses on a private network",
-		Long: `Put this machine on a virtual network with the other machines that turn
-it on. Each of them gets an IP address in one private subnet and the
-name <machine>.gst, for every program and any protocol, TCP and UDP
-alike. WireGuard encrypts the packets end to end; they go directly over
-UDP where the network allows, and along the links of the mesh where not.
+func (a *app) subnetCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "subnet [cidr]",
+		Short: "Show or change the subnet of the virtual network",
+		Long: `Show the private subnet that the machines of the mesh share, or change it
+for all of them. The first machine chooses a /16 that overlaps nothing on
+the machines that answer; later ones take the subnet of the others.
 
-The interface needs root once: install the helper with sudo gst net
-install, which also lets the network start with the daemon.`,
-		Example: `  sudo gst net install                 # once on each machine
-  gst net on                           # on each machine
-  ping devbox.gst
-  gst net status`,
-	})
-	cmd.AddCommand(a.netOnCommand(), a.netOffCommand(), a.netStatusCommand(), a.netInstallCommand(), a.netUninstallCommand())
-	return cmd
-}
-
-func (a *app) netOnCommand() *cobra.Command {
-	var subnet string
-	cmd := &cobra.Command{
-		Use:   "on",
-		Short: "Join the virtual network",
-		Long: `Put this machine on the virtual network, and keep it there across
-restarts. The machines of the mesh share one subnet. The first machine
-chooses a /16 that overlaps nothing on the machines that answer; later
-ones take the subnet of the others.
-
-With --subnet, use that subnet instead, on every machine of the network:
-the latest choice wins, and they all change their addresses to it. It
-must be private: inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, or
-100.64.0.0/10, with a prefix length of 8 to 28.`,
-		Example: "  gst net on\n  gst net on --subnet 10.99.0.0/16",
-		Args:    a.args(0, 0),
-		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			if subnet != "" {
-				prefix, err := config.ParseSubnet(subnet)
-				if err != nil {
-					return &usageError{err}
-				}
-				subnet = prefix.String()
+The latest choice wins, on every machine of the network, and they all
+change their addresses to it. It must be private: inside 10.0.0.0/8,
+172.16.0.0/12, 192.168.0.0/16, or 100.64.0.0/10, with a prefix length of 8
+to 28.`,
+		Example: "  gst subnet\n  gst subnet 10.99.0.0/16",
+		Args:    a.args(0, 1),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return a.showSubnet(cmd.Context())
 			}
-			err := a.update(func(f *config.File) error {
-				if subnet != "" {
-					f.Net = &config.Net{Subnet: subnet, Since: time.Now().UnixNano()}
-				} else if f.Net == nil {
-					f.Net = &config.Net{}
-				}
+			prefix, err := config.ParseSubnet(args[0])
+			if err != nil {
+				return &usageError{err}
+			}
+			subnet := prefix.String()
+			err = a.update(func(f *config.File) error {
+				f.Net = &config.Net{Subnet: subnet, Since: time.Now().UnixNano()}
 				return nil
 			})
 			if err != nil {
@@ -101,8 +75,18 @@ must be private: inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, or
 			return nil
 		}),
 	}
-	cmd.Flags().StringVar(&subnet, "subnet", "", "the private subnet of the whole network, such as 10.99.0.0/16")
-	return cmd
+}
+
+func (a *app) showSubnet(ctx context.Context) error {
+	st := a.status(ctx)
+	if st == nil {
+		return withHint(errors.New("the gst daemon does not answer"), "start it with `gst up`")
+	}
+	if st.Net == nil || st.Net.Subnet == "" {
+		return withHint(errors.New("this machine has no subnet yet"), "see why with `gst status`")
+	}
+	fmt.Fprintln(a.stdout, st.Net.Subnet)
+	return nil
 }
 
 // waitNet waits until the network runs, on subnet when it is not empty,
@@ -128,7 +112,7 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 			case last == nil:
 				return nil, noDaemon(ctx.Err())
 			case last.Error == "":
-				return nil, withHint(errors.New("the virtual network did not come up in time"), "see how it goes with `gst net status`")
+				return nil, withHint(errors.New("the virtual network did not come up in time"), "see how it goes with `gst status`")
 			}
 			return nil, errors.New(last.Error)
 		case <-time.After(netPoll):
@@ -136,77 +120,8 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 	}
 }
 
-func (a *app) netOffCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "off",
-		Short: "Leave the virtual network",
-		Long:  "Take this machine off the virtual network: its interface, routes, and .gst names go away, on this machine. The other machines stay on the network.",
-		Args:  a.args(0, 0),
-		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			err := a.update(func(f *config.File) error {
-				f.Net = nil
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return a.sync(cmd.Context())
-		}),
-	}
-}
-
-// netView is what gst net status --json prints. Its JSON form is part of
-// the command line interface.
-type netView struct {
-	On bool `json:"on"`
-	*wire.NetState
-}
-
-func (a *app) netStatusCommand() *cobra.Command {
-	var asJSON bool
-	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show this machine's address and the other machines",
-		Long: `Show this machine's address on the virtual network and, for each other
-machine, its address, how packets go to it (direct over UDP, or along the
-mesh), and when WireGuard last confirmed the machine's key.`,
-		Args: a.args(0, 0),
-		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			b, err := a.backend()
-			if err != nil {
-				return err
-			}
-			st, ok := b.Status(cmd.Context())
-			if !ok {
-				return withHint(errors.New("the gst daemon does not answer"), "start it with `gst up`")
-			}
-			if asJSON {
-				return writeJSON(a.stdout, netView{st.Net != nil, st.Net})
-			}
-			return writeNet(a.stdout, st.Net)
-		}),
-	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	return cmd
-}
-
-func writeNet(out io.Writer, st *wire.NetState) error {
-	if st == nil {
-		fmt.Fprintln(out, "The virtual network is off. Join it with: gst net on")
-		return nil
-	}
-	fmt.Fprintf(out, "Address: %s\nSubnet: %s\nInterface: %s\n", cmp.Or(st.Address, "-"), cmp.Or(st.Subnet, "-"), cmp.Or(st.Interface, "-"))
-	if st.Error != "" {
-		fmt.Fprintf(out, "\n# Problem: %s\n", st.Error)
-		if st.Hint != "" {
-			fmt.Fprintf(out, "# Hint: %s\n", st.Hint)
-		}
-	}
-	if len(st.Peers) == 0 {
-		fmt.Fprintln(out, "\nNo other machine is on the network yet.")
-		return nil
-	}
-	fmt.Fprintln(out)
+// writePeers prints the other machines of the virtual network.
+func writePeers(out io.Writer, st *wire.NetState) error {
 	w := table(out)
 	fmt.Fprintln(w, "MACHINE\tADDRESS\tPATH\tHANDSHAKE\tRECEIVED\tSENT")
 	for _, p := range st.Peers {
@@ -237,21 +152,22 @@ func asRoot(command string) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
-	return withHint(errors.New("this command needs root"), "run it with `sudo gst net "+command+"`")
+	return withHint(errors.New("this command needs root"), "run it with `sudo gst "+command+"`")
 }
 
-func (a *app) netInstallCommand() *cobra.Command {
+func (a *app) installCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
 		Use:         "install",
 		Annotations: standalone,
-		Short:       "Install the helper that sets up the network interface (as root)",
+		Short:       "Put this machine on the virtual network (as root, once)",
 		Long: `Install the system service that creates the interface of the virtual
-network, as root, for one user's daemon. It runs a copy of this gst that
-root owns, so upgrading gst does not change it; run this command again to
+network, as root, for one user's daemon, which then joins the network by
+itself. Each machine needs it once. It runs a copy of this gst that root
+owns, so upgrading gst does not change it; run this command again to
 update it. Run it with sudo; the user is the one who ran sudo, unless
 --user says otherwise.`,
-		Example: "  sudo gst net install",
+		Example: "  sudo gst install",
 		Args:    a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if err := asRoot("install"); err != nil {
@@ -275,7 +191,7 @@ update it. Run it with sudo; the user is the one who ran sudo, unless
 			if err := h.Install(exe, name); err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "The helper runs for %s. Join the network with: gst net on\n", name)
+			fmt.Fprintf(a.stdout, "The helper runs for %s. This machine joins the network in a few seconds; see it with: gst status\n", name)
 			return nil
 		}),
 	}
@@ -283,12 +199,12 @@ update it. Run it with sudo; the user is the one who ran sudo, unless
 	return cmd
 }
 
-func (a *app) netUninstallCommand() *cobra.Command {
+func (a *app) uninstallCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:         "uninstall",
 		Annotations: standalone,
-		Short:       "Remove the helper (as root)",
-		Long:        "Remove the helper's service and its copy of gst. Without it the virtual network cannot run on this machine.",
+		Short:       "Take this machine off the virtual network (as root)",
+		Long:        "Remove the helper's service and its copy of gst. Without it this machine has no address on the virtual network, and only passes on what other machines send through it.",
 		Args:        a.args(0, 0),
 		RunE: run(func(*cobra.Command, []string) error {
 			if err := asRoot("uninstall"); err != nil {

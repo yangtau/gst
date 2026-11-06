@@ -139,8 +139,12 @@ func (w *world) topology(self string) wire.Topology {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	topo := wire.Topology{Self: self}
+	alone := false
+	for _, n := range w.nodes {
+		alone = alone || n.info.ID == self && n.alone
+	}
 	for _, id := range []string{"a0", "b0", "c0"} {
-		if n := w.nodes[id]; n != nil {
+		if n := w.nodes[id]; n != nil && (n.info.ID == self || !alone && !n.alone) {
 			topo.Nodes = append(topo.Nodes, wire.TopoNode{ID: n.info.ID, Name: n.info.Name, Reachable: true, Net: n.net})
 		}
 	}
@@ -175,6 +179,15 @@ type fakeMesh struct {
 	changed  chan struct{}
 	handle   func(string, []byte)
 	networks []string
+	alone    bool // sees no other node, and none sees it
+}
+
+// setAlone cuts the node off the others, or joins it to them.
+func (m *fakeMesh) setAlone(alone bool) {
+	m.world.mu.Lock()
+	m.alone = alone
+	m.world.mu.Unlock()
+	m.world.changed()
 }
 
 func (m *fakeMesh) Self() wire.NodeInfo { return m.info }
@@ -213,7 +226,7 @@ func (m *fakeMesh) HandlePackets(handle func(string, []byte)) {
 	defer m.world.mu.Unlock()
 	m.handle = handle
 }
-func (m *fakeMesh) PacketPath(string) string { return wire.PathMesh }
+func (m *fakeMesh) PacketPath(string) string { return wire.PathSSH }
 func (m *fakeMesh) Call(_ context.Context, ref, method string, _, result any) error {
 	if method != wire.MethodNetNetworks {
 		return errors.New("unknown method")
@@ -409,7 +422,7 @@ func TestTwoMachines(t *testing.T) {
 		p := a.manager.Status().Peers[0]
 		return !p.Handshake.IsZero() && p.Sent > 0 && p.Received > 0
 	})
-	if p := a.manager.Status().Peers[0]; p.Name != "devbox" || p.Address != sb.Address || p.Path != wire.PathMesh {
+	if p := a.manager.Status().Peers[0]; p.Name != "devbox" || p.Address != sb.Address || p.Path != wire.PathSSH {
 		t.Fatalf("peer: %+v", p)
 	}
 	spec := a.device().current()
@@ -423,20 +436,14 @@ func TestTwoMachines(t *testing.T) {
 		t.Fatalf("state: %v, %v", info, err)
 	}
 
-	a.manager.Configure(t.Context(), nil)
-	if a.manager.Status() != nil || a.mesh.net != nil {
-		t.Fatal("the network stayed on")
-	}
-	waitFor(t, "b sees a leave", up(b, 0))
 }
 
 func TestChoosingASubnetAsksTheOthers(t *testing.T) {
 	// Whatever the first choice would be, it is taken on the other machine.
 	var w world
 	first, _ := chooseSubnet("a0"+strings.Repeat("0", 30), nil)
+	w.add("b0", "devbox").networks = []string{first.String()}
 	a := start(t, &w, "a0", "laptop")
-	start(t, &w, "b0", "devbox", first)
-	a.manager.Configure(t.Context(), &config.Net{})
 	waitFor(t, "a is up", up(a, 0))
 	if got := a.manager.Status().Subnet; got == first.String() {
 		t.Fatalf("chose %s, which the other machine uses", got)
@@ -471,21 +478,48 @@ func TestLatestSubnetWins(t *testing.T) {
 	}
 }
 
+// A machine that picked a subnet on its own, before it knew of the others,
+// must not move the network it then joins.
+func TestAutomaticChoiceYields(t *testing.T) {
+	var w world
+	a := start(t, &w, "a0", "laptop")
+	waitFor(t, "a chose", up(a, 0))
+	chosen := a.manager.Status().Subnet
+
+	lone := &testNode{mesh: w.add("b0", "devbox"), dir: t.TempDir()}
+	lone.mesh.setAlone(true)
+	lone.run(t)
+	waitFor(t, "b chose", up(lone, 0))
+	lone.mesh.setAlone(false)
+	waitFor(t, "b joins", func() bool {
+		st := lone.manager.Status()
+		return st.Subnet == chosen && len(st.Peers) == 1
+	})
+	if got := a.manager.Status().Subnet; got != chosen {
+		t.Fatalf("a moved from %s to %s", chosen, got)
+	}
+
+	// Any choice of a person beats them.
+	lone.manager.Configure(t.Context(), &config.Net{Subnet: "10.55.0.0/16", Since: 1})
+	waitFor(t, "a follows", func() bool { return a.manager.Status().Subnet == "10.55.0.0/16" })
+}
+
 func TestAddressConflict(t *testing.T) {
 	// Two machines that settled on one address, as after a merge of two
 	// networks: the higher id moves.
 	var w world
 	a := start(t, &w, "a0", "laptop")
-	b := start(t, &w, "b0", "devbox")
 	subnet := &config.Net{Subnet: "10.70.0.0/16", Since: 1}
 	a.manager.Configure(t.Context(), subnet)
 	waitFor(t, "a is up", up(a, 0))
 	address := a.manager.Status().Address
 
+	b := &testNode{mesh: w.add("b0", "devbox"), dir: t.TempDir()}
 	state := `{"private_key":"` + strings.Repeat("11", 32) + `","subnet":"10.70.0.0/16","since":1,"address":"` + address + `"}`
 	if err := os.WriteFile(filepath.Join(b.dir, "net.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	b.run(t)
 	b.manager.Configure(t.Context(), subnet)
 	waitFor(t, "they differ", func() bool {
 		st := b.manager.Status()
@@ -502,16 +536,22 @@ func TestStateSurvivesARestart(t *testing.T) {
 	a.manager.Configure(t.Context(), &config.Net{})
 	waitFor(t, "a is up", up(a, 0))
 	before := a.manager.Status()
-	key := a.mesh.net.PublicKey
+	key := published(&w, a.mesh).PublicKey
 
 	again := &testNode{mesh: a.mesh, dir: a.dir}
 	again.run(t)
 	again.manager.Configure(t.Context(), &config.Net{})
 	waitFor(t, "a is up again", up(again, 0))
 	after := again.manager.Status()
-	if after.Subnet != before.Subnet || after.Address != before.Address || a.mesh.net.PublicKey != key {
+	if after.Subnet != before.Subnet || after.Address != before.Address || published(&w, a.mesh).PublicKey != key {
 		t.Fatalf("%+v became %+v", before, after)
 	}
+}
+
+func published(w *world, m *fakeMesh) *wire.NetInfo {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return m.net
 }
 
 func TestProblemsAreReported(t *testing.T) {
@@ -542,14 +582,21 @@ func TestProblemsAreReported(t *testing.T) {
 	waitFor(t, "the manager runs", m.running.Load)
 	m.Configure(t.Context(), &config.Net{})
 	st := m.Status()
-	if !strings.Contains(st.Hint, "sudo gst net install") || st.Interface != "" {
+	if !strings.Contains(st.Hint, "sudo gst install") || st.Interface != "" {
 		t.Fatalf("without the helper: %+v", st)
+	}
+	// The other machines must not send to a machine that cannot answer.
+	if published(&w, mesh) != nil {
+		t.Fatal("published the machine without an interface")
 	}
 
 	helper.Store(true)
 	m.Configure(t.Context(), &config.Net{Subnet: "10.80.0.0/16", Since: time.Now().UnixNano()})
 	st = m.Status()
-	if !strings.Contains(st.Error, "overlaps 10.80.0.0/24") || !strings.Contains(st.Hint, "--subnet") {
+	if published(&w, mesh) == nil {
+		t.Fatal("published nothing with an interface")
+	}
+	if !strings.Contains(st.Error, "overlaps 10.80.0.0/24") || !strings.Contains(st.Hint, "gst subnet") {
 		t.Fatalf("with an overlap: %+v", st)
 	}
 }

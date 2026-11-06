@@ -1,7 +1,7 @@
 // Package tun gives the gst daemon a network interface. Creating one,
 // and the addresses, routes, and name resolution that go with it, take
 // root, while the daemon runs as its user, so a small service does that
-// part: the helper, which `gst net install` sets up. The daemon asks it for
+// part: the helper, which `gst install` sets up. The daemon asks it for
 // an interface with Dial, over a Unix socket that only its user can open,
 // and gets the open device back; everything that handles packets stays in
 // the daemon. The interface lives as long as that connection: when the
@@ -25,9 +25,8 @@ const (
 	// Socket is where the helper listens.
 	Socket = "/var/run/gst-net.sock"
 	// MTU makes every WireGuard packet, with its 32 bytes of overhead, a
-	// UDP payload of at most 1200 bytes. QUIC needs a path to carry that
-	// much, so it fits any direct link, without path MTU discovery. Direct
-	// links do not fragment: a larger packet would be lost.
+	// UDP payload of at most 1200 bytes, which fits the paths with the
+	// smallest MTU that IPv6 allows, 1280, on both IPv4 and IPv6.
 	MTU = 1168
 	// DNSAddress is where the daemon answers for .gst, and where the
 	// helper points the system's resolver.

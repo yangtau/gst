@@ -10,35 +10,32 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 func (a *app) rootCommand() *cobra.Command {
 	// Help lists commands in the order they are added, grouped by task.
 	cobra.EnableCommandSorting = false
 	root := asGroup(&cobra.Command{
 		Use:   "gst",
-		Short: "Link your machines into a private mesh over SSH",
-		Long: `gst links your machines into a private mesh over SSH.
+		Short: "Link your machines into a private network over SSH",
+		Long: `gst links your machines into a private network.
 
 Each machine runs a gst daemon in the background. A link is an SSH
 connection from one machine to another that also has gst; linked
-machines pass on what they know, so every machine can reach every other
-one, through the links between them. Reach them by:
-
-  connect  gst connect <machine> <port>, also as an ssh ProxyCommand
-  proxy    a SOCKS5 and HTTP proxy where <machine>.gst is that machine
-  map      a local port or socket that leads to a machine's port or socket
-  route    send the proxy's connections to some hosts out through an exit
-  net      an IP address and <machine>.gst for every program, on a private
-           network with WireGuard; the only part that needs root, once
+machines pass on what they know, so every machine learns of every other
+one. Each gets an IP address and the name <machine>.gst, for every
+program and any protocol. WireGuard encrypts the traffic end to end; it
+goes directly over UDP where the network allows, and along the SSH links
+where not. The network interface needs root: run sudo gst install once on
+each machine.
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
 report state accept --json.`,
 		Example: `  gst add devbox                        # link to the ssh config host "devbox"
-  gst status                           # every machine in the mesh
-  gst map add 15432 devbox:5432         # local port 15432 leads to devbox's 5432
-  curl http://devbox.gst:8080/          # with ALL_PROXY from gst proxy`,
+  sudo gst install                      # once on each machine
+  gst status                            # every machine and its address
+  ping devbox.gst`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	})
@@ -59,7 +56,7 @@ report state accept --json.`,
 
 	root.AddGroup(
 		&cobra.Group{ID: "mesh", Title: "Build the mesh:"},
-		&cobra.Group{ID: "reach", Title: "Reach machines:"},
+		&cobra.Group{ID: "network", Title: "The virtual network:"},
 		&cobra.Group{ID: "machine", Title: "This machine:"},
 	)
 	addGroup := func(id string, cmds ...*cobra.Command) {
@@ -69,8 +66,8 @@ report state accept --json.`,
 		}
 	}
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
-	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand(), a.netCommand())
-	addGroup("machine", a.nameCommand(), a.exitCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
+	addGroup("network", a.installCommand(), a.uninstallCommand(), a.subnetCommand())
+	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:         "version",
 		Annotations: standalone,
 		Short:       "Show the gst version",

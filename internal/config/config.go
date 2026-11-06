@@ -1,7 +1,6 @@
 // Package config reads and writes the gst configuration file: this
-// machine's node identity, its links to other machines, and how it uses
-// the mesh (proxy, maps, and routes). The gst CLI is its only intended
-// writer.
+// machine's node identity, its links to other machines, and the subnet
+// that the user chose. The gst CLI is its only intended writer.
 package config
 
 import (
@@ -21,40 +20,35 @@ import (
 	"unicode"
 )
 
-// Version is the current configuration format. Version 3 replaced the
-// tunnels and their forwards with links, maps, and routes.
-const Version = 3
+// Version is the current configuration format. Version 4 left out the
+// proxy, maps, and routes of version 3, as the virtual network replaced them.
+const Version = 4
 
 // File is the configuration file.
 type File struct {
 	Version int   `json:"version"`
 	Node    *Node `json:"node,omitempty"` // set by Update
 	// Down keeps the daemon from running until gst up.
-	Down   bool             `json:"down,omitempty"`
-	Proxy  string           `json:"proxy,omitempty"` // listen address; off when empty
-	Links  map[string]*Link `json:"links"`
-	Maps   []Map            `json:"maps"`
-	Routes Routes           `json:"routes"`
-	// Net turns on the virtual network; it is off when nil.
+	Down  bool             `json:"down,omitempty"`
+	Links map[string]*Link `json:"links"`
+	// Net is what the user chose for the virtual network; nil leaves it
+	// to the machines.
 	Net *Net `json:"net,omitempty"`
 }
 
-// Net is this machine's part in the virtual network.
+// Net is what the user chose for the virtual network.
 type Net struct {
-	// Subnet is the subnet that the user chose for the whole network, and
-	// Since when, in Unix nanoseconds. The network's machines agree on the
-	// latest choice. Empty leaves it to them.
-	Subnet string `json:"subnet,omitempty"`
-	Since  int64  `json:"since,omitempty"`
+	// Subnet is the subnet of the whole network, and Since when the user
+	// chose it, in Unix nanoseconds. The network's machines agree on the
+	// latest choice.
+	Subnet string `json:"subnet"`
+	Since  int64  `json:"since"`
 }
 
 // Node is this machine's identity in the mesh.
 type Node struct {
 	ID   string `json:"id"`   // random and stable
 	Name string `json:"name"` // shown to others; not unique
-	// Exit lets other machines connect through this one to addresses
-	// that are not on this machine.
-	Exit bool `json:"exit,omitempty"`
 }
 
 // Link is an SSH connection to another machine's gst. Destination is
@@ -83,7 +77,7 @@ func DefaultPath() (string, error) {
 }
 
 func empty() *File {
-	return &File{Version: Version, Links: map[string]*Link{}, Maps: []Map{}, Routes: Routes{}}
+	return &File{Version: Version, Links: map[string]*Link{}}
 }
 
 // Load reads and validates the configuration file. A missing file is an
@@ -112,8 +106,7 @@ func load(path string) (*File, []string, error) {
 }
 
 // parse decodes and validates a configuration document. Errors name the
-// link, map, or route but not configured values, because the daemon logs
-// them.
+// link but not configured values, because the daemon logs them.
 func parse(data []byte) (*File, []string, error) {
 	var head struct {
 		Version int `json:"version"`
@@ -121,8 +114,11 @@ func parse(data []byte) (*File, []string, error) {
 	if err := json.Unmarshal(data, &head); err != nil {
 		return nil, nil, errors.New("invalid JSON")
 	}
-	if head.Version < Version {
+	switch {
+	case head.Version == legacyVersion:
 		return parseLegacy(data)
+	case head.Version < legacyVersion:
+		return nil, nil, fmt.Errorf("config version %d is too old: remove the file and add the links again", head.Version)
 	}
 	f := empty()
 	if err := decodeStrict(data, f); err != nil {
@@ -151,12 +147,6 @@ func (f *File) normalize() error {
 	if f.Links == nil {
 		f.Links = map[string]*Link{}
 	}
-	if f.Maps == nil {
-		f.Maps = []Map{}
-	}
-	if f.Routes == nil {
-		f.Routes = Routes{}
-	}
 	return f.validate()
 }
 
@@ -166,9 +156,6 @@ func (f *File) validate() error {
 	}
 	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil) {
 		return errors.New("invalid node id or name")
-	}
-	if _, ok := parseListenAddress(f.Proxy); !ok && f.Proxy != "" {
-		return errors.New("invalid proxy address")
 	}
 	for name, l := range f.Links {
 		if err := ValidateName(name); err != nil {
@@ -181,32 +168,9 @@ func (f *File) validate() error {
 			return fmt.Errorf("link %s: %w", name, err)
 		}
 	}
-	for i, m := range f.Maps {
-		if err := m.validate(); err != nil {
-			return fmt.Errorf("map %d: %w", i+1, err)
-		}
-		if m.Listen == f.Proxy {
-			return fmt.Errorf("map %d listens on the proxy address", i+1)
-		}
-		for _, earlier := range f.Maps[:i] {
-			if earlier.Listen == m.Listen {
-				return fmt.Errorf("map %d: duplicate listen address", i+1)
-			}
-		}
-	}
-	if f.Net != nil && f.Net.Subnet != "" {
+	if f.Net != nil {
 		if _, err := ParseSubnet(f.Net.Subnet); err != nil {
 			return errors.New("invalid subnet of the virtual network")
-		}
-	}
-	for i, r := range f.Routes {
-		if err := r.validate(); err != nil {
-			return fmt.Errorf("route %d: %w", i+1, err)
-		}
-		for _, earlier := range f.Routes[:i] {
-			if earlier.Match == r.Match {
-				return fmt.Errorf("route %d: duplicate match", i+1)
-			}
 		}
 	}
 	return nil
@@ -221,9 +185,9 @@ func Update(path string, fn func(*File) error) error {
 	return err
 }
 
-// Upgrade writes a configuration file of an earlier version in the
-// current format. It returns whether it did and notes on the forwards
-// that the current format has no place for. Other files stay as they are.
+// Upgrade writes a configuration file of version 3 in the current format.
+// It returns whether it did and notes on what the current format has no
+// place for. Other files stay as they are.
 func Upgrade(path string) (upgraded bool, notes []string, err error) {
 	if _, notes, err := load(path); err != nil || notes == nil {
 		return false, nil, err

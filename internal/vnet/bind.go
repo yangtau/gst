@@ -13,7 +13,7 @@ const inboundQueue = 2048 // packets on their way to WireGuard; more are dropped
 
 // endpoint is a peer as WireGuard sees it: a node of the mesh, not an
 // address. The mesh knows how to reach the node now, so WireGuard never
-// has to follow a peer that moves between UDP and the mesh.
+// has to follow a peer that moves between UDP and SSH.
 type endpoint string
 
 func (e endpoint) ClearSrc()           {}

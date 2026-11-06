@@ -2,10 +2,8 @@ package relay
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -138,31 +136,5 @@ func TestPipeWithoutHalfClose(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Pipe did not return")
-	}
-}
-
-func TestDialError(t *testing.T) {
-	refused := os.NewSyscallError("connect", syscall.ECONNREFUSED)
-	op := &net.OpError{Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 80}, Err: refused}
-	plain := errors.New("plain")
-	noCause := &net.OpError{Op: "dial"}
-	tests := []struct {
-		name string
-		err  error
-		want error
-	}{
-		{"nil", nil, nil},
-		{"OpError", op, refused},
-		{"wrapped OpError", fmt.Errorf("dial: %w", op), refused},
-		{"OpError without cause", noCause, noCause},
-		{"other", plain, plain},
-	}
-	for _, tt := range tests {
-		if got := DialError(tt.err); got != tt.want {
-			t.Errorf("%s: DialError(%v) = %v, want %v", tt.name, tt.err, got, tt.want)
-		}
-	}
-	if msg := DialError(op).Error(); msg != "connect: connection refused" {
-		t.Errorf("message = %q", msg)
 	}
 }

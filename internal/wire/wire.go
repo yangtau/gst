@@ -19,10 +19,11 @@ import (
 	"net"
 )
 
-// Protocol is the protocol version this implementation speaks. Version 2
-// replaced tunnels and their forwards with links between gst nodes; it
-// does not talk to version 1.
-const Protocol = 2
+// Protocol is the protocol version this implementation speaks. Version 3
+// made the virtual network the only way to reach machines: it has no
+// connections to addresses, and a UDP path carries WireGuard's packets
+// rather than QUIC. It does not talk to earlier versions.
+const Protocol = 3
 
 // MaxFrame is the largest frame payload accepted, in bytes.
 const MaxFrame = 1 << 20
@@ -136,7 +137,7 @@ func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 		return theirs, theirs.Error
 	}
 	if theirs.Protocol < Protocol {
-		return theirs, Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.3 or later", theirs.Software)
+		return theirs, Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.4 or later", theirs.Software)
 	}
 	return theirs, nil
 }
@@ -156,7 +157,7 @@ func Answer(w io.Writer, theirs, mine Hello, refusal *Error) error {
 	mine.Protocol = Protocol
 	mine.Error = refusal
 	if theirs.Protocol < Protocol {
-		mine.Error = Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.3 or later", theirs.Software)
+		mine.Error = Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.4 or later", theirs.Software)
 	}
 	if err := WriteFrame(w, mine); err != nil {
 		return err

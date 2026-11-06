@@ -83,21 +83,11 @@ func (c *Client) Ping(ctx context.Context, node string) (p wire.Ping, err error)
 	return
 }
 
-// Direct reports the direct link with a machine of the mesh and how the
+// Direct reports the UDP path to a machine of the mesh and how the
 // latest try at one went.
 func (c *Client) Direct(ctx context.Context, node string) (r wire.DirectReport, err error) {
 	err = c.call(ctx, wire.MethodDirect, wire.NodeParams{Node: node}, &r)
 	return
-}
-
-// Connect asks the daemon to connect to target on a machine of the mesh.
-// On success the connection carries the bytes of that connection and
-// belongs to the caller; the client must not be used any more.
-func (c *Client) Connect(ctx context.Context, node string, target wire.Target) (net.Conn, error) {
-	if err := c.call(ctx, wire.MethodConnect, wire.ConnectParams{Node: node, Target: target}, nil); err != nil {
-		return nil, err
-	}
-	return c.conn, nil
 }
 
 // Build identifies the executable at path by the SHA-256 of its content,

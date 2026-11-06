@@ -61,9 +61,9 @@ func chooseAddress(id string, subnet netip.Prefix, taken map[netip.Addr]bool) (n
 	return netip.Addr{}, fmt.Errorf("%s has no free address", subnet)
 }
 
-// newer reports whether choice a of the network's subnet beats b: the
-// later one, and for two at the same time, either, as long as every node
-// picks the same.
+// newer reports whether choice a of the network's subnet beats b: the one
+// with the higher Since (see wire.NetInfo), and for two with the same, either,
+// as long as every node picks the same.
 func newer(aSubnet string, aSince int64, bSubnet string, bSince int64) bool {
 	if aSince != bSince {
 		return aSince > bSince

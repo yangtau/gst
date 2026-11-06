@@ -32,18 +32,17 @@ func (a *app) statusCommand() *cobra.Command {
 		Use:   "status [machine]",
 		Short: "Show the machines of the mesh, or what one machine runs",
 		Long: `Without a machine, show every machine of the mesh as this machine knows
-it, one per line: its id, name, and gst, and whether it is online, the
-machines that connections to it pass through or that they go to it
-directly over UDP, and whether it is an exit. Linked machines pass on what they know, so the list includes machines
-several links away. Problems on this machine, such as a link that is
-down, follow the list; with --all, the running links between all the
-machines come first, direct links with their addresses as the machine
-that opened them sees them.
+it, one per line: its id, name, gst, and address, whether it is online,
+and how packets go to it: directly over UDP, or along the SSH links,
+through the machines that it names. Linked machines pass on what they
+know, so the list includes machines several links away. Problems on this
+machine, such as a link that is down, follow the list; with --all, the
+running links between all the machines and the traffic with each of them
+come first.
 
-With a machine, show its links, proxy, maps, and routes, asked through
-the mesh. A machine is named by its name, its id or an id prefix of at
-least 4 characters, or the name of a link to it, optionally followed by
-.gst.`,
+With a machine, show its address and links, asked through the mesh. A
+machine is named by its name, its id or an id prefix of at least 4
+characters, or the name of a link to it, optionally followed by .gst.`,
 		Example: "  gst status\n  gst status --all\n  gst status devbox",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -82,7 +81,7 @@ least 4 characters, or the name of a link to it, optionally followed by
 			return writeMesh(a.stdout, st, topo, all)
 		}),
 	}
-	cmd.Flags().BoolVar(&all, "all", false, "also show the running links between all the machines")
+	cmd.Flags().BoolVar(&all, "all", false, "also show the running links and the traffic with each machine")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -93,8 +92,7 @@ func noDaemon(err error) error {
 }
 
 // writeMesh prints a line for each machine, this one first, with all the
-// running links between them, and then the problems of this machine's
-// links and listeners.
+// running links between them, and then the problems of this machine.
 func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) error {
 	names := displayNames(topo)
 	onNet := slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.Net != nil })
@@ -104,6 +102,8 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		switch {
 		case n.ID == topo.Self:
 			state = append(state, "-")
+		case n.Direct:
+			state = append(state, "online", "direct")
 		case !n.Reachable:
 			state = append(state, "offline")
 		case len(n.Path) > 2:
@@ -112,13 +112,8 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 				via[i] = names[id]
 			}
 			state = append(state, "online", "via "+strings.Join(via, ", "))
-		case n.Direct:
-			state = append(state, "online", "direct")
 		default:
 			state = append(state, "online")
-		}
-		if n.Exit {
-			state = append(state, "exit")
 		}
 		line := []string{shortID(n.ID), names[n.ID], cmp.Or(n.Software, "-")}
 		if onNet {
@@ -143,11 +138,13 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		})
 		fmt.Fprintln(out, "\nLINK")
 		for _, e := range edges {
-			text := linkText(names[e.From], names[e.To], e.Link)
-			if e.Local != "" {
-				text += " " + e.Local + " -> " + e.Remote
-			}
-			fmt.Fprintln(out, text)
+			fmt.Fprintln(out, linkText(names[e.From], names[e.To], e.Link))
+		}
+	}
+	if all && st.Net != nil && len(st.Net.Peers) > 0 {
+		fmt.Fprintln(out)
+		if err := writePeers(out, st.Net); err != nil {
+			return err
 		}
 	}
 	var problems []string
@@ -156,16 +153,12 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 			problems = append(problems, "link "+stateLinkText(st.Node.Name, l)+" is "+linkStateText(l))
 		}
 	}
-	if st.Proxy.Error != "" {
-		problems = append(problems, "proxy "+st.Proxy.Listen+" failed: "+st.Proxy.Error)
-	}
-	for _, m := range st.Maps {
-		if m.Error != "" {
-			problems = append(problems, "map "+m.Listen+" failed: "+m.Error)
-		}
-	}
 	if st.Net != nil && st.Net.Error != "" {
-		problems = append(problems, "virtual network: "+st.Net.Error)
+		text := "virtual network: " + st.Net.Error
+		if st.Net.Hint != "" {
+			text += "; " + st.Net.Hint
+		}
+		problems = append(problems, text)
 	}
 	if len(problems) > 0 {
 		fmt.Fprintln(out, "\n# Problems:")
@@ -193,69 +186,25 @@ func displayNames(topo wire.Topology) map[string]string {
 	return names
 }
 
-// writeStatus prints a machine's status: the machine, its proxy, and
-// tables of its links, maps, and routes.
+// writeStatus prints a machine's status: the machine, its address, and a
+// table of its links.
 func writeStatus(out io.Writer, st wire.Status) error {
-	exit := "not an exit"
-	if st.Node.Exit {
-		exit = "an exit"
-	}
-	fmt.Fprintf(out, "%s (%s), %s, %s\n", st.Node.Name, shortID(st.Node.ID), st.Software, exit)
-	proxy := "off"
-	if st.Proxy.Listen != "" {
-		proxy = st.Proxy.Listen + " (" + listenerText(st.Proxy) + ")"
-	}
-	fmt.Fprintf(out, "Proxy: %s\n", proxy)
+	fmt.Fprintf(out, "%s (%s), %s\n", st.Node.Name, shortID(st.Node.ID), st.Software)
 	if st.Net != nil {
-		fmt.Fprintf(out, "Net: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
+		fmt.Fprintf(out, "Address: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
 	}
 
 	fmt.Fprintln(out)
 	if len(st.Links) == 0 {
 		fmt.Fprintln(out, "No links.")
-	} else {
-		w := table(out)
-		fmt.Fprintln(w, "LINK\tSTATUS\tDESTINATION")
-		for _, l := range st.Links {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", stateLinkText(st.Node.Name, l), linkStateText(l), l.Destination)
-		}
-		if err := w.Flush(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Fprintln(out)
-	if len(st.Maps) == 0 {
-		fmt.Fprintln(out, "No maps.")
-	} else {
-		w := table(out)
-		fmt.Fprintln(w, "MAP\tTARGET\tSTATUS")
-		for _, m := range st.Maps {
-			fmt.Fprintf(w, "%s\t%s on %s\t%s\n", m.Listen, m.Target, m.Machine, listenerText(m.Listener))
-		}
-		if err := w.Flush(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Fprintln(out)
-	if len(st.Routes) == 0 {
-		fmt.Fprintln(out, "No routes.")
 		return nil
 	}
 	w := table(out)
-	fmt.Fprintln(w, "ROUTE\tVIA")
-	for _, r := range st.Routes {
-		fmt.Fprintf(w, "%s\t%s\n", r.Match, r.Via)
+	fmt.Fprintln(w, "LINK\tSTATUS\tDESTINATION")
+	for _, l := range st.Links {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", stateLinkText(st.Node.Name, l), linkStateText(l), l.Destination)
 	}
 	return w.Flush()
-}
-
-func listenerText(l wire.Listener) string {
-	if l.Error != "" {
-		return statusFailed + ": " + l.Error
-	}
-	return statusListening
 }
 
 func (a *app) pingCommand() *cobra.Command {
@@ -263,17 +212,17 @@ func (a *app) pingCommand() *cobra.Command {
 	var asJSON, verbose bool
 	cmd := &cobra.Command{
 		Use:   "ping <machine>",
-		Short: "Check that a machine answers through the mesh",
-		Long: `Ask a machine of the mesh to answer through the links that lead to it,
-once a second, and print each answer with the machines it passed and
+		Short: "Check that a machine answers over the SSH links",
+		Long: `Ask a machine of the mesh to answer through the SSH links that lead to
+it, once a second, and print each answer with the machines it passed and
 the time it took, which includes setting up the relay at each machine on
-the way. Exit status is 1 if no answer came.
+the way. Exit status is 1 if no answer came. To check the virtual network
+itself, use ping <machine>.gst.
 
-A connection to a machine also tries a direct link to it, as this one
-does. With -v, after the answers and any try still running, show that
-link, or why there is none, and what both machines did in their latest
-try: the addresses they offered, the probes they heard, and the QUIC
-handshake.`,
+Traffic to a machine tries a UDP path to it, and so does this command.
+With -v, after the answers and any try still running, show that path, or
+why there is none, and what both machines did in their latest try: the
+addresses they offered and the probes they heard.`,
 		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -v",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -318,7 +267,7 @@ handshake.`,
 			case verbose:
 				report, err := directReport(cmd.Context(), b, machine)
 				if err != nil {
-					fmt.Fprintf(a.stderr, "no report on the direct link: %v\n", err)
+					fmt.Fprintf(a.stderr, "no report on the UDP path: %v\n", err)
 				} else if asJSON {
 					if err := writeJSON(a.stdout, verbosePing{pings, report}); err != nil {
 						return err
@@ -338,7 +287,7 @@ handshake.`,
 		}),
 	}
 	cmd.Flags().IntVarP(&count, "count", "c", 3, "number of answers to ask for")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the direct link and how the latest try at one went")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the UDP path and how the latest try at one went")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -350,8 +299,8 @@ type verbosePing struct {
 	Direct wire.DirectReport `json:"direct"`
 }
 
-// directReport waits for a running try at a direct link to end and
-// reports it.
+// directReport waits for a running try at a UDP path to end and reports
+// it.
 func directReport(ctx context.Context, b backend, machine string) (wire.DirectReport, error) {
 	for {
 		r, err := b.Direct(ctx, machine)
@@ -369,14 +318,14 @@ func directReport(ctx context.Context, b backend, machine string) (wire.DirectRe
 func writeDirect(out io.Writer, r wire.DirectReport) {
 	fmt.Fprintln(out)
 	switch {
-	case r.Link != nil:
-		fmt.Fprintf(out, "Direct link with %s: up, %s -> %s\n", r.Node.Name, r.Link.Local, r.Link.Remote)
+	case r.Path != nil:
+		fmt.Fprintf(out, "UDP path to %s: up, %s -> %s\n", r.Node.Name, r.Path.Local, r.Path.Remote)
 	case r.Off:
-		fmt.Fprintf(out, "Direct link with %s: off on this machine\n", r.Node.Name)
+		fmt.Fprintf(out, "UDP path to %s: off on this machine\n", r.Node.Name)
 	case !r.Next.IsZero():
-		fmt.Fprintf(out, "Direct link with %s: none, next try in %s\n", r.Node.Name, time.Until(r.Next).Round(time.Second))
+		fmt.Fprintf(out, "UDP path to %s: none, next try in %s\n", r.Node.Name, time.Until(r.Next).Round(time.Second))
 	default:
-		fmt.Fprintf(out, "Direct link with %s: none\n", r.Node.Name)
+		fmt.Fprintf(out, "UDP path to %s: none\n", r.Node.Name)
 	}
 	writeTrace(out, "This machine", r.Local, "")
 	writeTrace(out, r.Node.Name, r.Peer, r.PeerError)
@@ -400,9 +349,6 @@ func writeTrace(out io.Writer, machine string, t wire.DirectTrace, failure strin
 
 func writePing(out io.Writer, p wire.Ping) {
 	path := "over SSH"
-	if p.Direct {
-		path = "over a direct link"
-	}
 	if len(p.Via) > 0 {
 		via := make([]string, len(p.Via))
 		for i, n := range p.Via {
@@ -410,5 +356,9 @@ func writePing(out io.Writer, p wire.Ping) {
 		}
 		path = "via " + strings.Join(via, ", ")
 	}
-	fmt.Fprintf(out, "pong from %s (%s) %s in %.1f ms\n", p.Node.Name, shortID(p.Node.ID), path, p.TimeMS)
+	note := ""
+	if p.Direct {
+		note = "; packets go over UDP"
+	}
+	fmt.Fprintf(out, "pong from %s (%s) %s in %.1f ms%s\n", p.Node.Name, shortID(p.Node.ID), path, p.TimeMS, note)
 }

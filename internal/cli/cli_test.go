@@ -27,8 +27,8 @@ import (
 )
 
 // fakeBackend is a daemon that only records state. Once Sync has installed
-// it, it reports what the configuration file asks it to run: every started
-// link as running, the proxy, and the maps as listening.
+// it, it reports what the configuration file asks it to run: every link as
+// running.
 type fakeBackend struct {
 	config    string
 	installed bool
@@ -38,31 +38,13 @@ type fakeBackend struct {
 	syncErr  error
 	nodesErr error
 
-	linkStates   map[string]wire.LinkState // replaces the state of a running link
-	nodeStatus   func(node string) (wire.Status, error)
-	ping         func(node string) (wire.Ping, error)
-	direct       func(node string) (wire.DirectReport, error)
-	listenErrors map[string]string // listen address -> why it does not listen
-	topology     wire.Topology
-	net          *wire.NetState // what the daemon reports while the configuration has the network on
-	sent         bytes.Buffer   // what gst connect sent
+	linkStates map[string]wire.LinkState // replaces the state of a running link
+	nodeStatus func(node string) (wire.Status, error)
+	ping       func(node string) (wire.Ping, error)
+	direct     func(node string) (wire.DirectReport, error)
+	topology   wire.Topology
+	net        *wire.NetState // what the daemon reports of the network
 }
-
-// fakeConn keeps what gst connect sends and, like an echo server, answers
-// once gst connect has sent everything.
-type fakeConn struct {
-	reply io.Reader
-	sent  *bytes.Buffer
-	done  chan struct{}
-}
-
-func (c *fakeConn) Read(p []byte) (int, error) {
-	<-c.done
-	return c.reply.Read(p)
-}
-func (c *fakeConn) Write(p []byte) (int, error) { return c.sent.Write(p) }
-func (c *fakeConn) CloseWrite() error           { close(c.done); return nil }
-func (c *fakeConn) Close() error                { return nil }
 
 func (f *fakeBackend) Sync(_ context.Context, command []string) error {
 	if command == nil {
@@ -82,7 +64,7 @@ func peerOf(name string) wire.NodeInfo {
 	return wire.NodeInfo{
 		ID:       fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(name))) + strings.Repeat("0", 24),
 		Name:     name,
-		Software: "gst 0.3.0",
+		Software: "gst 0.4.0",
 	}
 }
 
@@ -94,12 +76,9 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 	if err != nil {
 		return wire.Status{}, false
 	}
-	st := wire.Status{Software: software, Links: []wire.LinkState{}, Maps: []wire.MapState{}}
+	st := wire.Status{Software: software, Links: []wire.LinkState{}, Net: f.net}
 	if cfg.Node != nil {
-		st.Node = wire.NodeInfo{ID: cfg.Node.ID, Name: cfg.Node.Name, Exit: cfg.Node.Exit}
-	}
-	listener := func(listen string) wire.Listener {
-		return wire.Listener{Listen: listen, Error: f.listenErrors[listen]}
+		st.Node = wire.NodeInfo{ID: cfg.Node.ID, Name: cfg.Node.Name}
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Links)) {
 		peer := peerOf(name)
@@ -108,15 +87,6 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 			state = s
 		}
 		st.Links = append(st.Links, state)
-	}
-	if cfg.Proxy != "" {
-		st.Proxy = listener(cfg.Proxy)
-	}
-	for _, m := range cfg.Maps {
-		st.Maps = append(st.Maps, wire.MapState{Listener: listener(m.Listen), Machine: m.Machine, Target: m.Target})
-	}
-	if cfg.Net != nil {
-		st.Net = f.net
 	}
 	return st, true
 }
@@ -157,14 +127,6 @@ func (f *fakeBackend) Nodes(context.Context) (wire.Topology, error) {
 	return f.topology, f.nodesErr
 }
 
-func (f *fakeBackend) Connect(_ context.Context, node string, target wire.Target) (io.ReadWriteCloser, error) {
-	f.calls = append(f.calls, "connect "+node+" "+target.Network+" "+target.Address)
-	if node == "nowhere" {
-		return nil, errors.New(`no machine "nowhere" in the mesh`)
-	}
-	return &fakeConn{reply: strings.NewReader("hello from " + node), sent: &f.sent, done: make(chan struct{})}, nil
-}
-
 type testEnv struct {
 	t        *testing.T
 	config   string
@@ -201,7 +163,7 @@ func newEnv(t *testing.T) *testEnv {
 		known:    filepath.Join(dir, "known_hosts"),
 		exe:      "/usr/local/bin/gst",
 	}
-	e.back = &fakeBackend{config: e.config, linkStates: map[string]wire.LinkState{}, listenErrors: map[string]string{}}
+	e.back = &fakeBackend{config: e.config, linkStates: map[string]wire.LinkState{}}
 	write(t, e.identity, string(pem.EncodeToMemory(block)))
 	write(t, e.known, knownhosts.Line([]string{"ssh.example.com:22"}, signer.PublicKey())+"\n")
 	host := sshconfig.Host{
@@ -344,19 +306,17 @@ func TestExitCodesAndErrorContract(t *testing.T) {
 
 	t.Run("usage errors print usage and exit 2", func(t *testing.T) {
 		for args, want := range map[string][]string{
-			"remove":        {"error: missing argument <name>\n", "usage: gst remove <name>...", "hint: links: db, myhost\n", "Run 'gst remove --help'"},
-			"ad":            {`unknown command "ad" for "gst"`, `did you mean "add"`},
-			"link add x":    {`unknown command "link" for "gst"`, `did you mean "add"`},
-			"nodes":         {`unknown command "nodes"`, "usage: gst <command>\n"},
-			"lnk":           {`unknown command "lnk"`, "usage: gst <command>\n"},
-			"frobnicate":    {`unknown command "frobnicate"`, "Run 'gst --help'"},
-			"status a b":    {`error: unexpected argument "b"`, "usage: gst status [machine]"},
-			"ping":          {"error: missing argument <machine>\n", "usage: gst ping <machine>"},
-			"map add 1":     {"error: missing argument <machine>:<target>\n", "usage: gst map add <listen> <machine>:<target>"},
-			"route add x":   {"error: missing argument <machine>\n", "usage: gst route add <match> <machine>"},
-			"add --nope":    {"error: unknown flag: --nope\n", "usage: gst add"},
-			"add":           {"error: missing argument <name>\n", "usage: gst add <name> [destination]"},
-			"exit sideways": {`error: invalid argument "sideways": use on or off`, "usage: gst exit [on | off]"},
+			"remove":     {"error: missing argument <name>\n", "usage: gst remove <name>...", "hint: links: db, myhost\n", "Run 'gst remove --help'"},
+			"ad":         {`unknown command "ad" for "gst"`, `did you mean "add"`},
+			"link add x": {`unknown command "link" for "gst"`, `did you mean "add"`},
+			"nodes":      {`unknown command "nodes"`, "usage: gst <command>\n"},
+			"lnk":        {`unknown command "lnk"`, "usage: gst <command>\n"},
+			"frobnicate": {`unknown command "frobnicate"`, "Run 'gst --help'"},
+			"status a b": {`error: unexpected argument "b"`, "usage: gst status [machine]"},
+			"ping":       {"error: missing argument <machine>\n", "usage: gst ping <machine>"},
+			"subnet a b": {`error: unexpected argument "b"`, "usage: gst subnet [cidr]"},
+			"add --nope": {"error: unknown flag: --nope\n", "usage: gst add"},
+			"add":        {"error: missing argument <name>\n", "usage: gst add <name> [destination]"},
 		} {
 			stderr := e.expectCode(exitUsage, strings.Fields(args)...)
 			for _, w := range want {
@@ -370,26 +330,15 @@ func TestExitCodesAndErrorContract(t *testing.T) {
 		}
 	})
 
-	t.Run("a group alone prints its help", func(t *testing.T) {
-		contains(t, e.mustGst("map"), "Usage:\n  gst map <command>\n")
-		contains(t, e.mustGst("route"), "Usage:\n  gst route <command>\n")
-	})
 }
 
 func TestEveryCommandNamesItsMissingArguments(t *testing.T) {
 	e := newEnv(t)
 	for args, want := range map[string]string{
-		"add":              "<name>",
-		"remove":           "<name>",
-		"rm":               "<name>",
-		"connect":          "<machine>",
-		"ping":             "<machine>",
-		"map add":          "<listen>",
-		"map remove":       "<listen>",
-		"route add":        "<match>",
-		"route remove":     "<match>",
-		"map add 15432":    "<machine>:<target>",
-		"route add corp.x": "<machine>",
+		"add":    "<name>",
+		"remove": "<name>",
+		"rm":     "<name>",
+		"ping":   "<machine>",
 	} {
 		stderr := e.expectCode(exitUsage, strings.Fields(args)...)
 		if !strings.Contains(stderr, "error: missing argument "+want+"\n") {
@@ -419,11 +368,11 @@ func TestConfigFromEnvironment(t *testing.T) {
 func TestInvalidConfigIsReported(t *testing.T) {
 	e := newEnv(t)
 	write(t, e.config, "{not json")
-	stderr := e.expectCode(exitFailure, "map", "list")
+	stderr := e.expectCode(exitFailure, "name")
 	if !strings.HasPrefix(stderr, "error: config ") || !strings.Contains(stderr, "invalid JSON") {
 		t.Fatalf("stderr %q", stderr)
 	}
-	write(t, e.config, `{"version":3,"surprise":true}`)
+	write(t, e.config, `{"version":4,"surprise":true}`)
 	e.expectCode(exitFailure, "status")
 }
 
@@ -607,11 +556,6 @@ func TestLinkRemoveDaemonFailure(t *testing.T) {
 	if len(e.load().Links) != 0 {
 		t.Fatal("the link stays configured")
 	}
-}
-
-func TestConnectMissingTargetNamesArgument(t *testing.T) {
-	e := newEnv(t)
-	e.expectError(exitUsage, []string{"connect", "devbox"}, "error: missing argument <port | host:port | socket>\n")
 }
 
 func TestCompletesLinkNames(t *testing.T) {

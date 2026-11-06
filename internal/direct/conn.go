@@ -1,103 +1,120 @@
 package direct
 
 import (
-	"context"
-	"net"
+	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/quic-go/quic-go"
 )
 
-// Conn is a direct connection: streams in both directions over a QUIC
-// connection. The stream interface of net.Conn applies, as well as
-// CloseWrite, which ends writing while Close also ends reading. When the
-// connection is lost, reading fails rather than ending cleanly.
+const (
+	beatInterval = time.Second     // how often a path says it works; also keeps it open through NATs
+	silenceLimit = 3 * time.Second // a path this quiet has ended
+)
+
+// Conn is a UDP path to the other side: one socket and one address, which
+// carry packets until the path falls silent or a side closes it.
 type Conn struct {
-	conn   *quic.Conn
 	socket *socket
+	to     netip.AddrPort
+	token  [tokenLen]byte
+	handle atomic.Pointer[func(packet []byte)]
+	heard  atomic.Int64 // when anything last arrived, in Unix nanoseconds
+
+	once sync.Once
+	done chan struct{}
 }
 
-// Open opens a stream to the other side.
-func (c *Conn) Open(ctx context.Context) (net.Conn, error) {
-	s, err := c.conn.OpenStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &stream{Stream: s, conn: c.conn}, nil
-}
-
-// Accept waits for a stream that the other side opens.
-func (c *Conn) Accept(ctx context.Context) (net.Conn, error) {
-	s, err := c.conn.AcceptStream(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &stream{Stream: s, conn: c.conn}, nil
+func newConn(s *socket, to netip.AddrPort, token [tokenLen]byte) *Conn {
+	c := &Conn{socket: s, to: to, token: token, done: make(chan struct{})}
+	c.heard.Store(time.Now().UnixNano())
+	receive := c.receive
+	s.receive.Store(&receive)
+	go c.beat()
+	return c
 }
 
 // Local returns the IP:port of this end.
-func (c *Conn) Local() string { return c.conn.LocalAddr().String() }
+func (c *Conn) Local() string { return c.socket.addr.String() }
 
 // Remote returns the IP:port of the other end, as this one sees it.
-func (c *Conn) Remote() string { return c.conn.RemoteAddr().String() }
+func (c *Conn) Remote() string { return c.to.String() }
 
-// Done is closed when the connection ends.
-func (c *Conn) Done() <-chan struct{} { return c.conn.Context().Done() }
+// Done is closed when the path ends.
+func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// WritePacket sends a datagram of another protocol to the other side, on
-// the socket of the connection, which already has a way through the
-// firewalls and NATs between the two. Its first byte must have the top
-// two bits clear, which keeps it out of QUIC on the other side, and it
-// must fit a UDP payload of 1200 bytes, which is all that a path is sure
-// to carry: the socket does not fragment.
+// WritePacket sends a WireGuard packet to the other side, over the socket
+// that has a way through the firewalls and NATs between the two.
 func (c *Conn) WritePacket(p []byte) error {
-	_, err := c.socket.transport.WriteTo(p, c.conn.RemoteAddr())
+	_, err := c.socket.udp.WriteToUDPAddrPort(p, c.to)
 	return err
 }
 
-// HandlePackets makes handle receive the datagrams that the other side
-// sends with WritePacket, on the goroutine that reads the socket: it must
-// not block or keep the packet. Packets are not authenticated, and probes
-// of the attempt may trail in.
+// HandlePackets makes handle receive the WireGuard packets that arrive,
+// on the goroutine that reads the socket: it must not block or keep the
+// packet. Packets are not authenticated; WireGuard does that.
 func (c *Conn) HandlePackets(handle func(packet []byte)) {
-	c.socket.demux.handle.Store(&handle)
+	c.handle.Store(&handle)
 }
 
-// Close ends the connection, telling the other side, and frees its socket.
+// Close ends the path, telling the other side, and frees its socket.
 func (c *Conn) Close() error {
-	c.conn.CloseWithError(0, "")
-	c.socket.close()
+	c.socket.send(kindBye, c.token, c.to)
+	c.end()
 	return nil
 }
 
-// stream is a QUIC stream as a net.Conn. quic-go does not allow closing
-// a stream while writing to it, which Close does when a relay breaks down
-// or a context ends, so writing holds mu for reading, and closing fails
-// the write in progress first.
-type stream struct {
-	*quic.Stream
-	conn *quic.Conn
-	mu   sync.RWMutex
+func (c *Conn) end() {
+	c.once.Do(func() {
+		close(c.done)
+		c.socket.udp.Close()
+	})
 }
 
-func (s *stream) LocalAddr() net.Addr  { return s.conn.LocalAddr() }
-func (s *stream) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
-
-func (s *stream) Write(p []byte) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.Stream.Write(p)
+// wireGuard reports whether packet is one of WireGuard's, by its message
+// type.
+func wireGuard(packet []byte) bool {
+	return len(packet) > 0 && packet[0] >= 1 && packet[0] <= 4
 }
 
-func (s *stream) CloseWrite() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.Stream.Close()
+func (c *Conn) receive(packet []byte, from netip.AddrPort) {
+	if from != c.to {
+		return
+	}
+	c.heard.Store(time.Now().UnixNano())
+	if wireGuard(packet) {
+		if handle := c.handle.Load(); handle != nil {
+			(*handle)(packet)
+		}
+		return
+	}
+	if !signed(packet, c.token) {
+		return
+	}
+	switch packet[0] {
+	case kindUse:
+		// The confirmation got lost.
+		c.socket.send(kindUsed, c.token, c.to)
+	case kindBye:
+		c.end()
+	}
 }
 
-func (s *stream) Close() error {
-	s.Stream.CancelRead(0)
-	s.Stream.SetWriteDeadline(time.Now())
-	return s.CloseWrite()
+// beat says that this end is there, and ends the path when the other end
+// stopped saying so.
+func (c *Conn) beat() {
+	tick := time.NewTicker(beatInterval)
+	defer tick.Stop()
+	for {
+		c.socket.send(kindBeat, c.token, c.to)
+		select {
+		case <-c.done:
+			return
+		case <-tick.C:
+			if time.Since(time.Unix(0, c.heard.Load())) > silenceLimit {
+				c.end()
+				return
+			}
+		}
+	}
 }

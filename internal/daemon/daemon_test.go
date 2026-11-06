@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +108,7 @@ type failConn struct {
 func (c failConn) Failure() string { return c.text }
 
 // newMachine prepares a machine named name with node identity (unless
-// bare), the proxy off, and no links, maps, or routes.
+// bare) and no links.
 func newMachine(t *testing.T, w *world, name string, bare bool, retry time.Duration) *machine {
 	t.Helper()
 	dir := filepath.Join(w.dir, name)
@@ -304,125 +302,6 @@ func pair(t *testing.T) (a, b *machine) {
 	return a, b
 }
 
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	return ln.Addr().String()
-}
-
-// greeter serves on network and address in the test: it greets each
-// connection with name and then echoes. It returns the address.
-func greeter(t *testing.T, network, address, name string) string {
-	t.Helper()
-	ln, err := net.Listen(network, address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				c.Write([]byte(name))
-				io.Copy(c, c)
-			}()
-		}
-	}()
-	return ln.Addr().String()
-}
-
-// expectGreeting reads the greeting of a greeter and checks that data
-// round-trips.
-func expectGreeting(t *testing.T, c net.Conn, name string) {
-	t.Helper()
-	c.SetDeadline(time.Now().Add(10 * time.Second))
-	buf := make([]byte, len(name))
-	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != name {
-		t.Fatalf("greeting = %q, %v; want %q", buf, err, name)
-	}
-	if _, err := c.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	buf = make([]byte, 4)
-	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ping" {
-		t.Fatalf("echo = %q, %v", buf, err)
-	}
-}
-
-// expectClosed checks that c is closed by the other side without data.
-func expectClosed(t *testing.T, c net.Conn) {
-	t.Helper()
-	c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if n, err := c.Read(make([]byte, 1)); n != 0 || err == nil {
-		t.Fatalf("read %d bytes, %v; want a closed connection", n, err)
-	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Fatal("the connection stayed open")
-	}
-}
-
-func dialTCP(t *testing.T, addr string) net.Conn {
-	t.Helper()
-	c, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Close() })
-	return c
-}
-
-// lanAddress returns a non-loopback IPv4 address of this machine, or skips.
-func lanAddress(t *testing.T) string {
-	t.Helper()
-	addrs, _ := net.InterfaceAddrs()
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() && !ipn.IP.IsLinkLocalUnicast() {
-			return ipn.IP.String()
-		}
-	}
-	t.Skip("no non-loopback IPv4 address")
-	return ""
-}
-
-// socksConnect asks the SOCKS5 proxy at proxy to connect to host:port. It
-// returns the connection and the reply code.
-func socksConnect(t *testing.T, proxy, host string, port int) (net.Conn, byte) {
-	t.Helper()
-	c := dialTCP(t, proxy)
-	c.SetDeadline(time.Now().Add(10 * time.Second))
-	req := append([]byte{5, 1, 0, 3, byte(len(host))}, host...)
-	req = binary.BigEndian.AppendUint16(req, uint16(port))
-	if _, err := c.Write(append([]byte{5, 1, 0}, req...)); err != nil {
-		t.Fatal(err)
-	}
-	reply := make([]byte, 12) // method selection, then the reply
-	if _, err := io.ReadFull(c, reply); err != nil {
-		t.Fatalf("SOCKS reply: %v", err)
-	}
-	c.SetDeadline(time.Time{})
-	return c, reply[3]
-}
-
-func portOf(t *testing.T, addr string) int {
-	t.Helper()
-	_, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, r := range p {
-		n = n*10 + int(r-'0')
-	}
-	return n
-}
-
 func wantCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var werr *wire.Error
@@ -437,11 +316,8 @@ func TestStatus(t *testing.T) {
 	if st.Software != "gst test" || st.Build != "sha256:test" || st.PID != os.Getpid() || st.Config != a.cfgPath {
 		t.Fatalf("status = %+v", st)
 	}
-	if st.Node.ID != nid("a") || st.Node.Name != "a" || st.Node.Exit {
+	if st.Node.ID != nid("a") || st.Node.Name != "a" {
 		t.Fatalf("node = %+v", st.Node)
-	}
-	if st.Proxy.Listen != "" || len(st.Maps) != 0 {
-		t.Fatalf("proxy %+v, maps %+v", st.Proxy, st.Maps)
 	}
 	if len(st.Links) != 1 {
 		t.Fatalf("links = %+v", st.Links)
@@ -712,17 +588,17 @@ func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 
 func TestReloadChangesNodeIdentity(t *testing.T) {
 	a, b := pair(t)
-	a.apply(func(f *config.File) { f.Node.Exit = true })
-	waitFor(t, "b sees a as an exit", func() bool {
+	a.apply(func(f *config.File) { f.Node.Name = "renamed" })
+	waitFor(t, "b sees a's new name", func() bool {
 		for _, n := range b.d.mesh.Topology().Nodes {
 			if n.ID == nid("a") {
-				return n.Exit
+				return n.Name == "renamed"
 			}
 		}
 		return false
 	})
-	if !a.d.Status().Node.Exit {
-		t.Fatal("status does not show exit")
+	if a.d.Status().Node.Name != "renamed" {
+		t.Fatal("status does not show the name")
 	}
 }
 
@@ -778,21 +654,9 @@ func TestControlClient(t *testing.T) {
 
 func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	a, b := pair(t)
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer occupied.Close()
-	proxy, free := freeAddr(t), freeAddr(t)
 	b.apply(func(f *config.File) {
-		f.Proxy = proxy
 		f.Links["back"] = &config.Link{Destination: "a"}
 		f.Links["off"] = &config.Link{Destination: "ssh.example.com"}
-		f.Maps = []config.Map{
-			{Listen: occupied.Addr().String(), Machine: "a", Target: "localhost:1"},
-			{Listen: free, Machine: "a", Target: "localhost:2"},
-		}
-		f.Routes = config.Routes{{Match: "example.com", Via: "a"}, {Match: config.DefaultRoute, Via: "a"}}
 	})
 	waitFor(t, "b's link back runs", func() bool { l, _ := b.link("back"); return l.State == wire.StateRunning })
 
@@ -807,28 +671,20 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Node.ID != nid("b") || st.Proxy.Listen != proxy || st.Proxy.Error != "" {
-		t.Fatalf("node = %+v, proxy = %+v", st.Node, st.Proxy)
+	if st.Node.ID != nid("b") {
+		t.Fatalf("node = %+v", st.Node)
 	}
 	if len(st.Links) != 2 || st.Links[0].Name != "back" || st.Links[0].Destination != "a" || st.Links[0].State != wire.StateRunning ||
 		st.Links[1].Name != "off" || st.Links[1].Destination != "ssh.example.com" || st.Links[1].State == wire.StateRunning {
 		t.Fatalf("links = %+v, want back running and off not", st.Links)
 	}
-	if len(st.Maps) != 2 || st.Maps[0].Machine != "a" || st.Maps[0].Target != "localhost:1" || st.Maps[0].Error == "" ||
-		st.Maps[1].Listen != free || st.Maps[1].Target != "localhost:2" || st.Maps[1].Error != "" {
-		t.Fatalf("maps = %+v, want the first to fail to listen", st.Maps)
-	}
-	if want := []wire.Route{{Match: "example.com", Via: "a"}, {Match: "default", Via: "a"}}; !slices.Equal(st.Routes, want) {
-		t.Fatalf("routes = %+v", st.Routes)
-	}
 
-	// This machine answers for itself, with the proxy off.
+	// This machine answers for itself.
 	st, err = c.NodeStatus(t.Context(), "a.gst")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Node.ID != nid("a") || st.Proxy.Listen != "" || len(st.Links) != 1 || st.Links[0].Name != "bee" || st.Links[0].Destination != "b" ||
-		len(st.Maps) != 0 || len(st.Routes) != 0 {
+	if st.Node.ID != nid("a") || len(st.Links) != 1 || st.Links[0].Name != "bee" || st.Links[0].Destination != "b" {
 		t.Fatalf("status of a = %+v", st)
 	}
 
@@ -845,66 +701,6 @@ func TestControlRefusesPeerlessRoles(t *testing.T) {
 	defer conn.Close()
 	_, err = wire.Dial(conn, wire.Hello{Software: "x", Role: "admin"})
 	wantCode(t, err, wire.CodeUnsupportedRole)
-}
-
-func TestConnectRelaysToTargetOnAnotherMachine(t *testing.T) {
-	a, b := pair(t)
-	tcp := greeter(t, "tcp", "127.0.0.1:0", "tcp-on-b")
-	sock := filepath.Join(a.w.dir, "t.sock")
-	greeter(t, "unix", sock, "unix-on-b")
-
-	for _, tt := range []struct {
-		name, node string
-		target     wire.Target
-		greeting   string
-	}{
-		{"tcp by node name", "b", wire.Target{Network: "tcp", Address: tcp}, "tcp-on-b"},
-		{"tcp by link name", "bee.gst", wire.Target{Network: "tcp", Address: tcp}, "tcp-on-b"},
-		{"unix socket", "b", wire.Target{Network: "unix", Address: sock}, "unix-on-b"},
-		{"from the accepting side", "a", wire.Target{Network: "tcp", Address: tcp}, "tcp-on-b"}, // a's own machine
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			from := a
-			if tt.name == "from the accepting side" {
-				from = b
-			}
-			c, err := Dial(t.Context(), from.socket, "gst cli", "sha256:cli")
-			if err != nil {
-				t.Fatal(err)
-			}
-			conn, err := c.Connect(t.Context(), tt.node, tt.target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close()
-			expectGreeting(t, conn, tt.greeting)
-		})
-	}
-
-	for _, tt := range []struct {
-		name, node string
-		target     wire.Target
-		code       string
-	}{
-		{"unknown machine", "nowhere", wire.Target{Network: "tcp", Address: tcp}, wire.CodeNotFound},
-		{"not an exit", "b", wire.Target{Network: "tcp", Address: "192.0.2.1:80"}, wire.CodeForbidden},
-		{"bad target", "b", wire.Target{Network: "tcp", Address: "x"}, wire.CodeInvalidParams},
-		{"refused", "b", wire.Target{Network: "tcp", Address: freeAddr(t)}, wire.CodeFailed},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			c, err := Dial(t.Context(), a.socket, "gst cli", "sha256:cli")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer c.Close()
-			conn, err := c.Connect(t.Context(), tt.node, tt.target)
-			if err == nil {
-				conn.Close()
-				t.Fatal("Connect succeeded")
-			}
-			wantCode(t, err, tt.code)
-		})
-	}
 }
 
 func TestSingleInstance(t *testing.T) {
@@ -963,25 +759,13 @@ func TestServeStopsEverything(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
 	a := startMachine(t, w, "a")
-	proxy, mapAddr := freeAddr(t), freeAddr(t)
-	a.apply(func(f *config.File) {
-		f.Proxy = proxy
-		f.Maps = []config.Map{{Listen: mapAddr, Machine: "b", Target: "localhost:1"}}
-	})
 	a.linkTo("bee", "b")
-	dialTCP(t, proxy).Close()
 
 	if err := a.shutdown(); err != nil {
 		t.Fatal(err)
 	}
-	for _, addr := range []string{proxy, mapAddr} {
-		if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-			c.Close()
-			t.Errorf("%s still listens after the daemon stopped", addr)
-		}
-	}
 	st := a.d.Status()
-	if len(st.Links) != 1 || st.Links[0].State != wire.StateDown || st.Proxy.Error != "" || st.Maps[0].Error != "" {
+	if len(st.Links) != 1 || st.Links[0].State != wire.StateDown {
 		t.Fatalf("status after stop = %+v, want the configuration with nothing running", st)
 	}
 }

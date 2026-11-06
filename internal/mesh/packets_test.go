@@ -3,7 +3,6 @@ package mesh
 import (
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -29,7 +28,7 @@ func (i *inbox) has(node, packet string) bool {
 	return i.got[node+" "+packet]
 }
 
-// Without a direct link, packets take a stream along the links, also
+// Without a UDP path, packets take a stream along the links, also
 // through a machine in between, and the stream carries them both ways.
 func TestPacketsAlongTheMesh(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
@@ -42,7 +41,7 @@ func TestPacketsAlongTheMesh(t *testing.T) {
 
 	a.SendPacket(nid("c"), []byte("hello"))
 	waitFor(t, "c gets the packet", func() bool { return atC.has(nid("a"), "hello") })
-	if got := a.PacketPath(nid("c")); got != wire.PathMesh {
+	if got := a.PacketPath(nid("c")); got != wire.PathSSH {
 		t.Fatalf("path = %q", got)
 	}
 	c.SendPacket(nid("a"), []byte("back"))
@@ -116,19 +115,4 @@ func TestNetSpreads(t *testing.T) {
 	})
 	a.SetNet(nil)
 	waitFor(t, "b forgets a's address", func() bool { return info(b, nid("a")) == nil })
-}
-
-func TestDirectLinkSilence(t *testing.T) {
-	var p packetPeer
-	if p.silent() {
-		t.Fatal("a link that never brought anything is silent")
-	}
-	p.heard.Store(time.Now().UnixNano())
-	if p.silent() {
-		t.Fatal("a link that just brought something is silent")
-	}
-	p.heard.Store(time.Now().Add(-2 * directSilence).UnixNano())
-	if !p.silent() {
-		t.Fatal("a quiet link is not silent")
-	}
 }

@@ -3,15 +3,10 @@
 // Command gst-it is the network client and server that the integration
 // tests run inside their containers, where Go's test process cannot reach.
 //
-//	gst-it echo-server ADDR                     answer "reply:" + request after the client half-closes; ADDR is host:port, or a socket path
-//	gst-it http-server ADDR BODY                answer every HTTP request with BODY
+//	gst-it echo-server ADDR                     answer "reply:" + request after the client half-closes
 //	gst-it roundtrip [-conns N] [-repeat R] ADDR...
 //	                                            send payloads concurrently, connection i to ADDR[i % len], and verify the replies
-//	gst-it socks PROXY HOST PORT [PAYLOAD]      connect through a SOCKS5 proxy; print the reply to PAYLOAD, or the first line
-//	gst-it connect PROXY HOST PORT [PAYLOAD]    like socks, through an HTTP proxy's CONNECT
-//	gst-it line NETWORK ADDR                    print the first line that ADDR sends
 //	gst-it http METHOD URL [TOKEN]              print the HTTP status and body of a request, with TOKEN as a bearer token;
-//	                                            plain http:// URLs go through $HTTP_PROXY
 //	gst-it udp-echo ADDR                        answer every UDP datagram with "reply:" + datagram
 //	gst-it udp ADDR PAYLOAD                     send a datagram until a reply comes, within 5 s, and print the reply
 //	gst-it dns SERVER NAME                      ask the DNS server at SERVER for NAME's IPv4 addresses and print them
@@ -25,9 +20,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -51,14 +44,6 @@ func main() {
 		err = echoServer(args)
 	case "roundtrip":
 		err = roundtrip(args)
-	case "socks":
-		err = socks(args)
-	case "http-server":
-		err = httpServer(args)
-	case "connect":
-		err = connectProxy(args)
-	case "line":
-		err = line(args)
 	case "http":
 		err = httpRequest(args)
 	case "udp-echo":
@@ -273,11 +258,7 @@ func echoServer(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: echo-server ADDR")
 	}
-	network := "tcp"
-	if strings.HasPrefix(args[0], "/") {
-		network = "unix"
-	}
-	listener, err := net.Listen(network, args[0])
+	listener, err := net.Listen("tcp", args[0])
 	if err != nil {
 		return err
 	}
@@ -297,15 +278,6 @@ func echoServer(args []string) error {
 			conn.(interface{ CloseWrite() error }).CloseWrite()
 		}()
 	}
-}
-
-func httpServer(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: http-server ADDR BODY")
-	}
-	return http.ListenAndServe(args[0], http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, args[1])
-	}))
 }
 
 func roundtrip(args []string) error {
@@ -364,99 +336,6 @@ func exchange(conn interface {
 	if want == "" {
 		fmt.Print(string(reply))
 	}
-	return nil
-}
-
-func socks(args []string) error {
-	if len(args) != 3 && len(args) != 4 {
-		return errors.New("usage: socks PROXY HOST PORT [PAYLOAD]")
-	}
-	port, err := strconv.ParseUint(args[2], 10, 16)
-	if err != nil {
-		return err
-	}
-	conn, err := net.DialTimeout("tcp", args[0], 5*time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	request := append([]byte{5, 1, 0, 5, 1, 0, 3, byte(len(args[1]))}, args[1]...)
-	request = binary.BigEndian.AppendUint16(request, uint16(port))
-	if _, err := conn.Write(request); err != nil {
-		return err
-	}
-	reply := make([]byte, 12)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		return err
-	}
-	if reply[1] != 0 || reply[3] != 0 {
-		return fmt.Errorf("SOCKS reply code %d (%v)", reply[3], reply)
-	}
-	if len(args) == 4 {
-		return exchange(conn.(*net.TCPConn), args[3], "")
-	}
-	return printLine(conn)
-}
-
-// connectProxy opens a tunnel with CONNECT, like socks does with SOCKS5.
-// A proxy that refuses reports its status line and body.
-func connectProxy(args []string) error {
-	if len(args) != 3 && len(args) != 4 {
-		return errors.New("usage: connect PROXY HOST PORT [PAYLOAD]")
-	}
-	conn, err := net.DialTimeout("tcp", args[0], 5*time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	target := net.JoinHostPort(args[1], args[2])
-	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
-		return err
-	}
-	r := bufio.NewReader(conn)
-	res, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		return err
-	}
-	if res.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("CONNECT %s: %s", res.Status, strings.TrimSpace(string(body)))
-	}
-	if len(args) == 4 {
-		return exchange(&bufferedConn{conn.(*net.TCPConn), r}, args[3], "")
-	}
-	return printLine(r)
-}
-
-// bufferedConn reads through r, which may hold bytes read ahead.
-type bufferedConn struct {
-	*net.TCPConn
-	r *bufio.Reader
-}
-
-func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
-
-func line(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: line NETWORK ADDR")
-	}
-	conn, err := net.DialTimeout(args[0], args[1], 5*time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	return printLine(conn)
-}
-
-func printLine(r io.Reader) error {
-	text, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && text == "" {
-		return err
-	}
-	fmt.Println(strings.TrimSuffix(text, "\n"))
 	return nil
 }
 

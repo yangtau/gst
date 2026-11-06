@@ -1,9 +1,9 @@
-// Package vnet runs this machine's part in the virtual network: every
-// machine of the mesh that takes part gets an IP address in one private
-// subnet and a name under .gst, and programs reach them through a network
-// interface, with any protocol. A WireGuard device (wireguard-go) encrypts
-// the packets end to end, and the mesh carries them, over UDP where a
-// direct link exists and along its links where not (bind.go).
+// Package vnet runs this machine's part in the virtual network, which is
+// how machines of the mesh reach each other: each gets an IP address in one
+// private subnet and a name under .gst, and programs reach them through a
+// network interface, with any protocol. A WireGuard device (wireguard-go)
+// encrypts the packets end to end, and the mesh carries them, over UDP
+// where the network allows and along its SSH links where not (bind.go).
 //
 // There is no coordinator. Each node publishes its subnet, address, and
 // WireGuard key in its link-state record, and every node works out the
@@ -133,7 +133,7 @@ func New(cfg Config) *Manager {
 	return &Manager{cfg: cfg, wake: make(chan chan struct{}), ended: make(chan struct{}), peers: map[string]peer{}}
 }
 
-// Configure sets this machine's part in the network; nil takes it out.
+// Configure sets what the user chose for the network, which may be nil.
 // Once Run runs, it waits until Run acted on c, so that Status tells how
 // that went.
 func (m *Manager) Configure(ctx context.Context, c *config.Net) {
@@ -154,7 +154,7 @@ func (m *Manager) Configure(ctx context.Context, c *config.Net) {
 	}
 }
 
-// Status reports the network; nil while it is off.
+// Status reports the network; nil when it cannot run here.
 func (m *Manager) Status() *wire.NetState {
 	st := m.status.Load()
 	if st == nil {
@@ -207,15 +207,8 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
-	c := m.config.Load()
-	if c == nil {
-		m.down()
-		m.cfg.Mesh.SetNet(nil)
-		m.status.Store(nil)
-		return
-	}
 	self := m.cfg.Mesh.Self()
-	if self.ID == "" {
+	if m.cfg.Open == nil || self.ID == "" {
 		return
 	}
 	st := &wire.NetState{}
@@ -229,18 +222,22 @@ func (m *Manager) reconcile(ctx context.Context) {
 		return
 	}
 	topo := m.cfg.Mesh.Topology()
-	if err := m.settle(ctx, c, self, topo); err != nil {
+	if err := m.settle(ctx, m.config.Load(), self, topo); err != nil {
 		st.Error = err.Error()
 		return
 	}
-	m.cfg.Mesh.SetNet(&wire.NetInfo{Subnet: m.state.Subnet, Since: m.state.Since, Address: m.state.Address, PublicKey: m.publicKey()})
-	topo = m.cfg.Mesh.Topology()
-	err := m.up(ctx, m.wanted(topo))
+	err := m.up(ctx)
 	if err == nil {
-		err = m.syncPeers(self, topo)
+		// Machines learn of this one once it can answer them.
+		m.cfg.Mesh.SetNet(&wire.NetInfo{Subnet: m.state.Subnet, Since: m.state.Since, Address: m.state.Address, PublicKey: m.publicKey()})
+		topo = m.cfg.Mesh.Topology()
+		err = m.apply(self, topo)
 	}
 	if err == nil {
 		err = m.conflict()
+	}
+	if m.iface == nil {
+		m.cfg.Mesh.SetNet(nil)
 	}
 	if err != nil {
 		st.Error = err.Error()
@@ -265,7 +262,7 @@ func (m *Manager) conflict() error {
 		return nil
 	}
 	if p, found := overlaps(subnet, m.cfg.Networks(m.name)); found {
-		return &hintError{fmt.Sprintf("the subnet %s overlaps %s on this machine", subnet, p), "choose another subnet with `gst net on --subnet <cidr>`"}
+		return &hintError{fmt.Sprintf("the subnet %s overlaps %s on this machine", subnet, p), "choose another subnet with `gst subnet <cidr>`"}
 	}
 	return nil
 }
@@ -327,7 +324,9 @@ func (m *Manager) settle(ctx context.Context, c *config.Net, self wire.NodeInfo,
 			subnet, since = s, t
 		}
 	}
-	consider(c.Subnet, c.Since)
+	if c != nil {
+		consider(c.Subnet, c.Since)
+	}
 	for _, n := range topo.Nodes {
 		if n.Net != nil && n.ID != self.ID {
 			consider(n.Net.Subnet, n.Net.Since)
@@ -338,7 +337,9 @@ func (m *Manager) settle(ctx context.Context, c *config.Net, self wire.NodeInfo,
 		if err != nil {
 			return err
 		}
-		subnet, since = chosen.String(), time.Now().UnixNano()
+		// Negative, so that it yields to any choice of a person, and among
+		// automatic choices the network that came first stays.
+		subnet, since = chosen.String(), -time.Now().UnixNano()
 	}
 	prefix, err := config.ParseSubnet(subnet)
 	if err != nil {
@@ -400,7 +401,7 @@ func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wir
 	wg.Wait()
 	subnet, ok := chooseSubnet(self.ID, used)
 	if !ok {
-		return netip.Prefix{}, &hintError{"no subnet is free on the machines of the mesh", "choose one with `gst net on --subnet <cidr>`"}
+		return netip.Prefix{}, &hintError{"no subnet is free on the machines of the mesh", "choose one with `gst subnet <cidr>`"}
 	}
 	return subnet, nil
 }
@@ -448,8 +449,19 @@ func lookup(topo wire.Topology, ref string) (netip.Addr, bool) {
 	return a, err == nil
 }
 
-// up makes the interface and the WireGuard device match spec.
-func (m *Manager) up(ctx context.Context, spec tun.Spec) error {
+// apply makes the interface and WireGuard match topo.
+func (m *Manager) apply(self wire.NodeInfo, topo wire.Topology) error {
+	name, err := m.iface.Set(m.wanted(topo))
+	if err != nil {
+		m.down()
+		return fmt.Errorf("the helper of the virtual network failed: %w", err)
+	}
+	m.name = name
+	return m.syncPeers(self, topo)
+}
+
+// up starts the interface and the WireGuard device, unless they run.
+func (m *Manager) up(ctx context.Context) error {
 	if m.dev != nil {
 		select {
 		case <-m.dev.Wait():
@@ -458,21 +470,12 @@ func (m *Manager) up(ctx context.Context, spec tun.Spec) error {
 		}
 	}
 	if m.iface != nil {
-		name, err := m.iface.Set(spec)
-		if err != nil {
-			m.down()
-			return fmt.Errorf("the helper of the virtual network failed: %w", err)
-		}
-		m.name = name
 		return nil
 	}
-	if m.cfg.Open == nil {
-		return errors.New("the virtual network is not available here")
-	}
-	iface, err := m.cfg.Open(spec)
+	iface, err := m.cfg.Open(tun.Spec{Subnet: m.state.Subnet, Address: m.state.Address})
 	if err != nil {
 		if errors.Is(err, tun.ErrNoHelper) {
-			return &hintError{"the helper of the virtual network does not run", "install it with `sudo gst net install`"}
+			return &hintError{"the helper of the virtual network does not run", "install it with `sudo gst install`"}
 		}
 		return fmt.Errorf("set up the interface: %w", err)
 	}

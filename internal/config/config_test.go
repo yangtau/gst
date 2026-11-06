@@ -13,44 +13,29 @@ import (
 const nodeID = "0123456789abcdef0123456789abcdef"
 
 func TestParseValidation(t *testing.T) {
-	const ok = `"version": 3`
+	const ok = `"version": 4`
 	tests := []struct {
 		name string
 		body string
 		want string // substring of the error; empty when valid
 	}{
 		{"empty", ok, ""},
-		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop", "exit": true}`, ""},
+		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop"}`, ""},
 		{"node bad id", ok + `, "node": {"id": "xyz", "name": "laptop"}`, "invalid node"},
 		{"node bad name", ok + `, "node": {"id": "` + nodeID + `", "name": "Laptop"}`, "invalid node"},
-		{"proxy off by default", ok, ""},
-		{"proxy empty", ok + `, "proxy": ""`, ""},
-		{"proxy word off", ok + `, "proxy": "off"`, "invalid proxy"},
-		{"proxy custom", ok + `, "proxy": "0.0.0.0:8080"`, ""},
-		{"proxy hostname", ok + `, "proxy": "localhost:8080"`, "invalid proxy"},
-		{"proxy no port", ok + `, "proxy": "127.0.0.1"`, "invalid proxy"},
 		{"link", ok + `, "links": {"myhost": {"destination": "user@myhost", "remote_gst": "/opt/gst"}}`, ""},
 		{"link removed field", ok + `, "links": {"myhost": {"destination": "myhost", "identity_file": "/k"}}`, "unknown field"},
 		{"link control in remote gst", ok + `, "links": {"myhost": {"destination": "myhost", "remote_gst": "a\nb"}}`, "remote gst"},
 		{"link bad name", ok + `, "links": {"My_Host": {"destination": "myhost"}}`, "invalid name"},
 		{"link null", ok + `, "links": {"myhost": null}`, "null"},
 		{"link option destination", ok + `, "links": {"myhost": {"destination": "-oProxyCommand=x"}}`, "link myhost"},
-		{"map", ok + `, "maps": [{"listen": "127.0.0.1:5432", "machine": "devbox", "target": "db.internal:5432"}, {"listen": "/run/a.sock", "machine": "devbox", "target": "/run/b.sock"}]`, ""},
-		{"map listen hostname", ok + `, "maps": [{"listen": "localhost:5432", "machine": "devbox", "target": "db:1"}]`, "map 1"},
-		{"map bad machine", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "Dev.Box", "target": "db:1"}]`, "map 1: invalid machine"},
-		{"map bad target", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "devbox", "target": "db"}]`, "invalid target"},
-		{"map duplicate listen", ok + `, "maps": [{"listen": "127.0.0.1:1", "machine": "a", "target": "db:1"}, {"listen": "127.0.0.1:1", "machine": "b", "target": "db:2"}]`, "map 2: duplicate listen"},
-		{"map listens on proxy", ok + `, "proxy": "127.0.0.1:1080", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, "proxy address"},
-		{"map on custom proxy", ok + `, "proxy": "127.0.0.1:9", "maps": [{"listen": "127.0.0.1:9", "machine": "a", "target": "db:1"}]`, "proxy address"},
-		{"map on 1080 with custom proxy", ok + `, "proxy": "127.0.0.1:9", "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
-		{"map on 1080 with proxy off", ok + `, "maps": [{"listen": "127.0.0.1:1080", "machine": "a", "target": "db:1"}]`, ""},
-		{"routes", ok + `, "routes": [{"match": "default", "via": "gw"}, {"match": "example.com", "via": "gw"}, {"match": "10.0.0.0/8", "via": "gw"}, {"match": "192.0.2.1", "via": "gw"}]`, ""},
-		{"route unmasked", ok + `, "routes": [{"match": "10.1.0.0/8", "via": "gw"}]`, "route 1: invalid match"},
-		{"route uppercase", ok + `, "routes": [{"match": "Example.com", "via": "gw"}]`, "invalid match"},
-		{"route bad via", ok + `, "routes": [{"match": "default", "via": "GW"}]`, "invalid machine"},
-		{"route duplicate", ok + `, "routes": [{"match": "default", "via": "a"}, {"match": "default", "via": "b"}]`, "route 2: duplicate match"},
+		{"subnet", ok + `, "net": {"subnet": "10.99.0.0/16", "since": 1}`, ""},
+		{"bad subnet", ok + `, "net": {"subnet": "8.8.8.0/24", "since": 1}`, "invalid subnet"},
+		{"no subnet", ok + `, "net": {}`, "invalid subnet"},
+		{"proxy is gone", ok + `, "proxy": "127.0.0.1:1"`, "unknown field"},
 		{"unknown field", ok + `, "bogus": 1`, "unknown field"},
-		{"future version", `"version": 4`, "unsupported config version"},
+		{"future version", `"version": 5`, "unsupported config version"},
+		{"old version", `"version": 2`, "too old"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,8 +47,8 @@ func TestParseValidation(t *testing.T) {
 				if notes != nil {
 					t.Errorf("notes = %v for a current file", notes)
 				}
-				if f.Links == nil || f.Maps == nil || f.Routes == nil {
-					t.Errorf("collections not initialized: %+v", f)
+				if f.Links == nil {
+					t.Errorf("links not initialized: %+v", f)
 				}
 				return
 			}
@@ -82,14 +67,14 @@ func TestLoadMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Version != Version || f.Node != nil || len(f.Links)+len(f.Maps)+len(f.Routes) != 0 {
+	if f.Version != Version || f.Node != nil || len(f.Links) != 0 {
 		t.Fatalf("missing file loaded as %+v", f)
 	}
 }
 
 func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"version": 3, "links": {"myhost": {"destination": "secret host"}}}`), 0o600)
+	os.WriteFile(path, []byte(`{"version": 4, "links": {"myhost": {"destination": "secret host"}}}`), 0o600)
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "link myhost") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("Load error = %v", err)
@@ -99,10 +84,8 @@ func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 func TestUpdateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gst", "config.json")
 	err := Update(path, func(f *File) error {
-		f.Proxy = "127.0.0.1:1081"
 		f.Links["myhost"] = &Link{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}
-		f.Maps = append(f.Maps, Map{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"})
-		f.Routes = append(f.Routes, Route{Match: "default", Via: "myhost"})
+		f.Net = &Net{Subnet: "10.99.0.0/16", Since: 7}
 		return nil
 	})
 	if err != nil {
@@ -123,10 +106,9 @@ func TestUpdateRoundTrip(t *testing.T) {
 		t.Fatalf("Update did not ensure a node identity: %+v", f.Node)
 	}
 	want := &File{
-		Version: Version, Node: f.Node, Proxy: "127.0.0.1:1081",
-		Links:  map[string]*Link{"myhost": {Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
-		Maps:   []Map{{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"}},
-		Routes: Routes{{Match: "default", Via: "myhost"}},
+		Version: Version, Node: f.Node,
+		Links: map[string]*Link{"myhost": {Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
+		Net:   &Net{Subnet: "10.99.0.0/16", Since: 7},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("round trip = %+v, want %+v", f, want)
@@ -198,17 +180,13 @@ func TestApply(t *testing.T) {
 }
 
 const legacyConfig = `{
-  "version": 2,
-  "tunnels": {
-    "myhost": {
-      "destination": "myhost",
-      "remote_gst": "/opt/gst",
-      "forwards": [
-        {"direction": "local", "listen": "127.0.0.1:5432", "target": "db.internal:5432"},
-        {"direction": "remote", "listen": "0.0.0.0:2222", "target": "127.0.0.1:22"}
-      ]
-    }
-  }
+  "version": 3,
+  "node": {"id": "` + nodeID + `", "name": "laptop", "exit": true},
+  "proxy": "127.0.0.1:1080",
+  "links": {"myhost": {"destination": "myhost", "remote_gst": "/opt/gst"}},
+  "maps": [{"listen": "127.0.0.1:5432", "machine": "myhost", "target": "db.internal:5432"}],
+  "routes": [{"match": "default", "via": "myhost"}],
+  "net": {}
 }`
 
 func TestUpgrade(t *testing.T) {
@@ -223,16 +201,16 @@ func TestUpgrade(t *testing.T) {
 	}
 
 	current := filepath.Join(dir, "current.json")
-	os.WriteFile(current, []byte(`{"version": 3}`), 0o600)
+	os.WriteFile(current, []byte(`{"version": 4}`), 0o600)
 	if up, notes, err := Upgrade(current); up || notes != nil || err != nil {
 		t.Errorf("current file: %v %v %v", up, notes, err)
 	}
-	if data, _ := os.ReadFile(current); string(data) != `{"version": 3}` {
+	if data, _ := os.ReadFile(current); string(data) != `{"version": 4}` {
 		t.Errorf("Upgrade rewrote a current file: %s", data)
 	}
 
 	invalid := filepath.Join(dir, "invalid.json")
-	os.WriteFile(invalid, []byte(`{"version": 3, "proxy": "bad"}`), 0o600)
+	os.WriteFile(invalid, []byte(`{"version": 3, "links": {"Bad Name": {"destination": "h"}}}`), 0o600)
 	if up, _, err := Upgrade(invalid); up || err == nil {
 		t.Errorf("invalid file: %v %v", up, err)
 	}
@@ -241,30 +219,34 @@ func TestUpgrade(t *testing.T) {
 	os.WriteFile(legacy, []byte(legacyConfig), 0o600)
 	// Load converts without writing.
 	f, err := Load(legacy)
-	if err != nil || len(f.Maps) != 1 {
+	if err != nil || len(f.Links) != 1 {
 		t.Fatalf("Load legacy = %+v, %v", f, err)
 	}
 	if data, _ := os.ReadFile(legacy); string(data) != legacyConfig {
 		t.Fatal("Load wrote the legacy file")
 	}
 	up, notes, err := Upgrade(legacy)
-	if err != nil || !up || !reflect.DeepEqual(notes, []string{"tunnel myhost: -R 0.0.0.0:2222:127.0.0.1:22"}) {
+	want := []string{"proxy 127.0.0.1:1080", "map 127.0.0.1:5432 to db.internal:5432 on myhost", "route default via myhost"}
+	if err != nil || !up || !reflect.DeepEqual(notes, want) {
 		t.Fatalf("Upgrade = %v %v %v", up, notes, err)
 	}
 	f, err = Load(legacy)
-	if err != nil || f.Version != Version || f.Node == nil || f.Links["myhost"].RemoteGst != "/opt/gst" ||
-		!reflect.DeepEqual(f.Maps, []Map{{Listen: "127.0.0.1:5432", Machine: "myhost", Target: "db.internal:5432"}}) {
+	if err != nil || f.Version != Version || f.Node == nil || f.Node.ID != nodeID || f.Links["myhost"].RemoteGst != "/opt/gst" || f.Net != nil {
 		t.Fatalf("upgraded file = %+v, %v", f, err)
 	}
 	if up, notes, err := Upgrade(legacy); up || notes != nil || err != nil {
 		t.Errorf("second Upgrade = %v %v %v", up, notes, err)
 	}
 
-	// A legacy file without forwards to drop still counts as upgraded.
+	// A file with nothing to drop still counts as upgraded, and keeps the
+	// subnet that the user chose.
 	bare := filepath.Join(dir, "bare.json")
-	os.WriteFile(bare, []byte(`{"version": 1, "tunnels": {"myhost": {"destination": "myhost", "forwards": []}}}`), 0o600)
+	os.WriteFile(bare, []byte(`{"version": 3, "links": {}, "net": {"subnet": "10.99.0.0/16", "since": 1}}`), 0o600)
 	if up, notes, err := Upgrade(bare); !up || len(notes) != 0 || err != nil {
 		t.Errorf("bare Upgrade = %v %v %v", up, notes, err)
+	}
+	if f, err := Load(bare); err != nil || f.Net == nil || f.Net.Subnet != "10.99.0.0/16" {
+		t.Errorf("bare file = %+v, %v", f, err)
 	}
 }
 

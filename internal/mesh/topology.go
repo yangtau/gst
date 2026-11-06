@@ -92,17 +92,10 @@ func (n *Node) Changed() <-chan struct{} {
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
-		if !n.usable(l) {
-			continue
-		}
-		e := wire.Edge{Name: l.name, Peer: l.peer.ID}
-		if l.direct && l.opened {
-			e.Direct, e.Local, e.Remote = true, l.local, l.remote
-		}
-		edges = append(edges, e)
+		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
 	}
 	slices.SortFunc(edges, func(a, b wire.Edge) int {
-		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer), boolOrder(a.Direct, b.Direct))
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer))
 	})
 	return edges
 }
@@ -113,12 +106,21 @@ func (n *Node) notify() {
 	n.changed = make(chan struct{})
 }
 
+// prune drops expired records, and keeps the records of the nodes with a
+// UDP path: their packets still flow when the machine between the two
+// sleeps and no new record can arrive. Only this node's copy lasts longer;
+// it goes to no one, as its Seq stays.
 func (n *Node) prune() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	now := time.Now()
 	for id, r := range n.records {
-		if id != n.info.ID && !r.Expires.After(now) {
+		switch {
+		case id == n.info.ID:
+		case n.packetPeer(id).direct.Load() != nil:
+			r.Expires = now.Add(n.ttl)
+			n.records[id] = r
+		case !r.Expires.After(now):
 			delete(n.records, id)
 		}
 	}
@@ -308,29 +310,25 @@ func (n *Node) Topology() wire.Topology {
 		}
 	}
 	recs = append(recs, wire.Record{Node: self, Links: n.edges(), Net: n.net})
-	direct := map[string]bool{}
-	for l := range n.links {
-		direct[l.peer.ID] = direct[l.peer.ID] || l.direct && n.usable(l)
-	}
 	n.mu.Unlock()
 	if self.ID == "" {
 		return wire.Topology{Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
 	}
 	topo := buildTopology(self.ID, recs, time.Now())
 	for i := range topo.Nodes {
-		topo.Nodes[i].Direct = direct[topo.Nodes[i].ID]
+		topo.Nodes[i].Direct = n.packetPeer(topo.Nodes[i].ID).direct.Load() != nil
 	}
 	return topo
 }
 
 // buildTopology joins the live records into nodes and the links between
 // them, and finds the shortest path from self to each node it reaches.
-// Links carry connections both ways.
+// Links carry calls and packets both ways.
 func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology {
 	nodes := map[string]*wire.TopoNode{}
 	for _, r := range recs {
 		if r.Node.ID == self || r.Expires.After(now) {
-			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Exit: r.Node.Exit, Expires: r.Expires, Net: r.Net}
+			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Expires: r.Expires, Net: r.Net}
 		}
 	}
 	// A link counts only while the nodes at both ends list it: the node
@@ -347,7 +345,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 	edges := []wire.TopoEdge{}
 	for _, r := range live {
 		for _, e := range r.Links {
-			if e.Name == "" && !e.Direct || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
+			if e.Name == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
 				// Accepted links show as the opening node's; a link
 				// that the other end no longer lists is gone.
 				continue
@@ -356,7 +354,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 				// Its record has not arrived yet.
 				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}
 			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name, Direct: e.Direct, Local: e.Local, Remote: e.Remote})
+			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name})
 		}
 	}
 	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {

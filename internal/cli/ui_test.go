@@ -185,9 +185,6 @@ func TestUIStateShape(t *testing.T) {
 	e.mustGst("name", "laptop")
 	e.mustGst("add", "web", "myhost")
 	e.mustGst("add", "db")
-	e.mustGst("proxy", "1081")
-	e.mustGst("map", "add", "15432", "devbox:5432")
-	e.mustGst("route", "add", "corp.example.com", "devbox")
 	e.back.topology = meshTopology()
 	c := newUIClient(t, e)
 
@@ -201,7 +198,7 @@ func TestUIStateShape(t *testing.T) {
 			t.Errorf("state lacks %q: %s", key, c.rawState())
 		}
 	}
-	for _, key := range []string{"errors", "daemon", "proxy", "links", "maps", "routes"} {
+	for _, key := range []string{"errors", "daemon", "links"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("state has %q at the top level: %s", key, raw[key])
 		}
@@ -218,15 +215,9 @@ func TestUIStateShape(t *testing.T) {
 		t.Fatal("state has no status")
 	}
 	st := s.Status
-	if st.Proxy != (wire.Listener{Listen: "127.0.0.1:1081"}) {
-		t.Fatalf("proxy %+v", st.Proxy)
-	}
 	if len(st.Links) != 2 || st.Links[0].Name != "db" || st.Links[0].State != wire.StateRunning ||
 		st.Links[1].Name != "web" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "web" {
 		t.Fatalf("links %+v", st.Links)
-	}
-	if len(st.Maps) != 1 || st.Maps[0].Listen != "127.0.0.1:15432" || st.Maps[0].Machine != "devbox" || st.Maps[0].Target != "localhost:5432" || st.Maps[0].Error != "" {
-		t.Fatalf("maps %+v", st.Maps)
 	}
 	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Edges) != 3 {
 		t.Fatalf("topology %+v", s.Topology)
@@ -234,17 +225,9 @@ func TestUIStateShape(t *testing.T) {
 
 	// The state follows the configuration and the daemon at each request.
 	e.back.linkStates["web"] = wire.LinkState{Name: "web", State: wire.StateDown, Error: "SSH connection closed"}
-	e.back.listenErrors["127.0.0.1:15432"] = "address already in use"
-	e.mustGst("exit", "on")
 	s = c.state()
 	if web := s.Status.Links[1]; web.State != wire.StateDown || web.Error != "SSH connection closed" || web.Peer != nil {
 		t.Fatalf("web %+v", web)
-	}
-	if m := s.Status.Maps[0]; m.Error != "address already in use" {
-		t.Fatalf("map %+v", m)
-	}
-	if !s.Node.Exit || !s.Status.Node.Exit {
-		t.Fatalf("node %+v, status node %+v", s.Node, s.Status.Node)
 	}
 }
 

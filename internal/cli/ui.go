@@ -32,9 +32,8 @@ func (a *app) uiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ui",
 		Short: "Show the mesh in a browser",
-		Long: `Show the mesh as this machine knows it, and the links, proxy, maps, and
-routes of any machine in it, in a web page that keeps itself up to date.
-gst ui serves the page on 127.0.0.1 until interrupted, prints its
+		Long: `Show the mesh as this machine knows it, and the address and links of any
+machine in it, in a web page that keeps itself up to date. gst ui serves the page on 127.0.0.1 until interrupted, prints its
 address, and opens it in a browser. The address ends with a secret that
 the page needs; anyone with the address can see the page while gst ui
 runs.`,

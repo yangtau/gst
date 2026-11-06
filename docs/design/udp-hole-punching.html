@@ -196,7 +196,7 @@ button:disabled { opacity: .4; cursor: default; }
       <li><strong>发</strong>：你指定目的地址，内核填上源地址（就是你登记的那个）发出去。</li>
     </ul>
     <p>所以两边对称：<strong>同一个 socket 既是“服务端”也是“客户端”。</strong>这一点是打洞的前提。向外发包用的端口，就是将来收包的端口，防火墙记下的正是这个端口。如果换一个 socket 发，源端口变了，之前开出来的洞也就对不上了。</p>
-    <p>“连接”这个词在 UDP 上只有一个含义：两边碰巧都在向对方的 <code>IP:端口</code> 发包。QUIC 在这种裸包之上自己做握手、重传、加密，所以 gst 的“直连”是 QUIC 连接，底层仍然只是 UDP 包。</p>
+    <p>“连接”这个词在 UDP 上只有一个含义：两边碰巧都在向对方的 <code>IP:端口</code> 发包。gst 的“直连”就是这样：两边都向对方的 <code>IP:端口</code> 发 WireGuard 的包，握手和加密由 WireGuard 在这些裸包里完成，丢了就丢了，重传交给里面的 TCP。</p>
     <pre><span class="c">// gst：绑定具体地址，端口 0 表示让内核随便分一个</span>
 udp, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))</pre>
   </div>
@@ -218,7 +218,7 @@ udp, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr
 <span class="k">else</span>:
     <span class="d">丢弃</span>           <span class="c"># 通常不告诉发送方</span></pre>
     <p>注意判断回包的依据：<strong>只比较地址和端口。</strong>TCP 还有 SYN、ACK 这些标志位，防火墙可以看出谁先发起。UDP 包头里什么都没有，防火墙看不出一个包是“回复”还是“另一方主动发的”，只要四个字段对得上就放行。打洞利用的就是这一点。</p>
-    <p>UDP 也没有结束标志，所以表项只能靠超时删除。Linux 默认大约 30 秒，有来有回之后大约 2 分钟；家用路由器和运营商设备从几十秒到几分钟都有。这就是 gst 每 5 秒发一次 keepalive 的原因：一旦表项过期，后面的包就会被当成陌生来客丢掉。</p>
+    <p>UDP 也没有结束标志，所以表项只能靠超时删除。Linux 默认大约 30 秒，有来有回之后大约 2 分钟；家用路由器和运营商设备从几十秒到几分钟都有。这就是 gst 每秒发一次心跳的原因：一旦表项过期，后面的包就会被当成陌生来客丢掉。</p>
   </div>
 </section>
 
@@ -278,10 +278,10 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     <ol>
       <li><strong>第一个包常常被丢，但它没有白发。</strong>A 的第一个探测被 B 的防火墙丢掉，但它在 A 自己的防火墙上留下了记录，这才是它的作用。</li>
       <li><strong>“同时”不需要精确。</strong>只要 B 的包到达时 A 的表项还没过期就行。gst 每 200 毫秒发一轮，持续最多 15 秒，所以两边的启动时间差几秒也没关系。</li>
-      <li><strong>全程必须是同一个 socket。</strong>表项记的是具体端口。探测用 5000，QUIC 换成 5001，就是另一个表项，洞对不上。</li>
+      <li><strong>全程必须是同一个 socket。</strong>表项记的是具体端口。探测用 5000，WireGuard 换成 5001，就是另一个表项，洞对不上。</li>
     </ol>
     <h3>为什么 TCP 打洞难得多</h3>
-    <p>TCP 有握手，防火墙看得懂 SYN。两边要同时发 SYN（TCP 的 simultaneous open），时序要求严格，还要让监听和连接共用一个端口，很多防火墙和 NAT 处理得也不好。UDP 什么状态都没有，反而容易。这也是 QUIC 跑在 UDP 上对打洞很有利的原因。</p>
+    <p>TCP 有握手，防火墙看得懂 SYN。两边要同时发 SYN（TCP 的 simultaneous open），时序要求严格，还要让监听和连接共用一个端口，很多防火墙和 NAT 处理得也不好。UDP 什么状态都没有，反而容易。这也是 WireGuard 跑在 UDP 上对打洞很有利的原因。</p>
   </div>
 </section>
 
@@ -301,17 +301,15 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
   </div>
   <div class="col">
     <p>STUN 没有什么魔法。它就是公网上一台会把源地址念给你听的机器，协议的核心只有这一件事。gst 里第二种情况相当于让对端节点兼任 STUN，而且不用把地址告诉你，直接回包就行。这就是下面这段代码：</p>
-    <pre><span class="c">// internal/direct/direct.go，read()：source 就是对方在公网上的真实地址</span>
-source := udp.AddrPort()
-<span class="k">switch</span> buf[0] {
+    <pre><span class="c">// internal/direct/direct.go，receive()：source 就是对方在公网上的真实地址</span>
+<span class="k">switch</span> packet[0] {
 <span class="k">case</span> kindProbe:
-    s.transport.WriteTo(a.packet(kindAnswer), from) <span class="c">// 原路回复</span>
-    a.targets[source] = true                        <span class="c">// 学到一个新目标</span>
+    s.send(kindAnswer, a.token, source) <span class="c">// 原路回复</span>
+    a.targets[source] = true            <span class="c">// 学到一个新目标</span>
 <span class="k">case</span> kindAnswer:
-    p := path{s, source}                            <span class="c">// 这条路径被证明可用</span>
-    proved &lt;- p
+    proved &lt;- path{s, source}           <span class="c">// 这条路径被证明可用</span>
 }</pre>
-    <p>为了不让无关的包混进来，探测里带 16 字节的 token。token 事先经 SSH 交换，只有 token 正确的包，来源才会被当成对端。探测包本身是明文，所以 token 只用来找路径，确认身份靠之后 QUIC 握手里的证书指纹。在 <button class="jump" data-sc="1" type="button">场景二</button> 里可以看到这个过程。</p>
+    <p>为了不让无关的包混进来，探测里带 16 字节的 token。token 事先经 SSH 交换，只有 token 正确的包，来源才会被当成对端。探测包本身是明文，所以 token 只用来找路径，确认身份靠之后 WireGuard 的握手。在 <button class="jump" data-sc="1" type="button">场景二</button> 里可以看到这个过程。</p>
     <p>这个方法的边界也很清楚：<strong>学习地址的前提是对方的包能到你这里。</strong>如果两边都在 NAT 后面，谁的包也到不了谁，就谁都学不到，看 <button class="jump" data-sc="2" type="button">场景三</button>。解法是找一个两边都能到的第三方，就是 <button class="jump" data-sc="3" type="button">场景四</button> 的 STUN。</p>
   </div>
 </section>
@@ -384,7 +382,7 @@ source := udp.AddrPort()
     <figcaption>第一轮 A→B 是 1×1 + 2×1 = 3 条路径，B→A 也是 3 条，学到新地址后再增加。每个探测 17 字节，每 200 毫秒一轮，开销可以忽略。</figcaption>
   </figure>
   <div class="col">
-    <p>所有路径是并行试的，谁的 answer 先回来，发起方就先在这条路径上发起 QUIC。成功后其余路径和 socket 全部放弃。所以 gst 选的是最先被证明可用的路径，通常延迟也比较低，但不保证最优。</p>
+    <p>所有路径是并行试的，谁的 answer 先回来，发起方就先选这条路径，发 use，对方回 used。成功后其余路径和 socket 全部放弃。所以 gst 选的是最先被证明可用的路径，通常延迟也比较低，但不保证最优。</p>
 
     <h3>从触发到连上</h3>
   </div>
@@ -392,20 +390,20 @@ source := udp.AddrPort()
     <table>
       <tr><th>步骤</th><th>代码</th><th>对应的原理</th></tr>
       <tr><td>每个本机 IP 开一个 UDP socket，端口随机</td><td><code>direct.New</code></td><td>第 2 节：绑定后这个 socket 收发同一个地址</td></tr>
-      <tr><td>经 SSH 交换地址、token、证书指纹</td><td><code>connectDirect</code>、<code>serveOffer</code></td><td>代替公共信令服务器</td></tr>
+      <tr><td>经 SSH 交换地址和 token</td><td><code>connectDirect</code>、<code>serveOffer</code></td><td>代替公共信令服务器</td></tr>
       <tr><td>每 200 毫秒向所有目标发探测</td><td><code>sendProbes</code></td><td>第 5 节：留下状态表记录，不必精确同时</td></tr>
       <tr><td>收到探测：回 answer，来源加入目标</td><td><code>read</code></td><td>第 6 节：从包头学到真实地址</td></tr>
       <tr><td>收到 answer：这条路径来回都通</td><td><code>read</code></td><td>一来一回都到，说明两边的洞都开了</td></tr>
-      <tr><td>在同一个 socket 上发起 QUIC</td><td><code>p.socket.transport.Dial</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
-      <tr><td>每 5 秒 keepalive，20 秒没收到算断开</td><td><code>quicConfig</code></td><td>第 3 节：表项靠超时删除</td></tr>
+      <tr><td>在同一个 socket 上选定路径，WireGuard 的包走它</td><td><code>use</code>、<code>keep</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
+      <tr><td>每秒发心跳，3 秒没收到算断开，包回到 SSH</td><td><code>beat</code></td><td>第 3 节：表项靠超时删除</td></tr>
     </table>
   </div>
   <div class="col">
     <h3>为什么要绑定具体 IP</h3>
     <p>绑定 <code>*</code> 时，回包的源地址由内核选，放到状态表里看就很具体。B 发探测到 homelab 的地址 X，B 那边的防火墙记下“允许来自 X 的回包”。如果 homelab 用 <code>*</code> socket 回复，内核可能选另一个地址 Y 作为源地址。这个包到了 B 的防火墙，<strong>表里只有 X，没有 Y，于是被丢掉。</strong>第 1 节说过回包必须是四个字段对调，这里就是源地址没有对调回去。这种情况在有多个 IPv6 地址的机器上很常见，所以 gst 绑定具体地址。</p>
 
-    <h3>为什么探测包不直接用 QUIC</h3>
-    <p>QUIC 握手有状态、有重试和超时，第一批包被丢很常见。用 17 字节的探测先把路径试出来，再握手，又快又便宜。探测的第一字节是 <code>0x01</code> 或 <code>0x02</code>，高两位是 0，而 QUIC 包不是这样，所以 quic-go 能把它们分开，同一个 socket 上探测和 QUIC 可以共存，这也是“全程同一个端口”能做到的原因。</p>
+    <h3>为什么探测包不直接用 WireGuard</h3>
+    <p>WireGuard 的握手有状态、有重试和超时，而且要先知道把包发到哪里，打洞时这正是不知道的。用 17 字节的探测先把路径试出来，再让 WireGuard 的包走它，又快又便宜。探测的第一字节从 <code>0x11</code> 起，WireGuard 的包是 1 到 4，所以同一个 socket 上两者可以共存，这也是“全程同一个端口”能做到的原因。</p>
   </div>
 </section>
 
@@ -438,122 +436,34 @@ source := udp.AddrPort()
   <span class="no">10 / 加密</span>
   <h2>直连怎么加密，靠什么保证安全</h2>
   <div class="col">
-    <p>打洞只解决了包能到达的问题，UDP 本身没有任何保护。路上的任何设备都能读、能改、能伪造。安全要回答三个问题：<strong>对面是谁</strong>（认证）、<strong>别人能不能看</strong>（保密）、<strong>别人能不能改</strong>（完整性）。gst 把后两个交给 QUIC 内置的 TLS 1.3，第一个靠 SSH 传来的证书指纹。</p>
+    <p>打洞只解决了包能到达的问题，UDP 本身没有任何保护。路上的任何设备都能读、能改、能伪造。安全要回答三个问题：<strong>对面是谁</strong>（认证）、<strong>别人能不能看</strong>（保密）、<strong>别人能不能改</strong>（完整性）。gst 的回答只有一个：WireGuard。UDP 路径自己不加密，它只运送 WireGuard 的包。</p>
 
-    <h3>第一步：信任从 SSH 来</h3>
-    <p>加密的前提是认证。如果不知道对面是谁，你可能在和攻击者安全地通信。互联网上靠 CA 解决这个问题，gst 不需要 CA，因为两台机器已经有一条可信通道，就是 SSH mesh。</p>
-    <p>每次尝试，两边各生成一张新的 ed25519 自签名证书。私钥只在内存里，从不离开本机，也不写磁盘。公开的部分是证书的 SHA-256 指纹，放进 <code>direct.offer</code>，经 SSH 发给对方。于是双方在发出第一个 UDP 包之前，已经知道对方应该出示哪张证书。</p>
-    <p>这和你第一次 SSH 登录时确认主机指纹是同一个思路，只是这里的指纹由已经认证过的通道送达，不需要人工确认。</p>
+    <h3>信任从 SSH 来</h3>
+    <p>每台机器有一对 WireGuard 密钥，私钥只在本机的 <code>net.json</code> 里（权限 <code>0600</code>）。公钥放进 link-state 记录，经 SSH link 传遍 mesh。所以在发出第一个 UDP 包之前，双方已经知道对方的公钥。能把公钥放进这份记录的，只有已经用 SSH 登录进 mesh 的机器。</p>
 
-    <h3>第二步：TLS 1.3 握手</h3>
-  </div>
-  <figure class="col">
-    <svg viewBox="0 0 680 440" role="img" aria-label="TLS 1.3 握手：先用临时公钥协商共享密钥，之后证书和签名都在加密状态下交换，双方校验指纹和签名后开始传数据" style="width:100%;height:auto;color:var(--fg)">
-      <defs>
-        <marker id="tp" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--nat)"/></marker>
-        <marker id="te" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--ok)"/></marker>
-      </defs>
-      <text x="90" y="24" text-anchor="middle" class="s-title">发起方（QUIC 客户端）</text>
-      <text x="590" y="24" text-anchor="middle" class="s-title">接受方（QUIC 服务端）</text>
-      <path d="M90 36V426M590 36V426" class="s-line"/>
-      <text x="340" y="62" text-anchor="middle" font-size="12">ClientHello：临时公钥、ALPN gst-direct</text>
-      <path d="M90 72H588" style="stroke:var(--nat);stroke-width:2.5;fill:none" marker-end="url(#tp)"/>
-      <text x="340" y="110" text-anchor="middle" font-size="12">ServerHello：临时公钥</text>
-      <path d="M590 120H92" style="stroke:var(--nat);stroke-width:2.5;fill:none" marker-end="url(#tp)"/>
-      <text x="340" y="156" text-anchor="middle" class="s-sub">两边各自算出同一个共享秘密，它从未在网络上出现；由它派生握手密钥</text>
-      <text x="340" y="194" text-anchor="middle" font-size="12">证书 + 对握手记录的签名 + Finished，并要求对方也出示证书</text>
-      <path d="M590 204H92" class="f-v6" marker-end="url(#te)"/>
-      <text x="340" y="238" text-anchor="middle" class="s-sub">发起方校验：证书指纹等于 SSH 传来的指纹，签名正确</text>
-      <text x="340" y="276" text-anchor="middle" font-size="12">证书 + 对握手记录的签名 + Finished</text>
-      <path d="M90 286H588" class="f-v6" marker-end="url(#te)"/>
-      <text x="340" y="320" text-anchor="middle" class="s-sub">接受方校验：同样比对指纹和签名</text>
-      <text x="340" y="358" text-anchor="middle" font-size="12">之后的所有数据：1-RTT 密钥加密</text>
-      <path d="M92 368H588" class="f-v6" marker-start="url(#te)" marker-end="url(#te)" style="stroke-width:4"/>
-      <text x="340" y="404" text-anchor="middle" class="s-sub">橙色：路上的设备可以解开。绿色：只有两端能解开</text>
-    </svg>
-    <figcaption>证书在绿色阶段才发送，所以路上的人看不到。橙色消息里只有临时公钥这类公开信息。</figcaption>
-  </figure>
-  <div class="col">
-    <p>这里有两个独立的机制，分工不同：</p>
-    <ul>
-      <li><strong>密钥交换负责保密。</strong>两边各生成一对临时密钥，只交换公钥，再各自算出同一个共享秘密。路上的人看到全部公钥，也算不出这个秘密。Go 默认优先用 <code>X25519MLKEM768</code>，把 X25519 和抗量子的 ML-KEM 混合使用，gst 没有改这个默认值。</li>
-      <li><strong>证书签名负责认证。</strong>光有密钥交换，中间人可以和两边各做一次交换。所以每一方还要用证书私钥，对整段握手记录的哈希签名（<code>CertificateVerify</code>）。这个签名绑定了本次握手的临时公钥，抄来的旧签名用不了。</li>
-    </ul>
-    <p>指纹校验在 <code>tlsConfig</code> 里。代码写着 <code>InsecureSkipVerify: true</code>，它只跳过 CA 证书链校验，因为这里根本没有 CA。真正的判断由 <code>VerifyPeerCertificate</code> 完成，比 CA 更严格：全世界只接受这一张证书。<code>ClientAuth: RequireAnyClientCert</code> 让发起方也必须出示证书，所以是双向认证。证书的有效期不参与校验，只看指纹。</p>
-    <pre><span class="c">// internal/direct/direct.go，tlsConfig()</span>
-MinVersion:             tls.VersionTLS13,
-SessionTicketsDisabled: true,                  <span class="c">// 没有会话恢复，也就没有 0-RTT</span>
-ClientAuth:             tls.RequireAnyClientCert,
-InsecureSkipVerify:     true,                  <span class="c">// 下面这个函数代替 CA 校验</span>
-VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Certificate) error {
-    <span class="k">if</span> len(raw) == 0 || subtle.ConstantTimeCompare([]byte(fingerprint(raw[0])), []byte(want)) != 1 {
-        <span class="k">return</span> errors.New("unexpected certificate")
-    }
-    <span class="k">return</span> nil
-},</pre>
+    <h3>加密在端到端</h3>
+    <p>WireGuard 用 Noise 协议握手：双方的长期密钥和临时密钥一起算出会话密钥，拿不出私钥就完不成握手。之后每个包用 ChaCha20-Poly1305 加密并认证，改动一个比特都会校验失败，包被直接丢弃；计数器防重放。会话密钥每两分钟左右换一次，所以录下流量、以后偷到私钥，也解不开过去的包。</p>
+    <p>WireGuard 的 endpoint 在 gst 里是 node id，不是地址。包走 UDP 还是 SSH，它都不知道，也不关心，所以切换路径不用重新握手，经 SSH 中转的机器看到的也只是密文。</p>
 
-    <h3>第三步：每个包怎么加密</h3>
-    <p>握手之后，TLS 把密钥交给 QUIC，由 QUIC 逐包加密。这和 TCP 上的 TLS 不同，TLS 不再处理字节流，只负责产生密钥。</p>
-  </div>
-  <figure class="col">
-    <div class="hdr" role="img" aria-label="一个 QUIC 包：IP 和 UDP 头是明文，连接 ID 可见，包号被头部保护遮盖，载荷被 AEAD 加密">
-      <div class="w4 lay">IP + UDP 头：明文，否则路由器和 NAT 没法工作</div>
-      <div class="w2">地址、端口、长度</div><div class="w2">所有设备都看得到</div>
-      <div class="w4 lay">QUIC 短包头</div>
-      <div class="w2">目的连接 ID：可见</div><div class="w2 hot">包号：被头部保护遮盖</div>
-      <div class="w4 lay">载荷：AEAD 加密，只有两端能解</div>
-      <div class="w4 hot">流编号、业务数据、ACK、关闭信号 + 16 字节认证标签</div>
-    </div>
-    <figcaption>握手后的数据包。外面只能看到地址、端口、长度和连接 ID，看不到里面跑了几个 TCP 连接。</figcaption>
-  </figure>
-  <div class="col">
-    <ul>
-      <li><strong>AEAD</strong>：算法由 TLS 协商，AES-GCM 或 ChaCha20-Poly1305。它一次完成加密和防篡改，每个包带 16 字节认证标签，改动一个比特都会校验失败，包被直接丢弃。</li>
-      <li><strong>Nonce</strong>：由密钥派生的 IV 和包号异或得到。包号不重复，所以 nonce 不重复，这是 AEAD 安全的前提。</li>
-      <li><strong>包头也被认证</strong>：包头作为附加数据参与校验，所以连接 ID 这些可见字段也改不了。</li>
-      <li><strong>防重放</strong>：同一个包号收到第二次会被丢弃。</li>
-      <li><strong>头部保护</strong>：再用一层掩码盖住包号，外面无法靠包号把流量串起来。</li>
-    </ul>
-    <p>QUIC 一共有三级密钥。Initial 密钥由包里的连接 ID 算出，算法公开，只防误伤，不算保密，所以防火墙能读到 ClientHello。Handshake 密钥来自密钥交换，保护证书。1-RTT 密钥保护之后的全部数据。</p>
-
-    <h3>前向保密</h3>
-    <p>有人录下全部流量，以后再偷到机器，能解开吗？不能。解密需要的临时密钥在握手后就丢了，证书也是一次性的，磁盘上没有任何长期密钥。gst 还关掉了会话票据，没有能恢复旧会话的材料。</p>
-
-    <h3>和 SSH 路径比较</h3>
-  </div>
-  <div class="tw col">
-    <table>
-      <tr><th></th><th>经 SSH 中转</th><th>直连</th></tr>
-      <tr><td>加密范围</td><td>逐跳：每段 SSH 单独加密</td><td>端到端：两端之间只有一层</td></tr>
-      <tr><td>中转的 gst 能否看到明文</td><td>能</td><td>没有中转，看不到</td></tr>
-      <tr><td>身份依据</td><td>SSH 密钥和 known_hosts</td><td>经 SSH 送达的一次性证书指纹</td></tr>
-      <tr><td>长期密钥</td><td>有，在 <code>~/.ssh</code></td><td>没有</td></tr>
-    </table>
-  </div>
-  <div class="col">
     <h3>各种攻击分别怎么挡</h3>
   </div>
   <div class="tw col">
     <table>
       <tr><th>攻击</th><th>结果</th><th>靠什么</th></tr>
-      <tr><td>路上窃听</td><td>只看到密文和元数据</td><td>TLS 1.3 密钥交换和 AEAD</td></tr>
-      <tr><td>篡改、注入、重放</td><td>包被丢弃</td><td>AEAD 认证标签，包号去重</td></tr>
-      <tr><td>中间人冒充任一端</td><td>握手失败</td><td>他没有私钥，签不出匹配指纹的证书</td></tr>
-      <tr><td>陌生人直接连 UDP 端口</td><td>连不上</td><td>端口随机且只在尝试时存在，接受方只认 offer 里的指纹</td></tr>
-      <tr><td>伪造探测包</td><td>最多干扰这次尝试</td><td>探测只找路径，身份在 QUIC 握手时确认</td></tr>
-      <tr><td>录下流量，以后偷私钥</td><td>解不开</td><td>前向保密，证书一次性</td></tr>
-      <tr><td>阻断 UDP</td><td>直连断开，新连接走 SSH</td><td>SSH 兜底</td></tr>
+      <tr><td>路上窃听</td><td>只看到密文和元数据</td><td>WireGuard 的 AEAD</td></tr>
+      <tr><td>中间人冒充任一端</td><td>握手失败</td><td>他没有和记录里的公钥配对的私钥</td></tr>
+      <tr><td>伪造探测包</td><td>最多干扰这次尝试</td><td>探测只找路径，身份在 WireGuard 握手时确认</td></tr>
+      <tr><td>伪造心跳让路径多活一会</td><td>做不到，来源地址和 token 都要对；就算做到，包也解不开</td><td>路径只接受确认过的地址，WireGuard 校验每个包</td></tr>
+      <tr><td>录下流量，以后偷私钥</td><td>解不开</td><td>临时密钥带来的前向保密</td></tr>
     </table>
   </div>
   <div class="col">
     <h3>挡不住什么</h3>
     <ul>
-      <li><strong>mesh 里的机器被攻破。</strong>信任根是 SSH，所以 mesh 成员都是可信的。offer 经过的中转 gst 能看到明文，理论上能替换指纹。这和它本来就能看到中转业务数据的风险相同，直连没有让它变差。</li>
-      <li><strong>元数据。</strong>路上的人知道这两个地址在通信、什么时候、流量多大，也能认出 QUIC 和 <code>gst-direct</code>。gst 不做流量伪装。</li>
-      <li><strong>拒绝服务。</strong>能阻断 UDP 的人总能让直连失败。</li>
-      <li><strong>已移除但没收到通知的节点。</strong>link 已断时执行 <code>gst remove</code>，对方收不到 <code>link.remove</code>，现有直连会继续运行，直到它自己断开。这段时间对方仍然能走这条直连。</li>
+      <li><strong>元数据。</strong>路上的人知道这两个地址在通信、什么时候、流量多大，也能认出 WireGuard。gst 不做流量伪装。</li>
+      <li><strong>拒绝服务。</strong>能阻断 UDP 的人总能让直连失败，包回到 SSH。</li>
+      <li><strong>已移除但没收到通知的节点。</strong>link 已断时执行 <code>gst remove</code>，对方收不到 <code>link.remove</code>，现有 UDP 路径会继续运行，直到它自己断开。这段时间对方仍然能走这条路径。</li>
     </ul>
-    <p>到达目标时的权限也和 SSH 路径一样：直连只是换了一段传输，<code>relay.open</code> 的 exit 检查仍然在最后一跳执行。</p>
   </div>
 </section>
 
@@ -575,7 +485,7 @@ VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Cer
       nodes: { A: a6, B: b6 },
       steps: [
         { t: '经 SSH 交换 offer', d: '发包之前，两边先经 SSH mesh 互换地址和 token。两台防火墙的状态表都是空的。此时谁主动发包，都会被对方的防火墙丢掉。',
-          ssh: 'direct.offer：互换地址、token、指纹', ta: [b6], tb: [a6], fa: [], fb: [] },
+          ssh: 'direct.offer：互换地址、token', ta: [b6], tb: [a6], fa: [], fb: [] },
         { t: 'A 发探测：出得去，进不来', d: '包经过 A 的防火墙，留下一条记录。到了 B 的防火墙，表里没有匹配项，被丢掉。这个包没有到达 B，但它已经完成了任务：A 这边的洞开了。',
           path: [H('A', a6, b6, 'A 发出'), H('FA', a6, b6, '出站：写入状态表，放行'), H('FB', a6, b6, '入站：表里没有，丢弃')], drop: '表里没有，丢弃',
           fa: [[a6, b6]] },
@@ -584,8 +494,8 @@ VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Cer
           fb: [[b6, a6]] },
         { t: 'A 回 answer：现在 B 的防火墙也放行了', d: 'A 收到探测后立刻回 answer。这次 B 的防火墙已经有记录，放行。两个方向都打通了。',
           path: [H('A', a6, b6, 'A 回 answer'), H('FA', a6, b6, '出站：刷新记录'), H('FB', a6, b6, '入站：匹配记录，放行'), H('B', a6, b6, 'B 收到，路径被证明')] },
-        { t: '在这条路径上跑 QUIC', d: '发起方用同一个 socket 发起 QUIC 握手，四个地址字段完全不变，所以直接匹配已有记录。之后 keepalive 每 5 秒刷新一次，表项不会过期。',
-          path: [H('A', a6, b6, 'QUIC Initial，同一个 socket'), H('FA', a6, b6, '匹配记录'), H('FB', a6, b6, '匹配记录'), H('B', a6, b6, 'TLS 1.3 握手，校验指纹')] }
+        { t: '在这条路径上跑 WireGuard', d: '发起方选定这条路径，之后 WireGuard 的包走同一个 socket，四个地址字段完全不变，所以直接匹配已有记录。之后心跳每秒刷新一次，表项不会过期。',
+          path: [H('A', a6, b6, 'WireGuard 握手，同一个 socket'), H('FA', a6, b6, '匹配记录'), H('FB', a6, b6, '匹配记录'), H('B', a6, b6, '用记录里的公钥校验')] }
       ] },
     { name: '二 · 一端 NAT，一端可达', kinds: ['nat', 'none'], stun: false,
       intro: 'A 在 NAT 后，B 能被直接打到。这是下面第 9 节里 laptop、devbox 连 homelab 的形状。图里用 IPv4 示例，IPv6 带地址转换时原理相同。这里没有 STUN，靠 B 从来包学到地址。',
@@ -600,8 +510,8 @@ VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Cer
           fa: [[aP, aN, bPub]], tb: [aP, aN] },
         { t: 'B 从来包学到真实地址，原路回复', d: '探测里的 token 正确，所以 B 把来源 203.0.113.7:40001 加入目标，并回 answer。这个包到达 NAT，映射存在，目的地址被改回 10.0.0.2:5000，A 收到。',
           path: [H('B', bPub, aN, 'B 回 answer'), H('FA', bPub, aP, 'NAT 查映射，改写目的地址'), H('A', bPub, aP, 'A 收到，路径被证明')] },
-        { t: 'A 在同一个 socket 上发起 QUIC', d: '源端口还是 5000，NAT 继续用 40001 这条映射，所以 B 看到的来源不变。keepalive 让映射不过期。这里全程不需要 STUN，B 自己就充当了告诉你地址的角色。',
-          path: [H('A', aP, bPub, 'QUIC Initial，同一个 socket'), H('FA', aN, bPub, '同一条映射'), H('B', aN, bPub, 'TLS 1.3 握手，校验指纹')] }
+        { t: 'A 在同一个 socket 上跑 WireGuard', d: '源端口还是 5000，NAT 继续用 40001 这条映射，所以 B 看到的来源不变。心跳让映射不过期。这里全程不需要 STUN，B 自己就充当了告诉你地址的角色。',
+          path: [H('A', aP, bPub, 'WireGuard 握手，同一个 socket'), H('FA', aN, bPub, '同一条映射'), H('B', aN, bPub, '用记录里的公钥校验')] }
       ] },
     { name: '三 · 两边 NAT，没有 STUN', kinds: ['nat', 'nat'], stun: false,
       intro: '这是 gst 打不通的情况。两边都只知道自己的私网地址，谁的包都到不了对方，所以谁也学不到地址。',
@@ -638,7 +548,7 @@ VerifyPeerCertificate: <span class="k">func</span>(raw [][]byte, _ [][]*x509.Cer
         { t: 'B 向 A 的公网地址发包：穿过去了', d: 'B 的包到达 A 的 NAT，来源是 B，A 的 NAT 刚才记下了允许 B，放行并改写目的地址。',
           path: [H('B', bP, aN, 'B 发出'), H('FB', bN, aN, '映射不变，增加允许的对端'), H('FA', bN, aP, '匹配，改写目的地址'), H('A', bN, aP, 'A 收到')],
           fb: [[bP, bN, 'STUN, A']] },
-        { t: 'A 回复：两个方向都通了', d: '现在 B 的 NAT 也允许 A。之后的 QUIC 和场景一相同。STUN 退场，不再参与。',
+        { t: 'A 回复：两个方向都通了', d: '现在 B 的 NAT 也允许 A。之后的 WireGuard 和场景一相同。STUN 退场，不再参与。',
           path: [H('A', aP, bN, 'A 回 answer'), H('FA', aN, bN, '匹配映射'), H('FB', aN, bP, '匹配，改写目的地址'), H('B', aN, bP, 'B 收到')] }
       ] },
     { name: '五 · 对称 NAT', kinds: ['nat', 'nat'], stun: true,

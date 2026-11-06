@@ -1,6 +1,6 @@
 # AGENTS.md
 
-gst links a user's machines into a mesh over SSH: one background daemon per user and machine, installed as a user service (systemd on Linux, launchd on macOS), links to other machines' daemons and relays TCP and Unix socket connections between them, directly over UDP when the network allows. `README.md` (English) and `README.zh-CN.md` (Simplified Chinese) are the user guide; keep them about using gst, keep the two in sync, and update both whenever CLI behavior changes. Development notes belong here.
+gst links a user's machines into a private network over SSH: one background daemon per user and machine, installed as a user service (systemd on Linux, launchd on macOS), links to other machines' daemons over SSH, and carries WireGuard between them, directly over UDP when the network allows and through the SSH links otherwise. `README.md` (English) and `README.zh-CN.md` (Simplified Chinese) are the user guide; keep them about using gst, keep the two in sync, and update both whenever CLI behavior changes. Development notes belong here.
 
 架构合理、设计合理、使用简单是我的最高优先级，为此当前已经有的任何功能、设计都可以更改、兼容性也无需保持。
 
@@ -17,16 +17,15 @@ gst links a user's machines into a mesh over SSH: one background daemon per user
 
 - `cmd/gst`: entry point.
 - `internal/cli`: cobra commands, output, and the error/hint contract; `gst ui` and its embedded page (`internal/cli/ui`).
-- `internal/config`: config file (locked, atomic writes; links, maps, routes, the proxy, this node), address parsing, and the conversion of version 2 files (`legacy.go`).
+- `internal/config`: config file (locked, atomic writes; links, the network's subnet, this node) and the conversion of version 3 files (`legacy.go`).
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/sshconn`: SSH connections with keepalive, remote commands, and `Check`, the offline preflight behind `gst add`.
-- `internal/daemon`: the daemon, which supervises the links, serves the proxy and the maps, and answers the control socket, and its client.
-- `internal/mesh`: the node: links (`gst peer-bridge` plus yamux, or `internal/direct`, behind `session`), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, and relayed connections (`relay.open`) along source routes, with the exit check at the last hop.
-- `internal/direct`: direct links: one try at a UDP path between two daemons (probes, QUIC, pinned certificates) and the connection it yields, which also carries raw packets (`demux`). Signaling is `mesh`'s.
-- `internal/vnet`: the virtual network, in the daemon: wireguard-go over the mesh (`bind`), the choice of subnet and addresses, and DNS for `.gst`. `mesh` carries its packets (`packets.go`).
+- `internal/daemon`: the daemon, which supervises the links, runs the virtual network, and answers the control socket, and its client.
+- `internal/mesh`: the node: links (`gst peer-bridge` plus yamux, behind `session`), the link-state records they flood (`topology.sync`) into each node's view of the whole mesh, calls to any node along source routes (`relay.open`), and the two ways of packets: a UDP path, or a stream along the links (`packets.go`). Signaling for UDP paths is here (`direct.go`).
+- `internal/direct`: UDP paths: one try at a path between two daemons (probes on each local address, then use and used) and the `Conn` it yields, which carries raw packets and beats. No encryption: that is WireGuard's. Signaling is `mesh`'s.
+- `internal/vnet`: the virtual network, in the daemon, and the only data path: wireguard-go over the mesh (`bind`), the choice of subnet and addresses, and DNS for `.gst`. `mesh` carries its packets (`packets.go`).
 - `internal/tun`: the root helper that creates the interface and sets addresses, routes, and name resolution, and the daemon's client of it. Commands that take root stay here; `internal/service` installs it.
-- `internal/proxy`: the SOCKS5 and HTTP proxy.
-- `internal/relay`: copies bytes between two connections.
+- `internal/relay`: copies bytes between two connections, for `relay.open`.
 - `internal/wire`: the gst protocol (frames, handshake, calls, and `Server`, which dispatches calls to registered methods) used by the control socket and links.
 - `internal/logfile`: rotating log files.
 - `internal/service`: installs the daemon as a systemd or launchd service, and the helper of the virtual network as a system one.
@@ -36,7 +35,7 @@ gst links a user's machines into a mesh over SSH: one background daemon per user
 
 - **CLI contract.** Results go to stdout. Errors go to stderr as `error:` plus an optional `hint:` that names the next command to run. Usage errors also print `usage:` and exit 2; failed work exits 1. `--json` fields are stable. Commands never prompt. Positional arguments are validated with `a.args`, which names the missing argument from the `Use` line.
 - **Resolution.** The config stores a link's destination and remote gst command only; every link connection resolves the destination with `ssh -G` (`-F $GST_SSH_CONFIG` when set), and settings the ssh config leaves unset take the defaults in `internal/cli/app.go`.
-- **Log privacy.** The daemon log (which holds the link events), and the errors from `internal/sshconn`, `internal/mesh`, and config parsing that reach it, never include server addresses, users, key paths, targets, or what a remote gst reports. Interactive output may include them, so `Check`'s errors may name paths and addresses.
+- **Log privacy.** The daemon log (which holds the link events), and the errors from `internal/sshconn`, `internal/mesh`, and config parsing that reach it, never include server addresses, users, key paths, or what a remote gst reports. Interactive output may include them, so `Check`'s errors may name paths and addresses.
 - **No personal data.** Code, tests, docs, and commits use placeholders such as `myhost` and `ssh.example.com`, never real hostnames, users, or emails.
 - **Protocol.** `docs/design/mesh.md` specifies the design and the gst protocol. Extend the protocol with new methods, fields, and features; never change the frame format or the meaning of a field without raising `wire.Protocol`.
 - **Unit tests stay local.** `internal/cli` tests inject a fake daemon backend and resolver; `internal/daemon` tests run daemons on temporary sockets with fake link connections; `internal/sshconn` tests use an in-process SSH server; `internal/vnet` tests run real WireGuard over a fake mesh and interface; `internal/tun` tests use a fake system. Nothing installs a real service, contacts a real server, or touches a real interface. macOS's `utun`, routes, and `/etc/resolver` are only exercised on a real Mac.

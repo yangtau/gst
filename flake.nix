@@ -21,9 +21,9 @@
           default = self.packages.${system}.gst;
           gst = (pkgs.buildGo126Module {
             pname = "gst";
-            version = "0.3.0";
+            version = "0.4.0";
             src = pkgs.lib.cleanSource ./.;
-            vendorHash = "sha256-uonXXSrzOJdGCzpyVJMT5yqMK+j9ZWrN/Hqps5mrWKg=";
+            vendorHash = "sha256-VY6UngF15Y2pARje0/3xJ322rLjCvKYocNDQInDnplw=";
             subPackages = [ "cmd/gst" ];
 
             nativeBuildInputs = [ pkgs.installShellFiles ]

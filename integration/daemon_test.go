@@ -15,10 +15,11 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	server.startEcho(3000)
 	client.mustGst("add", "srv", p.destination())
-	client.mustGst("map", "add", "15432", "srv:3000")
 	client.waitLink("srv", "running")
+	client.installHelper()
+	server.installHelper()
+	client.waitNet(1)
 	before := client.daemonPID()
 
 	// gst up makes the daemon apply the configuration, and nothing else.
@@ -37,9 +38,7 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 		t.Fatalf("daemon %s not restarted after the upgrade (now %q)", before, pid)
 	}
 	client.waitLink("srv", "running")
-	eventually(t, 20*time.Second, "the map did not work after the upgrade", func() bool {
-		return client.roundtrip("127.0.0.1:15432") == nil
-	})
+	client.waitPing(server.waitNet(1).Address)
 }
 
 // gst down stops everything on a machine, including accepting links, until
@@ -86,7 +85,7 @@ func TestDownAndUp(t *testing.T) {
 		t.Fatalf("configuration after gst up: %v\n%s", err, cfg)
 	}
 
-	// Down on the client stops its links and its proxy.
+	// Down on the client stops its links.
 	client.mustGst("down")
 	eventually(t, 10*time.Second, "the client's daemon still runs", func() bool { return client.daemonPID() == "" })
 	code, _, stderr := client.gst("status")
