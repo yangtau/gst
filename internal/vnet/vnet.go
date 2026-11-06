@@ -110,6 +110,7 @@ type Manager struct {
 	loaded   bool
 	bind     *bind
 	iface    Interface
+	loop     *loopback // the interface as WireGuard sees it
 	name     string
 	dev      *device.Device
 	peers    map[string]peer // by public key; replaced, never changed
@@ -476,6 +477,7 @@ func lookup(topo wire.Topology, ref string) (netip.Addr, bool) {
 
 // apply makes the interface and WireGuard match topo.
 func (m *Manager) apply(self wire.NodeInfo, topo wire.Topology) error {
+	m.loop.setAddress(m.state.Address)
 	name, err := m.iface.Set(m.wanted(topo))
 	if err != nil {
 		m.down()
@@ -507,7 +509,9 @@ func (m *Manager) up(ctx context.Context) error {
 	m.iface = iface
 	m.name, _ = iface.Device().Name()
 	m.bind = newBind(m.cfg.Mesh.SendPacket)
-	m.dev = device.NewDevice(iface.Device(), m.bind, device.NewLogger(device.LogLevelSilent, ""))
+	m.loop = &loopback{Device: iface.Device()}
+	m.loop.setAddress(m.state.Address)
+	m.dev = device.NewDevice(m.loop, m.bind, device.NewLogger(device.LogLevelSilent, ""))
 	// An endpoint is a node id, set from the records, and stays right
 	// wherever a machine moves. The node that a packet seems to come from
 	// is less sure: two machines behind one NAT can have the same source

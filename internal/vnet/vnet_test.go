@@ -1,6 +1,7 @@
 package vnet
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/binary"
@@ -27,6 +28,32 @@ import (
 )
 
 func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
+
+// macOS routes a machine's own address into the interface, and only this
+// brings such packets back.
+func TestPacketsToThisMachine(t *testing.T) {
+	var w world
+	a := start(t, &w, "a0", "laptop")
+	b := start(t, &w, "b0", "devbox")
+	a.manager.Configure(t.Context(), &config.Net{})
+	b.manager.Configure(t.Context(), &config.Net{})
+	waitFor(t, "a is up", up(a, 1))
+	waitFor(t, "b is up", up(b, 1))
+	wantPacket(t, a, b, "before")
+
+	self := a.manager.Status().Address
+	sent := ipPacket(self, self, "to myself")
+	a.device().in <- sent
+	select {
+	case got := <-a.device().out:
+		if !bytes.Equal(got, sent) {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the packet did not come back")
+	}
+	wantPacket(t, a, b, "after")
+}
 
 func TestChooseSubnet(t *testing.T) {
 	a, ok := chooseSubnet("one", nil)
