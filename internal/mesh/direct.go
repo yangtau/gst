@@ -311,7 +311,9 @@ func (n *Node) runDirect(id string, conn *direct.Conn, opened bool, try *directT
 	ctx := n.directCtx
 	n.mu.Unlock()
 	l := &link{session: conn, direct: true, opened: opened, local: conn.Local(), remote: conn.Remote()}
+	defer n.detachPackets(id, conn)
 	err := n.run(ctx, l, func(wire.NodeInfo) {
+		n.attachPackets(id, conn)
 		n.endDirect(id, try)
 		n.log.Printf("direct link with %s: up", n.nodeName(id))
 		n.trace(id, "up: %s -> %s", l.local, l.remote)

@@ -23,7 +23,7 @@
             pname = "gst";
             version = "0.3.0";
             src = pkgs.lib.cleanSource ./.;
-            vendorHash = "sha256-CKliRDfgTXguKKtOWtWt4zUqykZoqqdSaT/AQ6/i958=";
+            vendorHash = "sha256-uonXXSrzOJdGCzpyVJMT5yqMK+j9ZWrN/Hqps5mrWKg=";
             subPackages = [ "cmd/gst" ];
 
             nativeBuildInputs = [ pkgs.installShellFiles ]

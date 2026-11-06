@@ -10,9 +10,10 @@ import (
 )
 
 type systemd struct {
-	dir   string // systemd user unit directory
-	run   runner
-	notes io.Writer
+	dir    string // systemd unit directory
+	system bool   // uses the system's service manager, not the user's
+	run    runner
+	notes  io.Writer
 }
 
 func newSystemd(home string, notes io.Writer) *systemd {
@@ -26,14 +27,26 @@ func newSystemd(home string, notes io.Writer) *systemd {
 const unitName = "gst.service"
 
 func (s *systemd) systemctl(args ...string) (string, error) {
-	return s.run("systemctl", append([]string{"--user"}, args...)...)
+	if !s.system {
+		args = append([]string{"--user"}, args...)
+	}
+	return s.run("systemctl", args...)
 }
 
 func (s *systemd) Install(command []string, restart bool) error {
+	if err := s.install(unitName, systemdUnit("gst daemon", command, "default.target"), restart); err != nil {
+		return err
+	}
+	s.noteLinger()
+	return nil
+}
+
+// install writes unit and makes sure it runs.
+func (s *systemd) install(unit, text string, restart bool) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
-	changed, err := writeIfChanged(filepath.Join(s.dir, unitName), []byte(systemdUnit(command)))
+	changed, err := writeIfChanged(filepath.Join(s.dir, unit), []byte(text))
 	if err != nil {
 		return err
 	}
@@ -41,7 +54,7 @@ func (s *systemd) Install(command []string, restart bool) error {
 	if changed || restart {
 		action = "restart"
 	}
-	steps := [][]string{{"enable", unitName}, {action, unitName}}
+	steps := [][]string{{"enable", unit}, {action, unit}}
 	if changed {
 		steps = append([][]string{{"daemon-reload"}}, steps...)
 	}
@@ -50,7 +63,6 @@ func (s *systemd) Install(command []string, restart bool) error {
 			return err
 		}
 	}
-	s.noteLinger()
 	return nil
 }
 
@@ -87,15 +99,15 @@ func (s *systemd) remove(unit string) error {
 	return err
 }
 
-// systemdUnit restarts the daemon 5 s after every exit, without a limit,
+// systemdUnit restarts the program 5 s after every exit, without a limit,
 // and gives it 15 s to exit after SIGTERM. Its log goes to journald.
-func systemdUnit(command []string) string {
+func systemdUnit(description string, command []string, wantedBy string) string {
 	quoted := make([]string, len(command))
 	for i, arg := range command {
 		quoted[i] = systemdQuote(arg)
 	}
 	return fmt.Sprintf(`[Unit]
-Description=gst daemon
+Description=%s
 StartLimitIntervalSec=0
 
 [Service]
@@ -107,8 +119,8 @@ TimeoutStopSec=15
 KillSignal=SIGTERM
 
 [Install]
-WantedBy=default.target
-`, strings.Join(quoted, " "))
+WantedBy=%s
+`, description, strings.Join(quoted, " "), wantedBy)
 }
 
 var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%", "$", "$$")

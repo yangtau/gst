@@ -1,12 +1,18 @@
 #!/bin/sh
-# Stands in for "systemctl --user" in the integration test image, which has
-# no systemd. It supports only what gst's service manager runs: it starts a
+# Stands in for systemctl in the integration test image, which has no
+# systemd. It supports only what gst's service manager runs: it starts a
 # unit's ExecStart in the background and stops it again. Restart= and the
-# other unit settings are not emulated.
+# other unit settings are not emulated. With --user it works on the user's
+# units, and without it on the system's, as root.
 set -eu
-[ "${1-}" = --user ] && shift
-units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-state="$HOME/.systemctl-shim"
+if [ "${1-}" = --user ]; then
+	shift
+	units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+	state="$HOME/.systemctl-shim"
+else
+	units=/etc/systemd/system
+	state=/run/systemctl-shim
+fi
 mkdir -p "$state"
 
 running() {

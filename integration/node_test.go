@@ -45,8 +45,9 @@ const (
 func startNode(t *testing.T) *node {
 	t.Helper()
 	// SYS_PTRACE lets root inspect the sockets of non-dumpable sshd session
-	// processes. It does not affect the unprivileged login user.
-	args := []string{"run", "-d", "--cap-add", "SYS_PTRACE"}
+	// processes. It does not affect the unprivileged login user, and neither
+	// do NET_ADMIN and NET_RAW, which the virtual network's helper needs.
+	args := []string{"run", "-d", "--cap-add", "SYS_PTRACE", "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"}
 	if filepath.Base(containerRuntime) == "container" {
 		args = append(args, "--memory", "256M", "--cpus", "1")
 	}
@@ -291,6 +292,9 @@ func (n *node) daemonPID() string {
 func (n *node) dumpLogs() {
 	out, _ := n.sh(`for f in ~/.systemctl-shim/*.log; do [ -f "$f" ] && echo "== $f" && cat "$f"; done`)
 	n.t.Logf("logs of %s:\n%s", n.container, out)
+	if out, err := n.exec("root", "sh", "-c", `cat /run/systemctl-shim/*.log`); err == nil {
+		n.t.Logf("system logs of %s:\n%s", n.container, out)
+	}
 }
 
 // signalSessions sends sig to the sshd processes serving the "tunnel" user,

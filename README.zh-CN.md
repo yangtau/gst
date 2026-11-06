@@ -2,11 +2,11 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，但只工作在第 4 层：只中转 TCP 连接和 Unix socket，不需要 root，直接使用你已有的 SSH 登录。网络允许时，机器之间还会经 UDP 直连。支持 Linux 和 macOS。
+`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有 mesh。体验接近 Tailscale，直接使用你已有的 SSH 登录：不需要 root 就能中转 TCP 连接和 Unix socket；用 root 安装一次之后，还能让机器在一个私有的 WireGuard 网络上拥有 IP 地址，承载任何协议。网络允许时，机器之间还会经 UDP 直连。支持 Linux 和 macOS。
 
 - 每台机器都运行 gst（link 的两端都需要 0.3 或更高版本）和一个小的后台 daemon。
 - **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `homelab` 和 `devbox` 的 link 时，`homelab` 经由 `laptop` 就能到达 `devbox`，不需要 `devbox` 的任何凭据。
-- 到达一台机器的方式有：`gst connect`；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；或者一个通向它的本地端口或 Unix socket（map）。
+- 到达一台机器的方式有：`gst connect`；SOCKS5/HTTP 代理，其中 `<machine>.gst` 就是那台机器；一个通向它的本地端口或 Unix socket（map）；或者虚拟网络上它的 IP 地址和名字 `<machine>.gst`。
 
 ## 安装
 
@@ -118,6 +118,7 @@ gst map add /tmp/devbox-docker.sock devbox:/var/run/docker.sock
 | **map** | 本机的一个端口或 Unix socket，其连接转到某台机器的端口或 socket；给不能使用代理的程序用 | `gst map …` |
 | **route** | 一条规则：把代理中到某些主机的连接经由另一台机器发出 | `gst route …` |
 | **exit** | 允许其他机器经由本机连接本机以外的地址 | `gst exit` |
+| **虚拟网络** | 一个私有网段，加入的每台机器都有一个 IP 地址和名字 `<machine>.gst`，所有程序和协议都能用 | `gst net …` |
 
 ### node 和 link
 
@@ -155,7 +156,7 @@ gst proxy off             # 关闭
 - SOCKS5 支持无认证的 `CONNECT`；域名原样交给路由，等同 `socks5h://`。不支持 UDP、`BIND` 和 SOCKS4，所以 UDP DNS 查询和 QUIC 无法通过。
 - HTTP 支持 `CONNECT host:port` 和普通的 `GET http://host/...` 请求。
 - 能访问代理地址的人都能使用代理。除非用防火墙限制访问来源，否则请使用 loopback 地址。
-- 不支持代理的程序，可以使用 map，或用 tun2socks 等工具把它们的 TCP 流量导入代理；gst 不创建 TUN 设备，也不配置路由。
+- 不支持代理的程序，可以使用 map 或[虚拟网络](#虚拟网络)。
 
 ### map
 
@@ -185,9 +186,28 @@ gst route add default gateway           # 其余所有主机
 
 默认情况下，一台机器替其他机器只连接它自己上的地址：`localhost`、loopback 地址和 Unix socket。只有 exit 还会连接其他地址，例如它所在的局域网或互联网。在要作为 exit 的机器上执行 `gst exit on` 开启（`gst exit off` 关闭，`gst exit` 查看）。无论经过哪条路径，这条规则都由发起最后一跳连接的机器检查。
 
+### 虚拟网络
+
+虚拟网络让加入的每台机器在同一个私有网段里有一个 IP 地址和名字 `<machine>.gst`，任何程序都能用任何协议到达它：TCP、UDP 和 ping，例如需要 UDP 的游戏串流或屏幕共享。不用它时，map 和代理照常工作。
+
+```bash
+sudo gst net install   # 每台机器一次：安装设置网卡的 helper
+gst net on             # 每台机器：加入网络
+ping devbox.gst
+gst net status         # 本机地址，以及包怎样到达其他机器
+```
+
+- **root。** 创建网卡和路由需要 root，而 daemon 以你的用户运行。`sudo gst net install` 安装一个小的系统服务，它运行一份属于 root 的 gst，只替你的 daemon 做这些事。`sudo` 找不到 gst 时请给出完整路径。升级 gst 后再执行一次这条命令可以更新 helper。
+- **网段。** 所有机器共用一个网段。第一台机器根据能应答的机器的网卡和路由，选一个不与它们重叠的 `/16`。`gst net on --subnet 10.99.0.0/16` 为整个网络换一个网段：最新的选择生效，所有机器都迁移过去，地址随之改变。它必须是私有网段（位于 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 或 `100.64.0.0/10` 内）。网段和某台机器上的其他网络重叠时，那台机器在 `gst status` 中报告。
+- **地址。** 机器重启后保持地址。只承载 IPv4。
+- **名字。** `<machine>.gst` 对所有程序生效，可以用机器名或到它的 link 名。macOS 和 systemd-resolved 上只有 `.gst` 会问 daemon。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 里。
+- **路径。** WireGuard 对每个包做端到端加密，途中的机器只看到密文。包走和 direct link 相同的穿越防火墙和 NAT 的路径经 UDP 直达，否则沿 mesh 的 link 走；`gst net status` 会显示走哪条。UDP 不通时，包在几秒内改走 mesh。经 SSH 时 TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
+- **MTU。** 网卡的 MTU 是 1168 字节，能放进任何直连路径。可以自己选包大小的程序应当小于它，否则包会被分片。
+- `gst net off` 让本机离开网络，删除网卡、路由和名字。daemon 停止时它们也会消失。
+
 ### 信任
 
-mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通过自己的 socket 接受它。mesh 中任何一台机器都可以请求任何一台机器连接**它自己的** `localhost` 端口和 Unix socket（本地数据库、Docker socket、ssh-agent）。exit 的范围更大：任何机器都可以连接 exit 所能到达的任何地方。只连接你信任的机器，只在需要的机器上开启 exit。`gst down` 让本机退出 mesh。直连是加密的，两台机器凭经 link 交换的证书互相识别，所以直连的信任来自 link。
+mesh 中的机器彼此信任。link 以你的用户身份登录，daemon 只通过自己的 socket 接受它。mesh 中任何一台机器都可以请求任何一台机器连接**它自己的** `localhost` 端口和 Unix socket（本地数据库、Docker socket、ssh-agent）。exit 的范围更大：任何机器都可以连接 exit 所能到达的任何地方。只连接你信任的机器，只在需要的机器上开启 exit。`gst down` 让本机退出 mesh。直连是加密的，两台机器凭经 link 交换的证书互相识别，所以直连的信任来自 link。在虚拟网络上，机器监听在所有地址上的端口都对网络中的其他机器开放；机器经 mesh 得知彼此的 WireGuard 公钥，所以这里的信任同样来自 link。
 
 ## 取代 ssh 转发
 
@@ -248,6 +268,11 @@ exit 的状态后面带 `; exit`。link 显示为两端的机器，如 `laptop->
 | `gst route add <match> <machine>` | 把到匹配主机的连接经由某台机器发出 |
 | `gst route remove <match>...`（`rm`） | 删除 route |
 | `gst route list`（`ls`） | 列出 route |
+| `gst net on [--subnet <cidr>]` | 加入虚拟网络，或为所有机器设定网段 |
+| `gst net off` | 离开虚拟网络 |
+| `gst net status` | 显示本机地址，以及包怎样到达其他机器 |
+| `sudo gst net install [--user <user>]` | 安装虚拟网络需要的 helper |
+| `sudo gst net uninstall` | 删除 helper |
 
 `<match>` 是 `default`、域名、IP 地址或 CIDR 网段。不属于该机器自己的 `host:port` 需要该机器是 exit。
 
@@ -334,6 +359,9 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 | `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行 0.3 或更新版本的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
 | 机器名匹配到多台机器 | 使用 `gst status` 中的 id 或 id 前缀 |
+| `the helper of the virtual network does not run` | 执行 `sudo gst net install`，之后网络会自动启动 |
+| `the subnet ... overlaps ... on this machine` | 在网络中任意一台机器上用 `gst net on --subnet <cidr>` 换一个网段 |
+| `gst net status` 的 `HANDSHAKE` 一直是 `never` | 需要有流量才会开始：试试 `ping <machine>.gst`。如果还是这样，检查另一台机器的 `gst net status` 有没有报告问题 |
 | macOS 阻止访问本地网络服务器 | 在“本地网络”权限提示或“系统设置 → 隐私与安全性 → 本地网络”中允许 gst，然后删除并重新添加该 link。终端获得授权不一定代表后台服务也获得授权 |
 
 ## 在脚本和 agent 中使用
@@ -345,4 +373,4 @@ gst 0.3 用上面的 mesh 模型取代了 tunnel 和 forward。配置会自动�
 
 ## 配置文件
 
-配置保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`），包括本机的 node（id、名字、exit）、代理地址、link、map 和 route。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以修改另一个配置文件会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。
+配置保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`），包括本机的 node（id、名字、exit）、代理地址、link、map、route，以及是否加入虚拟网络。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以修改另一个配置文件会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。

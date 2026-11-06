@@ -13,7 +13,7 @@ import (
 )
 
 type launchd struct {
-	agentsDir string // ~/Library/LaunchAgents
+	agentsDir string // ~/Library/LaunchAgents, where the plists go
 	logPath   string // the daemon's own log
 	domain    string // gui/<uid>
 	run       runner
@@ -39,37 +39,41 @@ func (l *launchd) plistPath(label string) string {
 }
 
 func (l *launchd) Install(command []string, restart bool) error {
+	return l.install(daemonLabel, append(slices.Clip(command), "--log-file", l.logPath), restart)
+}
+
+// install writes the plist of label and makes sure the service runs.
+func (l *launchd) install(label string, command []string, restart bool) error {
 	for _, dir := range []string{l.agentsDir, filepath.Dir(l.logPath)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	command = append(slices.Clip(command), "--log-file", l.logPath)
-	plist, err := launchdPlist(daemonLabel, command, l.logPath)
+	plist, err := launchdPlist(label, command, l.logPath)
 	if err != nil {
 		return err
 	}
-	changed, err := writeIfChanged(l.plistPath(daemonLabel), plist)
+	changed, err := writeIfChanged(l.plistPath(label), plist)
 	if err != nil {
 		return err
 	}
-	if !changed && l.loaded(daemonLabel) {
+	if !changed && l.loaded(label) {
 		if restart {
-			_, err := l.run("launchctl", "kickstart", "-k", l.target(daemonLabel))
+			_, err := l.run("launchctl", "kickstart", "-k", l.target(label))
 			return err
 		}
 		return nil
 	}
 	// An agent disabled earlier, for example with launchctl disable,
 	// refuses to load.
-	if _, err := l.run("launchctl", "enable", l.target(daemonLabel)); err != nil {
+	if _, err := l.run("launchctl", "enable", l.target(label)); err != nil {
 		return err
 	}
 	// Reloading is the only way to apply a changed plist.
-	if err := l.unload(daemonLabel); err != nil {
+	if err := l.unload(label); err != nil {
 		return err
 	}
-	_, err = l.run("launchctl", "bootstrap", l.domain, l.plistPath(daemonLabel))
+	_, err = l.run("launchctl", "bootstrap", l.domain, l.plistPath(label))
 	return err
 }
 

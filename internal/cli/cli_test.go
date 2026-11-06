@@ -44,7 +44,8 @@ type fakeBackend struct {
 	direct       func(node string) (wire.DirectReport, error)
 	listenErrors map[string]string // listen address -> why it does not listen
 	topology     wire.Topology
-	sent         bytes.Buffer // what gst connect sent
+	net          *wire.NetState // what the daemon reports while the configuration has the network on
+	sent         bytes.Buffer   // what gst connect sent
 }
 
 // fakeConn keeps what gst connect sends and, like an echo server, answers
@@ -113,6 +114,9 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 	}
 	for _, m := range cfg.Maps {
 		st.Maps = append(st.Maps, wire.MapState{Listener: listener(m.Listen), Machine: m.Machine, Target: m.Target})
+	}
+	if cfg.Net != nil {
+		st.Net = f.net
 	}
 	return st, true
 }

@@ -12,12 +12,21 @@
 //	gst-it line NETWORK ADDR                    print the first line that ADDR sends
 //	gst-it http METHOD URL [TOKEN]              print the HTTP status and body of a request, with TOKEN as a bearer token;
 //	                                            plain http:// URLs go through $HTTP_PROXY
+//	gst-it udp-echo ADDR                        answer every UDP datagram with "reply:" + datagram
+//	gst-it udp ADDR PAYLOAD                     send a datagram until a reply comes, within 5 s, and print the reply
+//	gst-it dns SERVER NAME                      ask the DNS server at SERVER for NAME's IPv4 addresses and print them
+//	gst-it sink ADDR                            accept TCP connections and discard what they send
+//	gst-it blast ADDR SECONDS                   send to ADDR over TCP for SECONDS and print the rate in Mbit/s
+//	gst-it udp-count ADDR                       count UDP datagrams, and answer "?" with the count, which starts over
+//	gst-it udp-burst ADDR MBITS SECONDS         send to a udp-count server at MBITS Mbit/s, a burst for each of 60 frames
+//	                                            a second, as video does, and print the share that arrived
 //
 // It exits with status 1 and a message on stderr when something fails.
 package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -52,12 +61,207 @@ func main() {
 		err = line(args)
 	case "http":
 		err = httpRequest(args)
+	case "udp-echo":
+		err = udpEcho(args)
+	case "udp":
+		err = udpExchange(args)
+	case "dns":
+		err = dnsLookup(args)
+	case "sink":
+		err = sink(args)
+	case "blast":
+		err = blast(args)
+	case "udp-count":
+		err = udpCount(args)
+	case "udp-burst":
+		err = udpBurst(args)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
 	if err != nil {
 		fail(err)
 	}
+}
+
+func udpEcho(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: udp-echo ADDR")
+	}
+	conn, err := net.ListenPacket("udp", args[0])
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, 65536)
+	for {
+		n, from, err := conn.ReadFrom(buf)
+		if err != nil {
+			return err
+		}
+		conn.WriteTo(append([]byte("reply:"), buf[:n]...), from)
+	}
+}
+
+func udpExchange(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: udp ADDR PAYLOAD")
+	}
+	conn, err := net.Dial("udp", args[0])
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	buf := make([]byte, 65536)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Write([]byte(args[1])); err != nil {
+			return err
+		}
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		if n, err := conn.Read(buf); err == nil {
+			fmt.Println(string(buf[:n]))
+			return nil
+		}
+	}
+	return errors.New("no reply")
+}
+
+func dnsLookup(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: dns SERVER NAME")
+	}
+	r := net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "udp", args[0])
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := r.LookupIP(ctx, "ip4", args[1])
+	if err != nil {
+		return err
+	}
+	for _, a := range addrs {
+		fmt.Println(a)
+	}
+	return nil
+}
+
+func sink(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: sink ADDR")
+	}
+	listener, err := net.Listen("tcp", args[0])
+	if err != nil {
+		return err
+	}
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		go func() {
+			defer conn.Close()
+			io.Copy(io.Discard, conn)
+		}()
+	}
+}
+
+func blast(args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: blast ADDR SECONDS")
+	}
+	seconds, err := strconv.Atoi(args[1])
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", args[0], 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	start := time.Now()
+	end := start.Add(time.Duration(seconds) * time.Second)
+	conn.SetWriteDeadline(end)
+	buf := make([]byte, 64<<10)
+	total := 0
+	for {
+		n, err := conn.Write(buf)
+		total += n
+		if err != nil {
+			break
+		}
+	}
+	fmt.Printf("%.1f\n", float64(total)*8/1e6/time.Since(start).Seconds())
+	return nil
+}
+
+func udpCount(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: udp-count ADDR")
+	}
+	conn, err := net.ListenPacket("udp", args[0])
+	if err != nil {
+		return err
+	}
+	// What this counts is the network, not how fast it gets to run.
+	conn.(*net.UDPConn).SetReadBuffer(4 << 20)
+	buf := make([]byte, 65536)
+	count := 0
+	for {
+		n, from, err := conn.ReadFrom(buf)
+		if err != nil {
+			return err
+		}
+		if n == 1 && buf[0] == '?' {
+			conn.WriteTo([]byte(strconv.Itoa(count)), from)
+			count = 0
+			continue
+		}
+		count++
+	}
+}
+
+func udpBurst(args []string) error {
+	if len(args) != 3 {
+		return errors.New("usage: udp-burst ADDR MBITS SECONDS")
+	}
+	mbits, err1 := strconv.Atoi(args[1])
+	seconds, err2 := strconv.Atoi(args[2])
+	if err := errors.Join(err1, err2); err != nil {
+		return err
+	}
+	conn, err := net.Dial("udp", args[0])
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	const size, fps = 1100, 60 // a datagram fits one packet of the network
+	packet := make([]byte, size)
+	perFrame := mbits * 1000000 / 8 / size / fps
+	frame := time.NewTicker(time.Second / fps)
+	defer frame.Stop()
+	sent := 0
+	for range seconds * fps {
+		<-frame.C
+		for range perFrame {
+			if _, err := conn.Write(packet); err == nil {
+				sent++
+			}
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	conn.Write([]byte("?"))
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+	received, err := strconv.Atoi(string(buf[:n]))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%.3f\n", float64(received)/float64(sent))
+	return nil
 }
 
 func fail(err error) {

@@ -127,7 +127,8 @@ func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 		return wire.Ping{}, err
 	}
 	n.mu.Lock()
-	direct := len(dest.Path) == 2 && n.directLink(dest.ID) != nil
+	l := n.directLink(dest.ID)
+	direct := len(dest.Path) == 2 && l != nil && n.usable(l)
 	n.mu.Unlock()
 	start := time.Now()
 	p := wire.Ping{Direct: direct}

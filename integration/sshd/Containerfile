@@ -10,7 +10,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
       sed -i "s|http://deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
  && apt-get update \
- && apt-get install -y --no-install-recommends openssh-server lsof procps netcat-openbsd \
+ && apt-get install -y --no-install-recommends openssh-server lsof procps netcat-openbsd iproute2 iptables iputils-ping \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
  && mkdir -p /run/sshd
 

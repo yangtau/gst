@@ -3,8 +3,10 @@ package mesh
 import (
 	"cmp"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -29,6 +31,7 @@ func (n *Node) Update() {
 // Run publishes this node's record whenever it changes and before it
 // expires, and drops expired records, until ctx is done.
 func (n *Node) Run(ctx context.Context) {
+	defer n.stop()
 	refresh := time.NewTicker(n.ttl / 3)
 	defer refresh.Stop()
 	for {
@@ -55,19 +58,43 @@ func (n *Node) publish(force bool) {
 	}
 	edges := n.edges()
 	old, ok := n.records[n.info.ID]
-	if ok && !force && old.Node == n.info && slices.Equal(old.Links, edges) {
+	if ok && !force && old.Node == n.info && slices.Equal(old.Links, edges) && sameNet(old.Net, n.net) {
 		return
 	}
 	now := time.Now()
 	seq := max(old.Seq+1, n.seqFloor+1, uint64(now.UnixNano()))
-	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Links: edges}
+	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Links: edges, Net: n.net}
 	n.notify()
+}
+
+func sameNet(a, b *wire.NetInfo) bool {
+	return a == b || a != nil && b != nil && *a == *b
+}
+
+// SetNet sets what this node's record says of its part in the virtual
+// network; nil takes it out.
+func (n *Node) SetNet(info *wire.NetInfo) {
+	n.mu.Lock()
+	n.net = info
+	n.mu.Unlock()
+	n.Update()
+}
+
+// Changed returns a channel that is closed at the next change of what
+// this node knows of the mesh.
+func (n *Node) Changed() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.changed
 }
 
 // edges describes the running links; n.mu is held.
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
+		if !n.usable(l) {
+			continue
+		}
 		e := wire.Edge{Name: l.name, Peer: l.peer.ID}
 		if l.direct && l.opened {
 			e.Direct, e.Local, e.Remote = true, l.local, l.remote
@@ -127,7 +154,7 @@ func (n *Node) newer(sent map[string]uint64) ([]wire.Record, <-chan struct{}) {
 // merge keeps the records that are newer than the ones this node has.
 // valid reports whether a record that a peer sent is well formed.
 func valid(r wire.Record) bool {
-	if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !fits(r) {
+	if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !fits(r) || !validNet(r.Net) {
 		return false
 	}
 	for _, e := range r.Links {
@@ -136,6 +163,21 @@ func valid(r wire.Record) bool {
 		}
 	}
 	return true
+}
+
+// validNet reports whether a record's part in the virtual network is well
+// formed.
+func validNet(info *wire.NetInfo) bool {
+	if info == nil {
+		return true
+	}
+	subnet, err := config.ParseSubnet(info.Subnet)
+	if err != nil {
+		return false
+	}
+	address, err := netip.ParseAddr(info.Address)
+	key, keyErr := hex.DecodeString(info.PublicKey)
+	return err == nil && subnet.Contains(address) && keyErr == nil && len(key) == 32
 }
 
 func (n *Node) merge(recs []wire.Record) {
@@ -265,10 +307,10 @@ func (n *Node) Topology() wire.Topology {
 			recs = append(recs, r)
 		}
 	}
-	recs = append(recs, wire.Record{Node: self, Links: n.edges()})
+	recs = append(recs, wire.Record{Node: self, Links: n.edges(), Net: n.net})
 	direct := map[string]bool{}
 	for l := range n.links {
-		direct[l.peer.ID] = direct[l.peer.ID] || l.direct
+		direct[l.peer.ID] = direct[l.peer.ID] || l.direct && n.usable(l)
 	}
 	n.mu.Unlock()
 	if self.ID == "" {
@@ -288,7 +330,7 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 	nodes := map[string]*wire.TopoNode{}
 	for _, r := range recs {
 		if r.Node.ID == self || r.Expires.After(now) {
-			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Exit: r.Node.Exit, Expires: r.Expires}
+			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Exit: r.Node.Exit, Expires: r.Expires, Net: r.Net}
 		}
 	}
 	// A link counts only while the nodes at both ends list it: the node

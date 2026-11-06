@@ -45,6 +45,25 @@ func (c *Conn) Remote() string { return c.conn.RemoteAddr().String() }
 // Done is closed when the connection ends.
 func (c *Conn) Done() <-chan struct{} { return c.conn.Context().Done() }
 
+// WritePacket sends a datagram of another protocol to the other side, on
+// the socket of the connection, which already has a way through the
+// firewalls and NATs between the two. Its first byte must have the top
+// two bits clear, which keeps it out of QUIC on the other side, and it
+// must fit a UDP payload of 1200 bytes, which is all that a path is sure
+// to carry: the socket does not fragment.
+func (c *Conn) WritePacket(p []byte) error {
+	_, err := c.socket.transport.WriteTo(p, c.conn.RemoteAddr())
+	return err
+}
+
+// HandlePackets makes handle receive the datagrams that the other side
+// sends with WritePacket, on the goroutine that reads the socket: it must
+// not block or keep the packet. Packets are not authenticated, and probes
+// of the attempt may trail in.
+func (c *Conn) HandlePackets(handle func(packet []byte)) {
+	c.socket.demux.handle.Store(&handle)
+}
+
 // Close ends the connection, telling the other side, and frees its socket.
 func (c *Conn) Close() error {
 	c.conn.CloseWithError(0, "")

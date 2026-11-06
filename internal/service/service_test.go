@@ -170,3 +170,122 @@ func TestSocket(t *testing.T) {
 		t.Fatalf("Socket() = %q, want %q", got, want)
 	}
 }
+
+func TestHelperOnSystemd(t *testing.T) {
+	fake := &fakeRunner{}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "gst")
+	if err := os.WriteFile(exe, []byte("program"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &systemd{dir: filepath.Join(dir, "system"), system: true, run: fake.run}
+	h := &Helper{filepath.Join(dir, "libexec", "gst-net"), systemdHelper{s}}
+
+	if err := h.Install(exe, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(h.binary)
+	if err != nil || string(got) != "program" {
+		t.Fatalf("copy: %q, %v", got, err)
+	}
+	info, err := os.Stat(h.binary)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("copy: %v, %v", info, err)
+	}
+	unit, err := os.ReadFile(filepath.Join(s.dir, helperUnit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `ExecStart="` + h.binary + `" "net-helper" "--user" "alice"`
+	if !strings.Contains(string(unit), want) || !strings.Contains(string(unit), "WantedBy=multi-user.target") {
+		t.Fatalf("unexpected unit:\n%s", unit)
+	}
+	wantCalls := []string{"systemctl daemon-reload", "systemctl enable gst-net.service", "systemctl restart gst-net.service"}
+	if !slices.Equal(fake.calls, wantCalls) {
+		t.Fatalf("calls: %q", fake.calls)
+	}
+
+	// Installing a newer gst replaces the copy, and restarts the service
+	// with it even though the unit stays the same.
+	if err := os.WriteFile(exe, []byte("newer"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake.calls = nil
+	if err := h.Install(exe, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(h.binary); string(got) != "newer" {
+		t.Fatalf("copy: %q", got)
+	}
+	if !slices.Equal(fake.calls, []string{"systemctl enable gst-net.service", "systemctl restart gst-net.service"}) {
+		t.Fatalf("calls: %q", fake.calls)
+	}
+
+	fake.calls = nil
+	if err := h.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(h.binary) || fileExists(filepath.Join(s.dir, helperUnit)) {
+		t.Fatal("files are left")
+	}
+	if !slices.Equal(fake.calls, []string{"systemctl disable --now gst-net.service", "systemctl daemon-reload"}) {
+		t.Fatalf("calls: %q", fake.calls)
+	}
+	if err := h.Uninstall(); err != nil {
+		t.Fatalf("uninstalling again: %v", err)
+	}
+}
+
+func TestHelperOnLaunchd(t *testing.T) {
+	loaded := false
+	fake := &fakeRunner{respond: func(call string) (string, error) {
+		switch {
+		case strings.HasPrefix(call, "launchctl print"):
+			if !loaded {
+				return "", errors.New("not loaded")
+			}
+		case strings.HasPrefix(call, "launchctl bootstrap"):
+			loaded = true
+		case strings.HasPrefix(call, "launchctl bootout"):
+			loaded = false
+		}
+		return "", nil
+	}}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "gst")
+	if err := os.WriteFile(exe, []byte("program"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l := &launchd{agentsDir: filepath.Join(dir, "LaunchDaemons"), logPath: filepath.Join(dir, "gst-net.log"), domain: "system", run: fake.run}
+	h := &Helper{filepath.Join(dir, "tools", helperLabel), launchdHelper{l}}
+	if err := h.Install(exe, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	plist, err := os.ReadFile(filepath.Join(l.agentsDir, helperLabel+".plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<string>" + h.binary + "</string>", "<string>net-helper</string>", "<string>alice</string>", "<key>KeepAlive</key>"} {
+		if !strings.Contains(string(plist), want) {
+			t.Fatalf("plist lacks %q:\n%s", want, plist)
+		}
+	}
+	if !slices.Contains(fake.calls, "launchctl bootstrap system "+l.plistPath(helperLabel)) {
+		t.Fatalf("calls: %q", fake.calls)
+	}
+
+	fake.calls = nil
+	if err := h.Install(exe, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(fake.calls, "launchctl kickstart -k system/"+helperLabel) {
+		t.Fatalf("calls: %q", fake.calls)
+	}
+
+	if err := h.Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(h.binary) || fileExists(l.plistPath(helperLabel)) {
+		t.Fatal("files are left")
+	}
+}

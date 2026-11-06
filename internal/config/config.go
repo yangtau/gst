@@ -35,6 +35,17 @@ type File struct {
 	Links  map[string]*Link `json:"links"`
 	Maps   []Map            `json:"maps"`
 	Routes Routes           `json:"routes"`
+	// Net turns on the virtual network; it is off when nil.
+	Net *Net `json:"net,omitempty"`
+}
+
+// Net is this machine's part in the virtual network.
+type Net struct {
+	// Subnet is the subnet that the user chose for the whole network, and
+	// Since when, in Unix nanoseconds. The network's machines agree on the
+	// latest choice. Empty leaves it to them.
+	Subnet string `json:"subnet,omitempty"`
+	Since  int64  `json:"since,omitempty"`
 }
 
 // Node is this machine's identity in the mesh.
@@ -181,6 +192,11 @@ func (f *File) validate() error {
 			if earlier.Listen == m.Listen {
 				return fmt.Errorf("map %d: duplicate listen address", i+1)
 			}
+		}
+	}
+	if f.Net != nil && f.Net.Subnet != "" {
+		if _, err := ParseSubnet(f.Net.Subnet); err != nil {
+			return errors.New("invalid subnet of the virtual network")
 		}
 	}
 	for i, r := range f.Routes {

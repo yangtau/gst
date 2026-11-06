@@ -2,6 +2,7 @@ package direct
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -107,6 +108,37 @@ func TestConnect(t *testing.T) {
 	server.Close()
 	exchange(t, c, s)
 	exchange(t, s, c)
+}
+
+// Packets of another protocol share the socket with QUIC, in bursts that
+// no queue of quic-go's would hold, and leave its streams alone.
+func TestPackets(t *testing.T) {
+	client, server := attempt(t), attempt(t)
+	c, s, err := connect(within(t, 10*time.Second), t, client, server, client.Offer(), server.Offer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+	server.Close()
+	const burst = 500
+	got := make(chan string, burst)
+	s.HandlePackets(func(p []byte) { got <- string(p) })
+	for i := range burst {
+		if err := c.WritePacket(fmt.Appendf(nil, "\x04%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exchange(t, c, s)
+	seen := map[string]bool{}
+	deadline := time.After(5 * time.Second)
+	for len(seen) < burst*9/10 {
+		select {
+		case p := <-got:
+			seen[p] = true
+		case <-deadline:
+			t.Fatalf("%d of %d packets arrived", len(seen), burst)
+		}
+	}
 }
 
 // A side that cannot be reached, as behind NAT, offers addresses that

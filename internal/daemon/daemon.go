@@ -26,6 +26,8 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/relay"
+	"github.com/yangtau/ssh-tunnel/internal/tun"
+	"github.com/yangtau/ssh-tunnel/internal/vnet"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -44,6 +46,13 @@ type Config struct {
 	// Addresses returns the local addresses that direct links use; direct
 	// links are off when it is nil.
 	Addresses func() []netip.Addr
+	// OpenNet sets up the interface of the virtual network, which cannot
+	// run when it is nil; NetDNS is the UDP address to answer for .gst on,
+	// and Networks what is in use on this machine, by default as
+	// vnet.LocalNetworks finds it.
+	OpenNet  func(tun.Spec) (vnet.Interface, error)
+	NetDNS   string
+	Networks func(skip string) []netip.Prefix
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
 	RetryDelay time.Duration
@@ -56,6 +65,7 @@ type Daemon struct {
 	cfg Config
 
 	mesh    *mesh.Node
+	net     *vnet.Manager
 	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
@@ -78,6 +88,14 @@ func New(cfg Config) *Daemon {
 	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}, maps: map[string]*listener{}, serveCtx: context.Background()}
 	m := mesh.New(cfg.Software, cfg.Log, d.Status)
 	d.mesh = m
+	d.net = vnet.New(vnet.Config{
+		Mesh:      m,
+		Log:       cfg.Log,
+		StatePath: filepath.Join(filepath.Dir(cfg.Socket), "net.json"),
+		Open:      cfg.OpenNet,
+		Networks:  cfg.Networks,
+		DNS:       cfg.NetDNS,
+	})
 	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
@@ -101,6 +119,7 @@ func New(cfg Config) *Daemon {
 		return m.DirectReport(ctx, p.Node)
 	})
 	wire.HandleStream(&d.control, wire.MethodConnect, d.connect)
+	wire.Handle(m.Peer(), wire.MethodNetNetworks, none(func() any { return d.net.Networks() }))
 	return d
 }
 
@@ -129,6 +148,15 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		// fixed, can still start the links.
 		d.cfg.Log.Print(err)
 	}
+	netDone := make(chan struct{})
+	go func() {
+		defer close(netDone)
+		d.net.Run(meshCtx)
+	}()
+	defer func() {
+		stopMesh()
+		<-netDone
+	}()
 	d.cfg.Log.Printf("%s daemon ready", d.cfg.Software)
 
 	var conns sync.WaitGroup
@@ -222,6 +250,7 @@ func (d *Daemon) Status() wire.Status {
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
 		Node: d.mesh.Self(), Proxy: wire.Listener{Listen: f.Proxy},
 		Links: []wire.LinkState{}, Maps: []wire.MapState{}, Routes: []wire.Route{},
+		Net: d.net.Status(),
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -261,6 +290,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	d.mesh.Configure(f.Node)
 	d.config.Store(f)
+	d.net.Configure(ctx, f.Net)
 	d.listen(f)
 	var stop []*supervisor
 	var removed []string

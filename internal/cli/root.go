@@ -18,7 +18,7 @@ func (a *app) rootCommand() *cobra.Command {
 	root := asGroup(&cobra.Command{
 		Use:   "gst",
 		Short: "Link your machines into a private mesh over SSH",
-		Long: `gst links your machines into a private mesh over SSH, without root.
+		Long: `gst links your machines into a private mesh over SSH.
 
 Each machine runs a gst daemon in the background. A link is an SSH
 connection from one machine to another that also has gst; linked
@@ -29,6 +29,8 @@ one, through the links between them. Reach them by:
   proxy    a SOCKS5 and HTTP proxy where <machine>.gst is that machine
   map      a local port or socket that leads to a machine's port or socket
   route    send the proxy's connections to some hosts out through an exit
+  net      an IP address and <machine>.gst for every program, on a private
+           network with WireGuard; the only part that needs root, once
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments. Commands that
@@ -67,7 +69,7 @@ report state accept --json.`,
 		}
 	}
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
-	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand())
+	addGroup("reach", a.connectCommand(), a.proxyCommand(), a.mapCommand(), a.routeCommand(), a.netCommand())
 	addGroup("machine", a.nameCommand(), a.exitCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:         "version",
 		Annotations: standalone,
@@ -77,7 +79,7 @@ report state accept --json.`,
 			fmt.Fprintln(a.stdout, "gst version", version)
 		},
 	})
-	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand())
+	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.netHelperCommand())
 	setHelpColors(root)
 	return root
 }

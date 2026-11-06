@@ -2,11 +2,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`gst` (go ssh tunnel) links your machines into a private mesh over SSH. It feels like Tailscale, but works at layer 4: it carries TCP connections and Unix sockets only, needs no root, and uses the SSH logins you already have. When the network allows it, machines also connect directly over UDP. It runs on Linux and macOS.
+`gst` (go ssh tunnel) links your machines into a private mesh over SSH. It feels like Tailscale, and uses the SSH logins you already have: it carries TCP connections and Unix sockets without root, and with a one-time root install it also gives the machines IP addresses on a private WireGuard network, for any protocol. When the network allows it, machines also connect directly over UDP. It runs on Linux and macOS.
 
 - Every machine runs gst (0.3 or later, on both ends of a link) and a small background daemon.
 - A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `homelab` and `devbox`, then `homelab` reaches `devbox` through `laptop`, without any credentials for `devbox`.
-- You reach a machine with `gst connect`, through a SOCKS5/HTTP proxy where `<machine>.gst` is that machine, or through a local port or Unix socket that leads to it (a map).
+- You reach a machine with `gst connect`, through a SOCKS5/HTTP proxy where `<machine>.gst` is that machine, through a local port or Unix socket that leads to it (a map), or at its IP address and the name `<machine>.gst` on the virtual network.
 
 ## Install
 
@@ -118,6 +118,7 @@ Every command explains itself with `--help`. In a terminal, help uses bold headi
 | **map** | A local port or Unix socket whose connections go to a port or socket of a machine; for programs that cannot use a proxy | `gst map …` |
 | **route** | A rule that sends the proxy's connections to some hosts out through another machine | `gst route …` |
 | **exit** | Allows other machines to connect through this one to addresses beyond this machine | `gst exit` |
+| **virtual network** | A private subnet where each machine that joins has an IP address and the name `<machine>.gst`, for every program and protocol | `gst net …` |
 
 ### Nodes and links
 
@@ -155,7 +156,7 @@ gst proxy off             # turn it off
 - SOCKS5 supports `CONNECT` without authentication; names are passed on unresolved, as with `socks5h://`. UDP, `BIND`, and SOCKS4 are not supported, so UDP DNS queries and QUIC cannot go through it.
 - HTTP supports `CONNECT host:port` and plain `GET http://host/...` requests.
 - Anyone who can reach the proxy address can use it. Keep a loopback address unless a firewall limits access.
-- For programs that ignore proxies, use a map, or a tool such as tun2socks to route their TCP traffic into the proxy; gst creates no TUN devices or routes.
+- For programs that ignore proxies, use a map or the [virtual network](#virtual-network).
 
 ### Map
 
@@ -185,9 +186,28 @@ gst route add default gateway           # everything else
 
 By default, a machine connects, for the others, only to addresses on itself: `localhost`, loopback addresses, and Unix sockets. Only an exit also connects to other addresses, such as its local network or the internet. Turn that on with `gst exit on` on the machine that should be the exit (`gst exit off` undoes it, and `gst exit` shows it). The machine that makes the final connection checks this, whatever the route.
 
+### Virtual network
+
+The virtual network gives every machine that joins an IP address in one private subnet and the name `<machine>.gst`, so that any program can reach it with any protocol: TCP, UDP, and ping, such as a game stream or a screen sharing session that needs UDP. Maps and the proxy keep working without it.
+
+```bash
+sudo gst net install   # once on each machine: the helper that sets up the interface
+gst net on             # on each machine: join the network
+ping devbox.gst
+gst net status         # this machine's address, and how packets go to the others
+```
+
+- **Root.** Creating an interface and a route takes root, and the daemon runs as your user. `sudo gst net install` installs a small system service, which runs a copy of gst that root owns, and does only that for your daemon. If `sudo` does not find gst, give its full path. Run the command again to update the helper after upgrading gst.
+- **Subnet.** The machines share one subnet. The first machine chooses a `/16` that overlaps nothing on the machines that answer, from their interfaces and routes. `gst net on --subnet 10.99.0.0/16` sets another for the whole network: the latest choice wins, and all machines move to it, changing their addresses. It must be private (inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or `100.64.0.0/10`). If the subnet overlaps something on a machine, that machine reports it in `gst status`.
+- **Addresses.** A machine keeps its address across restarts. Only IPv4 is carried.
+- **Names.** `<machine>.gst` resolves for all programs, by the machine's name, or the name of a link to it. On macOS and with systemd-resolved, only `.gst` goes to the daemon. Elsewhere on Linux, the names go in `/etc/hosts` for as long as the network runs.
+- **Paths.** WireGuard encrypts each packet from end to end, so that machines on the way see only ciphertext. Packets go directly over UDP on the same way through firewalls and NATs as a direct link, and along the links of the mesh otherwise; `gst net status` shows which. If UDP stops working, they move to the mesh within seconds. Through SSH, TCP runs inside TCP, which works but slows down on lossy networks.
+- **MTU.** The interface has an MTU of 1168 bytes, which fits every direct path. Programs that choose a packet size themselves should stay below it, or their packets are fragmented.
+- `gst net off` takes this machine off the network and removes the interface, the route, and the names. They also go away when the daemon stops.
+
 ### Trust
 
-Machines in the mesh trust each other. A link logs in as your user, and the daemon accepts it only through its own socket. Any machine in the mesh can ask any machine to connect to that machine's own `localhost` ports and Unix sockets (a local database, a Docker socket, an ssh-agent). Exits go further: any machine can connect anywhere an exit can. Link only machines you trust, and turn exit on only where you want it. `gst down` takes this machine out of the mesh. Direct connections are encrypted, and the two machines recognize each other by certificates that they exchange over the links, so they trust what the links trust.
+Machines in the mesh trust each other. A link logs in as your user, and the daemon accepts it only through its own socket. Any machine in the mesh can ask any machine to connect to that machine's own `localhost` ports and Unix sockets (a local database, a Docker socket, an ssh-agent). Exits go further: any machine can connect anywhere an exit can. Link only machines you trust, and turn exit on only where you want it. `gst down` takes this machine out of the mesh. Direct connections are encrypted, and the two machines recognize each other by certificates that they exchange over the links, so they trust what the links trust. On the virtual network, every port that a machine opens on all its addresses is open to the other machines of the network, and the machines learn each other's WireGuard keys through the mesh, so here too they trust what the links trust.
 
 ## Replacing ssh forwards
 
@@ -248,6 +268,11 @@ Commands follow the groups of `gst --help`. Names of machines and links are desc
 | `gst route add <match> <machine>` | Send connections to matching hosts through a machine |
 | `gst route remove <match>...` (`rm`) | Remove routes |
 | `gst route list` (`ls`) | List routes |
+| `gst net on [--subnet <cidr>]` | Join the virtual network, or set its subnet for all machines |
+| `gst net off` | Leave the virtual network |
+| `gst net status` | Show this machine's address and how packets go to the others |
+| `sudo gst net install [--user <user>]` | Install the helper that the virtual network needs |
+| `sudo gst net uninstall` | Remove the helper |
 
 `<match>` is `default`, a domain, an IP address, or a CIDR prefix. A `host:port` that is not the machine's own needs the machine to be an exit.
 
@@ -334,6 +359,9 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 | `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst 0.3 or later with a running daemon; see `gst status` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
 | A machine name matches several machines | Use its id or an id prefix from `gst status` |
+| `the helper of the virtual network does not run` | Run `sudo gst net install`; the network then starts by itself |
+| `the subnet ... overlaps ... on this machine` | Choose another subnet with `gst net on --subnet <cidr>`, on any machine of the network |
+| `HANDSHAKE` stays `never` in `gst net status` | Traffic has to start it: try `ping <machine>.gst`. If it stays, check that the other machine also shows `gst net status` without a problem |
 | macOS blocks access to a local network server | Allow gst in the Local Network alert or in System Settings → Privacy & Security → Local Network, then remove and add the link again. Authorization for your terminal does not necessarily authorize the background service |
 
 ## Scripts and agents
@@ -345,4 +373,4 @@ Work from the outside in: `gst status` shows whether the machine is `online` and
 
 ## Configuration file
 
-The configuration is stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). It holds this machine's node (id, name, exit), the proxy address, links, maps, and routes. `--config` or the `GST_CONFIG` environment variable selects another file, and the daemon keeps using it. There is one daemon per user, so changing another file switches the daemon to that file. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe.
+The configuration is stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). It holds this machine's node (id, name, exit), the proxy address, links, maps, routes, and whether it is on the virtual network. `--config` or the `GST_CONFIG` environment variable selects another file, and the daemon keeps using it. There is one daemon per user, so changing another file switches the daemon to that file. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe.

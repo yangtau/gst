@@ -97,6 +97,7 @@ func noDaemon(err error) error {
 // links and listeners.
 func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) error {
 	names := displayNames(topo)
+	onNet := slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.Net != nil })
 	w := table(out)
 	for _, n := range topo.Nodes {
 		var state []string
@@ -119,7 +120,15 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		if n.Exit {
 			state = append(state, "exit")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", shortID(n.ID), names[n.ID], cmp.Or(n.Software, "-"), strings.Join(state, "; "))
+		line := []string{shortID(n.ID), names[n.ID], cmp.Or(n.Software, "-")}
+		if onNet {
+			address := "-"
+			if n.Net != nil {
+				address = n.Net.Address
+			}
+			line = append(line, address)
+		}
+		fmt.Fprintln(w, strings.Join(append(line, strings.Join(state, "; ")), "\t"))
 	}
 	if err := w.Flush(); err != nil {
 		return err
@@ -154,6 +163,9 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		if m.Error != "" {
 			problems = append(problems, "map "+m.Listen+" failed: "+m.Error)
 		}
+	}
+	if st.Net != nil && st.Net.Error != "" {
+		problems = append(problems, "virtual network: "+st.Net.Error)
 	}
 	if len(problems) > 0 {
 		fmt.Fprintln(out, "\n# Problems:")
@@ -194,6 +206,9 @@ func writeStatus(out io.Writer, st wire.Status) error {
 		proxy = st.Proxy.Listen + " (" + listenerText(st.Proxy) + ")"
 	}
 	fmt.Fprintf(out, "Proxy: %s\n", proxy)
+	if st.Net != nil {
+		fmt.Fprintf(out, "Net: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
+	}
 
 	fmt.Fprintln(out)
 	if len(st.Links) == 0 {

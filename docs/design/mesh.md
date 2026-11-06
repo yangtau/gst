@@ -1,6 +1,6 @@
 # gst 设计
 
-gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon，daemon 之间经 SSH 互联，交换拓扑，并沿 mesh 中转 TCP 连接和 Unix socket 连接；网络允许时，两台机器之间再经 UDP 建立直连。使用体验接近 Tailscale，但只工作在第 4 层（连接），不需要 root。
+gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon，daemon 之间经 SSH 互联，交换拓扑，并沿 mesh 中转 TCP 连接和 Unix socket 连接；网络允许时，两台机器之间再经 UDP 建立直连。使用体验接近 Tailscale：mesh 工作在第 4 层（连接），不需要 root；用 root 安装一次 helper 后，虚拟网络再给机器 IP 地址，承载任何 IP 协议。
 
 ## 概念
 
@@ -13,6 +13,7 @@ gst 把多台机器上的 gst 连成一个 mesh：每台机器跑一个 daemon�
 | **map** | 本机的一个监听端口或 Unix socket，连接转到某台机器上的端口或 socket，给不支持代理的程序用 | `gst map …` |
 | **route** | 出口规则：某些域名、网段或全部流量经某台机器出去 | `gst route …` |
 | **exit** | 允许别的机器经本机连接本机以外的地址 | `gst exit` |
+| **虚拟网络** | 一个私有网段，加入的机器各有 IP 地址和 `<machine>.gst`；WireGuard 加密，mesh 运送 | `gst net …` |
 
 没有 `-L`、`-R`、`-D`：`-L` 由 map 取代；`-R` 由对方机器自己建 map 取代；`-D` 由 proxy 加 route 取代。两端都必须安装 gst。
 
@@ -28,8 +29,8 @@ homelab 上执行 `gst connect devbox 22`、访问 `devbox.gst:8080`，或建 `g
 - **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）；作为服务器第一次被 `gst peer-bridge` 连到时同样生成身份并启动 daemon。
 - **up / down**：`gst down` 在配置里写 `down: true`，停止 daemon 并删除服务；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它并启动 daemon。除 down 外，daemon 总在运行（即使没有 link），因为它要提供 proxy、map，并接受别人的 link。
 - **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 内任何节点都可以请求任何节点连接**它自己机器上的**地址（loopback 与 Unix socket）。连接本机以外的地址（局域网、互联网）需要该节点开启 exit：`gst exit on`。这条规则由执行连接的最后一跳检查。mesh 里的机器都属于同一个用户、彼此完全信任：能连本机 loopback 与 Unix socket，就能用上面的任何服务（sshd、本机 gst 的 proxy 与 control socket），所以 exit 是防止流量意外从某台机器出去的默认策略，不是机器之间的安全边界。
-- **只有 TCP**：中转的是字节流。目标是 TCP `host:port` 或 Unix socket 路径。
-- **没有 IP 层**：link 之下的公共抽象是可靠的多路复用流（`session`），不是 IP 包。mesh 只承载连接，目标还有 Unix socket 和由 exit 解析的域名，这些都没有 IP 表示；不用 TUN 时用户态 TCP 栈只是多走一遍，IP 包走 SSH 还是 TCP-over-TCP。
+- **中转的是字节流**：目标是 TCP `host:port` 或 Unix socket 路径。
+- **link 之下没有 IP 层**：link 之下的公共抽象是可靠的多路复用流（`session`），不是 IP 包。mesh 承载连接，目标还有 Unix socket 和由 exit 解析的域名，这些都没有 IP 表示。IP 包是建在 mesh 之上的另一层，只服务虚拟网络，见[虚拟网络](#虚拟网络)。
 - **SSH 决定成员**：SSH 是控制面和兜底。direct link 只是捷径，凭据、信令都来自 mesh，不让本来不相连的机器相连。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
@@ -176,6 +177,8 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方建立 direct link，见下文 |
 | `link.remove` | `{"node": 调用方 id, "link": link 名}` | 无；调用方即将删除这条 link，见 direct link 一节 |
 | `direct.trace` | `{"node": 调用方 id}` | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次尝试建立 direct link 的过程 |
+| `net.packets` | `{"node": 调用方 id}` | 无；之后该流双向运送虚拟网络的包，见[虚拟网络](#虚拟网络)。被调方不在虚拟网络上时返回 `failed` |
+| `net.networks` | 无 | `{"prefixes": ["10.0.0.0/24", …]}`：被调方在用的 IPv4 网段，供选择网段时避开 |
 
 ### link 的建立
 
@@ -199,6 +202,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - 每个节点只发布自己的记录，`links` 是它处于 running 的 link：自己发起的带 `name`，接受的 `name` 为空。`seq` 取 `max(上一次 seq + 1, 当前 Unix 纳秒)`；若收到自己旧进程发布的更大 `seq`，立即以更大的 `seq` 重新发布。
 - 节点信息或 link 变化时立即重新发布；收到更大 `seq` 的记录就替换，并经各条 `topology.sync` 流推送给其他 peer（洪泛）。
 - direct link 由发起方列出，`links` 中 `name` 为空、`direct` 为 true，`local` 和 `remote` 是发起方看到的两端 `IP:port`；接受方的 `name` 同样为空，没有 `direct`。
+- 加入虚拟网络的节点在记录里带 `net`：`{"subnet": …, "since": …, "address": …, "public_key": …}`，见[虚拟网络](#虚拟网络)。收到的记录中 `net` 不合法时整条丢弃。
 - 记录有效期 30 分钟，节点每 10 分钟刷新。每个节点最多保留 1024 条记录，每条记录最多 1024 条 link。
 - `Topology` 由查看方计算：`nodes`（id、name、software、exit、reachable、`path`：从本节点出发的最短路径上的节点 id）与 `edges`（from、to、link 名）。只有两端的记录都列出对方时，一条 link 才算存在（对端没有有效记录时以发起方为准）：失去 link 的一端可能无法再把新记录传给其他节点，另一端可以。`edges` 只含发起方列出的 link，direct link 带 `direct: true` 和 `local`、`remote`。`nodes` 的 `direct` 表示查看方有到该节点的 direct link。link 是双向的，路径可以沿任一方向经过。
 
@@ -223,10 +227,31 @@ SSH link 之外，两个节点之间可以再有一条经 UDP 的 direct link（
 - **认证**：每次尝试生成一张自签名证书，指纹经 mesh 传递，双方都校验对方证书的指纹（TLS 1.3，ALPN `gst-direct`）。信任来自 SSH，没有长期密钥。探测包只用来找路径，不用于认证。
 - **会话**：QUIC 连接之后是一个 `session`：每个 QUIC 流相当于一个 yamux 子流，没有 `Hello`（ALPN 已经确定协议），各调用一次 `node.info`，然后 `topology.sync`，与 SSH link 一样。keepalive 5 秒，20 秒没有收到数据视为断开。
 - **选路**：`Topology` 的路径计入 direct link。每一跳由 `sessionTo` 选择 session，有 direct link 就用它，所以 `relay.open` 不变。direct link 在调用途中断开时，这一跳改走到同一节点的其他 link，连接不失败，只是最多等到 20 秒的超时。
-- **断开**：direct link 断开时，走它的连接随之中断，新连接回到其他 link。已有连接不在 link 之间迁移。
+- **断开**：direct link 断开时，走它的连接随之中断，新连接回到其他 link。已有连接不在 link 之间迁移。心跳让新连接提前离开静默的 direct link，见[虚拟网络](#虚拟网络)。
 - **SSH 决定成员**：丢失 SSH link 不改变成员，direct link 继续运行，例如两个节点之间的机器休眠时。只有 `gst remove` 删除 link 才改变成员：打开方在停止 link 前调用 `link.remove`（最多等 3 秒），之后 link 两端各检查一次，不计这条 link 时只经 SSH link 能否到达 direct link 的对端，到不了就关闭。对方没有收到 `link.remove`（link 当时已断）时，它的 direct link 继续运行，直到自行断开。
 - **过程记录**：每个节点在内存里保留与每个对端最近一次尝试的事件（提供的地址、听到的探测、被证明的路径、QUIC 握手、结果），新的尝试开始时清空，最多 200 条。记录含地址，只经 `mesh.direct` 和 `direct.trace` 交给发出请求的用户，不进日志。
 - `GST_DIRECT=off` 让 daemon 不发起也不接受 direct link，集成测试用它固定路径。
+
+## 虚拟网络
+
+虚拟网络（`internal/vnet`）让加入的机器在一个私有网段里互相用 IP 通信，用来承载 map 和代理到不了的东西：UDP、ICMP，以及自己选择端口的程序。它不替代 mesh，机器身份、成员、路径和信令都来自 mesh，所以没有协调服务器。
+
+```
+程序 ── 网卡（utun / gst0）── wireguard-go ── bind ── Node.SendPacket ─┬─ direct link 的 UDP socket
+                                                                       └─ 沿 mesh 的流（经 SSH）
+```
+
+- **WireGuard**：daemon 里跑 wireguard-go，加密和重放保护都用它的。mesh 对它来说是一张网（`conn.Bind`）：endpoint 是 node id，不是地址，所以路径怎么变都不需要 WireGuard 知道，也不用 PersistentKeepalive（打洞由 direct link 维持）。私钥只在 `net.json`（control socket 旁边，`0600`），公钥在记录里，信任来自 SSH，和 direct link 一样。
+- **路径**：`Node.SendPacket` 有可用的 direct link 就在同一个 UDP socket 上直接发，否则放进队列，由一条 `net.packets` 流沿 mesh 运送（帧：2 字节大端长度加包，两个方向都走，1 分钟空闲关闭）。任何一方都可以开这条流。包在 mesh 上不需要保护：途中只有密文，丢了就是丢了。经 mesh 时流量也会触发 direct link 的尝试（5 秒一次），成功后自动切到 UDP。
+- **共用 socket**：WireGuard 包的首字节是 1 到 4，高两位是 0，QUIC 不会当成自己的包。quic-go 自己交出这类包的队列只有 32 个，一帧视频就能冲掉它，所以 `internal/direct` 给 quic-go 的 socket 是 `demux`，在 `ReadBatch` 里当场把这类包取走。direct link 建好之前（探测阶段）仍走 quic-go 的队列。
+- **心跳**：direct link 上每秒发一个 1 字节的 `0x00`。3 秒没有收到任何东西，这条 direct link 就算静默：`edges`、`sessionTo`、`Topology` 都当它不存在，包和新连接在几秒内改走其他 link，不用等 QUIC 20 秒的超时；它上面的已有连接继续等待恢复。从没收到过心跳的对端（旧版本）不算静默。包的流只在没有可用 direct link 时才开，所以不会走在 direct link 上一起卡住。
+- **MTU**：网卡 MTU 是 1168，加上 WireGuard 的 32 字节正好是 1200 字节的 UDP 载荷，也就是 QUIC 要求路径至少能承载的大小，所以不需要路径 MTU 发现。quic-go 的 socket 设置了 DF，更大的包在本地就会失败。
+- **网段**：每个节点把 `{subnet, since, address, public_key}` 放进自己的记录（`net` 字段）。`since` 最新的网段胜出，相同时取字符串较小的，所以所有节点独立算出同一个结果。`gst net on --subnet` 把 `since` 写成当前时间。第一个节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个不重叠的 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）。网段和本机其他网络重叠时不阻止运行，只报告。
+- **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。
+- **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 link 名和 id 前缀也能用），未知名字 NXDOMAIN，AAAA 返回空。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。这些名字和代理的 `<machine>.gst` 相同，只是解析出 IP。
+- **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由 `gst net install` 安装的系统服务（`gst net-helper --user NAME`）完成。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
+- **管理循环**：`vnet.Manager` 在拓扑变化、配置变化和每 5 秒时比较一遍：算网段和地址、发布记录、调 helper、同步 WireGuard 的 peer。`Configure` 等这一轮结束再返回，所以 `gst net on` 看到的 `Status` 已经反映新配置。没有 helper 或网段重叠是 `NetState` 里的 `error` 和 `hint`，不是失败退出，装好 helper 后下一轮就启动。
+- **没有 IPv6**：网段只有 IPv4，AAAA 返回空。
 
 ## Web UI
 

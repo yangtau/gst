@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -30,10 +31,12 @@ import (
 // knows of the other nodes.
 type Node struct {
 	software string
-	log      *log.Logger   // the daemon's log
-	ttl      time.Duration // lifetime of this node's record
-	update   chan struct{} // asks Run to publish
-	peer     wire.Server   // the methods that peers call
+	log      *log.Logger     // the daemon's log
+	ttl      time.Duration   // lifetime of this node's record
+	update   chan struct{}   // asks Run to publish
+	peer     wire.Server     // the methods that peers call
+	life     context.Context // ends when Run returns
+	stop     context.CancelFunc
 
 	mu       sync.Mutex
 	info     wire.NodeInfo // ID is empty until Configure gives the node an identity
@@ -41,6 +44,7 @@ type Node struct {
 	records  map[string]wire.Record // by node id, this node's included
 	changed  chan struct{}          // closed and replaced when records change
 	seqFloor uint64                 // the highest Seq seen on this node's own record
+	net      *wire.NetInfo          // this node's part in the virtual network; see SetNet
 
 	// Direct links; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
@@ -48,6 +52,10 @@ type Node struct {
 	directTries map[string]*directTry         // by node id
 	directWaits map[string]directWait         // by node id
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
+
+	// Packets of the virtual network; see packets.go.
+	onPacket atomic.Pointer[func(node string, packet []byte)]
+	packets  sync.Map // node id -> *packetPeer
 }
 
 // link is a running link: the peer session with another node.
@@ -64,7 +72,10 @@ type link struct {
 // New returns a node without an identity, which refuses links until
 // Configure gives it one. status reports the daemon to the other nodes.
 func New(software string, daemonLog *log.Logger, status func() wire.Status) *Node {
+	life, stop := context.WithCancel(context.Background())
 	n := &Node{
+		life:     life,
+		stop:     stop,
 		software: software,
 		log:      daemonLog,
 		ttl:      30 * time.Minute,
@@ -83,6 +94,7 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 	wire.Handle(&n.peer, wire.MethodDirectOffer, n.serveOffer)
 	wire.Handle(&n.peer, wire.MethodLinkRemove, n.serveLinkRemove)
 	wire.Handle(&n.peer, wire.MethodDirectTrace, n.serveTrace)
+	wire.HandleStream(&n.peer, wire.MethodNetPackets, n.servePackets)
 	if status != nil {
 		wire.Handle(&n.peer, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return status(), nil })
 	}
@@ -109,6 +121,10 @@ func (n *Node) Configure(c *config.Node) {
 	}
 	n.info = info
 }
+
+// Peer returns the methods that peers call, for the daemon to add to
+// before the node runs.
+func (n *Node) Peer() *wire.Server { return &n.peer }
 
 // Self returns this node's identity; its ID is empty until Configure gives it one.
 func (n *Node) Self() wire.NodeInfo {
@@ -280,7 +296,7 @@ func (n *Node) sessionTo(id string) session {
 	defer n.mu.Unlock()
 	var found session
 	for l := range n.links {
-		if l.peer.ID == id && !closed(l.session) {
+		if l.peer.ID == id && !closed(l.session) && n.usable(l) {
 			if l.direct {
 				return l.session
 			}

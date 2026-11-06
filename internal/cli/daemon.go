@@ -12,6 +12,8 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/direct"
 	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/service"
+	"github.com/yangtau/ssh-tunnel/internal/tun"
+	"github.com/yangtau/ssh-tunnel/internal/vnet"
 )
 
 // daemonRunCommand runs the gst daemon in the foreground. Its background
@@ -66,6 +68,14 @@ func (a *app) daemonRunCommand() *cobra.Command {
 				Build:      build,
 				Connect:    a.connectLink,
 				Addresses:  addresses,
+				OpenNet: func(spec tun.Spec) (vnet.Interface, error) {
+					c, err := tun.Dial(tun.Socket, spec)
+					if err != nil {
+						return nil, err
+					}
+					return c, nil
+				},
+				NetDNS: tun.DNSAddress,
 			})
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)

@@ -26,6 +26,14 @@ const (
 	// returns DirectTrace: what the callee did in its latest try at a
 	// direct link with that node.
 	MethodDirectTrace = "direct.trace"
+	// MethodNetPackets ("net.packets") takes PacketsParams. On success the
+	// stream carries the packets of the virtual network in both
+	// directions, each after its length as a big-endian uint16.
+	MethodNetPackets = "net.packets"
+	// MethodNetNetworks ("net.networks") takes no params and returns
+	// Networks: what the subnet of the virtual network must not overlap
+	// on the callee's machine.
+	MethodNetNetworks = "net.networks"
 )
 
 // FeatureYamux in a peer Hello says that the connection continues as a
@@ -80,6 +88,29 @@ type Record struct {
 	Seq     uint64    `json:"seq"`
 	Expires time.Time `json:"expires"`
 	Links   []Edge    `json:"links"`
+	// Net is the node's part in the virtual network; nil while it takes
+	// no part.
+	Net *NetInfo `json:"net,omitempty"`
+}
+
+// NetInfo is what the other nodes need to reach a node over the virtual
+// network. Subnet is the whole network's, which the nodes agree on: the
+// one with the highest Since counts.
+type NetInfo struct {
+	Subnet    string `json:"subnet"`     // CIDR prefix
+	Since     int64  `json:"since"`      // when the subnet was chosen, in Unix nanoseconds
+	Address   string `json:"address"`    // the node's IP address in Subnet
+	PublicKey string `json:"public_key"` // its WireGuard key, in hexadecimal
+}
+
+// PacketsParams are the params of net.packets.
+type PacketsParams struct {
+	Node string `json:"node"` // the caller's id
+}
+
+// Networks lists the IP prefixes in use on a machine.
+type Networks struct {
+	Prefixes []string `json:"prefixes"`
 }
 
 // Edge is one of a node's running links.

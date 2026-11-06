@@ -71,6 +71,7 @@ type Attempt struct {
 type socket struct {
 	addr      netip.AddrPort
 	udp       *net.UDPConn
+	demux     *demux
 	transport *quic.Transport
 }
 
@@ -111,10 +112,12 @@ func New(addrs []netip.Addr) (*Attempt, error) {
 		if err != nil {
 			continue // The address went away.
 		}
+		demux := newDemux(udp)
 		a.sockets = append(a.sockets, &socket{
 			addr:      udp.LocalAddr().(*net.UDPAddr).AddrPort(),
 			udp:       udp,
-			transport: &quic.Transport{Conn: udp},
+			demux:     demux,
+			transport: &quic.Transport{Conn: demux},
 		})
 	}
 	if len(a.sockets) == 0 {

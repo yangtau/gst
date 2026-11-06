@@ -39,6 +39,35 @@ type Status struct {
 	Links    []LinkState `json:"links"`
 	Maps     []MapState  `json:"maps"`
 	Routes   []Route     `json:"routes"`
+	Net      *NetState   `json:"net,omitempty"` // nil while the virtual network is off
+}
+
+// NetState is this machine's part in the virtual network. Error says why
+// it does not work; the rest is what it reached so far.
+type NetState struct {
+	Subnet    string    `json:"subnet,omitempty"`
+	Address   string    `json:"address,omitempty"`
+	Interface string    `json:"interface,omitempty"` // empty until the network is up
+	Error     string    `json:"error,omitempty"`
+	Hint      string    `json:"hint,omitempty"` // what to do about Error
+	Peers     []NetPeer `json:"peers"`
+}
+
+// Ways that packets take to a peer.
+const (
+	PathDirect = "direct" // over UDP
+	PathMesh   = "mesh"   // along the links of the mesh
+)
+
+// NetPeer is another machine of the virtual network.
+type NetPeer struct {
+	Node      string    `json:"node"` // its id
+	Name      string    `json:"name"`
+	Address   string    `json:"address"`
+	Path      string    `json:"path"`               // PathDirect or PathMesh
+	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
+	Received  uint64    `json:"received"`           // bytes
+	Sent      uint64    `json:"sent"`               // bytes
 }
 
 // Listener is the state of one of the daemon's listeners, identified by
@@ -137,6 +166,7 @@ type TopoNode struct {
 	Path      []string  `json:"path,omitempty"`   // node ids from this node, for reachable nodes
 	Direct    bool      `json:"direct,omitempty"` // this node has a direct link to it
 	Expires   time.Time `json:"expires,omitzero"` // when its record expires; zero for this node
+	Net       *NetInfo  `json:"net,omitempty"`    // its part in the virtual network
 }
 
 // TopoEdge is a running link from one node to another.
