@@ -8,12 +8,14 @@
 // can be reached; an answer also says where its probe came from, which tells
 // a machine that address, for its offers to others.
 //
-// Nothing here chooses a local address or an interface: packets go the way
-// the system's routes say, through a VPN if that is where they lead. Each
-// side measures its addresses of the other and sends to the fastest, so the
-// two directions may differ. The path then carries the packets of the
-// virtual network, which WireGuard encrypts and authenticates. Nothing here
-// protects them: the token only keeps stray packets out.
+// Packets go the way the system's routes say, with one exception: on macOS
+// the sockets send through the interface that reaches the internet, because
+// a proxy that takes the routes sends UDP again from another port, which
+// holes in firewalls do not fit (see bind_darwin.go). Each side measures its addresses of the other and
+// sends to the fastest, so the two directions may differ. The path then
+// carries the packets of the virtual network, which WireGuard encrypts and
+// authenticates. Nothing here protects them: the token only keeps stray
+// packets out.
 package direct
 
 import (
@@ -39,6 +41,7 @@ const (
 	maxPublic    = 4                // addresses that others saw this machine at, kept for offers
 	publicLife   = 10 * time.Minute // for how long such an address counts
 	maxRTT       = 10 * time.Second // an answer that took longer is no measure
+	bindEvery    = 5 * time.Second  // how often the sockets look for their interface again
 
 	tokenLen = 16
 	idLen    = 8
@@ -73,12 +76,15 @@ type Transport struct {
 	tokens  map[[tokenLen]byte]*Path
 	public  map[netip.AddrPort]time.Time // this machine as others see it
 	closed  bool
+	done    chan struct{}                            // closed by Close
 	sources atomic.Pointer[map[netip.AddrPort]*Path] // by the addresses that proved themselves; replaced, never changed
 }
 
 type socket struct {
-	udp  *net.UDPConn
-	port uint16
+	udp     *net.UDPConn
+	network string
+	port    uint16
+	bound   int // the interface it sends through; 0 when the routes decide
 }
 
 // Listen opens the sockets, on port if it is free. addrs returns this
@@ -94,6 +100,7 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 		sweepEvery: sweepInterval,
 		tokens:     map[[tokenLen]byte]*Path{},
 		public:     map[netip.AddrPort]time.Time{},
+		done:       make(chan struct{}),
 	}
 	rand.Read(t.id[:])
 	t.sources.Store(&map[netip.AddrPort]*Path{})
@@ -104,12 +111,48 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 	if t.v4 == nil && t.v6 == nil {
 		return nil, errors.New("no UDP socket")
 	}
+	t.bind()
+	go t.keepBound()
 	for _, s := range []*socket{t.v4, t.v6} {
 		if s != nil {
 			go t.read(s)
 		}
 	}
 	return t, nil
+}
+
+// bind points the sockets at the interfaces that reach the internet now.
+func (t *Transport) bind() {
+	v4, v6 := defaultInterfaces()
+	for _, b := range []struct {
+		s     *socket
+		index int
+	}{{t.v4, v4}, {t.v6, v6}} {
+		if b.s == nil || b.s.bound == b.index {
+			continue
+		}
+		c, err := b.s.udp.SyscallConn()
+		if err == nil {
+			err = bindSocket(c, b.s.network, b.index)
+		}
+		if err == nil {
+			b.s.bound = b.index
+		}
+	}
+}
+
+// keepBound follows the machine from one network to another.
+func (t *Transport) keepBound() {
+	tick := time.NewTicker(bindEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			t.bind()
+		case <-t.done:
+			return
+		}
+	}
 }
 
 func listen(network string, port int) *socket {
@@ -120,7 +163,7 @@ func listen(network string, port int) *socket {
 		}
 		udp.SetReadBuffer(socketBuffer)
 		udp.SetWriteBuffer(socketBuffer)
-		return &socket{udp: udp, port: udp.LocalAddr().(*net.UDPAddr).AddrPort().Port()}
+		return &socket{udp: udp, network: network, port: udp.LocalAddr().(*net.UDPAddr).AddrPort().Port()}
 	}
 	return nil
 }
@@ -128,6 +171,9 @@ func listen(network string, port int) *socket {
 // Close ends every path and closes the sockets.
 func (t *Transport) Close() {
 	t.mu.Lock()
+	if !t.closed {
+		close(t.done)
+	}
 	t.closed = true
 	paths := make([]*Path, 0, len(t.tokens))
 	for _, p := range t.tokens {
