@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 `gst` (go ssh tunnel) links your machines into a private network over SSH. It feels like Tailscale, and uses the SSH logins you already have: every machine gets an IP address and the name `<machine>.gst` on a WireGuard network, for any program and protocol. Packets go directly over UDP when the network allows it, and through the SSH links otherwise. It runs on Linux and macOS, and needs root once on each machine.
 
-- Every machine runs gst (0.4 or later, on all machines) and a small background daemon.
+- Every machine runs gst, all of the same gst protocol, and a small background daemon.
 - A **link** is an SSH connection from one machine to another that also runs gst. Linked machines tell each other what they know, so every machine can reach every other one through the links between them: if `laptop` links to `homelab` and `devbox`, then `homelab` reaches `devbox` through `laptop`, without any credentials for `devbox`.
 - The links only find the machines and carry what they say to each other. Everything your programs send is WireGuard, end to end, over one of two ways: a UDP path between the two machines, found through the links, or the SSH links when no such path exists.
 
@@ -30,7 +30,7 @@ nix profile add .         # install from the local checkout
 
 The Nix package includes completion scripts for Bash, Zsh, and Fish; `gst completion bash|zsh|fish` generates them otherwise.
 
-Run `gst version` to print the installed version, for example `gst version 0.4.0`.
+Run `gst version` to print the installed version, for example `gst version 0.5.0+a2ffc87 (protocol 4)`: the release, the commit it was built from (`.dirty` when built with uncommitted changes), and the gst protocol. Machines link only when they speak the same protocol.
 
 Install gst on every machine of the mesh, and make sure it is in the `PATH` of the login shell that ssh starts there (see `--remote-gst` if it is not). The background daemon remembers the path of gst. After upgrading or moving gst, run `gst up` to restart the daemon with the new gst; any command that changes the configuration does so too.
 
@@ -58,7 +58,7 @@ gst runs in the background, where it cannot type a passphrase or confirm an unkn
 
 3. **The machine's host key in known_hosts**: connect once with `ssh devbox`, then verify and accept the host key.
 
-4. **gst 0.4 or later on that machine, and `gst up` run there once.** It needs no links of its own. gst never sets up another machine: if `gst up` has not run there, `gst add` says so and gives the command, and the link connects by itself once it has.
+4. **gst of the same protocol on that machine, and `gst up` run there once.** It needs no links of its own. gst never sets up another machine: if `gst up` has not run there, `gst add` says so and gives the command, and the link connects by itself once it has.
 
 Only the machine that creates a link needs these; the machine that is linked to just needs gst, `gst up`, and an sshd that runs commands (gst uses a login session, not port forwarding, so sshd's `AllowTcpForwarding` does not matter). A server that forces a fixed command on every session cannot be linked.
 
@@ -266,7 +266,7 @@ gst add devbox               # on the machines that had links
 
 - `gst up` replaces the 0.3 daemon. Each machine gets a new identity; `gst name` sets its name again.
 - Reach a machine as `devbox.gst` where you had a map or the proxy; see [Services](#virtual-network) for programs that listen only on loopback or a Unix socket.
-- Upgrade every machine you link to together. The gst protocol is now version 3, and gst refuses to talk to an older one: it reports `speaks an older gst protocol; upgrade gst there to 0.4 or later`.
+- Upgrade every machine you link to together. gst refuses to talk to a gst of another protocol, and names both, such as `gst 0.4.0 speaks gst protocol 3 and gst 0.5.0 speaks 4; upgrade gst on the older side`.
 - `gst net on`, `gst net off`, and `gst net status` are gone: the network is always on. `gst subnet` replaces `--subnet`, `gst status --all` shows the peers, and `gst up` replaces `sudo gst net install`.
 
 ## Troubleshooting
@@ -280,10 +280,10 @@ Work from the outside in: `gst status` shows whether the machine can be reached 
 | Host key mismatch | Once you have confirmed the machine's key really changed, run `ssh-keygen -R <host>` and connect once with `ssh` |
 | A link is `down` with an error from the other gst, such as command not found | gst is not in the `PATH` of the login shell that ssh starts there. Install it, or give its path: `gst remove devbox`, then `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | A link is `down` with `gst is not up on this machine; run gst up there`, or `gst add` says so | Run `gst up` on the other machine, for example with `ssh -t <destination> gst up`; the link connects by itself |
-| `speaks an older gst protocol; upgrade gst there to 0.4 or later` | Upgrade gst on the machine it names (0.4 on both ends of every link) |
+| `speaks gst protocol 3 and … speaks 4; upgrade gst on the older side` | Upgrade gst on the machine with the older protocol; both ends of every link need the same one |
 | `config version 3 is too old` | Remove the file it names and add the links again ([Upgrading from 0.3](#upgrading-from-03)) |
 | `no route to ...: no running links lead there` | No running links connect this machine to that one. Check `gst status` (a machine that is missing, and links that are not running) |
-| `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst 0.4 or later with a running daemon; see `gst status` for the way to it |
+| `gst status <machine>` or `gst ping <machine>` fails | The machine must be reachable and run gst of the same protocol with a running daemon; see `gst status` for the way to it |
 | `the gst daemon does not answer` | Run `gst up`; see the daemon log (`journalctl --user -u gst`, or `~/Library/Logs/gst-daemon.log`) |
 | A machine name matches several machines | Use its id or an id prefix from `gst status` |
 | `the helper of the virtual network does not run` | Run `gst up`; the machine then joins by itself |

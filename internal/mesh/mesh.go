@@ -215,7 +215,7 @@ func (n *Node) Link(ctx context.Context, name string, conn io.ReadWriteCloser, o
 		if failed, ok := conn.(interface{ Failure() string }); ok && failed.Failure() != "" {
 			return &RemoteError{"the remote gst failed: " + failed.Failure()}
 		}
-		return errors.New("the remote gst did not answer; is gst 0.4 or later installed there?")
+		return errors.New("the remote gst did not answer; is gst installed there, and the same version as here?")
 	}
 	yamuxed, err := yamux.Client(conn, yamuxConfig())
 	if err != nil {

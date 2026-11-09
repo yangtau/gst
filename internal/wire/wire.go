@@ -138,9 +138,16 @@ func Dial(rw io.ReadWriter, mine Hello) (Hello, error) {
 		return theirs, theirs.Error
 	}
 	if theirs.Protocol < Protocol {
-		return theirs, Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.4 or later", theirs.Software)
+		return theirs, olderProtocol(theirs, mine)
 	}
 	return theirs, nil
+}
+
+// olderProtocol is the refusal of theirs, which speaks an older protocol
+// than mine. It names both sides' gst, as the other side shows it too.
+func olderProtocol(theirs, mine Hello) *Error {
+	return Errorf(CodeUnsupportedProto, "%s speaks gst protocol %d and %s speaks %d; upgrade gst on the older side",
+		theirs.Software, theirs.Protocol, mine.Software, mine.Protocol)
 }
 
 // ReadHello reads the Hello that opens a connection, on the accepting
@@ -158,7 +165,7 @@ func Answer(w io.Writer, theirs, mine Hello, refusal *Error) error {
 	mine.Protocol = Protocol
 	mine.Error = refusal
 	if theirs.Protocol < Protocol {
-		mine.Error = Errorf(CodeUnsupportedProto, "%s speaks an older gst protocol; upgrade gst there to 0.4 or later", theirs.Software)
+		mine.Error = olderProtocol(theirs, mine)
 	}
 	if err := WriteFrame(w, mine); err != nil {
 		return err

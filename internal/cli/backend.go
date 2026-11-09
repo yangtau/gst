@@ -37,8 +37,6 @@ type backend interface {
 	Direct(ctx context.Context, node string) (wire.DirectReport, error)
 }
 
-const software = "gst " + version
-
 // daemonBackend is the real backend.
 type daemonBackend struct {
 	manager service.Manager

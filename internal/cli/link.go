@@ -26,9 +26,9 @@ traffic of the virtual network can pass through it in both directions. A
 link runs in the background, starts at login, and reconnects after
 failures; gst status shows its state.
 
-The other machine needs gst 0.4 or later in the PATH of its login shell,
-or set with --remote-gst, and someone must have run gst up there: gst
-never sets up another machine. If it has not, this command says so and
+The other machine needs a gst of the same protocol, which gst version
+shows, in the PATH of its login shell or set with --remote-gst, and
+someone must have run gst up there: gst never sets up another machine. If it has not, this command says so and
 keeps the link, which connects by itself after gst up there.
 
 <name> uses 1-32 lowercase letters, digits, and '-', and also names the

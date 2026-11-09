@@ -107,7 +107,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | 字段 | 含义 |
 | --- | --- |
 | `protocol` | 发送方的协议版本。当前为 4；接收方拒绝低于 4 的版本 |
-| `software` | 人类可读的软件版本 |
+| `software` | 人类可读的软件版本：发布版本加构建所用的 commit，如 `gst 0.5.0+a2ffc87`，仅供显示；判断是否同一个可执行文件用 `build` |
 | `role` | `control`（CLI → 本机 daemon）或 `peer`（daemon ↔ daemon） |
 | `build` | 可执行文件标识，CLI 用它判断 daemon 是否需要重启 |
 | `features` | 可选能力；`peer` 连接必须带 `yamux` |

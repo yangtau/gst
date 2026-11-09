@@ -21,10 +21,14 @@
           default = self.packages.${system}.gst;
           gst = (pkgs.buildGo126Module {
             pname = "gst";
-            version = "0.4.0";
+            # The release is internal/cli/root.go's; see AGENTS.md.
+            version = builtins.head (builtins.match ".*const version = \"([^\"]+)\".*"
+              (builtins.readFile ./internal/cli/root.go));
             src = pkgs.lib.cleanSource ./.;
             vendorHash = "sha256-VY6UngF15Y2pARje0/3xJ322rLjCvKYocNDQInDnplw=";
             subPackages = [ "cmd/gst" ];
+            # cleanSource drops .git, so Go cannot stamp the commit.
+            ldflags = [ "-X github.com/yangtau/ssh-tunnel/internal/cli.commit=${self.shortRev or self.dirtyShortRev or ""}" ];
 
             nativeBuildInputs = [ pkgs.installShellFiles ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.darwin.cctools ];

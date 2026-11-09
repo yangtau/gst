@@ -3,9 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func TestVersion(t *testing.T) {
@@ -14,11 +17,33 @@ func TestVersion(t *testing.T) {
 	if code := a.execute(context.Background(), []string{"version"}); code != exitOK {
 		t.Fatalf("version exited %d: %s", code, &stderr)
 	}
-	if got, want := stdout.String(), "gst version "+version+"\n"; got != want {
+	if got, want := stdout.String(), fmt.Sprintf("gst version %s (protocol %d)\n", strings.TrimPrefix(software, "gst "), wire.Protocol); got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(software, "gst "+version) {
+		t.Fatalf("software = %q, want the release %s", software, version)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", &stderr)
+	}
+}
+
+func TestFullVersion(t *testing.T) {
+	const rev = "a2ffc87e0123456789abcdef0123456789abcdef"
+	for _, tt := range []struct {
+		commit   string
+		settings map[string]string
+		want     string
+	}{
+		{"", nil, "0.5.0"},
+		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "false"}, "0.5.0+a2ffc87"},
+		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "true"}, "0.5.0+a2ffc87.dirty"},
+		{"a2ffc87", map[string]string{"vcs.revision": "ffffffffff"}, "0.5.0+a2ffc87"},
+		{"a2ffc87-dirty", nil, "0.5.0+a2ffc87.dirty"},
+	} {
+		if got := fullVersion("0.5.0", tt.commit, tt.settings); got != tt.want {
+			t.Errorf("fullVersion(%q, %v) = %q, want %q", tt.commit, tt.settings, got, tt.want)
+		}
 	}
 }
 

@@ -6,7 +6,7 @@ gst links a user's machines into a private network over SSH: one background daem
 
 ## Commands
 
-- `make build`, `make test`, `make test-integration` (see `Makefile`).
+- `make build`, `make test`, `make test-integration`, `make release V=X.Y.Z` (see `Makefile`).
 - `nix develop` provides Go, gopls, Make, and OpenSSH. `nix build` builds gst;
   `nix flake check` runs the unit tests and both vet checks as part of the build.
 - After changing Go dependencies, update `vendorHash` in `flake.nix` using the
@@ -39,6 +39,16 @@ gst links a user's machines into a private network over SSH: one background daem
 - **No personal data.** Code, tests, docs, and commits use placeholders such as `myhost` and `ssh.example.com`, never real hostnames, users, or emails.
 - **Protocol.** `docs/design/mesh.md` specifies the design and the gst protocol. Extend the protocol with new methods, fields, and features; never change the frame format or the meaning of a field without raising `wire.Protocol`.
 - **Unit tests stay local.** `internal/cli` tests inject a fake daemon backend and resolver; `internal/daemon` tests run daemons on temporary sockets with fake link connections; `internal/sshconn` tests use an in-process SSH server; `internal/vnet` tests run real WireGuard over a fake mesh and interface; `internal/tun` tests use a fake system. Nothing installs a real service, contacts a real server, or touches a real interface. macOS's `utun`, routes, socket binding, and `/etc/resolver` are only exercised on a real Mac.
+
+## Versions
+
+Each version changes for its own reason, and only it:
+
+- **Release**: `const version` in `internal/cli/root.go`, the single source (`flake.nix` reads it). `make release V=X.Y.Z` sets it, runs the unit tests and vet, commits, and tags `vX.Y.Z`; push yourself. Raise the minor version with `wire.Protocol` or `config.Version`. README and design-doc examples are examples: leave their versions alone.
+- **Commit**: added to the release as `+a2ffc87[.dirty]` in `software`, for people only: Go's VCS stamp, or `-X internal/cli.commit` in nix, whose source has no `.git`.
+- **Build**: `daemon.Build`, the executable's SHA-256, is how a gst command decides the daemon runs another gst and restarts it.
+- **Protocol**: `wire.Protocol`, raised per the Protocol convention; nodes of different protocols refuse each other, naming both `software`.
+- **Helper**: `tun.HelperVersion`, raised only when the helper's code or the daemon's requests of it change, since updating the helper takes root.
 
 ## Integration tests
 

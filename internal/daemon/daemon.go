@@ -34,7 +34,7 @@ import (
 type Config struct {
 	ConfigPath string // the gst configuration file
 	Socket     string // control socket path
-	Software   string // reported in Hello and Status, such as "gst 0.3.0"
+	Software   string // reported in Hello and Status, such as "gst 0.5.0+a2ffc87"
 	Build      string // identifies the executable; see Build
 
 	// Connect opens a connection to the daemon on the machine of the link

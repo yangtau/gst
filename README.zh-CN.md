@@ -4,7 +4,7 @@
 
 `gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有网络。体验接近 Tailscale，直接使用你已有的 SSH 登录：每台机器都在一个 WireGuard 网络上拥有 IP 地址和名字 `<machine>.gst`，所有程序和协议都能用。网络允许时，包经 UDP 直连，否则经 SSH link 传送。支持 Linux 和 macOS，每台机器需要用一次 root。
 
-- 每台机器都运行 gst（所有机器都需要 0.4 或更高版本）和一个小的后台 daemon。
+- 每台机器都运行 gst（所有机器的 gst 协议版本相同）和一个小的后台 daemon。
 - **link** 是从一台机器到另一台同样运行 gst 的机器的 SSH 连接。相连的机器会互相转告各自知道的信息，所以每台机器都能经由它们之间的 link 到达其他所有机器：`laptop` 有到 `homelab` 和 `devbox` 的 link 时，`homelab` 经由 `laptop` 就能到达 `devbox`，不需要 `devbox` 的任何凭据。
 - link 只负责发现机器、传递机器之间的信息。你的程序发出的所有内容都是端到端的 WireGuard，走两条路之一：两台机器之间经 link 找到的 UDP 路径，或者没有这种路径时的 SSH link。
 
@@ -30,7 +30,7 @@ nix profile add .         # 从本地项目安装
 
 Nix 包附带 Bash、Zsh 和 Fish 的补全脚本；其他方式安装时用 `gst completion bash|zsh|fish` 生成。
 
-运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.4.0`。
+运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.5.0+a2ffc87 (protocol 4)`：依次是发布版本、构建所用的 commit（构建时有未提交的修改则带 `.dirty`）和 gst 协议版本。只有协议版本相同的机器才能连接。
 
 mesh 中的每台机器都要安装 gst，并确保 gst 在 ssh 在该机器上启动的登录 shell 的 `PATH` 中（不在时见 `--remote-gst`）。后台 daemon 会记住 gst 的路径。升级或移动 gst 后，执行 `gst up`，用新的 gst 重启 daemon；任何修改配置的命令也会这样做。
 
@@ -58,7 +58,7 @@ gst 在后台运行，不能输入口令，也不能确认未知的主机密钥�
 
 3. **known_hosts 里有该机器的主机密钥**：先用 `ssh devbox` 连接一次，核对并接受主机密钥。
 
-4. **那台机器上有 gst 0.4 或更高版本，并在那里执行过一次 `gst up`。** 它不需要自己的 link。gst 绝不替别的机器做设置：那里没执行过 `gst up` 时，`gst add` 会说明并给出命令，执行之后 link 自动连上。
+4. **那台机器上有协议版本相同的 gst，并在那里执行过一次 `gst up`。** 它不需要自己的 link。gst 绝不替别的机器做设置：那里没执行过 `gst up` 时，`gst add` 会说明并给出命令，执行之后 link 自动连上。
 
 这些只对创建 link 的机器有要求；被连接的机器只需要 gst、执行过 `gst up` 和能执行命令的 sshd（gst 使用登录会话而不是端口转发，所以 sshd 的 `AllowTcpForwarding` 不影响它）。对每个会话都强制执行固定命令的服务器无法被连接。
 
@@ -266,7 +266,7 @@ gst add devbox               # 在原来有 link 的机器上
 
 - `gst up` 会替换 0.3 的 daemon。每台机器得到新的身份，用 `gst name` 重新设置名字。
 - 原来用 map 或代理的地方，改用 `devbox.gst` 到达那台机器；只监听 loopback 或 Unix socket 的程序见[虚拟网络](#虚拟网络)中的“服务”。
-- 把你连接的所有机器一起升级。gst 协议现在是版本 3，gst 拒绝与更旧的版本通信，并提示 `speaks an older gst protocol; upgrade gst there to 0.4 or later`。
+- 把你连接的所有机器一起升级。gst 拒绝与协议版本不同的 gst 通信，并同时指出双方，例如 `gst 0.4.0 speaks gst protocol 3 and gst 0.5.0 speaks 4; upgrade gst on the older side`。
 - `gst net on`、`gst net off` 和 `gst net status` 都已移除：网络总是开启。`gst subnet` 取代 `--subnet`，`gst status --all` 显示 peer，`gst up` 取代 `sudo gst net install`。
 
 ## 排查问题
@@ -280,10 +280,10 @@ gst add devbox               # 在原来有 link 的机器上
 | 主机密钥不匹配 | 确认该机器的密钥确实更换后，执行 `ssh-keygen -R <host>`，再用 `ssh` 连接一次 |
 | link 为 `down`，错误来自对方 gst，例如 command not found | gst 不在 ssh 在那里启动的登录 shell 的 `PATH` 中。安装它，或指定路径：先 `gst remove devbox`，再 `gst add devbox --remote-gst ~/.nix-profile/bin/gst` |
 | link 为 `down`，错误是 `gst is not up on this machine; run gst up there`，或者 `gst add` 这样提示 | 在对方机器上执行 `gst up`，例如 `ssh -t <destination> gst up`；之后 link 自动连上 |
-| `speaks an older gst protocol; upgrade gst there to 0.4 or later` | 升级它指出的那台机器上的 gst（每条 link 的两端都要 0.4） |
+| `speaks gst protocol 3 and … speaks 4; upgrade gst on the older side` | 升级协议版本较旧那台机器上的 gst；每条 link 的两端协议版本必须相同 |
 | `config version 3 is too old` | 删除它指出的文件，重新添加 link（见[从 0.3 升级](#从-03-升级)） |
 | `no route to ...: no running links lead there` | 没有运行中的 link 把本机和那台机器连起来。检查 `gst status`（机器不在列表里，以及未运行的 link） |
-| `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行 0.4 或更新版本的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
+| `gst status <machine>` 或 `gst ping <machine>` 失败 | 那台机器必须可达，并运行协议版本相同的 gst 且 daemon 在运行；用 `gst status` 查看到它的路径 |
 | `the gst daemon does not answer` | 执行 `gst up`；查看 daemon 日志（`journalctl --user -u gst` 或 `~/Library/Logs/gst-daemon.log`） |
 | 机器名匹配到多台机器 | 使用 `gst status` 中的 id 或 id 前缀 |
 | `the helper of the virtual network does not run` | 执行 `gst up`，之后机器会自动加入 |
