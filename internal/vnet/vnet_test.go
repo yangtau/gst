@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,29 @@ func TestPacketsToThisMachine(t *testing.T) {
 	wantPacket(t, a, b, "after")
 }
 
+func TestConflict(t *testing.T) {
+	subnet := prefix("192.168.199.0/24")
+	for _, c := range []struct {
+		name     string
+		networks Networks
+		want     string // what conflicts; none when empty
+	}{
+		{"a network inside", Networks{Interfaces: []netip.Prefix{prefix("192.168.199.0/25")}}, "192.168.199.0/25"},
+		{"a network around", Networks{Interfaces: []netip.Prefix{prefix("192.168.0.0/16")}}, "192.168.0.0/16"},
+		{"another network", Networks{Interfaces: []netip.Prefix{prefix("192.168.31.0/24")}}, ""},
+		{"a route inside", Networks{Routes: []netip.Prefix{prefix("192.168.199.7/32")}}, "192.168.199.7/32"},
+		{"the same route", Networks{Routes: []netip.Prefix{prefix("192.168.199.0/24")}}, "192.168.199.0/24"},
+		// A VPN that takes all addresses, in halves, apart from private
+		// networks, which go to the local router.
+		{"wider routes", Networks{Routes: []netip.Prefix{prefix("128.0.0.0/1"), prefix("192.168.0.0/16")}}, ""},
+	} {
+		p, found := conflict(subnet, c.networks)
+		if got := map[bool]string{true: p.String()}[found]; got != c.want {
+			t.Errorf("%s: conflicts with %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestChooseSubnet(t *testing.T) {
 	a, ok := chooseSubnet("one", nil)
 	if !ok || !prefix("10.0.0.0/8").Contains(a.Addr()) || a.Bits() != 16 {
@@ -63,18 +87,26 @@ func TestChooseSubnet(t *testing.T) {
 	if b, _ := chooseSubnet("one", nil); b != a {
 		t.Fatal("the choice is not stable")
 	}
-	used := []netip.Prefix{a, prefix("192.168.1.0/24")}
+	used := []Networks{{Interfaces: []netip.Prefix{a, prefix("192.168.1.0/24")}}}
 	b, ok := chooseSubnet("one", used)
 	if !ok || b == a {
 		t.Fatalf("chose %v, %v with %v in use", b, ok, a)
 	}
 	// All of 10/8 in use leaves the rest.
-	c, ok := chooseSubnet("one", []netip.Prefix{prefix("10.0.0.0/8")})
+	c, ok := chooseSubnet("one", []Networks{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8")}}})
 	if !ok || !prefix("172.16.0.0/12").Contains(c.Addr()) {
 		t.Fatalf("chose %v, %v", c, ok)
 	}
-	if d, ok := chooseSubnet("one", []netip.Prefix{prefix("10.0.0.0/8"), prefix("172.16.0.0/12")}); ok {
+	if d, ok := chooseSubnet("one", []Networks{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8"), prefix("172.16.0.0/12")}}}); ok {
 		t.Fatalf("chose %v with nothing free", d)
+	}
+	// A wide route may lead to machines, so it is avoided when it can be,
+	// but it takes no addresses.
+	if d, ok := chooseSubnet("one", []Networks{{Routes: []netip.Prefix{prefix("10.0.0.0/8")}}}); !ok || !prefix("172.16.0.0/12").Contains(d.Addr()) {
+		t.Fatalf("chose %v, %v beside a route to 10.0.0.0/8", d, ok)
+	}
+	if d, ok := chooseSubnet("one", []Networks{{Routes: []netip.Prefix{prefix("0.0.0.0/1"), prefix("128.0.0.0/1")}}}); d != a || !ok {
+		t.Fatalf("chose %v, %v beside routes to all addresses", d, ok)
 	}
 }
 
@@ -106,7 +138,8 @@ func TestNewer(t *testing.T) {
 }
 
 func TestLocalNetworksLeaveOutWhatCannotConflict(t *testing.T) {
-	for _, p := range LocalNetworks("") {
+	n := LocalNetworks("")
+	for _, p := range slices.Concat(n.Interfaces, n.Routes) {
 		if p.Bits() == 0 || p.Addr().IsLoopback() || !p.Addr().Is4() {
 			t.Errorf("LocalNetworks has %s", p)
 		}
@@ -206,7 +239,7 @@ type fakeMesh struct {
 	net      *wire.NetInfo
 	changed  chan struct{}
 	handle   func(string, []byte)
-	networks []string
+	networks wire.Networks
 	alone    bool   // sees no other node, and none sees it
 	sendAs   string // the id that packets seem to come from, when not empty
 }
@@ -270,7 +303,7 @@ func (m *fakeMesh) Call(_ context.Context, ref, method string, _, result any) er
 	defer m.world.mu.Unlock()
 	for _, n := range m.world.nodes {
 		if n.info.ID == ref {
-			result.(*wire.Networks).Prefixes = n.networks
+			*result.(*wire.Networks) = n.networks
 			return nil
 		}
 	}
@@ -353,7 +386,7 @@ func start(t *testing.T, w *world, id, name string, networks ...netip.Prefix) *t
 	t.Helper()
 	n := &testNode{mesh: w.add(id, name), dir: t.TempDir()}
 	for _, p := range networks {
-		n.mesh.networks = append(n.mesh.networks, p.String())
+		n.mesh.networks.Interfaces = append(n.mesh.networks.Interfaces, p.String())
 	}
 	n.run(t, networks...)
 	return n
@@ -371,7 +404,7 @@ func (n *testNode) run(t *testing.T, networks ...netip.Prefix) {
 			n.iface = f
 			return f, nil
 		},
-		Networks: func(string) []netip.Prefix { return networks },
+		Networks: func(string) Networks { return Networks{Interfaces: networks} },
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -477,7 +510,7 @@ func TestChoosingASubnetAsksTheOthers(t *testing.T) {
 	// Whatever the first choice would be, it is taken on the other machine.
 	var w world
 	first, _ := chooseSubnet("a0"+strings.Repeat("0", 30), nil)
-	w.add("b0", "devbox").networks = []string{first.String()}
+	w.add("b0", "devbox").networks.Interfaces = []string{first.String()}
 	a := start(t, &w, "a0", "laptop")
 	waitFor(t, "a is up", up(a, 0))
 	if got := a.manager.Status().Subnet; got == first.String() {
@@ -699,7 +732,9 @@ func TestProblemsAreReported(t *testing.T) {
 			}
 			return newFakeInterface(spec), nil
 		},
-		Networks: func(string) []netip.Prefix { return []netip.Prefix{prefix("10.80.0.0/24")} },
+		Networks: func(string) Networks {
+			return Networks{Routes: []netip.Prefix{prefix("10.80.0.0/24"), prefix("128.0.0.0/1")}}
+		},
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

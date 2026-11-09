@@ -77,9 +77,9 @@ type Config struct {
 	StatePath string // holds this identity's private key and what the node settled on
 	// Open sets up the interface; the network cannot run when it is nil.
 	Open func(tun.Spec) (Interface, error)
-	// Networks returns the prefixes in use on this machine, without the
+	// Networks returns the networks of this machine, without the
 	// interface called skip; LocalNetworks when nil.
-	Networks func(skip string) []netip.Prefix
+	Networks func(skip string) Networks
 	// DNS is the UDP address to answer on; no DNS when empty.
 	DNS string
 	// Echo is the UDP port on this machine's address that answers Ping;
@@ -190,9 +190,13 @@ func (m *Manager) Status() *wire.NetState {
 
 // Networks reports what the subnet must not overlap on this machine.
 func (m *Manager) Networks() wire.Networks {
-	list := wire.Networks{Prefixes: []string{}}
-	for _, p := range m.cfg.Networks(m.interfaceName()) {
-		list.Prefixes = append(list.Prefixes, p.String())
+	n := m.cfg.Networks(m.interfaceName())
+	list := wire.Networks{Interfaces: []string{}, Routes: []string{}}
+	for _, p := range n.Interfaces {
+		list.Interfaces = append(list.Interfaces, p.String())
+	}
+	for _, p := range n.Routes {
+		list.Routes = append(list.Routes, p.String())
 	}
 	return list
 }
@@ -291,13 +295,13 @@ type hintError struct {
 
 func (e *hintError) Error() string { return e.text }
 
-// conflict says what on this machine overlaps the subnet.
+// conflict says what on this machine takes addresses of the subnet.
 func (m *Manager) conflict() error {
 	subnet, err := netip.ParsePrefix(m.state.Subnet)
 	if err != nil {
 		return nil
 	}
-	if p, found := overlaps(subnet, m.cfg.Networks(m.name)); found {
+	if p, found := conflict(subnet, m.cfg.Networks(m.name)); found {
 		return &hintError{fmt.Sprintf("the subnet %s overlaps %s on this machine", subnet, p), "choose another subnet with `gst subnet <cidr>`"}
 	}
 	return nil
@@ -428,10 +432,10 @@ func (m *Manager) settle(ctx context.Context, c *config.Net, self wire.NodeInfo,
 	return m.save()
 }
 
-// chooseSubnet finds a subnet that overlaps nothing on the machines that
-// answer now, for the first node of the network.
+// chooseSubnet finds a subnet that conflicts with nothing on the machines
+// that answer now, for the first node of the network.
 func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wire.Topology) (netip.Prefix, error) {
-	used := m.cfg.Networks("")
+	used := []Networks{m.cfg.Networks("")}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, n := range topo.Nodes {
@@ -444,7 +448,7 @@ func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wir
 			var networks wire.Networks
 			if m.cfg.Mesh.Call(ctx, n.ID, wire.MethodNetNetworks, nil, &networks) == nil {
 				mu.Lock()
-				used = append(used, usedPrefixes(networks.Prefixes)...)
+				used = append(used, usedNetworks(networks))
 				mu.Unlock()
 			}
 		})

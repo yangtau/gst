@@ -52,7 +52,7 @@ type Config struct {
 	OpenNet  func(tun.Spec) (vnet.Interface, error)
 	NetDNS   string
 	NetEcho  int // the UDP port that answers gst ping
-	Networks func(skip string) []netip.Prefix
+	Networks func(skip string) vnet.Networks
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
 	RetryDelay time.Duration

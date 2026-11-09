@@ -35,8 +35,8 @@ func (a *app) subnetCommand() *cobra.Command {
 		Use:   "subnet [cidr]",
 		Short: "Show or change the subnet of the virtual network",
 		Long: `Show the private subnet that the machines of the mesh share, or change it
-for all of them. The first machine chooses a /16 that overlaps nothing on
-the machines that answer; later ones take the subnet of the others.
+for all of them. The first machine chooses a /16 that the machines that
+answer do not use; later ones take the subnet of the others.
 
 The latest choice wins, on every machine of the network, and they all
 change their addresses to it. It must be private: inside 10.0.0.0/8,

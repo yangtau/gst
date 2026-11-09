@@ -6,20 +6,30 @@ import (
 	"slices"
 )
 
-// LocalNetworks returns the IPv4 prefixes in use on this machine: those
-// of its interfaces and routes, apart from the interface called skip,
-// which is the virtual network's own.
-func LocalNetworks(skip string) []netip.Prefix {
-	var out []netip.Prefix
-	add := func(p netip.Prefix) {
+// Networks are the IPv4 networks in use on a machine, which the subnet
+// must leave alone (see conflict).
+type Networks struct {
+	// Interfaces are the networks of its interfaces, where other machines
+	// may have any of the addresses.
+	Interfaces []netip.Prefix
+	// Routes are the destinations of its routes, which may be as wide as
+	// half of all addresses, as VPNs route them.
+	Routes []netip.Prefix
+}
+
+// LocalNetworks returns the networks of this machine, apart from those of
+// the interface called skip, which is the virtual network's own.
+func LocalNetworks(skip string) Networks {
+	var out Networks
+	add := func(list *[]netip.Prefix, p netip.Prefix) {
 		p = p.Masked()
 		a := p.Addr()
 		// A default route says nothing of the addresses it leads to, and
 		// the rest are never private addresses.
-		if !a.Is4() || p.Bits() == 0 || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || slices.Contains(out, p) {
+		if !a.Is4() || p.Bits() == 0 || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || slices.Contains(*list, p) {
 			return
 		}
-		out = append(out, p)
+		*list = append(*list, p)
 	}
 	interfaces, _ := net.Interfaces()
 	for _, i := range interfaces {
@@ -32,12 +42,12 @@ func LocalNetworks(skip string) []netip.Prefix {
 		}
 		for _, a := range addrs {
 			if p, err := netip.ParsePrefix(a.String()); err == nil {
-				add(netip.PrefixFrom(p.Addr().Unmap(), p.Bits()))
+				add(&out.Interfaces, netip.PrefixFrom(p.Addr().Unmap(), p.Bits()))
 			}
 		}
 	}
 	for _, p := range routes(skip) {
-		add(p)
+		add(&out.Routes, p)
 	}
 	return out
 }

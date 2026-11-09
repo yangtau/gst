@@ -98,9 +98,11 @@ type PacketsParams struct {
 	Node string `json:"node"` // the caller's id
 }
 
-// Networks lists the IP prefixes in use on a machine.
+// Networks lists the IPv4 prefixes in use on a machine: the networks of
+// its interfaces, and the destinations of its routes.
 type Networks struct {
-	Prefixes []string `json:"prefixes"`
+	Interfaces []string `json:"interfaces"`
+	Routes     []string `json:"routes"`
 }
 
 // Edge is one of a node's running links.

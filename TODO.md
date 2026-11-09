@@ -36,21 +36,3 @@ UDP 路径应该只走本机真实 IP，不走任何 VPN 或代理：TUN 代理�
 `vnet.bind` 已经按批次拿到包，但 `Send` 把批次拆开，经 mesh 逐包写 UDP。Linux 上可以把批次传到 socket，用 `sendmmsg`、`recvmmsg`，再评估 UDP GSO/GRO。Tailscale 的实现在 `net/batching`，没有 macOS 后端。
 
 先看 `gst ping -v` 的丢包计数和 CPU，确认是瓶颈再做。
-
-mini in ~
-❯ gst status --all
-f46a584f mini gst 0.4.0 192.168.199.158 -
-e6dbe8cf devcn gst 0.4.0 192.168.199.202 online; via m3
-87e715c4 m3 gst 0.4.0 192.168.199.127 online; direct
-
-LINK
-m3->devcn
-m3->mini
-
-MACHINE ADDRESS PATH HANDSHAKE RECEIVED SENT
-devcn 192.168.199.202 ssh never 0 B 0 B
-m3 192.168.199.127 direct [2408:8666:ba01:802::2c]:15355 42s ago 138.7 KiB 164.4 KiB
-
-# Problems:
-
-# - virtual network: the subnet 192.168.199.0/24 overlaps 128.0.0.0/1 on this machine; choose another subnet with `gst subnet <cidr>`
