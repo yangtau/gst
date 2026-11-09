@@ -21,14 +21,22 @@
           default = self.packages.${system}.gst;
           gst = (pkgs.buildGo126Module {
             pname = "gst";
-            # The release is internal/cli/root.go's; see AGENTS.md.
+            # The release is internal/cli/version.go's; see AGENTS.md.
             version = builtins.head (builtins.match ".*const version = \"([^\"]+)\".*"
-              (builtins.readFile ./internal/cli/root.go));
+              (builtins.readFile ./internal/cli/version.go));
             src = pkgs.lib.cleanSource ./.;
             vendorHash = "sha256-VY6UngF15Y2pARje0/3xJ322rLjCvKYocNDQInDnplw=";
             subPackages = [ "cmd/gst" ];
             # cleanSource drops .git, so Go cannot stamp the commit.
-            ldflags = [ "-X github.com/yangtau/ssh-tunnel/internal/cli.commit=${self.shortRev or self.dirtyShortRev or ""}" ];
+            ldflags =
+              let
+                d = self.lastModifiedDate or "";
+                at = pkgs.lib.optionalString (d != "") (with builtins;
+                  "${substring 0 4 d}-${substring 4 2 d}-${substring 6 2 d}T${substring 8 2 d}:${substring 10 2 d}:${substring 12 2 d}Z");
+              in [
+                "-X github.com/yangtau/ssh-tunnel/internal/cli.commit=${self.rev or self.dirtyRev or ""}"
+                "-X github.com/yangtau/ssh-tunnel/internal/cli.committed=${at}"
+              ];
 
             nativeBuildInputs = [ pkgs.installShellFiles ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.darwin.cctools ];

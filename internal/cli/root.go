@@ -2,60 +2,12 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
-	"runtime/debug"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
-
-// version is the gst release. `make release` sets it; see AGENTS.md.
-const version = "0.5.0"
-
-// commit is the git commit gst is built from, for builds without Go's
-// VCS stamp, such as nix's: -ldflags "-X <this package>.commit=...".
-var commit string
-
-// software names this gst for people, in gst version, gst status, and the
-// handshake: the release, the commit, and whether the tree had changes,
-// such as "gst 0.5.0+a2ffc87.dirty". Only the build tells executables apart.
-var software = "gst " + fullVersion(version, commit, buildSettings())
-
-func buildSettings() map[string]string {
-	settings := map[string]string{}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			settings[s.Key] = s.Value
-		}
-	}
-	return settings
-}
-
-// fullVersion adds the commit to release as semver build metadata: commit
-// when set, else the VCS stamp in settings, else nothing.
-func fullVersion(release, commit string, settings map[string]string) string {
-	dirty := false
-	if commit == "" {
-		commit, dirty = settings["vcs.revision"], settings["vcs.modified"] == "true"
-	} else if c, ok := strings.CutSuffix(commit, "-dirty"); ok {
-		// nix's dirtyShortRev
-		commit, dirty = c, true
-	}
-	if commit == "" {
-		return release
-	}
-	if len(commit) > 7 {
-		commit = commit[:7]
-	}
-	if dirty {
-		commit += ".dirty"
-	}
-	return release + "+" + commit
-}
 
 func (a *app) rootCommand() *cobra.Command {
 	// Help lists commands in the order they are added, grouped by task.
@@ -106,14 +58,7 @@ report state accept --json.`,
 	}
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
 	addGroup("network", a.subnetCommand(), a.exposeCommand())
-	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
-		Use:   "version",
-		Short: "Show the gst version",
-		Args:  a.args(0, 0),
-		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintf(a.stdout, "gst version %s (protocol %d)\n", strings.TrimPrefix(software, "gst "), wire.Protocol)
-		},
-	})
+	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), a.versionCommand())
 	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.installCommand(), a.uninstallCommand(), a.netHelperCommand(), a.helperVersionCommand())
 	setHelpColors(root)
 	return root

@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -17,8 +19,10 @@ func TestVersion(t *testing.T) {
 	if code := a.execute(context.Background(), []string{"version"}); code != exitOK {
 		t.Fatalf("version exited %d: %s", code, &stderr)
 	}
-	if got, want := stdout.String(), fmt.Sprintf("gst version %s (protocol %d)\n", strings.TrimPrefix(software, "gst "), wire.Protocol); got != want {
-		t.Fatalf("version output = %q, want %q", got, want)
+	var want bytes.Buffer
+	built.write(&want)
+	if got := stdout.String(); got != want.String() || !strings.HasPrefix(got, "gst "+version+"\n") {
+		t.Fatalf("version output = %q, want %q", got, &want)
 	}
 	if !strings.HasPrefix(software, "gst "+version) {
 		t.Fatalf("software = %q, want the release %s", software, version)
@@ -26,30 +30,50 @@ func TestVersion(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", &stderr)
 	}
+
+	stdout.Reset()
+	if code := a.execute(context.Background(), []string{"version", "--json"}); code != exitOK {
+		t.Fatalf("version --json exited %d: %s", code, &stderr)
+	}
+	var got buildInfo
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || got != built {
+		t.Fatalf("version --json = %s (%v), want %+v", &stdout, err, built)
+	}
 }
 
-func TestFullVersion(t *testing.T) {
+func TestBuildInfo(t *testing.T) {
 	const rev = "a2ffc87e0123456789abcdef0123456789abcdef"
+	const at = "2026-11-09T08:12:00Z"
 	for _, tt := range []struct {
 		commit   string
 		settings map[string]string
-		want     string
+		short    string
+		text     string
 	}{
-		{"", nil, "0.5.0"},
-		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "false"}, "0.5.0+a2ffc87"},
-		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "true"}, "0.5.0+a2ffc87.dirty"},
-		{"a2ffc87", map[string]string{"vcs.revision": "ffffffffff"}, "0.5.0+a2ffc87"},
-		{"a2ffc87-dirty", nil, "0.5.0+a2ffc87.dirty"},
+		{"", nil, version, ""},
+		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "false", "vcs.time": at},
+			version + "+a2ffc87", "commit: " + rev + "\ncommitted: " + at + "\n"},
+		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "true", "vcs.time": at},
+			version + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
+		{rev + "-dirty", map[string]string{"vcs.revision": "ffffffffff"},
+			version + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
 	} {
-		if got := fullVersion("0.5.0", tt.commit, tt.settings); got != tt.want {
-			t.Errorf("fullVersion(%q, %v) = %q, want %q", tt.commit, tt.settings, got, tt.want)
+		b := readBuildInfo(tt.commit, at, tt.settings)
+		if got := b.short(); got != tt.short {
+			t.Errorf("short(%q, %v) = %q, want %q", tt.commit, tt.settings, got, tt.short)
+		}
+		var out bytes.Buffer
+		b.write(&out)
+		want := fmt.Sprintf("gst %s\n%sprotocol: %d\nhelper: %d\n", version, tt.text, wire.Protocol, tun.HelperVersion)
+		if out.String() != want {
+			t.Errorf("write(%q, %v) = %q, want %q", tt.commit, tt.settings, &out, want)
 		}
 	}
 }
 
 func TestVersionRejectsArgumentsAndFlags(t *testing.T) {
 	e := newEnv(t)
-	for _, args := range [][]string{{"version", "extra"}, {"version", "--json"}, {"-v"}, {"--version"}} {
+	for _, args := range [][]string{{"version", "extra"}, {"-v"}, {"--version"}} {
 		e.expectCode(exitUsage, args...)
 	}
 }

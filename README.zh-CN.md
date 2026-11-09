@@ -30,7 +30,17 @@ nix profile add .         # 从本地项目安装
 
 Nix 包附带 Bash、Zsh 和 Fish 的补全脚本；其他方式安装时用 `gst completion bash|zsh|fish` 生成。
 
-运行 `gst version` 查看已安装的版本，例如输出 `gst version 0.5.0+a2ffc87 (protocol 4)`：依次是发布版本、构建所用的 commit（构建时有未提交的修改则带 `.dirty`）和 gst 协议版本。只有协议版本相同的机器才能连接。
+运行 `gst version` 查看已安装的版本：
+
+```
+gst 0.5.0
+commit: d65d699c4e3f2b1a0987654321fedcba01234567
+committed: 2026-11-09T08:12:00Z
+protocol: 4
+helper: 1
+```
+
+依次是发布版本、构建所用的 commit（构建时有未提交的修改则标 `(dirty)`）和该 commit 的时间、gst 协议版本，以及 `gst up` 安装的 helper 的版本。只有协议版本相同的机器才能连接。`gst status` 显示每台机器的发布版本加短 commit，例如 `gst 0.5.0+d65d699`。
 
 mesh 中的每台机器都要安装 gst，并确保 gst 在 ssh 在该机器上启动的登录 shell 的 `PATH` 中（不在时见 `--remote-gst`）。后台 daemon 会记住 gst 的路径。升级或移动 gst 后，执行 `gst up`，用新的 gst 重启 daemon；任何修改配置的命令也会这样做。
 
@@ -208,7 +218,7 @@ link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向�
 | `gst up [--yes]` | 现在运行 daemon，并在登录时运行；helper 缺失或过期时，说明 `sudo` 要执行什么并询问后安装 |
 | `gst down` | 撤销 `gst up`：停止 daemon，删除它的服务和 helper；其他机器不能连接本机 |
 | `gst ui [--port N] [--no-open]` | 在浏览器中显示本机状态、mesh 和任意机器的 link |
-| `gst version` | 显示 gst 版本 |
+| `gst version` | 显示 gst 的发布版本、commit、协议版本和 helper 版本（`--json`） |
 
 每个命令都接受 `--config <file>`。`status` 和 `ping` 接受 `--json`；`gst status --json` 打印 `{"self": <本机状态>, "mesh": <机器和 link>}`。
 

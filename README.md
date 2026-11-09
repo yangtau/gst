@@ -30,7 +30,17 @@ nix profile add .         # install from the local checkout
 
 The Nix package includes completion scripts for Bash, Zsh, and Fish; `gst completion bash|zsh|fish` generates them otherwise.
 
-Run `gst version` to print the installed version, for example `gst version 0.5.0+a2ffc87 (protocol 4)`: the release, the commit it was built from (`.dirty` when built with uncommitted changes), and the gst protocol. Machines link only when they speak the same protocol.
+Run `gst version` to print the installed version:
+
+```
+gst 0.5.0
+commit: d65d699c4e3f2b1a0987654321fedcba01234567
+committed: 2026-11-09T08:12:00Z
+protocol: 4
+helper: 1
+```
+
+That is the release, the commit it was built from (marked `(dirty)` when built with uncommitted changes) and that commit's time, the gst protocol, and the version of the helper that `gst up` installs. Machines link only when they speak the same protocol. `gst status` shows each machine's release with the short commit, such as `gst 0.5.0+d65d699`.
 
 Install gst on every machine of the mesh, and make sure it is in the `PATH` of the login shell that ssh starts there (see `--remote-gst` if it is not). The background daemon remembers the path of gst. After upgrading or moving gst, run `gst up` to restart the daemon with the new gst; any command that changes the configuration does so too.
 
@@ -208,7 +218,7 @@ Links show as the machines at their ends, such as `laptop->gateway`; when a link
 | `gst up [--yes]` | Run the daemon now and at login; when the helper is missing or out of date, say what `sudo` will run, ask, and install it |
 | `gst down` | Undo `gst up`: stop the daemon, remove its service and the helper; other machines cannot link to this one |
 | `gst ui [--port N] [--no-open]` | Show this machine's status, the mesh, and any machine's links, in a browser |
-| `gst version` | Show the gst version |
+| `gst version` | Show the gst release, commit, protocol, and helper version (`--json`) |
 
 Every command accepts `--config <file>`. `status` and `ping` accept `--json`; `gst status --json` prints `{"self": <this machine's status>, "mesh": <the machines and links>}`.
 

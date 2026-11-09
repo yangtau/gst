@@ -1,5 +1,5 @@
 #!/bin/sh
-# Release gst VERSION: set the version in internal/cli/root.go, run the unit
+# Release gst VERSION: set the version in internal/cli/version.go, run the unit
 # tests and vet, commit, and tag. It pushes nothing.
 set -eu
 
@@ -16,7 +16,7 @@ cd "$(git rev-parse --show-toplevel)"
 [ -z "$(git status --porcelain)" ] || fail "the working tree has changes; commit them first"
 ! git rev-parse -q --verify "refs/tags/v$v" >/dev/null || fail "tag v$v exists"
 
-file=internal/cli/root.go
+file=internal/cli/version.go
 old=$(sed -n 's/^const version = "\(.*\)"$/\1/p' "$file")
 [ -n "$old" ] || fail "no 'const version' in $file"
 [ "$(printf '%s\n%s\n' "$old" "$v" | sort -V | tail -n 1)" = "$v" ] && [ "$old" != "$v" ] ||

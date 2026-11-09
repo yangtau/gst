@@ -44,8 +44,8 @@ gst links a user's machines into a private network over SSH: one background daem
 
 Each version changes for its own reason, and only it:
 
-- **Release**: `const version` in `internal/cli/root.go`, the single source (`flake.nix` reads it). `make release V=X.Y.Z` sets it, runs the unit tests and vet, commits, and tags `vX.Y.Z`; push yourself. Raise the minor version with `wire.Protocol` or `config.Version`. README and design-doc examples are examples: leave their versions alone.
-- **Commit**: added to the release as `+a2ffc87[.dirty]` in `software`, for people only: Go's VCS stamp, or `-X internal/cli.commit` in nix, whose source has no `.git`.
+- **Release**: `const version` in `internal/cli/version.go`, the single source (`flake.nix` reads it). `make release V=X.Y.Z` sets it, runs the unit tests and vet, commits, and tags `vX.Y.Z`; push yourself. Raise the minor version with `wire.Protocol` or `config.Version`. README and design-doc examples are examples: leave their versions alone.
+- **Commit**: for people only. `gst version` prints it in full with its time; `software` (`gst status`, the handshake) adds it to the release as `+a2ffc87[.dirty]`. It comes from Go's VCS stamp, or in nix, whose source has no `.git`, from `-X internal/cli.commit` and `.committed`.
 - **Build**: `daemon.Build`, the executable's SHA-256, is how a gst command decides the daemon runs another gst and restarts it.
 - **Protocol**: `wire.Protocol`, raised per the Protocol convention; nodes of different protocols refuse each other, naming both `software`.
 - **Helper**: `tun.HelperVersion`, raised only when the helper's code or the daemon's requests of it change, since updating the helper takes root.
