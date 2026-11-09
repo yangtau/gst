@@ -33,7 +33,8 @@ type File struct {
 	Links map[string]*Link `json:"links"`
 	// Net is what the user chose for the virtual network; nil leaves it
 	// to the machines.
-	Net *Net `json:"net,omitempty"`
+	Net     *Net     `json:"net,omitempty"`
+	Exposes []Expose `json:"exposes,omitempty"`
 }
 
 // Net is what the user chose for the virtual network.
@@ -156,6 +157,16 @@ func (f *File) validate() error {
 		if err := l.Validate(); err != nil {
 			return fmt.Errorf("link %s: %w", name, err)
 		}
+	}
+	seen := map[string]bool{}
+	for _, e := range f.Exposes {
+		if err := e.Validate(); err != nil {
+			return err
+		}
+		if seen[e.Key()] {
+			return errors.New("duplicate expose port and protocol")
+		}
+		seen[e.Key()] = true
 	}
 	if f.Net != nil {
 		if _, err := ParseSubnet(f.Net.Subnet); err != nil {

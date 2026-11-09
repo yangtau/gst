@@ -39,6 +39,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/expose"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
@@ -95,12 +96,18 @@ type state struct {
 	Address    string `json:"address,omitempty"`
 }
 
+type settings struct {
+	net     *config.Net
+	exposes []config.Expose
+}
+
 // Manager keeps the network as the configuration and the mesh say.
 type Manager struct {
-	cfg    Config
-	config atomic.Pointer[config.Net]
-	wake   chan chan struct{} // for Run to look now, and to close the channel then
-	status atomic.Pointer[wire.NetState]
+	cfg     Config
+	exposes expose.Manager
+	config  atomic.Pointer[settings]
+	wake    chan chan struct{} // for Run to look now, and to close the channel then
+	status  atomic.Pointer[wire.NetState]
 
 	running atomic.Bool
 	ended   chan struct{} // closed when Run returns
@@ -146,11 +153,11 @@ func New(cfg Config) *Manager {
 	return &Manager{cfg: cfg, wake: make(chan chan struct{}), ended: make(chan struct{}), peers: map[string]peer{}}
 }
 
-// Configure sets what the user chose for the network, which may be nil.
+// Configure sets the chosen subnet (which may be nil) and exposed ports.
 // Once Run runs, it waits until Run acted on c, so that Status tells how
 // that went.
-func (m *Manager) Configure(ctx context.Context, c *config.Net) {
-	m.config.Store(c)
+func (m *Manager) Configure(ctx context.Context, c *config.Net, rules ...config.Expose) {
+	m.config.Store(&settings{net: c, exposes: slices.Clone(rules)})
 	if !m.running.Load() {
 		return
 	}
@@ -221,6 +228,18 @@ func (m *Manager) Run(ctx context.Context) {
 
 func (m *Manager) reconcile(ctx context.Context) {
 	self := m.cfg.Mesh.Self()
+	cfg := m.config.Load()
+	if cfg == nil {
+		cfg = &settings{}
+	}
+	ready := false
+	defer func() {
+		address := ""
+		if ready {
+			address = m.state.Address
+		}
+		m.exposes.Apply(ctx, address, cfg.exposes)
+	}()
 	if m.cfg.Open == nil || self.ID == "" {
 		return
 	}
@@ -235,7 +254,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 		return
 	}
 	topo := m.cfg.Mesh.Topology()
-	if err := m.settle(ctx, m.config.Load(), self, topo); err != nil {
+	if err := m.settle(ctx, cfg.net, self, topo); err != nil {
 		st.Error = err.Error()
 		return
 	}
@@ -247,6 +266,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 		err = m.apply(self, topo)
 	}
 	if err == nil {
+		ready = true
 		err = m.answerPings(ctx)
 	}
 	if err == nil {
@@ -547,6 +567,7 @@ func (m *Manager) up(ctx context.Context) error {
 
 // down stops everything that up started.
 func (m *Manager) down() {
+	m.exposes.Close()
 	if m.stopDNS != nil {
 		m.stopDNS()
 		m.stopDNS = nil
@@ -646,3 +667,6 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 	slices.SortFunc(list, func(a, b wire.NetPeer) int { return strings.Compare(a.Name, b.Name) })
 	return list
 }
+
+// Exposes reports the local port forwards, independently of network health.
+func (m *Manager) Exposes() []wire.ExposeState { return m.exposes.Status() }

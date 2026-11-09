@@ -60,7 +60,7 @@ report state accept --json.`,
 		}
 	}
 	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
-	addGroup("network", a.subnetCommand())
+	addGroup("network", a.subnetCommand(), a.exposeCommand())
 	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), &cobra.Command{
 		Use:   "version",
 		Short: "Show the gst version",

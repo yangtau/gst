@@ -35,6 +35,7 @@ type fakeBackend struct {
 	command   []string // the last daemon command
 	calls     []string
 
+	exposes  []wire.ExposeState
 	syncErr  error
 	nodesErr error
 
@@ -89,6 +90,17 @@ func (f *fakeBackend) Status(context.Context) (wire.Status, bool) {
 			state = s
 		}
 		st.Links = append(st.Links, state)
+	}
+	for _, e := range cfg.Exposes {
+		state := wire.ExposeState{Protocol: e.Protocol, Port: e.Port, Target: e.Target, State: "waiting"}
+		if f.net != nil && f.net.Interface != "" {
+			state.State = wire.StateRunning
+			state.Address = fmt.Sprintf("%s:%d", f.net.Address, e.Port)
+		}
+		st.Exposes = append(st.Exposes, state)
+	}
+	if f.exposes != nil {
+		st.Exposes = f.exposes
 	}
 	return st, true
 }

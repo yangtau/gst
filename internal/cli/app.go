@@ -109,7 +109,7 @@ func (a *app) execute(ctx context.Context, args []string) int {
 }
 
 func useLine(cmd *cobra.Command) string {
-	if cmd.HasAvailableSubCommands() {
+	if cmd.HasAvailableSubCommands() && len(placeholders(cmd)) == 0 {
 		return cmd.CommandPath() + " <command>"
 	}
 	return cmd.UseLine()

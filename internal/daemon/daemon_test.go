@@ -782,3 +782,19 @@ func TestServeStopsEverything(t *testing.T) {
 		t.Fatalf("status after stop = %+v, want the configuration with nothing running", st)
 	}
 }
+
+// Even without a helper, reload reports persisted rules as waiting and removes
+// them synchronously. No listener may fall back to another local address.
+func TestReloadExposesWithoutNetwork(t *testing.T) {
+	w := newWorld(t)
+	a := startMachine(t, w, "a")
+	rule, _ := config.ParseExpose("8080", 5999, false)
+	st := a.apply(func(f *config.File) { f.Exposes = []config.Expose{rule} })
+	if len(st.Exposes) != 1 || st.Exposes[0].State != "waiting" || st.Exposes[0].Address != "" {
+		t.Fatalf("exposes: %+v", st.Exposes)
+	}
+	st = a.apply(func(f *config.File) { f.Exposes = nil })
+	if len(st.Exposes) != 0 {
+		t.Fatalf("removed rule survived: %+v", st.Exposes)
+	}
+}

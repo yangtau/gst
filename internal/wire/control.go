@@ -30,13 +30,14 @@ const (
 
 // Status describes the daemon, its configuration, and what it runs.
 type Status struct {
-	Software string      `json:"software"`
-	Build    string      `json:"build"`
-	PID      int         `json:"pid"`
-	Config   string      `json:"config"`
-	Node     NodeInfo    `json:"node"`
-	Links    []LinkState `json:"links"`
-	Net      *NetState   `json:"net,omitempty"` // nil while this daemon cannot run the network
+	Software string        `json:"software"`
+	Build    string        `json:"build"`
+	PID      int           `json:"pid"`
+	Config   string        `json:"config"`
+	Node     NodeInfo      `json:"node"`
+	Links    []LinkState   `json:"links"`
+	Exposes  []ExposeState `json:"exposes,omitempty"`
+	Net      *NetState     `json:"net,omitempty"` // nil while this daemon cannot run the network
 }
 
 // NetState is this machine's part in the virtual network. Error says why
@@ -179,4 +180,15 @@ type TopoEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	Link string `json:"link"` // its name on From
+}
+
+// ExposeState distinguishes a listening port from one waiting for the network
+// or unable to bind. Running does not imply that the target is reachable.
+type ExposeState struct {
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
+	Target   string `json:"target"`
+	Address  string `json:"address,omitempty"`
+	State    string `json:"state"`
+	Error    string `json:"error,omitempty"`
 }

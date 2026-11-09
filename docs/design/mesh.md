@@ -31,7 +31,7 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 - **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）。别的机器绝不替它做设置：没有身份的机器拒绝 `gst peer-bridge`，要有人在那台机器上执行 `gst up`。
 - **up / down**：`gst down` 是 `gst up` 的逆操作：在配置里写 `down: true`，停止 daemon 并删除服务，再删除 helper；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它，启动 daemon，并处理 helper（见“虚拟网络”）。除 down 外，daemon 总在运行（即使没有 link），因为它要运行虚拟网络，并接受别人的 link。
 - **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`gst up` 装好 helper 就是加入，`gst down` 删除 helper 就是离开，所以没有单独的开关。
-- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务到不了。
+- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。mesh 里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务需要显式用 `gst expose` 暴露。
 - **只有一条数据链路**：应用的数据只走 WireGuard，没有按连接中转字节流的第二条路。mesh 的 `relay.open` 只为控制面服务：沿 link 调用 peer 方法，和运送 WireGuard 的包。
 - **SSH 决定成员**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
@@ -243,6 +243,14 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由系统服务（`gst net-helper --user NAME`）完成。`gst up` 用 `gst helper-version` 询问 root 那份 gst 的 `tun.HelperVersion`，这一步不需要 root；helper 缺失、版本不同或没有在监听时，它显示要执行的 `sudo <gst 的绝对路径> install --user NAME` 和这条命令的改动，询问后在当前终端执行，密码由 sudo 询问。版本号只在 helper 的代码或 daemon 对它的要求变化时提高，所以普通升级不需要 root。`gst down` 经同一个 socket 发 `Spec{Remove: true}`，不需要 root：这条消息没有参数，只能让 helper 删除固定路径上的服务和那份 gst。helper 先删文件，回复，最后让服务管理器停止自己，因为这一步会结束进程。helper 没有应答时，`gst down` 才说明并询问后用 `sudo <gst> uninstall`。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
 - **管理循环**：`vnet.Manager` 在拓扑变化、配置变化和每 5 秒时比较一遍：算网段和地址、发布记录、调 helper、同步 WireGuard 的 peer。`Configure` 等这一轮结束再返回，所以 `gst subnet` 看到的 `Status` 已经反映新配置。没有 helper 或网段重叠是 `NetState` 里的 `error` 和 `hint`，不是失败退出，装好 helper 后下一轮就启动。
 - **没有 IPv6**：网段只有 IPv4，AAAA 返回空。
+
+## 端口暴露
+
+- `gst expose <target> [--port port] [--udp]` 写本机配置中的 `exposes` 数组，每项是 `{protocol, port, target}`，以 `(protocol, port)` 唯一标识。target 为 `tcp://host:port`、`udp://host:port` 或 `unix:///absolute/path`，Unix stream 在网络侧使用 TCP。CLI 复用配置锁、原子写入、`daemon.reload` 和状态查询，不增加 peer 方法。
+- `vnet.Manager` 在接口配置成功后把当前地址和规则交给 `internal/expose.Manager`，网络未就绪时传空地址；down 先关闭 expose。地址变更、规则替换或移除都会关闭旧监听和现存连接；相同规则重载不影响连接。监听失败只影响对应规则，每轮重试，不阻止虚拟网络运行。
+- expose 只使用明确的 gst IPv4 地址创建 `tcp4` / `udp4` socket，绝不回退到通配地址。系统 TCP/IP 栈和现有 WireGuard 路径承载入口流量，不增加 mesh 数据路径。出口由用户 daemon 的 `net.Dialer` 连接，使用 5 秒连接超时；TCP/Unix stream 复用 `relay.Pipe`，保留半关闭。
+- UDP 每个来源 IP:port 有一个独立 connected UDP socket，回包通过原监听 socket 返回。每规则最多 256 个映射，每映射有 16 个报文的有界队列，溢出丢弃；独立 goroutine 拨号，不阻塞其他客户端。双向流量刷新 2 分钟空闲超时。规则停止时取消拨号、关闭 socket，并等待 goroutine 退出。
+- `Status.exposes` 新增 `{protocol, port, target, address?, state, error?}`；state 为 `waiting`、`running` 或 `failed`。CLI 在 daemon 不报告规则时显示 `stopped`，停机也能读配置列出规则。`running` 仅证明绑定成功，不探测目标。状态可交互查看，但目标、客户端地址和原始网络错误不写 daemon 日志。新增可选字段不改变帧或现有字段语义。
 
 ## Web UI
 

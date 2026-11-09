@@ -127,13 +127,35 @@ link 在后台连接，连上后机器出现在列表里。列表下方的 `# Pr
 虚拟网络让每台机器在一个私有网段里拥有 IP 地址和名字 `<machine>.gst`，任何程序都能用任何协议到达它：TCP、UDP 和 ping，例如游戏串流或屏幕共享。程序不需要任何设置。
 
 - **root。** 创建网卡和路由需要 root，而 daemon 以你的用户身份运行，所以由一个小的系统服务 helper 为你的 daemon 做这件事，它运行一份 root 拥有的 gst。helper 缺失或过期时，`gst up` 会显示它要执行的 `sudo` 命令，以及这条命令会改动本机的哪些内容，并先询问你，因为 `sudo` 不一定会要密码。之后 `sudo` 自己询问密码，gst 看不到密码。没有终端时 `gst up` 不询问，也什么都不执行；`gst up --yes` 不询问直接执行，但仍然显示命令。在已经 up 的机器上执行 `gst up` 不会改变任何东西，升级 gst 后也只有 helper 变了才需要再次使用 root。机器会自动加入；在此之前，`gst status` 说明缺什么。
-- **服务。** 其他机器能到达程序在所有地址或本机 `.gst` 地址上打开的端口。只监听 `127.0.0.1` 或 Unix socket 的程序从网络上到不了；请修改它的监听地址，或者用 `ssh <machine>.gst` 登录后在那里使用。
+- **服务。** 其他机器能到达程序在所有地址或本机 `.gst` 地址上打开的端口。用 `gst expose` 可以把回环端口、Unix stream socket 或本机能访问的其他地址暴露到本机 gst IP 上。
 - **网段。** 所有机器共用一个网段。第一台机器根据能应答的机器上的网卡和路由，选一个不与它们重叠的 `/16`。`gst subnet 10.99.0.0/16` 为整个网络设置另一个网段：最新的选择胜出，所有机器都迁移过去，地址随之改变。它必须是私有网段（在 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 或 `100.64.0.0/10` 之内）。网段与某台机器上的其他网络重叠时，那台机器在 `gst status` 中报告。
 - **地址。** 机器重启后地址不变。只承载 IPv4。
 - **名字。** `<machine>.gst` 对所有程序生效，可以用机器的名字、到它的 link 的名字或 id 前缀。在 macOS 和使用 systemd-resolved 的 Linux 上，只有 `.gst` 交给 daemon 解析。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 中。
 - **路径。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 传送，这些流量让两台机器经 link 寻找 UDP 路径：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器可能继续走 SSH，不过每台机器能从任何已打通 UDP 路径的机器得知自己的公网地址，常常因此打通。所有路径共用一个 UDP 端口，默认 15355，被占用时换一个；包按系统路由走，路由指向别的 VPN 就走 VPN。在 macOS 上，如果 VPN 或代理接管了路由，包改走它下面的网卡，因为代理会换一个端口重新发包，规则是直连也一样，防火墙随后就会丢掉这些包；只有那个 VPN 才能到达的地址因此继续走 SSH。gst 持续测量到对方各地址的延迟，有明显更快的地址时切过去，不打断任何连接。`gst status` 在机器后面显示 `direct`，`gst status --all` 显示每台机器走哪条路。UDP 失效时，包在几秒内改走 SSH，程序的连接不断。机器换到另一个网络时，gst 立刻重试，不用等之前失败的等待时间结束，运行中的路径也会得知新地址。UDP 路径建立后不再依赖 link，所以 SSH 断开或两台机器之间的机器休眠时，它还能继续运行 20 到 30 分钟；之后那台机器算作离开，路径结束。`gst remove` 之后如果已没有 link 通向某台机器，到它的 UDP 路径立刻断开。经 SSH 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
 - **MTU。** 网卡的 MTU 是 1168 字节，适合每条 UDP 路径。自己选择包大小的程序应该低于这个值，否则包会被分片。
 - `gst down` 撤销 `gst up`：删除 daemon 的服务、网卡、路由、名字和 helper。helper 自己删除自己，所以不需要密码，下次 `gst up` 会重新询问。只留下配置和日志，机器的地址和 link 都保留。daemon 只是意外停止时，网卡、路由和名字也会消失，helper 保留。
+
+### 暴露服务
+
+在能访问目标的机器上执行：
+
+```sh
+gst expose 8080 --port 5999                  # TCP：gst IP:5999 -> 127.0.0.1:8080
+gst expose unix:///tmp/service.sock --port 6000
+gst expose 5353 --udp                       # UDP：gst IP:5353 -> 127.0.0.1:5353
+gst expose udp://service.example.com:5353 --port 5999
+gst expose list                            # 脚本可加 --json
+gst expose remove 5999                     # 只删除 TCP
+gst expose remove 5999 --udp               # 只删除 UDP
+```
+
+机器名为 `myhost` 时，其他机器使用对应协议连接 `myhost.gst:5999`。单独的端口表示回环地址，显式 TCP 目标使用 `tcp://host:port`。暴露端口默认与目标端口相同；Unix stream socket 必须指定 `--port`。TCP 和 UDP 可以共用端口。重复添加相同规则不产生变化；修改目标需要先删除旧规则。
+
+规则由 daemon 运行，退出终端或重启后仍然保留。监听**只绑定本机的 gst IPv4 地址**，不会绑定通配地址或物理网卡地址。`waiting` 表示网络尚未就绪；`failed` 表示绑定失败，会自动重试；`running` 表示监听已开启，不代表后端健康；`stopped` 表示 daemon 没有报告该规则。目标服务可以稍后启动，新连接会重新尝试。`gst status <machine>` 也显示那台机器暴露的端口。
+
+删除规则或停止 gst 会关闭其连接。gst 地址变化时会关闭旧连接，并在新地址上重新监听。`gst down` 保留规则，下次 `gst up` 时恢复。暴露端口不会请求 root 权限；需要特权的端口会报告错误。
+
+mesh 中的所有机器都能访问暴露端口。目标看到的是 daemon 发起的连接，不是原始客户端；Unix socket 权限按 daemon 所属用户判断。转发保留字节和 UDP 报文，不改写 HTTP，也不终止 TLS。WireGuard 保护 gst 这一段，目标这一段使用目标自身的协议。UDP 映射在空闲两分钟后回收，每条规则最多 256 个客户端，超限流量丢弃。不支持 Unix datagram socket、广播或组播转发。绑定 gst IP 限制的是目的地址，不是刻意路由过来的报文所进入的网卡。
 
 ### 信任
 
@@ -174,6 +196,9 @@ link 显示为两端的机器，例如 `laptop->gateway`；link 名与它通向�
 | 命令 | 用途 |
 | --- | --- |
 | `gst subnet [cidr]` | 显示虚拟网络的网段，或为所有机器修改它 |
+| `gst expose <target> [--port port] [--udp]` | 持久化一个只监听本机 gst IP 的端口转发 |
+| `gst expose list [--json]` | 查看规则配置与运行状态 |
+| `gst expose remove <port> [--udp]` | 删除规则并关闭其连接 |
 
 ### 本机
 
@@ -276,4 +301,4 @@ gst add devbox               # 在原来有 link 的机器上
 
 ## 配置文件
 
-配置保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`），包括本机的 node（id 和名字）、link，以及你选择的网段。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以修改另一个配置文件会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。
+配置保存在 `~/.config/gst/config.json`（设置了 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/gst/config.json`），包括本机的 node（id 和名字）、link、暴露端口，以及你选择的网段。可以用 `--config` 或环境变量 `GST_CONFIG` 指定其他路径，daemon 会沿用同一个路径。每个用户只有一个 daemon，所以修改另一个配置文件会让 daemon 切换到那个文件。这个文件由 gst 维护，请用 gst 命令修改，不要手动编辑；多个 gst 命令同时执行也是安全的。

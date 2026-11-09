@@ -232,7 +232,7 @@ func (d *Daemon) Status() wire.Status {
 	f := d.config.Load()
 	st := wire.Status{
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
-		Node: d.mesh.Self(), Links: []wire.LinkState{}, Net: d.net.Status(),
+		Node: d.mesh.Self(), Links: []wire.LinkState{}, Net: d.net.Status(), Exposes: d.net.Exposes(),
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -296,7 +296,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	d.mesh.Configure(f.Node)
 	d.config.Store(f)
-	d.net.Configure(ctx, f.Net)
+	d.net.Configure(ctx, f.Net, f.Exposes...)
 	var stop []*supervisor
 	var removed []string
 	d.mu.Lock()

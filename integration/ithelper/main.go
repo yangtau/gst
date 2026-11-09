@@ -134,7 +134,11 @@ func sink(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: sink ADDR")
 	}
-	listener, err := net.Listen("tcp", args[0])
+	network, address := "tcp", args[0]
+	if strings.HasPrefix(address, "unix://") {
+		network, address = "unix", strings.TrimPrefix(address, "unix://")
+	}
+	listener, err := net.Listen(network, address)
 	if err != nil {
 		return err
 	}

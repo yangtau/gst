@@ -159,6 +159,15 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 		}
 		problems = append(problems, text)
 	}
+	for _, e := range st.Exposes {
+		if e.State != wire.StateRunning {
+			text := fmt.Sprintf("expose %s/%d: %s", e.Protocol, e.Port, e.State)
+			if e.Error != "" {
+				text += ": " + e.Error
+			}
+			problems = append(problems, text)
+		}
+	}
 	if len(problems) > 0 {
 		fmt.Fprintln(out, "\n# Problems:")
 		for _, p := range problems {
@@ -193,6 +202,12 @@ func writeStatus(out io.Writer, st wire.Status) error {
 		fmt.Fprintf(out, "Address: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
 	}
 
+	if len(st.Exposes) > 0 {
+		fmt.Fprintln(out)
+		if err := writeExposes(out, st.Exposes); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintln(out)
 	if len(st.Links) == 0 {
 		fmt.Fprintln(out, "No links.")

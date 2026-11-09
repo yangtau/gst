@@ -127,13 +127,35 @@ When names repeat, `gst status` tells the machines apart by id; use the id or an
 The virtual network gives every machine an IP address in one private subnet and the name `<machine>.gst`, so that any program can reach it with any protocol: TCP, UDP, and ping, such as a game stream or a screen sharing session. Programs need no setup.
 
 - **Root.** Creating an interface and a route takes root, and the daemon runs as your user, so a small system service, the helper, does only that for your daemon, with a copy of gst that root owns. When the helper is missing or out of date, `gst up` shows the `sudo` command it would run and what that changes on this machine, and asks first, because `sudo` may not ask for a password. `sudo` then asks for your password itself; gst never sees it. Without a terminal `gst up` does not ask and runs nothing; `gst up --yes` goes ahead without asking and still shows the command. Running `gst up` on a machine that is up changes nothing, and after upgrading gst it needs root again only if the helper changed. The machine joins by itself; until then, `gst status` says what is missing.
-- **Services.** Other machines reach the ports that a program opens on all addresses or on this machine's `.gst` address. A program that listens only on `127.0.0.1`, or on a Unix socket, is not reachable from the network; change where it listens, or log in with `ssh <machine>.gst` and use it there.
+- **Services.** Other machines reach the ports that a program opens on all addresses or on this machine's `.gst` address. Use `gst expose` to make a loopback port, Unix stream socket, or another address reachable by this machine available on its gst IP.
 - **Subnet.** The machines share one subnet. The first machine chooses a `/16` that overlaps nothing on the machines that answer, from their interfaces and routes. `gst subnet 10.99.0.0/16` sets another for the whole network: the latest choice wins, and all machines move to it, changing their addresses. It must be private (inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or `100.64.0.0/10`). If the subnet overlaps something on a machine, that machine reports it in `gst status`.
 - **Addresses.** A machine keeps its address across restarts. Only IPv4 is carried.
 - **Names.** `<machine>.gst` resolves for all programs, by the machine's name, the name of a link to it, or an id prefix. On macOS and with systemd-resolved, only `.gst` goes to the daemon. Elsewhere on Linux, the names go in `/etc/hosts` for as long as the network runs.
 - **Paths.** WireGuard encrypts each packet from end to end, so that machines on the way see only ciphertext. Packets start through the SSH links, and that traffic makes the two machines look for a UDP path, over the links: nothing needs configuring, and no outside server is involved. It works when UDP gets through and an address of one machine, such as a public IPv6 address or one on a shared network, can be reached from the other; two machines behind NAT with no such address may stay on SSH, though each learns its public address from any machine it has a UDP path to, which often gets them through. All paths share one UDP port, 15355 unless it is taken; packets follow the system's routes, through another VPN if that is where they lead. On macOS, when a VPN or proxy takes the routes, they go through the network interface below it instead, because a proxy sends them again from another port, even when its rules say direct, and firewalls then drop them; an address that only that VPN reaches then stays on SSH. gst keeps measuring the addresses of a machine and moves to a clearly faster one without interrupting anything. `gst status` shows `direct` next to the machine, and `gst status --all` shows the way of each. If UDP stops working, packets move to SSH within seconds, and programs keep their connections. When a machine moves to another network, gst tries again at once, without waiting for earlier failures to wear off, and a running path learns the new addresses. A UDP path does not need the links once it runs, so it carries on when SSH drops or a machine between the two sleeps, for 20 to 30 minutes; after that the machine counts as gone and the path ends. `gst remove` ends it at once if no links then lead to the machine. Through SSH, TCP runs inside TCP, which works but slows down on lossy networks.
 - **MTU.** The interface has an MTU of 1168 bytes, which fits every UDP path. Programs that choose a packet size themselves should stay below it, or their packets are fragmented.
 - `gst down` undoes `gst up`: it removes the daemon's service, the interface, the route, the names, and the helper, which removes itself, so it takes no password, and `gst up` asks for one again. Only the configuration and logs stay, with the machine's address and links. If the daemon just stops, the interface, route, and names go too, and the helper stays.
+
+### Expose a service
+
+Run these on the machine that can reach the target:
+
+```sh
+gst expose 8080 --port 5999                  # TCP: gst IP:5999 -> 127.0.0.1:8080
+gst expose unix:///tmp/service.sock --port 6000
+gst expose 5353 --udp                       # UDP: gst IP:5353 -> 127.0.0.1:5353
+gst expose udp://service.example.com:5353 --port 5999
+gst expose list                            # add --json for scripts
+gst expose remove 5999                     # remove TCP only
+gst expose remove 5999 --udp               # remove UDP only
+```
+
+If the machine is named `myhost`, connect to `myhost.gst:5999` using the matching protocol. Bare ports mean loopback; explicit TCP targets use `tcp://host:port`. The exposed port defaults to the target port; Unix stream sockets require `--port`. TCP and UDP can share a port. Repeating a rule is harmless; to change its target, remove it first.
+
+Rules run in the daemon and survive terminal exit and restart. They bind **only this machine's gst IPv4 address**, never a wildcard or physical interface address. `waiting` means the network is not ready; `failed` reports a bind error, retried automatically; `running` means the listener is open, not that the target is healthy. `stopped` means the daemon is not reporting the rule. Targets may start later; each new connection tries again. `gst status <machine>` also shows its exposed ports.
+
+Deleting a rule or stopping gst closes its connections. A gst address change closes the old connections and rebinds the rules. `gst down` retains the rules for the next `gst up`. Exposing a port never asks for root; a port that requires privileges reports an error.
+
+All mesh machines can access exposed ports. Targets see the daemon's connection, not the original client; Unix socket permissions apply to the daemon's user. Forwarding preserves bytes and UDP datagrams without HTTP rewriting or TLS termination. WireGuard protects the gst leg; the target leg uses the target protocol. UDP mappings expire after two idle minutes and are limited to 256 clients per rule; excess traffic is dropped. Unix datagram sockets, broadcast and multicast forwarding are not supported. Binding a gst IP restricts the destination address, not the interface on which a deliberately routed packet arrives.
 
 ### Trust
 
@@ -174,6 +196,9 @@ Links show as the machines at their ends, such as `laptop->gateway`; when a link
 | Command | Purpose |
 | --- | --- |
 | `gst subnet [cidr]` | Show the subnet of the virtual network, or change it for all machines |
+| `gst expose <target> [--port port] [--udp]` | Persist a port forward on this machine's gst IP |
+| `gst expose list [--json]` | Show configured rules and their runtime state |
+| `gst expose remove <port> [--udp]` | Remove a rule and close its connections |
 
 ### This machine
 
@@ -276,4 +301,4 @@ Work from the outside in: `gst status` shows whether the machine can be reached 
 
 ## Configuration file
 
-The configuration is stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). It holds this machine's node (id and name), its links, and the subnet if you chose one. `--config` or the `GST_CONFIG` environment variable selects another file, and the daemon keeps using it. There is one daemon per user, so changing another file switches the daemon to that file. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe.
+The configuration is stored in `~/.config/gst/config.json` (`$XDG_CONFIG_HOME/gst/config.json` when `XDG_CONFIG_HOME` is set). It holds this machine's node (id and name), its links, exposed ports, and the subnet if you chose one. `--config` or the `GST_CONFIG` environment variable selects another file, and the daemon keeps using it. There is one daemon per user, so changing another file switches the daemon to that file. gst maintains this file; change it with gst commands rather than by hand. Running several gst commands at once is safe.
