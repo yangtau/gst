@@ -30,6 +30,8 @@ func devboxStatus() wire.Status {
 func TestStatusOfAnotherMachine(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(node string) (wire.Status, error) { return devboxStatus(), nil }
+	e.mustGst("up")
+	e.back.topology = meshTopology()
 
 	out := e.mustGst("status", "devbox")
 	header, links, _ := strings.Cut(out, "\n\n")
@@ -37,10 +39,11 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 		t.Fatalf("header %q, want %q", header, want)
 	}
 	want := [][]string{
-		{"LINK", "TO", "MACHINE", "STATE"},
-		{"bastion.example.com", "bastion", "running"},
-		{"myhost", "-", "down", "(last", "error:", "connection", "refused)"},
-		{"db", "-", "connecting"},
+		{"LINK", "DESTINATION", "STATE"},
+		{"devbox", "->", "bastion", "bastion.example.com", "running"},
+		{"devbox", "->", "myhost", "myhost", "down", "(last", "error:", "connection", "refused)"},
+		{"devbox", "->", "db", "db", "connecting"},
+		{"laptop", "->", "devbox", "-", "running"},
 	}
 	if got := rows(links); !reflect.DeepEqual(got, want) {
 		t.Errorf("links\n got %q\nwant %q", got, want)
@@ -68,7 +71,7 @@ func TestStatusMachineReference(t *testing.T) {
 	} {
 		e.resetCalls()
 		e.mustGst("status", tc.arg)
-		if want := []string{"node-status " + tc.node}; !slices.Equal(e.back.calls, want) {
+		if want := []string{"node-status " + tc.node, "nodes"}; !slices.Equal(e.back.calls, want) {
 			t.Errorf("gst status %s: calls %v, want %v", tc.arg, e.back.calls, want)
 		}
 	}
@@ -131,9 +134,21 @@ func TestStatusVerboseListsTheLinks(t *testing.T) {
 	e.mustGst("link", "devbox")
 	e.back.topology = meshTopology()
 
+	e.back.linkStates["devbox"] = wire.LinkState{Destination: "devbox", State: wire.StateDown, Error: "connection refused"}
+	e.mustGst("link", "db")
+
+	// This machine's links come first, with their destinations and states,
+	// down ones too; the others' running links follow.
 	got := lines(e.mustGst("status", "-v"))
-	want := []string{"", "LINKS", "devbox -> dup (dddd4444)", "devbox -> far", "laptop -> devbox"}
-	if len(got) != 5+len(want) || !slices.Equal(got[5:], want) {
+	want := []string{
+		"",
+		"LINK DESTINATION STATE",
+		"laptop -> devbox devbox down (last error: connection refused)",
+		"laptop -> db db running",
+		"devbox -> dup (dddd4444) - running",
+		"devbox -> far - running",
+	}
+	if len(got) < 5+len(want) || !slices.Equal(got[5:5+len(want)], want) {
 		t.Fatalf("status -v\n got %q\nwant 5 machines and %q", got, want)
 	}
 	if code, _, stderr := e.gst("status", "-v", "devbox"); code != exitUsage || !strings.Contains(stderr, "-v") {

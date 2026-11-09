@@ -17,10 +17,13 @@ type uiServer struct {
 	base, token string
 }
 
-// startUI starts gst ui on n and reads its address.
+// startUI starts gst ui on n, which must be on the network, and reads its
+// address, with n's gst IP for its name: the containers do not resolve
+// .gst.
 func (n *node) startUI() *uiServer {
 	n.t.Helper()
-	n.mustSh(`setsid gst ui --no-open --port 8370 </dev/null >~/ui.out 2>&1 &`)
+	ip := n.net().Address
+	n.mustSh(`setsid gst ui --port 8370 </dev/null >~/ui.out 2>&1 &`)
 	var url string
 	eventually(n.t, 10*time.Second, "gst ui printed no address", func() bool {
 		out, _ := n.sh(`cat ~/ui.out`)
@@ -29,18 +32,19 @@ func (n *node) startUI() *uiServer {
 		return ok && strings.Contains(url, "#")
 	})
 	base, token, _ := strings.Cut(url, "#")
-	return &uiServer{n, base, token}
+	_, port, _ := strings.Cut(strings.TrimPrefix(base, "http://"), ":")
+	return &uiServer{n, "http://" + ip + ":" + port, token}
 }
 
-// request sends an HTTP request to gst ui, with its token or without, and
-// returns the status code and body.
-func (u *uiServer) request(method, path string, withToken bool) (string, string) {
+// request sends an HTTP request to gst ui from machine from, over the
+// network, with its token or without, and returns the status code and body.
+func (u *uiServer) request(from *node, method, path string, withToken bool) (string, string) {
 	u.n.t.Helper()
 	args := []string{"http", method, u.base + path}
 	if withToken {
 		args = append(args, u.token)
 	}
-	out, err := u.n.helper(args...)
+	out, err := from.helper(args...)
 	if err != nil {
 		u.n.t.Fatalf("gst ui %s %s: %v", method, path, err)
 	}
@@ -57,12 +61,23 @@ func TestUI(t *testing.T) {
 	client.mustGst("name", "cli")
 	client.mustGst("link", p.destination())
 	client.waitLink(p.destination(), "running")
+	client.installHelper()
+	p.server.installHelper()
+	client.waitNet(1)
+	p.server.waitNet(1)
 	ui := client.startUI()
 
-	if code, _ := ui.request("GET", "api/state", false); code != "401" {
+	// gst ui serves on the gst IP only, to every machine of the network.
+	if code, _ := ui.request(p.server, "GET", "api/state", true); code != "200" {
+		t.Fatalf("state from the other machine: %s", code)
+	}
+	if _, err := client.helper("http", "GET", "http://127.0.0.1:8370/api/state", ui.token); err == nil {
+		t.Fatal("gst ui answers on 127.0.0.1")
+	}
+	if code, _ := ui.request(client, "GET", "api/state", false); code != "401" {
 		t.Fatalf("state without the token: %s", code)
 	}
-	code, body := ui.request("GET", "api/state", true)
+	code, body := ui.request(client, "GET", "api/state", true)
 	var state struct {
 		Status   *wire.Status   `json:"status"`
 		Topology *wire.Topology `json:"topology"`
@@ -77,7 +92,7 @@ func TestUI(t *testing.T) {
 
 	// The page cannot act on links: the actions it once had are gone.
 	for _, action := range []string{"restart", "stop", "start"} {
-		if code, _ := ui.request("POST", "api/links/srv/"+action, true); code == "200" {
+		if code, _ := ui.request(client, "POST", "api/links/srv/"+action, true); code == "200" {
 			t.Fatalf("%s from gst ui: %s", action, code)
 		}
 	}

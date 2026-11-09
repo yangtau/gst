@@ -40,7 +40,7 @@ func TestMesh(t *testing.T) {
 				t.Fatalf("gst status lacks %q:\n%s", want, out)
 			}
 		}
-		if all := a.mustGst("status", "-v"); !strings.Contains(all, "LINKS") || !strings.Contains(all, "a -> b") || !strings.Contains(all, "c -> b") {
+		if all := a.mustGst("status", "-v"); !strings.Contains(all, "LINK  ") || !strings.Contains(all, "a -> b") || !strings.Contains(all, "c -> b") {
 			t.Fatalf("gst status -v lacks the links:\n%s", all)
 		}
 		var names []string
@@ -104,7 +104,7 @@ func TestMesh(t *testing.T) {
 			t.Fatalf("a's status = %+v", own)
 		}
 		out := a.mustGst("status", "c.gst")
-		for _, want := range []string{"LINK TO", cb.destination(), "running", dead, "down", "gst IP: "} {
+		for _, want := range []string{"LINK", "c -> b", cb.destination(), "running", dead, "down", "gst IP: "} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("gst status c.gst lacks %q:\n%s", want, out)
 			}
@@ -116,8 +116,9 @@ func TestMesh(t *testing.T) {
 		if out := a.mustGst("status"); strings.Contains(out, "Problems") {
 			t.Fatalf("gst status on a:\n%s", out)
 		}
-		// b only accepts links, so it has none of its own.
-		if out := a.mustGst("status", "b"); !strings.Contains(out, "No links.") {
+		// b only accepts links, so it has none of its own: it shows the
+		// links that the others made to it.
+		if out := a.mustGst("status", "b"); strings.Contains(out, cb.destination()) || !strings.Contains(out, "c -> b") {
 			t.Fatalf("gst status b:\n%s", out)
 		}
 		if code, _, stderr := a.gst("status", "nowhere"); code != 1 || !strings.Contains(stderr, "hint:") || !strings.Contains(stderr, "gst status") {

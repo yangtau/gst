@@ -46,7 +46,6 @@ func Execute(args []string) int {
 		newBackend:   func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
 		resolve:      sshconfig.Resolve,
 		executable:   os.Executable,
-		openURL:      openBrowser,
 		newHelper:    func() (helperService, error) { return service.NewHelper() },
 		removeHelper: func() error { return tun.Remove(tun.Socket) },
 		runRoot:      runTerminal,
@@ -64,7 +63,6 @@ type app struct {
 	newBackend     func() (backend, error)
 	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
 	executable     func() (string, error)
-	openURL        func(url string) error // nil opens nothing
 	newHelper      func() (helperService, error)
 	removeHelper   func() error              // asks the helper to remove itself
 	runRoot        func(argv []string) error // runs a command on this terminal

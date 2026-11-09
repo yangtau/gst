@@ -183,15 +183,15 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `gst up [--yes]` | 现在启动 gst，并在登录时启动；network helper 缺失或过期时，说明 `sudo` 要执行什么，询问后安装 |
 | `gst link <destination> [--remote-gst cmd]` | 经 SSH 把本机 link 到另一台机器，在后台运行 |
 | `gst status` | 列出网络中的每台机器：短 id、名字、gst 版本、gst IP，以及 `direct` 或 `relay`；然后是本机的问题 |
-| `gst status -v` | 再列出所有机器之间的 link，以及与每台机器的流量：怎么走（`direct` 和 `ip:port`，或 `relay`）、最近一次握手和收发字节数 |
-| `gst status <machine>` | 经网络查询，显示一台机器的 gst IP、暴露的端口和 link（destination、机器和状态） |
+| `gst status -v` | 再列出所有机器之间的 link（`from -> to`、destination 和状态；本机的 link 断开也会列出，其他机器的只列运行中的），以及与每台机器的流量：怎么走（`direct` 和 `ip:port`，或 `relay`）、最近一次握手和收发字节数 |
+| `gst status <machine>` | 经网络查询，显示一台机器的 gst IP、暴露的端口，以及从它出发或连到它的所有 link（`from -> to`、destination 和状态） |
 | `gst ping <machine> [-c N] [-s BYTES] [-v]` | 每秒向一台机器发一个包并收回（默认 3 次），打印怎么走的和时间，最后打印丢了多少；`-s` 设置包的大小，超过网卡 MTU 时分片；`-v` 还检查 SSH link，并显示直连或没有直连的原因、双方最近一次尝试的过程，以及本机在哪里丢了包 |
 | `gst expose [target] [--port port] [--udp]` | 不带 target 时列出本机暴露的端口；带 target 时把它暴露到本机 gst IP 上 |
 | `gst unexpose <port> [--udp]` | 停止暴露一个端口，并关闭其连接 |
 | `gst unlink <machine>...` | 删除本机到指定机器的 link，可以用名字、id 或 destination |
 | `gst name [name]` | 显示或修改本机名字，并显示 id |
 | `gst subnet [cidr]` | 显示网络的网段，或为所有机器修改它 |
-| `gst ui [--port N] [--no-open]` | 在浏览器中显示网络 |
+| `gst ui [--port N]` | 在网页中显示网络 |
 | `gst down [--yes]` | 撤销 `gst up`：停止 gst，删除它的服务和 network helper；其他机器不能 link 到本机 |
 | `gst version` | 显示 gst 的发布版本、commit、协议版本和 network helper 版本 |
 
@@ -244,13 +244,13 @@ link 没有自己的 SSH 设置。每次连接时，gst 都会用 `ssh -G` 重�
 
 ### 网页
 
-`gst ui` 在浏览器页面中显示网络，每隔几秒自动刷新：所有机器及其状态和问题、机器之间的 link 关系图，以及所选机器的 link、其他机器连过来的 link、到其他机器的包怎么走和暴露的端口（与 `gst status <machine>` 相同）。按 J 和 K 在机器之间移动。本机 gst 没有运行时，页面会说明。它在 `127.0.0.1` 上提供页面，直到按 Ctrl-C 为止；启动时打印地址并在浏览器中打开。页面只用来查看；修改仍使用上面的命令。
+`gst ui` 在网页中显示网络，每隔几秒自动刷新：顶部是本机和所有机器之间的 link 关系图，下面列出每台机器的 gst IP、包怎么走和问题。展开一台机器可以看到它暴露的端口，以及所有从它出发或连到它的 link，写成 `from → to`，与 `gst status -v` 一致；link 属于它出发的那台机器，并附上建立它时用的 ssh destination。本机 gst 没有运行时，页面会说明。页面只用来查看；修改仍使用上面的命令。
+
+`gst ui` 只在本机的 gst IP 上提供页面，直到按 Ctrl-C；网络里的任何机器（包括本机）都用 `<name>.gst` 打开，不监听 `localhost` 或其他地址。它需要网络已经起来，启动时打印地址，不会自动打开浏览器。
 
 ```bash
 gst ui
-# 在没有浏览器的机器上：指定端口并转发出来
-gst ui --port 8370 --no-open
-ssh -L 8370:localhost:8370 devbox   # 然后在你自己的机器上打开打印出的地址
+gst ui --port 8370   # 在 devbox 上运行；然后在网络里任意机器上打开 http://devbox.gst:8370/#...
 ```
 
 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。

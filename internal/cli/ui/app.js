@@ -1,7 +1,7 @@
 "use strict";
 
 // The page polls /api/state (this machine and the mesh) and /api/nodes/{id}
-// (every other machine it can reach, so that selecting one is instant), with
+// (every other machine it can reach, so that opening one is instant), with
 // the token from the address that gst ui printed. Everything shown is built
 // with DOM text nodes: names and destinations come from other machines of
 // the mesh.
@@ -11,7 +11,7 @@ const SVG = "http://www.w3.org/2000/svg";
 const POLL_MS = 3000;
 const MACHINE_POLL_MS = 5000;
 const MACHINE_REQUESTS = 4; // at a time
-const SELECTED_KEY = "gst.machine";
+const OPEN_KEY = "gst.open";
 
 const $ = (id) => document.getElementById(id);
 
@@ -41,11 +41,12 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 let state = null; // the last /api/state
 const answers = new Map(); // machine id: {status} or {error}, for machines other than this one
-let selected = "";
+let open = null; // ids of the machines shown open; null until the page knows this machine
 let drawn = ""; // what the page shows, to leave it alone when nothing changed
 
 try {
-  selected = localStorage.getItem(SELECTED_KEY) || "";
+  const saved = JSON.parse(localStorage.getItem(OPEN_KEY));
+  if (Array.isArray(saved)) open = new Set(saved);
 } catch (_) {}
 
 const topology = () => (state && state.topology) || null;
@@ -137,12 +138,12 @@ function mark(kind, title) {
 
 const linkMark = (l) => mark({ running: "ok", connecting: "wait" }[l.state] || "bad", l.state);
 
-// jump names a machine and selects it when clicked, if the page knows it.
+// jump names a machine and shows it when clicked, if the page knows it.
 function jump(ref, cls, text) {
   const n = findMachine(ref);
   if (!n) return el("span", { class: "cell " + (cls || "") }, text || ref);
-  const b = el("button", { type: "button", class: "jump cell " + (cls || ""), title: `Show ${n.name}` }, text || ref);
-  b.addEventListener("click", () => select(n.id));
+  const b = el("button", { type: "button", class: "jump " + (cls || ""), title: `Show ${n.name}` }, text || ref);
+  b.addEventListener("click", () => show(n.id));
   return el("span", { class: "cell" }, b);
 }
 
@@ -161,161 +162,178 @@ function copyButton(text, label) {
 }
 
 function group(title, note, rows, empty) {
+  if (rows.length === 0 && !empty) return null;
   return el("section", { class: "group" },
-    el("h2", null, title, note),
-    el("ul", null, rows.length > 0 ? rows : empty && el("li", { class: "row row-empty" }, empty)));
+    el("h3", null, title, " ", note),
+    el("ul", null, rows.length > 0 ? rows : el("li", { class: "row-empty" }, empty)));
 }
 
-const count = (n, bad) => el("span", { class: bad ? "bad" : "" }, n);
+const count = (n, bad) => el("span", { class: bad ? "bad" : "faint" }, n);
 
-// ---- the selected machine ----
+// ---- a machine, open ----
 
-function linksGroup(st, isSelf) {
-  const links = st.links || [];
-  const down = links.filter((l) => l.state !== "running").length;
-  const rows = links.map((l) => {
+// linksGroup lists the links of machine n, as `gst status -v` does: a
+// line "from → to" each, made on "from". The links that n made come from
+// its own report, with their destinations and states; the links that other
+// machines made to n come from the network, which knows only running ones.
+function linksGroup(n, st, names) {
+  const isSelf = n.id === selfID();
+  const name = (id) => jump(id, "", names[id] || shortID(id));
+  const arrow = (from, to) => el("span", { class: "cell edge" }, from, el("span", { class: "faint" }, " → "), to);
+  const mine = (st && st.links) || [];
+  const rows = mine.map((l) => {
     const running = l.state === "running";
     const end = running
       ? el("span", { class: "row-end", title: `running since ${new Date(l.since).toLocaleString()}${l.reconnects ? `, ${plural(l.reconnects, "reconnect")}` : ""}` }, age(l.since))
       : el("span", { class: "row-end " + (l.state === "down" ? "bad" : "warn") }, l.state);
+    const to = l.peer && l.peer.id ? name(l.peer.id) : el("span", { class: "cell mono" }, l.destination);
     return el("li", { class: "row" },
       linkMark(l),
-      l.peer && l.peer.id
-        ? jump(l.peer.id, "row-name", l.peer.name)
-        : el("span", { class: "cell row-name" }, "—"),
-      el("span", { class: "cell mono sub row-wide", title: l.destination }, l.destination),
+      arrow(names[n.id], to),
+      // The destination, when the arrow does not already say it.
+      el("span", { class: "cell mono sub", title: "ssh destination" }, l.peer && l.peer.id && l.peer.name !== l.destination ? l.destination : ""),
       end,
       !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
   });
-  return group("Links", count(down ? `${links.length - down} of ${links.length} running` : links.length, down), rows,
-    isSelf && ["Add one with ", el("code", null, "gst link <destination>")]);
-}
-
-// linkedFromGroup lists the links that other machines made to this one,
-// which only the network knows.
-function linkedFromGroup(id, names) {
   const topo = topology();
-  const edges = topo ? topo.edges.filter((e) => e.to === id) : [];
-  if (edges.length === 0) return null;
-  const rows = edges.map((e) => el("li", { class: "row" },
-    mark("ok", "running"),
-    jump(e.from, "row-name", names[e.from] || shortID(e.from))));
-  return group("Incoming links", count(edges.length), rows);
-}
-
-// machinesGroup lists the other machines of the network, with how packets
-// go to each.
-function machinesGroup(st) {
-  const peers = (st.net && st.net.peers) || [];
-  if (peers.length === 0) return null;
-  const rows = peers.map((p) => el("li", { class: "row" },
-    p.handshake ? mark("ok", "WireGuard confirmed its key") : mark("off", "no handshake yet"),
-    jump(p.node, "row-name", p.name),
-    el("span", { class: "cell mono sub row-wide", title: p.address }, p.address),
-    el("span", { class: "row-end" }, p.path === "direct" ? "direct" : "relay")));
-  return group("Machines", count(peers.length), rows);
+  for (const e of topo ? topo.edges.filter((e) => e.to === n.id && e.from !== n.id) : []) {
+    rows.push(el("li", { class: "row" },
+      mark("ok", "running"),
+      arrow(name(e.from), names[n.id]),
+      el("span"),
+      el("span")));
+  }
+  const down = mine.filter((l) => l.state !== "running").length;
+  return group("Links", count(down ? `${rows.length - down} of ${rows.length} running` : rows.length || "", down), rows,
+    isSelf && ["None yet. Add one with ", el("code", null, "gst link <destination>"), "."]);
 }
 
 function exposesGroup(st) {
   const exposes = st.exposes || [];
-  if (exposes.length === 0) return null;
   const down = exposes.filter((e) => e.state !== "running").length;
   const rows = exposes.map((e) => el("li", { class: "row" },
     mark({ running: "ok", waiting: "wait", stopped: "off", failed: "bad" }[e.state], e.state),
-    el("span", { class: "cell row-name" }, `${e.protocol.toUpperCase()} ${e.port}`),
-    el("span", { class: "cell mono sub", title: e.address }, e.address || "—"),
-    el("span", { class: "cell mono sub", title: e.target }, e.target),
-    el("span", { class: "row-end " + (e.state === "failed" ? "bad" : e.state === "waiting" ? "warn" : "") }, e.state),
+    el("span", { class: "cell mono", title: e.address }, e.address || `${e.protocol}/${e.port}`),
+    el("span", { class: "cell mono sub", title: e.target }, "→ " + e.target),
+    el("span", { class: "row-end " + (e.state === "failed" ? "bad" : e.state === "waiting" ? "warn" : "") }, e.state === "running" ? e.protocol : e.state),
     e.error ? el("p", { class: "row-error" }, e.error) : null));
-  return group("Exposed ports", count(down ? `${exposes.length - down} of ${exposes.length} running` : exposes.length, down), rows);
+  return group("Exposed ports", count(down ? `${exposes.length - down} of ${exposes.length} running` : exposes.length || "", down), rows);
 }
 
-function blank(title, ...text) {
-  return el("div", { class: "blank" }, el("strong", null, title), el("p", null, text));
+function note(title, ...text) {
+  return el("p", { class: "note" }, el("strong", null, title), " ", ...text);
 }
 
-function drawHead(n, names, st) {
-  const isSelf = n && n.id === selfID();
-  const found = problems(st);
-  $("head").replaceChildren(...[
-    el("h1", { class: "truncate" }, n ? names[n.id] : "This machine"),
-    isSelf && el("span", { class: "tag" }, "this machine"),
-    found.length > 0 && el("span", { class: "head-problems", title: found.join("\n") }, plural(found.length, "problem")),
-  ].filter(Boolean));
+function props(n, names, st) {
+  const isSelf = n.id === selfID();
+  const route = !isSelf && n.path && n.path.length > 2 ? n.path.map((id) => names[id] || shortID(id)).join(" → ") : "";
+  const software = (st && st.software) || n.software;
+  const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
+  return el("dl", { class: "props" },
+    ...row("Name", el("span", { class: "mono" }, `${n.name}.gst`)),
+    ...row("Route", route),
+    ...row("Version", software),
+    ...row("ID", el("span", null, el("span", { class: "mono" }, shortID(n.id)), copyButton(n.id, "Copy"))));
 }
 
-function drawDetail(n, names) {
-  const detail = $("detail");
-  const isSelf = !n || n.id === selfID();
-  const st = n ? statusOf(n.id) : state.status;
+function machineBody(n, names) {
+  const isSelf = n.id === selfID();
+  const st = statusOf(n.id);
+  // This machine's facts are at the top of the page.
+  const parts = [isSelf ? null : props(n, names, st)];
   if (isSelf && !st) {
-    const title = state.down ? "gst is down on this machine" : "gst is not running on this machine";
-    detail.replaceChildren(blank(title, "Start it with ", el("code", null, "gst up"), "."));
-    return;
-  }
-  if (!st) {
+    parts.push(note(state.down ? "gst is down on this machine." : "gst is not running on this machine.", "Start it with ", el("code", null, "gst up"), "."));
+  } else if (!st) {
     const answer = answers.get(n.id);
     if (!n.reachable) {
-      detail.replaceChildren(blank(`${names[n.id]} cannot report`, "No running link leads to it now, so it cannot be asked. Direct traffic to it still flows."));
+      parts.push(n.direct
+        ? note("No link leads to it now,", "so gst ui cannot ask it. Packets still reach it directly.")
+        : note("Offline.", "No link leads to it now."));
     } else if (answer && answer.error) {
-      detail.replaceChildren(blank(`${names[n.id]} did not answer`, answer.error));
+      parts.push(note("It did not answer:", answer.error));
     } else {
-      detail.replaceChildren(blank("Asking…", `Waiting for ${names[n.id]} to answer.`));
+      parts.push(note("Asking…", ""));
     }
-    return;
+  } else {
+    const found = problems(st);
+    if (found.length > 0) parts.push(el("ul", { class: "problems" }, found.map((p) => el("li", null, p))));
   }
-  detail.replaceChildren(...[
-    linksGroup(st, isSelf),
-    n && linkedFromGroup(n.id, names),
-    machinesGroup(st),
-    exposesGroup(st),
-  ].filter(Boolean));
+  parts.push(linksGroup(n, st, names), st && exposesGroup(st));
+  return el("div", { class: "machine-body" }, ...parts.filter(Boolean));
 }
 
 // ---- the machines ----
 
 function nodeMark(n) {
-  if (n.id === selfID()) return state.status ? mark("ok", "this machine, running") : mark("off", "this machine, not running");
+  if (n.id === selfID()) return state.status ? mark("ok", "running") : mark("off", "not running");
   return n.reachable || n.direct ? mark("ok", "reachable") : mark("off", "offline");
 }
 
+const chevron = () => svg("svg", { class: "chevron", viewBox: "0 0 12 12", "aria-hidden": "true" }, svg("path", { d: "M4.5 2.5L8 6l-3.5 3.5" }));
+
 function drawMachines(nodes, names) {
-  const nav = $("machines");
-  const focused = nav.contains(document.activeElement) ? document.activeElement.dataset.id : "";
-  nav.replaceChildren(...nodes.map((n) => {
+  const list = $("machines");
+  const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : "";
+  list.replaceChildren(...nodes.map((n) => {
+    const isSelf = n.id === selfID();
+    const isOpen = open.has(n.id);
     const found = problems(statusOf(n.id)).length;
-    const how = n.id === selfID() ? "" : way(n, names);
-    const b = el("button", { type: "button", class: "machine", "data-id": n.id, "aria-current": n.id === selected ? "true" : "false" },
+    const how = isSelf ? "" : way(n, names);
+    const address = n.net && n.net.address;
+    const b = el("button", { type: "button", class: "machine-row", "data-id": n.id, "aria-expanded": String(isOpen) },
       nodeMark(n),
-      el("span", { class: "truncate machine-name" }, names[n.id]),
-      el("span", { class: "machine-meta" },
-        found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
-        how ? el("span", { class: how === "direct" ? "tag" : "truncate", title: how }, how) : null));
-    b.addEventListener("click", () => select(n.id));
-    return b;
+      el("span", { class: "cell machine-name" }, el("span", null, names[n.id]), isSelf && el("span", { class: "tag" }, "this machine")),
+      el("span", { class: "cell mono sub ip" }, address || ""),
+      el("span", { class: "cell way" + (how === "offline" ? " off" : ""), title: how }, how),
+      el("span", { class: "end" }, found ? plural(found, "problem") : ""),
+      chevron());
+    b.addEventListener("click", () => toggle(n.id));
+    return el("li", { class: "machine" + (isOpen ? " open" : ""), id: "m-" + n.id }, b, isOpen && machineBody(n, names));
   }));
   if (focused) {
-    const b = nav.querySelector(`[data-id="${CSS.escape(focused)}"]`);
+    const b = list.querySelector(`[data-id="${CSS.escape(focused)}"]`);
     if (b) b.focus();
   }
+  $("count").textContent = nodes.length > 1 ? String(nodes.length) : "";
 }
 
 function drawSummary(nodes) {
   const found = nodes.reduce((sum, n) => sum + problems(statusOf(n.id)).length, 0);
-  const text = !state.status ? "not running" : plural(nodes.length, "machine");
-  $("summary").replaceChildren(text, ...(found ? [", ", el("span", { class: "bad" }, plural(found, "problem"))] : []));
+  const text = !state.status ? "gst is not running" : plural(nodes.length, "machine");
+  $("summary").replaceChildren(text, ...(found ? [" · ", el("span", { class: "bad" }, plural(found, "problem"))] : []));
 }
 
-// ---- the mesh ----
+// drawSelf shows this machine at the top.
+function drawSelf(nodes) {
+  const self = nodes.find((n) => n.id === selfID());
+  const st = state.status;
+  const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
+  if (!self) {
+    $("self").replaceChildren(el("div", { class: "blank-lead" },
+      el("strong", null, "gst is not set up on this machine"), "Start it with ", el("code", null, "gst up"), "."));
+    return;
+  }
+  const address = (st && st.net && st.net.address) || (self.net && self.net.address);
+  $("self").replaceChildren(
+    el("div", { class: "lead" }, nodeMark(self), el("h1", { class: "cell" }, self.name)),
+    ...row("Status", st ? "Running" : state.down ? "Down: start it with gst up" : "Not running: start it with gst up"),
+    ...row("gst IP", address && el("span", { class: "mono" }, address)),
+    ...row("Name", el("span", { class: "mono" }, `${self.name}.gst`)),
+    ...row("Version", (st && st.software) || state.software),
+    ...row("ID", el("span", null, el("span", { class: "mono" }, shortID(self.id)), copyButton(self.id, "Copy"))));
+}
+
+// ---- the map ----
 
 // The machines sit on a circle, so that a line between two of them never
-// passes a third, however the mesh grows. Lines are links and point at the
-// machine that was linked to.
+// passes a third, however the network grows. Lines are links and point at
+// the machine that was linked to.
 function drawRing(nodes, names) {
   const ring = $("ring");
   const topo = topology();
   const alone = !topo || nodes.length < 2;
   ring.toggleAttribute("hidden", alone);
+  $("overview").classList.toggle("alone", alone);
   if (alone) return;
 
   const r = Math.max(82, nodes.length * 13);
@@ -345,7 +363,7 @@ function drawRing(nodes, names) {
       return { x: p.x + ((c.x - p.x) / l) * d, y: p.y + ((c.y - p.y) / l) * d };
     };
     const p = away(a, 9), q = away(b, 12);
-    const on = e.from === selected || e.to === selected ? " on" : "";
+    const on = open.has(e.from) || open.has(e.to) ? " on" : "";
     links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
       svg("title", null, `${names[e.from]} -> ${names[e.to]}`)));
     // The arrowhead, along the line's last stretch.
@@ -360,13 +378,14 @@ function drawRing(nodes, names) {
     const dx = side === "start" ? 12 : side === "end" ? -12 : 0;
     const dy = side === "middle" ? (p.sin < 0 ? -12 : 20) : 4;
     const name = names[n.id].length > 12 ? names[n.id].slice(0, 11) + "…" : names[n.id];
-    const g = svg("g", { class: `ring-node online${n.id === selected ? " picked" : ""}` },
+    const live = n.id === selfID() ? !!state.status : n.reachable || n.direct;
+    const g = svg("g", { class: `ring-node${live ? "" : " off"}${open.has(n.id) ? " picked" : ""}` },
       svg("title", null, names[n.id]),
       svg("circle", { class: "hit", cx: p.x, cy: p.y, r: 14 }),
-      ...(n.id === selected ? [svg("circle", { class: "halo", cx: p.x, cy: p.y, r: 8.5 })] : []),
+      ...(open.has(n.id) ? [svg("circle", { class: "halo", cx: p.x, cy: p.y, r: 8.5 })] : []),
       svg("circle", { class: "dot", cx: p.x, cy: p.y, r: 4.5 }),
       svg("text", { x: p.x + dx, y: p.y + dy, "text-anchor": side }, name));
-    g.addEventListener("click", () => select(n.id));
+    g.addEventListener("click", () => show(n.id));
     return g;
   });
 
@@ -374,52 +393,28 @@ function drawRing(nodes, names) {
   ring.replaceChildren(...links, ...tips, ...dots);
 }
 
-function drawProps(n, names, st) {
-  const props = $("props");
-  if (!n) {
-    props.replaceChildren();
-    return;
-  }
-  const isSelf = n.id === selfID();
-  const route = n.path && n.path.length > 1 ? n.path.map((id) => names[id] || shortID(id)).join(" → ") : "";
-  const software = (st && st.software) || n.software;
-  const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
-  props.replaceChildren(
-    ...row("Status", isSelf ? (state.status ? "Running" : "Not running") : "Online"),
-    ...row("Path", route),
-    ...row("Address", n.net && n.net.address),
-    ...row("Version", software),
-    ...row("ID", el("span", null, el("span", { class: "mono" }, shortID(n.id)), " ", copyButton(n.id, "Copy"))));
-}
-
 // ---- page ----
 
-function select(id) {
-  if (id === selected) return;
-  selected = id;
+function saveOpen() {
   try {
-    localStorage.setItem(SELECTED_KEY, id);
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...open]));
   } catch (_) {}
+}
+
+function toggle(id) {
+  if (open.has(id)) open.delete(id);
+  else open.add(id);
+  saveOpen();
   draw();
+  if (open.has(id)) refreshMachines();
 }
 
-function move(step) {
-  const nodes = machines();
-  const i = nodes.findIndex((n) => n.id === selected);
-  const next = nodes[Math.min(nodes.length - 1, Math.max(0, i + step))];
-  if (!next) return;
-  select(next.id);
-  const b = $("machines").querySelector(`[data-id="${CSS.escape(next.id)}"]`);
-  if (b) b.scrollIntoView({ block: "nearest" });
+// show opens a machine and scrolls to it.
+function show(id) {
+  if (!open.has(id)) toggle(id);
+  const li = document.getElementById("m-" + id);
+  if (li) li.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
-
-document.addEventListener("keydown", (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === "j" || e.key === "ArrowDown") move(1);
-  else if (e.key === "k" || e.key === "ArrowUp") move(-1);
-  else return;
-  e.preventDefault();
-});
 
 function showAlert(...texts) {
   const a = $("alert");
@@ -432,23 +427,19 @@ function showAlert(...texts) {
 function draw() {
   if (!state) return;
   const nodes = machines();
-  // A remembered machine that the mesh no longer lists gives way to this one.
-  if (!nodes.some((n) => n.id === selected)) selected = selfID();
-  const key = JSON.stringify([state, [...answers], selected, Math.floor(Date.now() / 60000)]);
+  // On a first visit, this machine starts open.
+  if (open === null) open = new Set(selfID() ? [selfID()] : []);
+  const key = JSON.stringify([state, [...answers], [...open], Math.floor(Date.now() / 60000)]);
   if (key === drawn) return;
   drawn = key;
 
   const names = displayNames(nodes);
-  const n = nodes.find((m) => m.id === selected);
-  const st = n ? statusOf(n.id) : state.status;
   document.title = state.node ? `gst: ${state.node.name}` : "gst";
   $("software").textContent = state.software;
   drawSummary(nodes);
-  drawMachines(nodes, names);
-  drawHead(n, names, st);
-  drawDetail(n, names);
+  drawSelf(nodes);
   drawRing(nodes, names);
-  drawProps(n, names, st);
+  drawMachines(nodes, names);
 }
 
 const authorized = { headers: { Authorization: "Bearer " + token }, cache: "no-store" };
@@ -486,7 +477,7 @@ async function ask(id) {
 let asking = false;
 let machineTimer = 0;
 
-// refreshMachines asks every machine that it can reach, the selected one
+// refreshMachines asks every machine that it can reach, the open ones
 // first, a few at a time.
 async function refreshMachines() {
   clearTimeout(machineTimer);
@@ -494,7 +485,7 @@ async function refreshMachines() {
   const self = selfID();
   const reachable = machines().filter((n) => n.reachable && n.id !== self).map((n) => n.id);
   for (const id of answers.keys()) if (!reachable.includes(id)) answers.delete(id);
-  const queue = reachable.sort((a, b) => (b === selected) - (a === selected));
+  const queue = reachable.sort((a, b) => (open && open.has(b)) - (open && open.has(a)));
   asking = true;
   await Promise.all(Array.from({ length: MACHINE_REQUESTS }, async () => {
     while (queue.length) await ask(queue.shift());

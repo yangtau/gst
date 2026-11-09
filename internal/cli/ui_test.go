@@ -26,7 +26,7 @@ type uiClient struct {
 
 func newUIClient(t *testing.T, e *testEnv) *uiClient {
 	t.Helper()
-	srv := httptest.NewServer(e.app(io.Discard, io.Discard).uiHandler("secret"))
+	srv := httptest.NewServer(e.app(io.Discard, io.Discard).uiHandler("secret", "10.64.0.7"))
 	t.Cleanup(srv.Close)
 	return &uiClient{t, srv}
 }
@@ -37,6 +37,7 @@ func (c *uiClient) do(method, path, auth string) *http.Response {
 	if err != nil {
 		c.t.Fatal(err)
 	}
+	req.Host = "laptop.gst:8370"
 	if auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
@@ -145,20 +146,21 @@ func TestUIIsReadOnly(t *testing.T) {
 func TestUIRejectsOtherHosts(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("link", "myhost")
-	h := e.app(io.Discard, io.Discard).uiHandler("secret")
+	h := e.app(io.Discard, io.Discard).uiHandler("secret", "10.64.0.7")
 	for host, want := range map[string]int{
-		"127.0.0.1:8370":                  http.StatusOK,
-		"127.0.0.1":                       http.StatusOK,
-		"localhost:8370":                  http.StatusOK,
-		"LOCALHOST:8370":                  http.StatusOK,
-		"localhost":                       http.StatusOK,
-		"[::1]:8370":                      http.StatusOK,
-		"[::1]":                           http.StatusOK,
-		"127.1.2.3:8370":                  http.StatusOK,
+		"10.64.0.7:8370":                  http.StatusOK,
+		"10.64.0.7":                       http.StatusOK,
+		"laptop.gst:8370":                 http.StatusOK,
+		"Laptop.GST":                      http.StatusOK,
+		"devbox.gst":                      http.StatusOK,
+		"127.0.0.1:8370":                  http.StatusForbidden,
+		"localhost:8370":                  http.StatusForbidden,
+		"[::1]:8370":                      http.StatusForbidden,
 		"evil.example.com":                http.StatusForbidden,
 		"evil.example:80":                 http.StatusForbidden,
 		"10.0.0.1:8370":                   http.StatusForbidden,
 		"0.0.0.0:8370":                    http.StatusForbidden,
+		"evil.example.gst:8370":           http.StatusForbidden,
 		"localhost.evil.example.com:8370": http.StatusForbidden,
 		"":                                http.StatusForbidden,
 	} {
@@ -281,25 +283,31 @@ func TestUIStateWithBrokenConfig(t *testing.T) {
 	}
 }
 
-func TestLoopbackHost(t *testing.T) {
+func TestUIHost(t *testing.T) {
 	for host, want := range map[string]bool{
-		"localhost":       true,
-		"localhost:80":    true,
-		"LocalHost:80":    true,
-		"127.0.0.1":       true,
-		"127.0.0.1:8370":  true,
-		"[::1]":           true,
-		"[::1]:8370":      true,
-		"::1":             true,
-		"192.168.1.1":     false,
+		"10.64.0.7":       true,
+		"10.64.0.7:8370":  true,
+		"devbox.gst":      true,
+		"devbox.gst:8370": true,
+		"DevBox.GST:80":   true,
+		"10.64.0.8":       false,
+		"a.b.gst":         false,
+		".gst":            false,
+		"localhost":       false,
+		"localhost:80":    false,
+		"127.0.0.1:8370":  false,
+		"[::1]:8370":      false,
 		"example.com":     false,
 		"example.com:80":  false,
 		"[2001:db8::1]:1": false,
 		"":                false,
 	} {
-		if got := loopbackHost(host); got != want {
-			t.Errorf("loopbackHost(%q) = %v, want %v", host, got, want)
+		if got := uiHost(host, "10.64.0.7"); got != want {
+			t.Errorf("uiHost(%q) = %v, want %v", host, got, want)
 		}
+	}
+	if uiHost("", "") {
+		t.Error("an empty Host matches an empty gst IP")
 	}
 }
 
@@ -321,20 +329,27 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// onNet puts the environment's machine on a gst network whose address is
+// 127.0.0.1, where a test can reach it.
+func onNet(e *testEnv) {
+	e.mustGst("name", "laptop")
+	e.mustGst("up")
+	e.back.net = &wire.NetState{Subnet: "127.0.0.0/8", Address: "127.0.0.1", Interface: "utun9", Peers: []wire.NetPeer{}}
+}
+
 func TestUICommandServes(t *testing.T) {
 	e := newEnv(t)
+	onNet(e)
 	e.mustGst("link", "myhost")
 	var stdout, stderr syncBuffer
 	a := e.app(&stdout, &stderr)
-	var opened []string
-	a.openURL = func(url string) error { opened = append(opened, url); return errors.New("no display") }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan int, 1)
 	go func() { done <- a.execute(ctx, []string{"--config", e.config, "ui"}) }()
 
-	urlPattern := regexp.MustCompile(`gst ui: (http://127\.0\.0\.1:\d+/)#([0-9A-Za-z]+)\n`)
+	urlPattern := regexp.MustCompile(`gst ui: http://laptop\.gst:(\d+)/#([0-9A-Za-z]+)\n`)
 	var m []string
 	deadline := time.Now().Add(5 * time.Second)
 	for m == nil && time.Now().Before(deadline) {
@@ -347,7 +362,9 @@ func TestUICommandServes(t *testing.T) {
 	}
 	contains(t, stdout.String(), "Press Ctrl-C to stop.\n")
 
-	req, _ := http.NewRequest("GET", m[1]+"api/state", nil)
+	// The gst IP is 127.0.0.1 here; a browser asks for laptop.gst.
+	req, _ := http.NewRequest("GET", "http://127.0.0.1:"+m[1]+"/api/state", nil)
+	req.Host = "laptop.gst:" + m[1]
 	req.Header.Set("Authorization", "Bearer "+m[2])
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -374,33 +391,6 @@ func TestUICommandServes(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("gst ui did not stop")
 	}
-	if len(opened) != 1 || opened[0] != m[1]+"#"+m[2] {
-		t.Fatalf("opened %v", opened)
-	}
-	// A browser that does not open is a note, not a failure.
-	contains(t, stderr.String(), "note: no browser opened (no display); open the address above\n")
-}
-
-func TestUICommandNoOpen(t *testing.T) {
-	e := newEnv(t)
-	var stdout syncBuffer
-	a := e.app(&stdout, io.Discard)
-	opened := false
-	a.openURL = func(string) error { opened = true; return nil }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan int, 1)
-	go func() { done <- a.execute(ctx, []string{"--config", e.config, "ui", "--no-open"}) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(stdout.String(), "Press Ctrl-C") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	if code := <-done; code != exitOK {
-		t.Fatalf("exit %d", code)
-	}
-	if opened {
-		t.Fatal("--no-open opened a browser")
-	}
 }
 
 func TestUICommandErrors(t *testing.T) {
@@ -409,13 +399,20 @@ func TestUICommandErrors(t *testing.T) {
 	e.expectError(exitUsage, []string{"ui", "--port", "-1"}, "error: --port must be between 0 and 65535\n")
 	e.expectError(exitUsage, []string{"ui", "extra"}, `error: unexpected argument "extra"`)
 
+	// gst ui serves on the gst network only.
+	e.expectError(exitFailure, []string{"ui"}, "error: gst is not running on this machine\n", "hint: start it with `gst up`\n")
+	e.mustGst("up")
+	e.back.net = &wire.NetState{Error: "the network helper is not running", Hint: "run `gst up` on this machine"}
+	e.expectError(exitFailure, []string{"ui"}, "error: this machine is not on the gst network: the network helper is not running\n", "hint: run `gst up` on this machine\n")
+	onNet(e)
+
 	// A port in use is a failure with a hint.
 	var stdout syncBuffer
 	a := e.app(&stdout, io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	go func() { done <- a.execute(ctx, []string{"--config", e.config, "ui", "--no-open"}) }()
-	m := regexp.MustCompile(`127\.0\.0\.1:(\d+)`)
+	go func() { done <- a.execute(ctx, []string{"--config", e.config, "ui"}) }()
+	m := regexp.MustCompile(`laptop\.gst:(\d+)`)
 	var port string
 	for deadline := time.Now().Add(5 * time.Second); port == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if p := m.FindStringSubmatch(stdout.String()); p != nil {
@@ -426,7 +423,7 @@ func TestUICommandErrors(t *testing.T) {
 		cancel()
 		t.Fatal("gst ui did not start")
 	}
-	e.expectError(exitFailure, []string{"ui", "--port", port}, "error: cannot listen on port "+port, "hint: choose another port with --port, or 0 for any free one\n")
+	e.expectError(exitFailure, []string{"ui", "--port", port}, "error: cannot listen on port "+port+" of the gst IP", "hint: choose another port with --port, or 0 for any free one\n")
 	cancel()
 	<-done
 }

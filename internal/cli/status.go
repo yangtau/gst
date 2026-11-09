@@ -28,12 +28,15 @@ func (a *app) statusCommand() *cobra.Command {
 line: its id, name, gst version, gst IP, and how packets go to it:
 direct over UDP, or relayed along the SSH links, through the machines
 named. Problems on this machine, such as a link that is down, follow.
-With -v, also show the links between all the machines, and the traffic
-with each machine.
+With -v, also show the links between all the machines, as "from -> to"
+with their destinations and states, and the traffic with each machine. A
+link belongs to the machine it starts from, and only that machine knows its
+destination and whether it is down: of the links that other machines made,
+only the running ones are known.
 
-With a machine, show its gst IP, exposed ports, and links. A machine is
-given by its name, or its id or an id prefix of at least 4 characters,
-optionally followed by .gst.`,
+With a machine, show its gst IP, exposed ports, and every link that
+starts or ends at it, in the same way. A machine is given by its name, or its id or an id prefix of at
+least 4 characters, optionally followed by .gst.`,
 		Example: "  gst status\n  gst status -v\n  gst status devbox",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -53,7 +56,9 @@ optionally followed by .gst.`,
 				if err != nil {
 					return withHint(err, "see the machines with `gst status`")
 				}
-				return writeStatus(a.stdout, st)
+				// The links that other machines made to it are the network's.
+				topo, _ := b.Nodes(cmd.Context())
+				return writeStatus(a.stdout, st, topo)
 			}
 			st, ok := b.Status(cmd.Context())
 			if !ok {
@@ -126,15 +131,14 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 	if len(topo.Nodes) == 1 && len(st.Links) == 0 {
 		fmt.Fprintln(out, "\nNo links yet. Link to another machine with `gst link <destination>`.")
 	}
-	if verbose && len(topo.Edges) > 0 {
-		var edges []string
-		for _, e := range topo.Edges {
-			edges = append(edges, names[e.From]+" -> "+names[e.To])
-		}
-		slices.Sort(edges)
-		fmt.Fprintln(out, "\nLINKS")
-		for _, e := range edges {
-			fmt.Fprintln(out, e)
+	if verbose {
+		self := wire.NodeInfo{ID: topo.Self, Name: names[topo.Self]}
+		rows := linkRows(self, st.Links, topo, func(wire.TopoEdge) bool { return true })
+		if len(rows) > 0 {
+			fmt.Fprintln(out)
+			if err := writeLinkRows(out, rows); err != nil {
+				return err
+			}
 		}
 	}
 	if verbose && st.Net != nil && len(st.Net.Peers) > 0 {
@@ -188,8 +192,9 @@ func displayNames(topo wire.Topology) map[string]string {
 }
 
 // writeStatus prints a machine's status: the machine, its gst IP, its
-// exposed ports, and a table of its links.
-func writeStatus(out io.Writer, st wire.Status) error {
+// exposed ports, and a table of the links from and to it. Its own links
+// come from st; the links that other machines made to it from topo.
+func writeStatus(out io.Writer, st wire.Status, topo wire.Topology) error {
 	fmt.Fprintf(out, "%s (%s), %s\n", st.Node.Name, shortID(st.Node.ID), st.Software)
 	if st.Net != nil {
 		fmt.Fprintf(out, "gst IP: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
@@ -201,19 +206,46 @@ func writeStatus(out io.Writer, st wire.Status) error {
 			return err
 		}
 	}
+	rows := linkRows(st.Node, st.Links, topo, func(e wire.TopoEdge) bool { return e.To == st.Node.ID })
 	fmt.Fprintln(out)
-	if len(st.Links) == 0 {
+	if len(rows) == 0 {
 		fmt.Fprintln(out, "No links.")
 		return nil
 	}
-	w := table(out)
-	fmt.Fprintln(w, "LINK TO\tMACHINE\tSTATE")
-	for _, l := range st.Links {
-		machine := "-"
+	return writeLinkRows(out, rows)
+}
+
+// linkRows lists links as "from -> to", with their destinations and
+// states: first the links that self made, which links holds, and then the
+// running links of topo that keep admits and another machine made, sorted.
+// Only the machine that made a link knows its destination and whether it
+// is down.
+func linkRows(self wire.NodeInfo, links []wire.LinkState, topo wire.Topology, keep func(wire.TopoEdge) bool) [][3]string {
+	names := displayNames(topo)
+	name := func(id, fallback string) string { return cmp.Or(names[id], fallback) }
+	from := name(self.ID, self.Name)
+	var rows, others [][3]string
+	for _, l := range links {
+		to := l.Destination
 		if l.Peer != nil {
-			machine = l.Peer.Name
+			to = name(l.Peer.ID, l.Peer.Name)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", l.Destination, machine, linkStateText(l))
+		rows = append(rows, [3]string{from + " -> " + to, l.Destination, linkStateText(l)})
+	}
+	for _, e := range topo.Edges {
+		if e.From != self.ID && keep(e) {
+			others = append(others, [3]string{name(e.From, shortID(e.From)) + " -> " + name(e.To, shortID(e.To)), "-", wire.StateRunning})
+		}
+	}
+	slices.SortFunc(others, func(a, b [3]string) int { return strings.Compare(a[0], b[0]) })
+	return append(rows, others...)
+}
+
+func writeLinkRows(out io.Writer, rows [][3]string) error {
+	w := table(out)
+	fmt.Fprintln(w, "LINK\tDESTINATION\tSTATE")
+	for _, r := range rows {
+		fmt.Fprintln(w, strings.Join(r[:], "\t"))
 	}
 	return w.Flush()
 }

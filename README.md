@@ -183,15 +183,15 @@ The commands, in the order of `gst --help`. How to name a machine is described i
 | `gst up [--yes]` | Start gst now and at login; when the network helper is missing or out of date, say what `sudo` will run, ask, and install it |
 | `gst link <destination> [--remote-gst cmd]` | Link this machine to another over SSH, in the background |
 | `gst status` | List every machine of the network: short id, name, gst version, gst IP, and `direct` or `relay`; then this machine's problems |
-| `gst status -v` | Also list the links between all the machines, and the traffic with each machine: the way (`direct` and the `ip:port`, or `relay`), the last handshake, and the bytes received and sent |
-| `gst status <machine>` | Show a machine's gst IP, exposed ports, and links (destination, machine, and state), asked through the network |
+| `gst status -v` | Also list the links between all the machines (`from -> to`, destination, and state; this machine's down links too, the others' running ones only), and the traffic with each machine: the way (`direct` and the `ip:port`, or `relay`), the last handshake, and the bytes received and sent |
+| `gst status <machine>` | Show a machine's gst IP, exposed ports, and every link from or to it (`from -> to`, destination, and state), asked through the network |
 | `gst ping <machine> [-c N] [-s BYTES] [-v]` | Send a packet to a machine and back once a second (3 times by default), print how it went and the time, and at the end how many were lost; `-s` sets the size of the packets, which past the interface's MTU go in fragments; `-v` also checks the SSH links and shows the direct path, or why there is none, what both machines did in their latest try at one, and where this machine lost packets |
 | `gst expose [target] [--port port] [--udp]` | Without a target, list this machine's exposed ports; with one, expose it on this machine's gst IP |
 | `gst unexpose <port> [--udp]` | Stop exposing a port and close its connections |
 | `gst unlink <machine>...` | Remove this machine's links to the machines given, by name, id, or destination |
 | `gst name [name]` | Show or change this machine's name, and show its id |
 | `gst subnet [cidr]` | Show the subnet of the network, or change it for all machines |
-| `gst ui [--port N] [--no-open]` | Show the network in a browser |
+| `gst ui [--port N]` | Show the network in a web page |
 | `gst down [--yes]` | Undo `gst up`: stop gst and remove its service and the network helper; other machines cannot link to this one |
 | `gst version` | Show the gst release, commit, protocol, and network helper version |
 
@@ -244,13 +244,13 @@ Limitations:
 
 ### Web page
 
-`gst ui` shows the network in a browser page that updates itself every few seconds: every machine with its state and problems, a map of the links between them, and, for the machine you pick, its links, the links from other machines, how packets go to the other machines, and its exposed ports (as `gst status <machine>` does). Press J and K to move between machines. It says so when gst is not running on this machine. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; changes take the commands above.
+`gst ui` shows the network in a web page that updates itself every few seconds: this machine at the top with a map of the links between all machines, then every machine with its gst IP, how packets go to it, and its problems. Open a machine to see its exposed ports and every link that starts or ends at it, written `from → to` as in `gst status -v`; a link belongs to the machine it starts from, with the ssh destination it was made with. It says so when gst is not running on this machine. The page only shows; changes take the commands above.
+
+`gst ui` serves the page on this machine's gst IP until you press Ctrl-C, so that any machine of the network, this one included, opens it at `<name>.gst`; it does not listen on `localhost` or any other address. It needs the network up, prints the address, and opens no browser.
 
 ```bash
 gst ui
-# On a machine without a browser: pick a port and forward it
-gst ui --port 8370 --no-open
-ssh -L 8370:localhost:8370 devbox   # then open the printed address on your own machine
+gst ui --port 8370   # on devbox; then open http://devbox.gst:8370/#... on any machine of the network
 ```
 
 The address ends with a random secret after `#`, which the page needs; anyone with the full address can use the page while `gst ui` runs. Each run makes a new secret.

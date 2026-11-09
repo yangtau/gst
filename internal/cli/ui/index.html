@@ -9,29 +9,23 @@
 <script src="app.js" defer></script>
 </head>
 <body>
-<div class="app">
-  <aside class="rail">
-    <header class="rail-head">
-      <span class="brand">gst</span>
-      <span id="summary" class="summary"></span>
-    </header>
-    <nav id="machines" class="machines" aria-label="Machines"></nav>
-    <footer class="rail-foot">
-      <span id="software"></span>
-      <span class="keys"><kbd>J</kbd><kbd>K</kbd> to move</span>
-    </footer>
-  </aside>
-
-  <main class="main">
-    <div id="alert" class="alert" role="alert" hidden></div>
-    <header id="head" class="head"></header>
-    <div id="detail" class="detail"></div>
-  </main>
-
-  <aside class="side" aria-label="The network and the selected machine">
+<header class="top">
+  <div class="top-in">
+    <span class="brand">gst</span>
+    <span id="summary" class="summary"></span>
+  </div>
+</header>
+<div id="alert" class="alert" role="alert" hidden></div>
+<main class="page">
+  <section id="overview" class="overview" aria-label="This machine and the network">
+    <dl id="self" class="facts"></dl>
     <svg id="ring" class="ring" role="img" aria-label="Machines of the network and the running links between them"></svg>
-    <dl id="props" class="props"></dl>
-  </aside>
-</div>
+  </section>
+  <section aria-label="Machines">
+    <h2 class="section-title">Machines <span id="count" class="faint"></span></h2>
+    <ul id="machines" class="machines"></ul>
+  </section>
+</main>
+<footer class="foot"><span id="software"></span></footer>
 </body>
 </html>

@@ -257,7 +257,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 
 ## Web UI
 
-- `gst ui` 是前台进程，只监听 `127.0.0.1`（`--port`，默认任意空闲端口），启动时生成随机 token，打印 `http://127.0.0.1:<port>/#<token>` 并打开浏览器（`--no-open` 跳过）。daemon 只有 control socket 这一个控制入口，退出后不留监听。
-- 页面（`internal/cli/ui`，go:embed）以 `Authorization: Bearer <token>` 请求 `GET /api/state`；`Host` 不是 localhost 或回环地址时返回 403；响应带严格的 CSP 等安全头。页面用 DOM 文本节点渲染所有字段。
+- `gst ui` 是前台进程，只监听本机 gst IP（`--port`，默认任意空闲端口），网络里的每台机器（包括本机，经 `loopback`）都用 `http://<name>.gst:<port>/` 打开；虚拟网络没起来时报错。启动时生成随机 token，打印 `http://<name>.gst:<port>/#<token>`，不打开浏览器。daemon 只有 control socket 这一个控制入口，退出后不留监听。
+- 页面（`internal/cli/ui`，go:embed）以 `Authorization: Bearer <token>` 请求 `GET /api/state`；`Host` 不是 `<name>.gst` 或本机 gst IP 时返回 403（`.gst` 只有 gst 解析，挡住 DNS rebinding）；响应带严格的 CSP 等安全头。页面用 DOM 文本节点渲染所有字段。
 - `/api/state` 返回本机 node、`Status`、daemon 是否应答、`Topology`；只供页面使用，字段可以改变。页面只读：不能启动、停止或重启 link；daemon 不运行时，页面说明这一点。机器表显示 `direct`、`relay` 或 `relay via …`。
-- `GET /api/nodes/{node}`（同样需要 token）返回 mesh 中任一机器的 `Status`，即 `mesh.status` 的结果，`{node}` 是机器的称呼（名称、id 或 id 前缀）；出错时返回 502 和错误信息。页面选中某台机器时请求它。
+- `GET /api/nodes/{node}`（同样需要 token）返回 mesh 中任一机器的 `Status`，即 `mesh.status` 的结果，`{node}` 是机器的称呼（名称、id 或 id 前缀）；出错时返回 502 和错误信息。页面轮询所有可达机器，先问展开的那几台。
