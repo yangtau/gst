@@ -14,7 +14,7 @@ import (
 )
 
 // version is the gst release. `make release` sets it; see AGENTS.md.
-const version = "0.4.0"
+const version = "0.5.0"
 
 // commit is the git commit gst is built from, for builds without Go's
 // VCS stamp, such as nix's: -ldflags "-X <this package>.commit=...".
