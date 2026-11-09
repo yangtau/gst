@@ -151,7 +151,7 @@ gst expose remove 5999 --udp               # remove UDP only
 
 If the machine is named `myhost`, connect to `myhost.gst:5999` using the matching protocol. Bare ports mean loopback; explicit TCP targets use `tcp://host:port`. The exposed port defaults to the target port; Unix stream sockets require `--port`. TCP and UDP can share a port. Repeating a rule is harmless; to change its target, remove it first.
 
-Rules run in the daemon and survive terminal exit and restart. They bind **only this machine's gst IPv4 address**, never a wildcard or physical interface address. `waiting` means the network is not ready; `failed` reports a bind error, retried automatically; `running` means the listener is open, not that the target is healthy. `stopped` means the daemon is not reporting the rule. Targets may start later; each new connection tries again. `gst status <machine>` also shows its exposed ports.
+Rules run in the daemon and survive terminal exit and restart. They bind **only this machine's gst IPv4 address**, never a wildcard or physical interface address. `waiting` means the network is not ready; `failed` reports a bind error, retried automatically; `running` means the listener is open, not that the target is healthy. `stopped` means the daemon is not reporting the rule. Targets may start later; each new connection tries again. `gst status <machine>` and `gst ui` also show its exposed ports and their state.
 
 Deleting a rule or stopping gst closes its connections. A gst address change closes the old connections and rebinds the rules. `gst down` retains the rules for the next `gst up`. Exposing a port never asks for root; a port that requires privileges reports an error.
 
@@ -243,7 +243,7 @@ Limitations:
 
 ### Web page
 
-`gst ui` shows the mesh in a browser page that updates itself every few seconds: every machine with its state and problems, a map of the links between them, and, for the machine you pick, its address, its links, and the links from other machines (as `gst status <machine>` does). Press J and K to move between machines. It says so when the daemon on this machine is not running. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; changes take the commands above.
+`gst ui` shows the mesh in a browser page that updates itself every few seconds: every machine with its state and problems, a map of the links between them, and, for the machine you pick, its address, its links, the links from other machines, and its exposed ports (as `gst status <machine>` does). Press J and K to move between machines. It says so when the daemon on this machine is not running. It serves the page on `127.0.0.1` until you press Ctrl-C, prints the address, and opens it in your browser. The page only shows; changes take the commands above.
 
 ```bash
 gst ui

@@ -88,6 +88,9 @@ function problems(st) {
   const found = [];
   for (const l of st.links || []) if (l.state !== "running") found.push(`link ${linkText(st.node.name, l.peer && l.peer.name, l.name)} is ${l.state}`);
   if (st.net && st.net.error) found.push(`virtual network: ${st.net.error}`);
+  for (const e of st.exposes || []) {
+    if (e.state !== "running") found.push(`expose ${e.protocol}/${e.port}: ${e.state}${e.error ? `: ${e.error}` : ""}`);
+  }
   return found;
 }
 
@@ -210,6 +213,20 @@ function peersGroup(st) {
   return group("Network", count(peers.length), rows);
 }
 
+function exposesGroup(st) {
+  const exposes = st.exposes || [];
+  if (exposes.length === 0) return null;
+  const down = exposes.filter((e) => e.state !== "running").length;
+  const rows = exposes.map((e) => el("li", { class: "row" },
+    mark({ running: "ok", waiting: "wait", stopped: "off", failed: "bad" }[e.state], e.state),
+    el("span", { class: "cell row-name" }, `${e.protocol.toUpperCase()} ${e.port}`),
+    el("span", { class: "cell mono sub", title: e.address }, e.address || "—"),
+    el("span", { class: "cell mono sub", title: e.target }, e.target),
+    el("span", { class: "row-end " + (e.state === "failed" ? "bad" : e.state === "waiting" ? "warn" : "") }, e.state),
+    e.error ? el("p", { class: "row-error" }, e.error) : null));
+  return group("Exposed ports", count(down ? `${exposes.length - down} of ${exposes.length} running` : exposes.length, down), rows);
+}
+
 function blank(title, ...text) {
   return el("div", { class: "blank" }, el("strong", null, title), el("p", null, text));
 }
@@ -248,6 +265,7 @@ function drawDetail(n, names) {
     linksGroup(st, isSelf),
     n && linkedFromGroup(n.id, names),
     peersGroup(st),
+    exposesGroup(st),
   ].filter(Boolean));
 }
 

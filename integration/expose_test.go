@@ -31,7 +31,8 @@ func TestExpose(t *testing.T) {
 	c.mustGst("expose", "8080", "--port", "5999") // idempotent
 	check := func() {
 		t.Helper()
-		eventually(t, 15*time.Second, "exposed TCP/Unix ports did not answer", func() bool { return a.roundtrip("-conns", "4", "c.gst:5999", "c.gst:6000") == nil })
+		// WireGuard may need over 15 seconds to rehandshake after a restart.
+		eventually(t, 40*time.Second, "exposed TCP/Unix ports did not answer", func() bool { return a.roundtrip("-conns", "4", "c.gst:5999", "c.gst:6000") == nil })
 		if err := c.roundtrip("c.gst:5999"); err != nil {
 			t.Fatalf("local gst address: %v", err)
 		}
