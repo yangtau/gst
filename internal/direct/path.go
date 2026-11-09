@@ -26,10 +26,28 @@ const (
 	maxTargets    = 2 * maxAddresses  // also counts addresses learned from packets
 
 	// A faster address must have this many measures, and beat the one in
-	// use by minGain and a tenth, or paths would hop between equals.
+	// use by its margin, or paths would hop between equals.
 	minSamples = 3
 	minGain    = 2 * time.Millisecond
 )
+
+// margin is by how much an address must beat one in use that takes rtt:
+// minGain, or a tenth when that is more.
+func margin(rtt time.Duration) time.Duration {
+	return max(minGain, rtt/10)
+}
+
+// cost is what addresses compete on: the round trip, less twice its margin
+// for a private address. Packets to one stay on a local network, or a VPN
+// the machines share, which is steadier and spares the internet link. So a
+// private address takes over unless it is slower by more than about its
+// margin, and gives way only to one faster by three.
+func cost(addr netip.Addr, rtt time.Duration) time.Duration {
+	if addr.IsPrivate() {
+		return rtt - 2*margin(rtt)
+	}
+	return rtt
+}
 
 // Path is a UDP path to one node: the addresses to reach it at, and the
 // one in use. It starts as a try, and once an address answers it carries
@@ -289,12 +307,21 @@ func (p *Path) record(addr netip.AddrPort, rtt time.Duration, now time.Time) []s
 		case current == nil || now.Sub(current.heard) > staleLimit:
 			p.best.Store(&addr)
 			events = append(events, fmt.Sprintf("moved to %s: the address in use stopped answering", addr))
-		case t.samples >= minSamples && t.rtt+minGain <= current.rtt && t.rtt*10 <= current.rtt*9:
+		case t.samples >= minSamples && cost(addr.Addr(), t.rtt)+margin(current.rtt) <= cost(best.Addr(), current.rtt):
 			p.best.Store(&addr)
-			events = append(events, fmt.Sprintf("moved to %s: %s, was %s", addr, ms(t.rtt), ms(current.rtt)))
+			events = append(events, fmt.Sprintf("moved to %s: %s%s, was %s", addr, ms(t.rtt), privately(addr), ms(current.rtt)))
 		}
 	}
 	return events
+}
+
+// privately names a private address in the trace, which explains a move
+// to one that is not the fastest.
+func privately(addr netip.AddrPort) string {
+	if addr.Addr().IsPrivate() {
+		return " on a private network"
+	}
+	return ""
 }
 
 func ms(d time.Duration) string {

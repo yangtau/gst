@@ -31,17 +31,26 @@ UDP 路径应该只走本机真实 IP，不走任何 VPN 或代理：TUN 代理�
 - 新流量到来时要马上恢复，这时 NAT 映射可能已经过期，首包可以先走 SSH。gst 没有常在线的中继，SSH 也可能已经断开，要测恢复时间。
 - 活动信号用本机发送和 WireGuard 认证过的接收，不能用未认证的包。
 
-## 地址选择给私网地址加分
-
-现在只看 RTT。同一个局域网里的路径不经过外部网络，更稳定，也不占公网带宽，所以 RTT 接近时应该优先。
-
-要做的：
-
-- 在 `Path.record` 的切换判断里给私网地址加分，比如 RTT 差距在一定范围内时优先私网地址。Tailscale 的做法是私网 +20、链路本地 +30、回环 +50、IPv6 +10。
-- 明显更慢的私网地址不能压过公网地址。
-
 ## 批量收发
 
 `vnet.bind` 已经按批次拿到包，但 `Send` 把批次拆开，经 mesh 逐包写 UDP。Linux 上可以把批次传到 socket，用 `sendmmsg`、`recvmmsg`，再评估 UDP GSO/GRO。Tailscale 的实现在 `net/batching`，没有 macOS 后端。
 
 先看 `gst ping -v` 的丢包计数和 CPU，确认是瓶颈再做。
+
+mini in ~
+❯ gst status --all
+f46a584f mini gst 0.4.0 192.168.199.158 -
+e6dbe8cf devcn gst 0.4.0 192.168.199.202 online; via m3
+87e715c4 m3 gst 0.4.0 192.168.199.127 online; direct
+
+LINK
+m3->devcn
+m3->mini
+
+MACHINE ADDRESS PATH HANDSHAKE RECEIVED SENT
+devcn 192.168.199.202 ssh never 0 B 0 B
+m3 192.168.199.127 direct [2408:8666:ba01:802::2c]:15355 42s ago 138.7 KiB 164.4 KiB
+
+# Problems:
+
+# - virtual network: the subnet 192.168.199.0/24 overlaps 128.0.0.0/1 on this machine; choose another subnet with `gst subnet <cidr>`

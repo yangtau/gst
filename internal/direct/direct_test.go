@@ -360,6 +360,40 @@ func TestChoosingTheFastestAddress(t *testing.T) {
 	}
 }
 
+// A private address wins when it is about as fast as a public one, but not
+// when it is clearly slower; and a public address must be clearly faster
+// still to take its place.
+func TestPreferringPrivateAddresses(t *testing.T) {
+	public, private := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("10.0.0.2:2")
+	measure := func(p *Path, addr netip.AddrPort, rtt time.Duration) {
+		for range minSamples {
+			p.record(addr, rtt, time.Now())
+		}
+	}
+	for _, c := range []struct {
+		name            string
+		first, then     netip.AddrPort
+		firstRTT, other time.Duration
+		want            netip.AddrPort
+	}{
+		{"as fast on a LAN", public, private, time.Millisecond, time.Millisecond, private},
+		{"a little slower", public, private, 40 * time.Millisecond, 43 * time.Millisecond, private},
+		{"clearly slower", public, private, 40 * time.Millisecond, 50 * time.Millisecond, public},
+		{"public a little faster", private, public, 43 * time.Millisecond, 40 * time.Millisecond, private},
+		{"public faster by the margin", private, public, 50 * time.Millisecond, 40 * time.Millisecond, private},
+		{"public much faster", private, public, 50 * time.Millisecond, 30 * time.Millisecond, public},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newTestPath(t, public, private)
+			measure(p, c.first, c.firstRTT)
+			measure(p, c.then, c.other)
+			if got := *p.best.Load(); got != c.want {
+				t.Fatalf("using %s", got)
+			}
+		})
+	}
+}
+
 // An address in use that stopped answering gives way to any that answers.
 func TestStaleAddress(t *testing.T) {
 	first, other := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
