@@ -492,6 +492,9 @@ func TestClose(t *testing.T) {
 	case <-time.After(silenceLimit / 2):
 		t.Fatal("the other side did not notice")
 	}
+	if c.FellSilent() || s.FellSilent() {
+		t.Fatal("a closed path counts as fallen silent")
+	}
 }
 
 // A path whose other end stopped answering ends by itself.
@@ -502,6 +505,22 @@ func TestSilence(t *testing.T) {
 	case <-c.Done():
 	case <-time.After(2 * silenceLimit):
 		t.Fatal("the path did not end")
+	}
+	if !c.FellSilent() {
+		t.Fatal("the path does not tell why it ended")
+	}
+}
+
+// A path is idle while this side sends nothing on it: probes and what
+// arrives do not count.
+func TestIdle(t *testing.T) {
+	c, s := mustConnect(t, transport(t), transport(t))
+	time.Sleep(probeInterval)
+	if err := c.WritePacket(wg()); err != nil {
+		t.Fatal(err)
+	}
+	if c.Idle() >= probeInterval || s.Idle() < probeInterval {
+		t.Fatalf("idle for %s and %s", c.Idle(), s.Idle())
 	}
 }
 

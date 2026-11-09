@@ -54,6 +54,7 @@ type Node struct {
 	directTries map[string]*directTry         // by node id
 	directWaits map[string]directWait         // by node id
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
+	directIdle  time.Duration                 // see runDirect
 
 	subnet atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
 
@@ -88,6 +89,7 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},
 		directTrace: map[string][]wire.DirectEvent{},
+		directIdle:  directIdle,
 	}
 	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.Self(), nil })
 	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)

@@ -78,8 +78,63 @@ func TestDirectPath(t *testing.T) {
 	waitFor(t, "the path ends on a", func() bool { return !hasDirect(a, nid("b")) })
 	a.SendPacket(nid("b"), wg("back on ssh"))
 	waitFor(t, "the packet arrives along the link", func() bool { return boxes[b].has(nid("a"), string(wg("back on ssh"))) })
-	if hasDirect(a, nid("b")) {
-		t.Fatal("a path came back at once")
+	// A path closed on purpose is no failure.
+	if waiting(a, nid("b")) || waiting(b, nid("a")) {
+		t.Fatal("waiting after a path was closed")
+	}
+}
+
+// waiting reports whether n holds off trying node id again.
+func waiting(n *Node, id string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return time.Now().Before(n.directWaits[id].next)
+}
+
+// A path that carries nothing ends, and traffic finds one again at once.
+func TestIdleDirectPathEnds(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	a.directIdle, c.directIdle = 300*time.Millisecond, 300*time.Millisecond
+	boxes := enableDirect(t, a, c)
+	linkUp(t, a, c, "c")
+	goDirect(t, a, c)
+	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
+
+	a.SendPacket(nid("c"), wg("again"))
+	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("again"))) })
+	waitFor(t, "traffic finds a path again", func() bool { return hasDirect(a, nid("c")) && hasDirect(c, nid("a")) })
+}
+
+// An idle path that is the only way to a node stays.
+func TestIdleDirectPathWithoutLinksStays(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	a.directIdle, c.directIdle = 300*time.Millisecond, 300*time.Millisecond
+	enableDirect(t, a, c)
+	ab, cb := linkUp(t, a, b, "b"), linkUp(t, c, b, "b")
+	goDirect(t, a, c)
+	// Traffic keeps the path until the links are gone.
+	busy := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-busy:
+				return
+			case <-time.After(50 * time.Millisecond):
+				a.SendPacket(nid("c"), wg("busy"))
+				c.SendPacket(nid("a"), wg("busy"))
+			}
+		}
+	}()
+	ab.cut()
+	cb.cut()
+	ab.wait(t)
+	cb.wait(t)
+	waitFor(t, "a loses b", func() bool { n, _ := findTopo(a.Topology(), nid("b")); return !n.Reachable })
+	waitFor(t, "c loses b", func() bool { n, _ := findTopo(c.Topology(), nid("b")); return !n.Reachable })
+	close(busy)
+	time.Sleep(3 * a.directIdle)
+	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
+		t.Fatal("the only way to the node ended")
 	}
 }
 
@@ -239,11 +294,7 @@ func TestDirectOffOnTheOtherSide(t *testing.T) {
 	linkUp(t, a, b, "b")
 	waitFor(t, "a sees b", func() bool { n, _ := findTopo(a.Topology(), nid("b")); return n.Reachable })
 	a.SendPacket(nid("b"), wg("hello"))
-	waitFor(t, "a holds off", func() bool {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return time.Now().Before(a.directWaits[nid("b")].next)
-	})
+	waitFor(t, "a holds off", func() bool { return waiting(a, nid("b")) })
 	waitFor(t, "the packet arrives", func() bool { return atB.has(nid("a"), string(wg("hello"))) })
 	if hasDirect(a, nid("b")) {
 		t.Fatal("a path without the other side")

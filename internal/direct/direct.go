@@ -401,7 +401,8 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
 		p.answered(to, source, rtt)
 		t.sawPublic(seen)
 	case packet[0] == kindBye:
-		if p.knows(source) {
+		if p.knows(source) && !p.ended() {
+			p.tracef("bye from %s: the other side closed the path", source)
 			p.end()
 		}
 	}

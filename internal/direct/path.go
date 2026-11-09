@@ -59,6 +59,8 @@ type Path struct {
 	handle atomic.Pointer[func(packet []byte)]
 	best   atomic.Pointer[netip.AddrPort]
 	heard  atomic.Int64 // when anything last arrived, in Unix nanoseconds
+	sent   atomic.Int64 // when this side last sent a packet, in Unix nanoseconds
+	silent atomic.Bool  // the path ended as the other side fell silent
 
 	proved chan struct{}
 	done   chan struct{}
@@ -89,6 +91,7 @@ func (t *Transport) newPath(token [tokenLen]byte, trace func(string)) (*Path, er
 		done:    make(chan struct{}),
 		targets: map[netip.AddrPort]*target{},
 	}
+	p.sent.Store(time.Now().UnixNano())
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
@@ -337,6 +340,7 @@ func (p *Path) run() {
 		now := time.Now()
 		if p.best.Load() != nil && now.Sub(time.Unix(0, p.heard.Load())) > silenceLimit {
 			p.tracef("the other side fell silent")
+			p.silent.Store(true)
 			p.end()
 			return
 		}
@@ -401,6 +405,16 @@ func (p *Path) Remote() string {
 // Done is closed when the path ends.
 func (p *Path) Done() <-chan struct{} { return p.done }
 
+// FellSilent reports whether the path ended as nothing arrived for too
+// long, rather than as a side closed it.
+func (p *Path) FellSilent() bool { return p.silent.Load() }
+
+// Idle returns how long ago this side last sent a packet on the path, or
+// since the path started. Probes do not count.
+func (p *Path) Idle() time.Duration {
+	return time.Since(time.Unix(0, p.sent.Load()))
+}
+
 // WritePacket sends a WireGuard packet to the other side.
 func (p *Path) WritePacket(packet []byte) error {
 	best := p.best.Load()
@@ -411,6 +425,7 @@ func (p *Path) WritePacket(packet []byte) error {
 	if s == nil {
 		return errors.New("no socket for the address")
 	}
+	p.sent.Store(time.Now().UnixNano())
 	_, err := s.udp.WriteToUDPAddrPort(packet, *best)
 	return err
 }

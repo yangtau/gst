@@ -16,10 +16,11 @@ import (
 
 const (
 	directTimeout = 15 * time.Second // to find a UDP path
-	directRetry   = 5 * time.Second  // first wait after a try fails or a path ends
+	directRetry   = 5 * time.Second  // first wait after a try fails or a path falls silent
 	directMaxWait = 5 * time.Minute
-	removeTimeout = 3 * time.Second // to tell a peer that its link is being removed
-	maxTrace      = 200             // latest events kept of a try
+	directIdle    = 45 * time.Second // a path that this node sends nothing on for this long ends; see runDirect
+	removeTimeout = 3 * time.Second  // to tell a peer that its link is being removed
+	maxTrace      = 200              // latest events kept of a try
 )
 
 // A UDP path (internal/direct) carries the WireGuard packets between two
@@ -372,6 +373,13 @@ func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error
 
 // runDirect makes packets to node id take path until it ends. The try
 // ends once the path runs, so that there is always one or the other.
+//
+// A path that this node sends nothing on for directIdle ends, so that
+// idle paths cost no probes; the next packet takes the links and finds a
+// path again. Sending is the sign of traffic both ways: WireGuard answers
+// what it receives within 10 seconds, with a keepalive if it has nothing
+// else to send. A path that the links do not lead around stays, as it is
+// then the only way to the node.
 func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	n.mu.Lock()
 	delete(n.directWaits, id)
@@ -383,13 +391,35 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	n.endDirect(id, try)
 	n.log.Printf("UDP path to %s: up", n.nodeName(id))
 	n.Update()
-	select {
-	case <-ctx.Done():
-	case <-path.Done():
-		n.log.Printf("UDP path to %s: ended", n.nodeName(id))
-		n.trace(id, "ended")
-		n.backOff(id)
+	idle := time.NewTicker(n.directIdle / 5)
+	defer idle.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-path.Done():
+			n.log.Printf("UDP path to %s: ended", n.nodeName(id))
+			n.trace(id, "ended")
+			// Only a failure waits: a side closed the path on purpose.
+			if path.FellSilent() {
+				n.backOff(id)
+			}
+			return
+		case <-idle.C:
+			if path.Idle() >= n.directIdle && n.linksReach(id) {
+				n.log.Printf("UDP path to %s: idle, closed", n.nodeName(id))
+				n.trace(id, "nothing sent for %s: closed until traffic comes", n.directIdle)
+				return
+			}
+		}
 	}
+}
+
+// linksReach reports whether SSH links lead to node id.
+func (n *Node) linksReach(id string) bool {
+	topo := n.Topology()
+	_, ok := reach(topo.Edges, topo.Self)[id]
+	return ok
 }
 
 // nodeName returns the name of node id, for the log.

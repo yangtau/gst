@@ -218,7 +218,7 @@ udp, err := net.ListenUDP("udp4", &amp;net.UDPAddr{Port: 15355})</pre>
 <span class="k">else</span>:
     <span class="d">丢弃</span>           <span class="c"># 通常不告诉发送方</span></pre>
     <p>注意判断回包的依据：<strong>只比较地址和端口。</strong>TCP 还有 SYN、ACK 这些标志位，防火墙可以看出谁先发起。UDP 包头里什么都没有，防火墙看不出一个包是“回复”还是“另一方主动发的”，只要四个字段对得上就放行。打洞利用的就是这一点。</p>
-    <p>UDP 也没有结束标志，所以表项只能靠超时删除。Linux 默认大约 30 秒，有来有回之后大约 2 分钟；家用路由器和运营商设备从几十秒到几分钟都有。这就是 gst 每秒探测一次在用地址的原因：一旦表项过期，后面的包就会被当成陌生来客丢掉。</p>
+    <p>UDP 也没有结束标志，所以表项只能靠超时删除。Linux 默认大约 30 秒，有来有回之后大约 2 分钟；家用路由器和运营商设备从几十秒到几分钟都有。这就是 gst 每秒探测一次在用地址的原因：一旦表项过期，后面的包就会被当成陌生来客丢掉。路径空闲 45 秒后 gst 干脆关掉它，有流量时重新打洞，不去赌表项还在。</p>
   </div>
 </section>
 
@@ -368,7 +368,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
       <tr><td>收到探测：回 answer，来源加入目标</td><td><code>Transport.receive</code></td><td>第 6 节：从包头学到真实地址</td></tr>
       <tr><td>收到 answer：这条路径来回都通，记下来回时间</td><td><code>Path.record</code></td><td>一来一回都到，说明两边的洞都开了</td></tr>
       <tr><td>WireGuard 的包发往最快的地址，同一个 socket</td><td><code>WritePacket</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
-      <tr><td>每秒探测在用的地址，3 秒没收到算断开，包回到 SSH</td><td><code>Path.run</code></td><td>第 3 节：表项靠超时删除</td></tr>
+      <tr><td>每秒探测在用的地址，3 秒没收到算断开，包回到 SSH；45 秒没有流量就关闭路径</td><td><code>Path.run</code>、<code>Node.runDirect</code></td><td>第 3 节：表项靠超时删除</td></tr>
     </table>
   </div>
   <div class="col">
