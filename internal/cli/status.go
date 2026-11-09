@@ -3,7 +3,6 @@ package cli
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -20,31 +19,22 @@ import (
 // directPoll is how often gst ping -v looks whether a try ended.
 const directPoll = 500 * time.Millisecond
 
-// meshStatus is what gst status prints without a machine. Its JSON form
-// is part of the command line interface.
-type meshStatus struct {
-	Self wire.Status   `json:"self"` // this machine's daemon
-	Mesh wire.Topology `json:"mesh"`
-}
-
 func (a *app) statusCommand() *cobra.Command {
-	var asJSON, all bool
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "status [machine]",
-		Short: "Show the machines of the mesh, or what one machine runs",
-		Long: `Without a machine, show the machines that this machine reaches now, one
-per line: its id, name, gst, and address, and how packets go to it:
-directly over UDP, or along the SSH links, through the machines that it
-names. Linked machines pass on what they know, so the list includes
-machines several links away. Problems on this
-machine, such as a link that is down, follow the list; with --all, the
-running links between all the machines and the traffic with each of them
-come first.
+		Short: "Show the machines of the network, or one machine's links",
+		Long: `Without a machine, show every machine that this one reaches, one per
+line: its id, name, gst version, gst IP, and how packets go to it:
+direct over UDP, or relayed along the SSH links, through the machines
+named. Problems on this machine, such as a link that is down, follow.
+With -v, also show the links between all the machines, and the traffic
+with each machine.
 
-With a machine, show its address and links, asked through the mesh. A
-machine is named by its name, its id or an id prefix of at least 4
-characters, or the name of a link to it, optionally followed by .gst.`,
-		Example: "  gst status\n  gst status --all\n  gst status devbox",
+With a machine, show its gst IP, exposed ports, and links. A machine is
+given by its name, or its id or an id prefix of at least 4 characters,
+optionally followed by .gst.`,
+		Example: "  gst status\n  gst status -v\n  gst status devbox",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			b, err := a.backend()
@@ -52,8 +42,8 @@ characters, or the name of a link to it, optionally followed by .gst.`,
 				return err
 			}
 			if len(args) == 1 {
-				if all {
-					return usage("--all shows the whole mesh; give no machine")
+				if verbose {
+					return usage("-v shows the whole network; give no machine")
 				}
 				machine, err := config.ParseMachine(args[0])
 				if err != nil {
@@ -61,86 +51,93 @@ characters, or the name of a link to it, optionally followed by .gst.`,
 				}
 				st, err := b.NodeStatus(cmd.Context(), machine)
 				if err != nil {
-					return withHint(err, "see the machines of the mesh with `gst status`")
-				}
-				if asJSON {
-					return writeJSON(a.stdout, st)
+					return withHint(err, "see the machines with `gst status`")
 				}
 				return writeStatus(a.stdout, st)
 			}
 			st, ok := b.Status(cmd.Context())
 			if !ok {
-				return withHint(errors.New("the gst daemon does not answer"), "start it with `gst up`")
+				return withHint(errNoDaemon, "start it with `gst up`")
 			}
 			topo, err := b.Nodes(cmd.Context())
 			if err != nil {
 				return noDaemon(err)
 			}
-			if asJSON {
-				return writeJSON(a.stdout, meshStatus{st, topo})
-			}
-			return writeMesh(a.stdout, st, topo, all)
+			return writeMachines(a.stdout, st, topo, verbose)
 		}),
 	}
-	cmd.Flags().BoolVar(&all, "all", false, "also show the running links and the traffic with each machine")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the links between all the machines, and the traffic with each")
 	return cmd
 }
 
 // noDaemon explains err from a daemon that does not answer.
 func noDaemon(err error) error {
-	return withHint(fmt.Errorf("the gst daemon does not answer: %w", err), "start it with `gst up`")
+	return withHint(fmt.Errorf("%w: %w", errNoDaemon, err), "start it with `gst up`")
 }
 
-// writeMesh prints a line for each machine, this one first, with all the
-// running links between them, and then the problems of this machine.
-func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) error {
+// wayText says how packets go to a machine: direct, or relayed along the
+// SSH links through the machines named.
+func wayText(direct bool, via []string) string {
+	switch {
+	case direct:
+		return "direct"
+	case len(via) > 0:
+		return "relay via " + strings.Join(via, ", ")
+	}
+	return "relay"
+}
+
+// writeMachines prints a line for each machine, this one first, with
+// all the running links between them when verbose, and then the problems
+// of this machine.
+func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bool) error {
 	names := displayNames(topo)
 	onNet := slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.Net != nil })
 	w := table(out)
 	for _, n := range topo.Nodes {
-		var state []string
+		var way string
 		switch {
 		case n.ID == topo.Self:
-			state = append(state, "-")
-		case n.Direct:
-			state = append(state, "online", "direct")
-		case len(n.Path) > 2:
-			via := make([]string, len(n.Path)-2)
-			for i, id := range n.Path[1 : len(n.Path)-1] {
-				via[i] = names[id]
-			}
-			state = append(state, "online", "via "+strings.Join(via, ", "))
+			way = "-"
+		case !n.Reachable && !n.Direct:
+			way = "offline"
 		default:
-			state = append(state, "online")
+			var via []string
+			if len(n.Path) > 2 {
+				for _, id := range n.Path[1 : len(n.Path)-1] {
+					via = append(via, names[id])
+				}
+			}
+			way = wayText(n.Direct, via)
 		}
 		line := []string{shortID(n.ID), names[n.ID], cmp.Or(n.Software, "-")}
 		if onNet {
-			address := "-"
+			ip := "-"
 			if n.Net != nil {
-				address = n.Net.Address
+				ip = n.Net.Address
 			}
-			line = append(line, address)
+			line = append(line, ip)
 		}
-		fmt.Fprintln(w, strings.Join(append(line, strings.Join(state, "; ")), "\t"))
+		fmt.Fprintln(w, strings.Join(append(line, way), "\t"))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
 	if len(topo.Nodes) == 1 && len(st.Links) == 0 {
-		fmt.Fprintln(out, "\nNo links yet. Link to another machine with: gst add <name> [destination]")
+		fmt.Fprintln(out, "\nNo links yet. Link to another machine with `gst link <destination>`.")
 	}
-	if all && len(topo.Edges) > 0 {
-		edges := slices.Clone(topo.Edges)
-		slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
-			return cmp.Or(cmp.Compare(names[a.From], names[b.From]), cmp.Compare(a.Link, b.Link))
-		})
-		fmt.Fprintln(out, "\nLINK")
+	if verbose && len(topo.Edges) > 0 {
+		var edges []string
+		for _, e := range topo.Edges {
+			edges = append(edges, names[e.From]+" -> "+names[e.To])
+		}
+		slices.Sort(edges)
+		fmt.Fprintln(out, "\nLINKS")
 		for _, e := range edges {
-			fmt.Fprintln(out, linkText(names[e.From], names[e.To], e.Link))
+			fmt.Fprintln(out, e)
 		}
 	}
-	if all && st.Net != nil && len(st.Net.Peers) > 0 {
+	if verbose && st.Net != nil && len(st.Net.Peers) > 0 {
 		fmt.Fprintln(out)
 		if err := writePeers(out, st.Net); err != nil {
 			return err
@@ -149,11 +146,11 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 	var problems []string
 	for _, l := range st.Links {
 		if l.State != wire.StateRunning {
-			problems = append(problems, "link "+stateLinkText(st.Node.Name, l)+" is "+linkStateText(l))
+			problems = append(problems, "link to "+destinationText(l)+": "+linkStateText(l))
 		}
 	}
 	if st.Net != nil && st.Net.Error != "" {
-		text := "virtual network: " + st.Net.Error
+		text := "network: " + st.Net.Error
 		if st.Net.Hint != "" {
 			text += "; " + st.Net.Hint
 		}
@@ -161,13 +158,13 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 	}
 	for _, e := range st.Exposes {
 		if e.State != wire.StateRunning {
-			problems = append(problems, "expose "+config.ExposeKey(e.Protocol, e.Port)+": "+exposeStateText(e))
+			problems = append(problems, "exposed "+config.ExposeKey(e.Protocol, e.Port)+": "+exposeStateText(e))
 		}
 	}
 	if len(problems) > 0 {
-		fmt.Fprintln(out, "\n# Problems:")
+		fmt.Fprintln(out, "\nProblems:")
 		for _, p := range problems {
-			fmt.Fprintln(out, "#   - "+p)
+			fmt.Fprintln(out, "  - "+p)
 		}
 	}
 	return nil
@@ -190,12 +187,12 @@ func displayNames(topo wire.Topology) map[string]string {
 	return names
 }
 
-// writeStatus prints a machine's status: the machine, its address, and a
-// table of its links.
+// writeStatus prints a machine's status: the machine, its gst IP, its
+// exposed ports, and a table of its links.
 func writeStatus(out io.Writer, st wire.Status) error {
 	fmt.Fprintf(out, "%s (%s), %s\n", st.Node.Name, shortID(st.Node.ID), st.Software)
 	if st.Net != nil {
-		fmt.Fprintf(out, "Address: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
+		fmt.Fprintf(out, "gst IP: %s (subnet %s)\n", cmp.Or(st.Net.Address, "-"), cmp.Or(st.Net.Subnet, "-"))
 	}
 
 	if len(st.Exposes) > 0 {
@@ -210,38 +207,38 @@ func writeStatus(out io.Writer, st wire.Status) error {
 		return nil
 	}
 	w := table(out)
-	fmt.Fprintln(w, "LINK\tSTATUS\tDESTINATION")
+	fmt.Fprintln(w, "LINK TO\tMACHINE\tSTATE")
 	for _, l := range st.Links {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", stateLinkText(st.Node.Name, l), linkStateText(l), l.Destination)
+		machine := "-"
+		if l.Peer != nil {
+			machine = l.Peer.Name
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", l.Destination, machine, linkStateText(l))
 	}
 	return w.Flush()
 }
 
 func (a *app) pingCommand() *cobra.Command {
 	var count, size int
-	var asJSON, verbose bool
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "ping <machine>",
-		Short: "Check that a machine answers over the virtual network",
-		Long: `Send a packet to a machine and back over the virtual network, once a
-second, and print each reply: the machine's address, the way the packet
-went, and the time it took. It goes the way of every program's packets,
-through the interface and WireGuard, so the time is what programs get.
-via an IP:port means that it went directly over UDP, to that address; via
-SSH, along the SSH links, through the machines that it names. Exit status
-is 1 if no reply came.
+		Short: "Check that a machine answers over the network",
+		Long: `Send a packet to a machine and back once a second, and print each reply:
+the machine's gst IP, how the packet went, and the time it took. The packet
+goes the way that every program's packets go, so the time is what programs
+get. Exit status is 1 if no reply came.
 
-Traffic to a machine tries a UDP path to it, so the first replies may come
-over SSH and the next over UDP.
+A packet goes direct over UDP, to the address shown, or is relayed along
+the SSH links, through the machines named. Traffic is what starts a direct
+path, so the first replies may be relayed.
 
 With -s, send packets of that size. Small packets can pass where large ones
 do not; past the interface's MTU they go in fragments.
 
-With -v, after the replies and any try still running, also check the SSH
-links, which carry the control of the network, and show the UDP path, or
-why there is none, and what both machines did in their latest try: the
-addresses they offered and the probes they heard, and where this machine
-lost packets.`,
+With -v, also check the SSH links, and show the UDP path, or why there is
+none, what both machines did in their latest try at one, and where this
+machine lost packets.`,
 		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -s 1140\n  gst ping devbox -v",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -272,68 +269,35 @@ lost packets.`,
 				p, err := b.NetPing(cmd.Context(), machine, size)
 				if err != nil {
 					last = err
-					if !asJSON {
-						fmt.Fprintf(a.stdout, "no reply: %v\n", err)
-					}
+					fmt.Fprintf(a.stdout, "no reply: %v\n", err)
 					continue
 				}
 				pings = append(pings, p)
-				if !asJSON {
-					writePing(a.stdout, p)
-				}
+				writePing(a.stdout, p)
 			}
-			if pings == nil {
-				pings = []wire.NetPing{}
-			}
-			if !asJSON && count > 1 {
+			if count > 1 {
 				writePingSummary(a.stdout, count, pings)
 			}
-			switch {
-			case verbose:
+			if verbose {
 				links, linksErr := b.Ping(cmd.Context(), machine)
+				writeLinks(a.stdout, links, linksErr)
 				report, err := directReport(cmd.Context(), b, machine)
 				if err != nil {
 					fmt.Fprintf(a.stderr, "no report on the UDP path: %v\n", err)
-				}
-				switch {
-				case asJSON && err == nil:
-					v := verbosePing{Pings: pings, Direct: report}
-					if linksErr == nil {
-						v.Links = &links
-					}
-					if err := writeJSON(a.stdout, v); err != nil {
-						return err
-					}
-				case !asJSON:
-					writeLinks(a.stdout, links, linksErr)
-					if err == nil {
-						writeDirect(a.stdout, report)
-					}
-				}
-			case asJSON:
-				if err := writeJSON(a.stdout, pings); err != nil {
-					return err
+				} else {
+					writeDirect(a.stdout, report)
 				}
 			}
 			if len(pings) == 0 {
-				return withHint(fmt.Errorf("%s did not answer: %w", args[0], last), "see the machines of the mesh with `gst status`")
+				return withHint(fmt.Errorf("%s did not answer: %w", args[0], last), "see the machines with `gst status`")
 			}
 			return nil
 		}),
 	}
-	cmd.Flags().IntVarP(&count, "count", "c", 3, "number of answers to ask for")
+	cmd.Flags().IntVarP(&count, "count", "c", 3, "number of replies to ask for")
 	cmd.Flags().IntVarP(&size, "size", "s", 16, "bytes of data in each packet")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the UDP path, how the latest try at one went, and lost packets")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the UDP path, the latest try at one, and lost packets")
 	return cmd
-}
-
-// verbosePing is what gst ping -v --json prints. Its JSON form is part of
-// the command line interface.
-type verbosePing struct {
-	Pings  []wire.NetPing    `json:"pings"`
-	Links  *wire.Ping        `json:"links,omitempty"` // the answer over the SSH links
-	Direct wire.DirectReport `json:"direct"`
 }
 
 // directReport waits for a running try at a UDP path to end and reports
@@ -397,14 +361,15 @@ func writePing(out io.Writer, p wire.NetPing) {
 	way := ""
 	switch p.Path {
 	case wire.PathDirect:
-		way = " via " + cmp.Or(p.Endpoint, "UDP") // The path may have just ended.
-	case wire.PathSSH:
-		way = " via SSH"
-		if len(p.Via) > 0 {
-			way += " (" + strings.Join(nodeNames(p.Via), ", ") + ")"
+		way = wayText(true, nil)
+		if p.Endpoint != "" { // The path may have just ended.
+			way += " " + p.Endpoint
 		}
+		way += ", "
+	case wire.PathSSH:
+		way = wayText(false, nodeNames(p.Via)) + ", "
 	}
-	fmt.Fprintf(out, "reply from %s (%s)%s in %.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
+	fmt.Fprintf(out, "reply from %s (%s): %s%.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
 }
 
 // writePingSummary prints what came of count packets.

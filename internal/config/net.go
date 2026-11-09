@@ -40,8 +40,8 @@ func ParseSubnet(spec string) (netip.Prefix, error) {
 	return netip.Prefix{}, errors.New("invalid subnet " + quote(spec) + ": use a private range: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, or 100.64.0.0/10")
 }
 
-// ParseMachine reads a reference to a machine of the mesh: a node name,
-// id, id prefix, or link name, optionally followed by ".gst".
+// ParseMachine reads a reference to a machine of the network: its name,
+// id, or id prefix, optionally followed by ".gst".
 func ParseMachine(ref string) (string, error) {
 	machine := strings.TrimSuffix(strings.ToLower(ref), ".gst")
 	if !namePattern.MatchString(machine) {

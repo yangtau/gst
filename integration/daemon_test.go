@@ -15,8 +15,8 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst("add", "srv", p.destination())
-	client.waitLink("srv", "running")
+	client.mustGst("link", p.destination())
+	client.waitLink(p.destination(), "running")
 	client.installHelper()
 	server.installHelper()
 	client.waitNet(1)
@@ -37,7 +37,7 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	if pid := client.daemonPID(); pid == before || pid == "" {
 		t.Fatalf("daemon %s not restarted after the upgrade (now %q)", before, pid)
 	}
-	client.waitLink("srv", "running")
+	client.waitLink(p.destination(), "running")
 	client.waitPing(server.waitNet(1).Address)
 }
 
@@ -47,17 +47,17 @@ func TestDownAndUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst("add", "srv", p.destination())
-	client.waitLink("srv", "running")
+	client.mustGst("link", p.destination())
+	client.waitLink(p.destination(), "running")
 	if out := server.mustGst("down"); !strings.Contains(out, "gst is down") {
 		t.Fatalf("unexpected gst down output %q", out)
 	}
 	eventually(t, 10*time.Second, "the daemon still runs after gst down", func() bool { return server.daemonPID() == "" })
-	client.waitLink("srv", "down")
+	client.waitLink(p.destination(), "down")
 
 	// The link cannot come back: peer-bridge refuses, and says why.
 	eventually(t, 60*time.Second, "the link does not report that gst is not up", func() bool {
-		return strings.Contains(client.links()["srv"].Error, "gst is not up")
+		return strings.Contains(client.links()[p.destination()].Error, "gst is not up")
 	})
 	if server.daemonPID() != "" {
 		t.Fatal("peer-bridge started a daemon on a machine that is down")
@@ -69,7 +69,7 @@ func TestDownAndUp(t *testing.T) {
 	}
 
 	server.mustGst("up")
-	client.waitLink("srv", "running")
+	client.waitLink(p.destination(), "running")
 	if server.daemonPID() == "" {
 		t.Fatal("no daemon after gst up")
 	}
@@ -85,9 +85,9 @@ func TestDownAndUp(t *testing.T) {
 	client.mustGst("down")
 	eventually(t, 10*time.Second, "the client's daemon still runs", func() bool { return client.daemonPID() == "" })
 	code, _, stderr := client.gst("status")
-	if code != 1 || !strings.Contains(stderr, "the gst daemon does not answer") || !strings.Contains(stderr, "gst up") {
+	if code != 1 || !strings.Contains(stderr, "gst is not running") || !strings.Contains(stderr, "gst up") {
 		t.Fatalf("gst status while gst is down: exit %d, stderr %q", code, stderr)
 	}
 	client.mustGst("up")
-	client.waitLink("srv", "running")
+	client.waitLink(p.destination(), "running")
 }

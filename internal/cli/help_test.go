@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -29,15 +28,6 @@ func TestVersion(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", &stderr)
-	}
-
-	stdout.Reset()
-	if code := a.execute(context.Background(), []string{"version", "--json"}); code != exitOK {
-		t.Fatalf("version --json exited %d: %s", code, &stderr)
-	}
-	var got buildInfo
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || got != built {
-		t.Fatalf("version --json = %s (%v), want %+v", &stdout, err, built)
 	}
 }
 
@@ -73,7 +63,7 @@ func TestBuildInfo(t *testing.T) {
 
 func TestVersionRejectsArgumentsAndFlags(t *testing.T) {
 	e := newEnv(t)
-	for _, args := range [][]string{{"version", "extra"}, {"-v"}, {"--version"}} {
+	for _, args := range [][]string{{"version", "extra"}, {"version", "--json"}, {"-v"}, {"--version"}} {
 		e.expectCode(exitUsage, args...)
 	}
 }
@@ -89,7 +79,7 @@ func TestColorHelp(t *testing.T) {
 func TestHelpColorPreservesLayout(t *testing.T) {
 	e := newEnv(t)
 	strip := strings.NewReplacer("\x1b[1m", "", "\x1b[36m", "", "\x1b[0m", "")
-	for _, args := range [][]string{{"--help"}, {"help", "add"}, {"subnet", "--help"}, {"add", "--help"}, {"version", "--help"}} {
+	for _, args := range [][]string{{"--help"}, {"help", "link"}, {"subnet", "--help"}, {"link", "--help"}, {"version", "--help"}} {
 		plain := e.mustGst(args...)
 		if strings.Contains(plain, "\x1b[") {
 			t.Fatalf("gst %v: redirected help contains escape codes", args)

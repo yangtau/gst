@@ -77,7 +77,7 @@ func openLink(t *testing.T, client, server *Node, name string) *pipeLink {
 		server.Accept(ctx, b, theirs)
 	}()
 	l := &pipeLink{cancel: cancel, conn: a, remote: b, peer: make(chan wire.NodeInfo, 1), done: make(chan error, 1)}
-	go func() { l.done <- client.Link(ctx, name, a, func(p wire.NodeInfo) { l.peer <- p }) }()
+	go func() { l.done <- client.Link(ctx, config.LinkID(name), a, func(p wire.NodeInfo) { l.peer <- p }) }()
 	return l
 }
 
@@ -168,7 +168,7 @@ func TestLinkIntroducesNodes(t *testing.T) {
 	// Each side learns the other, and the link's name from the side that opened it.
 	waitFor(t, "a reaches b", func() bool { return reaches(a, "b", "a", "b") })
 	waitFor(t, "b reaches a", func() bool { return reaches(b, "a", "b", "a") })
-	want := []wire.TopoEdge{{From: nid("a"), To: nid("b"), Link: "ab"}}
+	want := []wire.TopoEdge{{From: nid("a"), To: nid("b"), Link: config.LinkID("ab")}}
 	for _, n := range []*Node{a, b} {
 		waitFor(t, "edge", func() bool {
 			edges := n.Topology().Edges
@@ -223,7 +223,7 @@ func TestLinkRefusals(t *testing.T) {
 		want           string
 		remote         bool // a *RemoteError
 	}{
-		{"server without identity", "a", "", "no node identity", true},
+		{"server without identity", "a", "", "no identity", true},
 		{"self", "a", "a", "this machine", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -43,7 +43,7 @@ func TestDialAlongPath(t *testing.T) {
 		want string
 	}{
 		{"two hops by name", a, "c", "c"},
-		{"by link name and .gst", a, "BC.gst", "c"}, // a link name that b published
+		{"by name and .gst", a, "C.gst", "c"},
 		{"by id prefix", a, nid("c")[:6], "c"},
 		{"one hop", a, "b", "b"},
 		{"the other way, against the links' directions", c, "a", "a"},
@@ -151,18 +151,6 @@ func TestFindNode(t *testing.T) {
 	)
 	topo := wire.Topology{
 		Nodes: []wire.TopoNode{node(laptop, "laptop"), node(homelab, "homelab"), node(devbox, "devbox"), node(devbox2, "devbox"), node("dddd0000000000000000000000000005", "other"), node("dddd1111111111111111111111111111", "dup")},
-		Edges: []wire.TopoEdge{
-			{From: laptop, To: homelab, Link: "box"},   // laptop calls homelab "box"
-			{From: devbox, To: homelab, Link: "box"},   // another node calls homelab "box" too: still one machine
-			{From: laptop, To: devbox, Link: "work"},   // "work" names devbox from laptop
-			{From: homelab, To: devbox2, Link: "work"}, // but another "work" names devbox2: ambiguous
-			{From: laptop, To: laptop, Link: "other"},  // a link name does not beat a node name
-			{From: laptop, To: "dddd1111111111111111111111111111", Link: "laptop"},
-		},
-	}
-	byID := map[string]wire.TopoNode{}
-	for _, n := range topo.Nodes {
-		byID[n.ID] = n
 	}
 	for _, tt := range []struct {
 		ref  string
@@ -171,12 +159,10 @@ func TestFindNode(t *testing.T) {
 	}{
 		{laptop, laptop, ""},
 		{"LAPTOP", laptop, ""},
-		{"laptop.gst", laptop, ""}, // the node name wins over the link called laptop
+		{"laptop.gst", laptop, ""},
 		{"HOMELAB.GST", homelab, ""},
-		{"box", homelab, ""}, // link name, published twice for the same node
 		{"other", "dddd0000000000000000000000000005", ""},
 		{"devbox", "", wire.CodeInvalidParams}, // two nodes of that name
-		{"work", "", wire.CodeInvalidParams},   // two links of that name to different nodes
 		{"aaaa", laptop, ""},
 		{"bbbb0000", homelab, ""},
 		{"ccc", "", wire.CodeNotFound}, // prefixes need four characters
@@ -208,7 +194,7 @@ func TestFindNodeIDBeatsEverything(t *testing.T) {
 func TestCallReachesAnyNode(t *testing.T) {
 	status := func(name string) func() wire.Status {
 		return func() wire.Status {
-			return wire.Status{Software: "status of " + name, Links: []wire.LinkState{{Name: "to-" + name}}}
+			return wire.Status{Software: "status of " + name, Links: []wire.LinkState{{Destination: "to-" + name}}}
 		}
 	}
 	a, b, c := newNodeStatus(t, "a", status("a")), newNodeStatus(t, "b", status("b")), newNodeStatus(t, "c", status("c"))
@@ -227,7 +213,7 @@ func TestCallReachesAnyNode(t *testing.T) {
 				t.Fatal(err)
 			}
 			name := strings.TrimSuffix(tt.ref, ".gst")
-			if st.Software != "status of "+name || len(st.Links) != 1 || st.Links[0].Name != "to-"+name {
+			if st.Software != "status of "+name || len(st.Links) != 1 || st.Links[0].Destination != "to-"+name {
 				t.Fatalf("status = %+v, want the status of %s", st, name)
 			}
 		})

@@ -107,14 +107,14 @@ type Networks struct {
 
 // Edge is one of a node's running links.
 type Edge struct {
-	Name string `json:"name"` // the link's name on the node
+	Link string `json:"link"` // the link's id, for links that the node opened; empty for accepted ones
 	Peer string `json:"peer"` // the node id at its other end
 }
 
 // LinkRemove names a link that its opener is removing.
 type LinkRemove struct {
 	Node string `json:"node"` // the caller's id
-	Link string `json:"link"` // the link's name, as in the caller's record
+	Link string `json:"link"` // the link's id, as in the caller's record
 }
 
 // DirectTraceParams name the node at the other end of a UDP path.

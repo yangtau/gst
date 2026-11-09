@@ -106,7 +106,7 @@ func TestUIServesPageAndSecurityHeaders(t *testing.T) {
 
 func TestUIRequiresToken(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "web", "myhost")
+	e.mustGst("link", "myhost")
 	c := newUIClient(t, e)
 	for _, auth := range []string{"", "Bearer wrong", "Bearer ", "Bearer secret2", "Bearer secre", "secret", "Basic secret", "bearer secret"} {
 		if res := c.do("GET", "/api/state", auth); res.StatusCode != http.StatusUnauthorized {
@@ -124,7 +124,7 @@ func TestUIRequiresToken(t *testing.T) {
 
 func TestUIIsReadOnly(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "web", "myhost")
+	e.mustGst("link", "myhost")
 	c := newUIClient(t, e)
 	e.resetCalls()
 	for _, path := range []string{"/api/state", "/api/nodes/devbox", "/api/links/web/stop", "/api/links/web/restart", "/api/links/web/start"} {
@@ -137,14 +137,14 @@ func TestUIIsReadOnly(t *testing.T) {
 	if res := c.do("GET", "/api/links/web/stop", "Bearer secret"); res.StatusCode != http.StatusNotFound {
 		t.Errorf("GET of the removed link action: %s", res.Status)
 	}
-	if e.link("web") == nil || len(e.back.calls) != 0 {
-		t.Fatalf("the page changed something: link %+v, calls %v", e.link("web"), e.back.calls)
+	if e.link("myhost") == nil || len(e.back.calls) != 0 {
+		t.Fatalf("the page changed something: link %+v, calls %v", e.link("myhost"), e.back.calls)
 	}
 }
 
 func TestUIRejectsOtherHosts(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "web", "myhost")
+	e.mustGst("link", "myhost")
 	h := e.app(io.Discard, io.Discard).uiHandler("secret")
 	for host, want := range map[string]int{
 		"127.0.0.1:8370":                  http.StatusOK,
@@ -183,8 +183,8 @@ func TestUIRejectsOtherHosts(t *testing.T) {
 func TestUIStateShape(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
-	e.mustGst("add", "web", "myhost")
-	e.mustGst("add", "db")
+	e.mustGst("link", "myhost")
+	e.mustGst("link", "db")
 	e.back.topology = meshTopology()
 	c := newUIClient(t, e)
 
@@ -215,8 +215,8 @@ func TestUIStateShape(t *testing.T) {
 		t.Fatal("state has no status")
 	}
 	st := s.Status
-	if len(st.Links) != 2 || st.Links[0].Name != "db" || st.Links[0].State != wire.StateRunning ||
-		st.Links[1].Name != "web" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "web" {
+	if len(st.Links) != 2 || st.Links[0].Destination != "myhost" || st.Links[0].State != wire.StateRunning ||
+		st.Links[1].Destination != "db" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "db" {
 		t.Fatalf("links %+v", st.Links)
 	}
 	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Edges) != 3 {
@@ -224,10 +224,10 @@ func TestUIStateShape(t *testing.T) {
 	}
 
 	// The state follows the configuration and the daemon at each request.
-	e.back.linkStates["web"] = wire.LinkState{Name: "web", State: wire.StateDown, Error: "SSH connection closed"}
+	e.back.linkStates["db"] = wire.LinkState{Destination: "db", State: wire.StateDown, Error: "SSH connection closed"}
 	s = c.state()
-	if web := s.Status.Links[1]; web.State != wire.StateDown || web.Error != "SSH connection closed" || web.Peer != nil {
-		t.Fatalf("web %+v", web)
+	if db := s.Status.Links[1]; db.State != wire.StateDown || db.Error != "SSH connection closed" || db.Peer != nil {
+		t.Fatalf("db %+v", db)
 	}
 }
 
@@ -251,7 +251,7 @@ func TestUIStateWithoutDaemonOrConfig(t *testing.T) {
 	}
 
 	// A machine whose daemon does not answer has its node, but no status or topology.
-	e.mustGst("add", "web", "myhost")
+	e.mustGst("link", "myhost")
 	e.mustGst("down")
 	s := c.state()
 	if !s.Down || s.Status != nil || s.Topology != nil || s.Node == nil {
@@ -265,7 +265,7 @@ func TestUIStateReportsMeshErrors(t *testing.T) {
 	e.back.nodesErr = errors.New("timed out")
 	c := newUIClient(t, e)
 	s := c.state()
-	if s.Status == nil || s.Topology != nil || !slices.Equal(s.Errors, []string{"mesh nodes: timed out"}) {
+	if s.Status == nil || s.Topology != nil || !slices.Equal(s.Errors, []string{"machines: timed out"}) {
 		t.Fatalf("state %+v", s)
 	}
 }
@@ -323,7 +323,7 @@ func (b *syncBuffer) String() string {
 
 func TestUICommandServes(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("add", "web", "myhost")
+	e.mustGst("link", "myhost")
 	var stdout, stderr syncBuffer
 	a := e.app(&stdout, &stderr)
 	var opened []string

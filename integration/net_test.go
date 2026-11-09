@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -19,7 +18,7 @@ import (
 
 const netInterface = "gst0"
 
-// installHelper installs the helper of the virtual network for the gst
+// installHelper installs the network helper for the gst
 // user, as gst up runs it through sudo.
 func (n *node) installHelper() {
 	n.t.Helper()
@@ -41,10 +40,10 @@ func (n *node) helperGone() {
 	})
 }
 
-// net returns the network as gst status reports it.
+// net returns the network as the daemon reports it.
 func (n *node) net() wire.NetState {
 	n.t.Helper()
-	if st := n.meshStatus().Self.Net; st != nil {
+	if st := n.status().Net; st != nil {
 		return *st
 	}
 	return wire.NetState{}
@@ -166,11 +165,10 @@ func TestNet(t *testing.T) {
 			return strings.HasPrefix(out, addressOfC+" ")
 		})
 		a.waitPing("c.gst")
-		// The link's name works too, and the daemon answers as it does for
-		// systems that ask it.
-		out, err := a.helper("dns", "127.0.0.1:15353", "tob.gst")
+		// The daemon answers as it does for systems that ask it.
+		out, err := a.helper("dns", "127.0.0.1:15353", "b.gst")
 		if err != nil || strings.TrimSpace(out) != view[b].Address {
-			t.Fatalf("dns tob.gst: %q, %v, want %s", out, err, view[b].Address)
+			t.Fatalf("dns b.gst: %q, %v, want %s", out, err, view[b].Address)
 		}
 		if out, err := a.helper("dns", "127.0.0.1:15353", "nobody.gst"); err == nil {
 			t.Fatalf("dns nobody.gst: %q", out)
@@ -181,11 +179,11 @@ func TestNet(t *testing.T) {
 		if out := a.mustGst("status"); !strings.Contains(out, addressOfC) {
 			t.Fatalf("gst status lacks %s: %q", addressOfC, out)
 		}
-		if out := a.mustGst("status", "c"); !strings.Contains(out, "Address: "+addressOfC) {
+		if out := a.mustGst("status", "c"); !strings.Contains(out, "gst IP: "+addressOfC) {
 			t.Fatalf("gst status c: %q", out)
 		}
-		if out := a.mustGst("status", "--all"); !strings.Contains(out, "HANDSHAKE") || !strings.Contains(out, " ago") {
-			t.Fatalf("gst status --all shows no handshake with c: %q", out)
+		if out := a.mustGst("status", "-v"); !strings.Contains(out, "HANDSHAKE") || !strings.Contains(out, " ago") {
+			t.Fatalf("gst status -v shows no handshake with c: %q", out)
 		}
 	})
 
@@ -237,22 +235,19 @@ func TestNet(t *testing.T) {
 
 	// gst ping goes where programs' packets go, and says which way.
 	t.Run("Ping", func(t *testing.T) {
-		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\) via SSH \(b\) in [0-9]+\.[0-9] ms$`)
+		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\): relay via b, [0-9]+\.[0-9] ms$`)
 		for _, machine := range []string{"c", "c.gst", "C"} {
 			out := a.mustGst("ping", machine, "-c", "1")
 			if m := reply.FindStringSubmatch(strings.TrimSpace(out)); m == nil || m[1] != "c" {
 				t.Fatalf("gst ping %s: %q", machine, out)
 			}
 		}
-		var pings []wire.NetPing
-		if err := json.Unmarshal([]byte(a.mustGst("ping", "c", "-c", "1", "--json")), &pings); err != nil {
-			t.Fatal(err)
+		var p wire.NetPing
+		a.call(wire.MethodNetPing, wire.NetPingParams{Node: "c"}, &p)
+		if p.Node.Name != "c" || p.Address != addressOfC || p.Path != wire.PathSSH || len(p.Via) != 1 || p.Via[0].Name != "b" || p.TimeMS <= 0 {
+			t.Fatalf("net.ping c: %+v", p)
 		}
-		if len(pings) != 1 || pings[0].Node.Name != "c" || pings[0].Address != addressOfC || pings[0].Path != wire.PathSSH ||
-			len(pings[0].Via) != 1 || pings[0].Via[0].Name != "b" || pings[0].TimeMS <= 0 {
-			t.Fatalf("gst ping c --json: %+v", pings)
-		}
-		if out := a.mustGst("ping", "a", "-c", "1"); !strings.HasPrefix(out, "reply from a (") || strings.Contains(out, " over ") {
+		if out := a.mustGst("ping", "a", "-c", "1"); !strings.HasPrefix(out, "reply from a (") || strings.Contains(out, "relay") || strings.Contains(out, "direct") {
 			t.Fatalf("gst ping a: %q", out)
 		}
 	})
@@ -286,7 +281,7 @@ func TestNetDirect(t *testing.T) {
 	p := trust(t, client, server)
 	client.mustGst("name", "laptop")
 	server.mustGst("name", "devbox")
-	client.mustGst("add", "devbox", p.destination())
+	client.mustGst("link", p.destination())
 	client.waitReachable("devbox")
 	for _, n := range []*node{client, server} {
 		n.installHelper()
@@ -434,7 +429,7 @@ func directPair(t *testing.T, prepare ...func(client, server *node)) (client, se
 	p := trust(t, client, server)
 	client.mustGst("name", "laptop")
 	server.mustGst("name", "devbox")
-	client.mustGst("add", "devbox", p.destination())
+	client.mustGst("link", p.destination())
 	client.waitReachable("devbox")
 	for _, n := range []*node{client, server} {
 		n.installHelper()
@@ -462,9 +457,9 @@ func TestNetHelper(t *testing.T) {
 	}
 	eventually(t, 10*time.Second, "gst status does not report the missing helper", func() bool {
 		out := n.mustGst("status")
-		return strings.Contains(out, "virtual network") && strings.Contains(out, "gst up")
+		return strings.Contains(out, "network helper") && strings.Contains(out, "gst up")
 	})
-	if code, stdout, _ := n.gst("ping", "laptop", "-c", "1"); code != 1 || !strings.Contains(stdout, "this machine is not on the virtual network") {
+	if code, stdout, _ := n.gst("ping", "laptop", "-c", "1"); code != 1 || !strings.Contains(stdout, "this machine is not on the gst network") {
 		t.Fatalf("gst ping without the helper: exit %d: %q", code, stdout)
 	}
 	if code, _, stderr := n.gst("install"); code != 1 || !strings.Contains(stderr, "gst up") {

@@ -31,13 +31,15 @@ func TestSubnetShows(t *testing.T) {
 	e.back.net = nil
 	e.expectError(exitFailure, []string{"subnet"}, "no subnet yet", "gst status")
 	e.mustGst("down")
-	e.expectError(exitFailure, []string{"subnet"}, "does not answer", "gst up")
+	e.expectError(exitFailure, []string{"subnet"}, "gst is not running", "gst up")
 }
 
 func TestSubnetChanges(t *testing.T) {
 	e := newEnv(t)
 	e.back.net = runningNet()
-	contains(t, e.mustGst("subnet", "10.99.7.0/16"), "10.99.1.2", "gst0", "10.99.0.0/16")
+	if out, want := e.mustGst("subnet", "10.99.7.0/16"), "The subnet is 10.99.0.0/16. This machine's gst IP is 10.99.1.2.\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
 	n := e.load().Net
 	if n == nil || n.Subnet != "10.99.0.0/16" || n.Since == 0 {
 		t.Fatalf("config: %+v", n)
@@ -59,8 +61,8 @@ func TestSubnetRejects(t *testing.T) {
 
 func TestSubnetReportsWhatToDo(t *testing.T) {
 	e := newEnv(t)
-	e.back.net = &wire.NetState{Error: "the helper of the virtual network does not run", Hint: "install it with `gst up`"}
-	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "error: the helper", "hint: install it with `gst up`")
+	e.back.net = &wire.NetState{Error: "the network helper is not running", Hint: "install it with `gst up`"}
+	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "error: the network helper", "hint: install it with `gst up`")
 	if e.load().Net == nil {
 		t.Fatal("the choice should apply once the helper is there")
 	}
@@ -81,7 +83,7 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 		t.Fatalf("no placeholder for the machine off the network:\n%s", out)
 	}
 
-	all := e.mustGst("status", "--all")
+	all := e.mustGst("status", "-v")
 	contains(t, all, "MACHINE", "1m0s ago", "2.0 KiB", "5 B", "never")
 	found := false
 	for _, row := range rows(all) {
@@ -92,19 +94,15 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 	if !found {
 		t.Fatalf("no line of devbox:\n%s", all)
 	}
-	v := decode[meshStatus](t, e.mustGst("status", "--json"))
-	if v.Self.Net == nil || v.Self.Net.Address != "10.99.1.2" || len(v.Self.Net.Peers) != 2 {
-		t.Fatalf("view: %+v", v.Self.Net)
-	}
 
 	e.back.net = &wire.NetState{Error: "the helper does not run", Hint: "install it with `gst up`"}
-	contains(t, e.mustGst("status"), "# Problems:", "virtual network: the helper does not run; install it with `gst up`")
+	contains(t, e.mustGst("status"), "\nProblems:\n", "  - network: the helper does not run; install it with `gst up`")
 
 	e.back.net = runningNet()
-	contains(t, e.mustGst("status", "devbox"), "Address: 10.99.1.2 (subnet 10.99.0.0/16)")
+	contains(t, e.mustGst("status", "devbox"), "gst IP: 10.99.1.2 (subnet 10.99.0.0/16)")
 }
 
-// A path that outlives the SSH links still counts as online.
+// A direct path that outlives the SSH links still counts.
 func TestStatusOfAMachineWithOnlyAUDPPath(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
@@ -113,7 +111,10 @@ func TestStatusOfAMachineWithOnlyAUDPPath(t *testing.T) {
 		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
 		{ID: b, Name: "b", Direct: true},
 	}}
-	contains(t, e.mustGst("status"), "online; direct")
+	contains(t, e.mustGst("status"), "direct")
+	if strings.Contains(e.mustGst("status"), "offline") {
+		t.Fatal("a machine with a direct path shows as offline")
+	}
 }
 
 func TestInstallNeedsRoot(t *testing.T) {
@@ -152,7 +153,7 @@ func TestUpAsksBeforeSudo(t *testing.T) {
 			}
 			contains(t, stdout, "gst is up")
 			contains(t, stderr, "needs root to put this machine", "sudo /usr/local/bin/gst install --user ", "copies gst",
-				"The service then does only this", "gst never sees it", "Run it? [y/N]")
+				"The network helper then does only this", "gst never sees it", "Run it? [y/N]")
 			if tt.runs != (len(e.rootRuns) == 1) {
 				t.Fatalf("ran %v", e.rootRuns)
 			}
@@ -232,7 +233,7 @@ func TestUpTwiceChangesNothing(t *testing.T) {
 
 func TestDownRemovesTheHelperWithoutRoot(t *testing.T) {
 	e := newEnv(t)
-	contains(t, e.mustGst("down"), "gst is down", "helper of the virtual network is removed")
+	contains(t, e.mustGst("down"), "gst is down", "The network helper is removed.")
 	if e.helper.installed || len(e.rootRuns) != 0 {
 		t.Fatalf("helper %+v, ran %v", e.helper, e.rootRuns)
 	}
@@ -267,22 +268,22 @@ func TestDownAsksWhenTheHelperDoesNotAnswer(t *testing.T) {
 	}
 }
 
-func TestAddTellsWhenTheOtherMachineIsNotUp(t *testing.T) {
+func TestLinkTellsWhenTheOtherMachineIsNotUp(t *testing.T) {
 	e := newEnv(t)
-	e.back.linkStates["myhost"] = wire.LinkState{Name: "myhost", State: wire.StateDown, Error: "error: " + notUp + "; run `gst up` there"}
-	e.expectError(exitFailure, []string{"add", "myhost", "--remote-gst", "/opt/gst"},
-		"gst is not up on that machine", "`ssh -t myhost /opt/gst up`", "connects by itself")
+	e.back.linkStates["myhost"] = wire.LinkState{Destination: "myhost", State: wire.StateDown, Error: "error: " + notUp + "; run `gst up` there"}
+	e.expectError(exitFailure, []string{"link", "myhost", "--remote-gst", "/opt/gst"},
+		"error: linked to myhost, but gst is not up there", "hint: run `ssh -t myhost /opt/gst up`; the link then connects by itself")
 	if len(e.rootRuns) != 0 {
 		t.Fatalf("ran %v", e.rootRuns)
 	}
 	f, err := config.Load(e.config)
-	if err != nil || f.Links["myhost"] == nil {
+	if err != nil || f.Link("myhost") == nil {
 		t.Fatalf("the link is gone: %+v, %v", f, err)
 	}
 }
 
-func TestAddReturnsOnOtherFailures(t *testing.T) {
+func TestLinkReturnsOnOtherFailures(t *testing.T) {
 	e := newEnv(t)
-	e.back.linkStates["myhost"] = wire.LinkState{Name: "myhost", State: wire.StateDown, Error: "connection refused"}
-	contains(t, e.mustGst("add", "myhost"), "Added link myhost")
+	e.back.linkStates["myhost"] = wire.LinkState{Destination: "myhost", State: wire.StateDown, Error: "connection refused"}
+	contains(t, e.mustGst("link", "myhost"), "Linked to myhost. It connects in the background")
 }

@@ -31,9 +31,9 @@ func (a *app) uiCommand() *cobra.Command {
 	var noOpen bool
 	cmd := &cobra.Command{
 		Use:   "ui",
-		Short: "Show the mesh in a browser",
-		Long: `Show the mesh as this machine knows it, and the address and links of any
-machine in it, in a web page that keeps itself up to date. gst ui serves the page on 127.0.0.1 until interrupted, prints its
+		Short: "Show the network in a browser",
+		Long: `Show the machines of the network, and the gst IP, exposed ports, and
+links of each, in a web page that keeps itself up to date. gst ui serves the page on 127.0.0.1 until interrupted, prints its
 address, and opens it in a browser. The address ends with a secret that
 the page needs; anyone with the address can see the page while gst ui
 runs.`,
@@ -91,7 +91,7 @@ func openBrowser(url string) error {
 }
 
 // uiState is what the gst ui page shows of this machine and the mesh.
-// Only the page reads it; unlike --json output, its fields may change.
+// Only the page reads it, so its fields may change.
 type uiState struct {
 	Software string       `json:"software"`
 	Down     bool         `json:"down"` // gst down
@@ -116,7 +116,7 @@ func (a *app) uiState(ctx context.Context) (uiState, error) {
 		return s, nil
 	}
 	if topo, err := b.Nodes(ctx); err != nil {
-		s.Errors = append(s.Errors, "mesh nodes: "+err.Error())
+		s.Errors = append(s.Errors, "machines: "+err.Error())
 	} else {
 		s.Topology = &topo
 	}

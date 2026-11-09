@@ -46,7 +46,7 @@ func startNode(t *testing.T) *node {
 	t.Helper()
 	// SYS_PTRACE lets root inspect the sockets of non-dumpable sshd session
 	// processes. It does not affect the unprivileged login user, and neither
-	// do NET_ADMIN and NET_RAW, which the virtual network's helper needs.
+	// do NET_ADMIN and NET_RAW, which the network helper needs.
 	args := []string{"run", "-d", "--cap-add", "SYS_PTRACE", "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"}
 	if filepath.Base(containerRuntime) == "container" {
 		args = append(args, "--memory", "256M", "--cpus", "1")
@@ -243,7 +243,7 @@ EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
 func (p *pair) destination() string { return p.server.container }
 
 // deadEnd adds a destination to the client's ssh configuration that
-// passes gst add's checks, because known_hosts records the server's
+// passes gst link's checks, because known_hosts records the server's
 // key on that port, but where nothing listens: a link to it stays down.
 // It returns the destination.
 func (p *pair) deadEnd() string {
@@ -301,51 +301,77 @@ func (n *node) killDaemon() {
 	eventually(n.t, 10*time.Second, "the daemon did not die", func() bool { return n.daemonPID() == "" })
 }
 
-// meshStatus is what gst status --json prints.
-type meshStatus struct {
-	Self wire.Status   `json:"self"`
-	Mesh wire.Topology `json:"mesh"`
+// call calls method of the daemon on n's machine, as gst does, and
+// decodes its result into result: gst prints what it learns only for
+// people.
+func (n *node) call(method string, params, result any) {
+	n.t.Helper()
+	args := []string{"call", method}
+	if params != nil {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			n.t.Fatal(err)
+		}
+		args = append(args, string(raw))
+	}
+	out, err := n.sh(`exec gst-it "$@"`, args...)
+	if err != nil {
+		n.t.Fatalf("%s on %s: %v", method, n.container, err)
+	}
+	if err := json.Unmarshal([]byte(out), result); err != nil {
+		n.t.Fatalf("%s on %s: %v: %q", method, n.container, err, out)
+	}
 }
 
-func (n *node) meshStatus() meshStatus {
+// status returns what the daemon on n's machine reports of itself.
+func (n *node) status() wire.Status {
 	n.t.Helper()
-	var st meshStatus
-	if err := json.Unmarshal([]byte(n.mustGst("status", "--json")), &st); err != nil {
-		n.t.Fatal(err)
-	}
+	var st wire.Status
+	n.call(wire.MethodStatus, nil, &st)
 	return st
 }
 
-// links returns the links of n's machine by name, as gst status reports them.
+// nodeStatus returns the status of the machine that ref names, asked
+// through the network, as gst status <machine> does.
+func (n *node) nodeStatus(ref string) wire.Status {
+	n.t.Helper()
+	var st wire.Status
+	n.call(wire.MethodNodeStatus, wire.NodeParams{Node: ref}, &st)
+	return st
+}
+
+// links returns the links of n's machine by destination.
 func (n *node) links() map[string]wire.LinkState {
 	n.t.Helper()
 	m := map[string]wire.LinkState{}
-	for _, l := range n.meshStatus().Self.Links {
-		m[l.Name] = l
+	for _, l := range n.status().Links {
+		m[l.Destination] = l
 	}
 	return m
 }
 
-// waitLink waits until link name is in state and returns it.
-func (n *node) waitLink(name, state string) wire.LinkState {
+// waitLink waits until the link to destination is in state and returns it.
+func (n *node) waitLink(destination, state string) wire.LinkState {
 	n.t.Helper()
 	var last wire.LinkState
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		if last = n.links()[name]; last.State == state {
+		if last = n.links()[destination]; last.State == state {
 			return last
 		}
 		if time.Now().After(deadline) {
-			n.t.Fatalf("link %s of %s is %q (%s), want %q", name, n.container, last.State, last.Error, state)
+			n.t.Fatalf("link to %s of %s is %q (%s), want %q", destination, n.container, last.State, last.Error, state)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// nodes returns the mesh as n's machine knows it.
+// nodes returns the network as n's machine knows it.
 func (n *node) nodes() wire.Topology {
 	n.t.Helper()
-	return n.meshStatus().Mesh
+	var topo wire.Topology
+	n.call(wire.MethodNodes, nil, &topo)
+	return topo
 }
 
 // find returns the node of topo with the given name.
@@ -433,8 +459,8 @@ func link3(t *testing.T, a, b, c *node) (_, _, _ *node, ab, cb *pair) {
 	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
 		n.mustGst("name", name)
 	}
-	a.mustGst("add", "tob", ab.destination())
-	c.mustGst("add", "tob", cb.destination())
+	a.mustGst("link", ab.destination())
+	c.mustGst("link", cb.destination())
 	a.waitReachable("c")
 	c.waitReachable("a")
 	return a, b, c, ab, cb

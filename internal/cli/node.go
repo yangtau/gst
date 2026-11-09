@@ -17,10 +17,10 @@ import (
 func (a *app) nameCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "name [name]",
-		Short: "Show or change this machine's name in the mesh",
+		Short: "Show or change this machine's name",
 		Long: `Show this machine's name and id, or change its name. Other machines
-use the name to reach this one, as <name>.gst; it defaults to the host
-name. Names need not be unique; ids are.`,
+reach this one as <name>.gst. The name defaults to the host name. Names
+need not be unique; ids are, and tell apart machines with the same name.`,
 		Example: "  gst name\n  gst name laptop",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -66,17 +66,16 @@ func (a *app) upCommand() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Run gst on this machine and put it on the virtual network",
-		Long: `Run the gst daemon in the background, now and at login: it runs the
-links, accepts links from other machines, and puts this machine on the
-virtual network. Other machines can link to this one only after this
-command. Run it on each machine, and again after upgrading gst or gst
-down. On a machine that is up it changes nothing.
+		Short: "Start gst on this machine and put it on the network",
+		Long: `Start gst in the background, now and at every login, and put this
+machine on the network. Other machines can link to this one only after
+this. Run it on each machine, and again after upgrading gst or gst down;
+on a machine that is up it changes nothing.
 
-The virtual network needs a small system service, its helper, which takes
-root to install. When it is missing or out of date, gst says what sudo
-would run and what that does, and asks first; sudo may then ask for your
-password. Without a terminal gst does not ask, and only says so.`,
+The network interface needs a small system service, the network helper,
+which takes root to install. When it is missing or out of date, gst says
+what sudo would run and what that changes, and asks first. Without a
+terminal gst does not ask, and only says so.`,
 		Example: `  gst up
   gst up --yes   # do not ask; gst still says what it runs`,
 		Args: a.args(0, 0),
@@ -91,7 +90,7 @@ password. Without a terminal gst does not ask, and only says so.`,
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "gst is up; this machine is %s (%s).\n", f.Node.Name, shortID(f.Node.ID))
+			fmt.Fprintf(a.stdout, "gst is up. This machine is %s (%s).\n", f.Node.Name, shortID(f.Node.ID))
 			return a.joinNetwork(yes)
 		}),
 	}
@@ -103,12 +102,11 @@ func (a *app) downCommand() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "down",
-		Short: "Stop gst on this machine and take it off the virtual network",
-		Long: `Undo gst up: stop the gst daemon and remove its service, so links stop
-and other machines cannot link to this one, and remove the helper of the
-virtual network, with its interface, routes, and names. This takes no
-password. The configuration stays, with the machine's address and links;
-gst up runs gst again, and asks to install the helper again.`,
+		Short: "Stop gst on this machine and take it off the network",
+		Long: `Undo gst up: stop gst, so that links stop and other machines cannot link
+to this one, and remove the network helper, with the interface, routes,
+and names. The configuration stays, with this machine's gst IP, links,
+and exposed ports; gst up starts it all again.`,
 		Args: a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			if err := a.update(func(f *config.File) error { f.Down = true; return nil }); err != nil {
@@ -117,11 +115,11 @@ gst up runs gst again, and asks to install the helper again.`,
 			if err := a.sync(cmd.Context()); err != nil {
 				return err
 			}
-			fmt.Fprintln(a.stdout, "gst is down; run gst up to start it again.")
+			fmt.Fprintln(a.stdout, "gst is down. Start it again with `gst up`.")
 			return a.leaveNetwork(yes)
 		}),
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask if removing the helper takes sudo; gst still says what it runs")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask if removing the network helper takes sudo; gst still says what it runs")
 	return cmd
 }
 
@@ -158,7 +156,7 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 			var d net.Dialer
 			conn, err := d.DialContext(cmd.Context(), "unix", socket)
 			if err != nil {
-				return errors.New("the gst daemon does not answer on this machine")
+				return errors.New("gst is not running on this machine")
 			}
 			defer conn.Close()
 			done := make(chan struct{}, 2)

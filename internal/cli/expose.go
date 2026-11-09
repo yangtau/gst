@@ -19,23 +19,37 @@ func (a *app) exposeCommand() *cobra.Command {
 	var port int
 	var udp bool
 	cmd := &cobra.Command{
-		Use: "expose <target>", Short: "Expose a TCP port, UDP port, or Unix stream socket on this machine's gst IP",
-		Long: `Forward a port on this machine's gst IP to a target reachable by its daemon.
-A bare port means 127.0.0.1 on that port. Explicit targets use tcp://host:port,
-udp://host:port, or unix:///absolute/path. --port selects the exposed port;
-it defaults to the target port and is required for Unix sockets.
+		Use:   "expose [target]",
+		Short: "Expose a port of this machine on its gst IP, or list them",
+		Long: `Without a target, list the ports exposed on this machine's gst IP.
 
-Rules persist across restarts. Only the gst IPv4 address is bound; there is
-no wildcard fallback. All machines of the mesh can connect. The target sees
-a connection from this daemon, not the original client. No TLS or HTTP
-processing is performed. --udp selects UDP for a bare port; udp:// also
-selects UDP. Unix datagram sockets are not supported.
+With a target, forward a port on this machine's gst IP to it, so that every
+machine of the network can reach it. A bare port means that port on
+127.0.0.1; other targets are tcp://host:port, udp://host:port, or
+unix:///absolute/path to a Unix stream socket. --port sets the port on the
+gst IP; it defaults to the target's port, and Unix sockets need it.
 
-The same protocol and port cannot have different targets. Remove the old
-rule first. Repeating the same rule is harmless.`,
-		Example: "  gst expose 8080 --port 5999\n  gst expose 5353 --udp\n  gst expose unix:///tmp/service.sock --port 5999",
-		Args:    a.args(1, 1),
+The rule stays until gst unexpose, across restarts. It listens only on the
+gst IP. The target sees a connection from gst, not from the client; bytes
+pass unchanged, with no TLS or HTTP processing. Repeating a rule changes
+nothing; to change its target, unexpose it first.`,
+		Example: "  gst expose\n  gst expose 8080 --port 5999\n  gst expose 5353 --udp\n  gst expose unix:///tmp/service.sock --port 5999",
+		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				if cmd.Flags().Changed("port") || udp {
+					return usage("--port and --udp need a target")
+				}
+				states, _, err := a.exposeStates(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if len(states) == 0 {
+					fmt.Fprintln(a.stdout, "No exposed ports. Expose one with `gst expose <target>`.")
+					return nil
+				}
+				return writeExposes(a.stdout, states)
+			}
 			if cmd.Flags().Changed("port") && port == 0 { // ParseExpose takes 0 for the target port
 				return usage("port must be between 1 and 65535")
 			}
@@ -49,11 +63,7 @@ rule first. Repeating the same rule is harmless.`,
 						if old == rule {
 							return nil
 						}
-						flag := ""
-						if rule.Protocol == "udp" {
-							flag = " --udp"
-						}
-						return withHint(fmt.Errorf("expose %s already has a different target", rule.Key()), "remove it with `gst expose remove "+strconv.Itoa(rule.Port)+flag+"`")
+						return withHint(fmt.Errorf("%s is already exposed, with another target", rule.Key()), "unexpose it first with `gst unexpose "+unexposeArgs(rule)+"`")
 					}
 				}
 				// In order of port, which is how everything lists them.
@@ -67,7 +77,7 @@ rule first. Repeating the same rule is harmless.`,
 				return err
 			}
 			if err := a.sync(cmd.Context()); err != nil {
-				return withHint(fmt.Errorf("rule saved but not applied: %w", err), "retry with `gst up`")
+				return withHint(fmt.Errorf("the rule is saved but not applied: %w", err), "retry with `gst up`")
 			}
 			states, down, err := a.exposeStates(cmd.Context())
 			if err != nil {
@@ -75,63 +85,66 @@ rule first. Repeating the same rule is harmless.`,
 			}
 			i := slices.IndexFunc(states, func(s wire.ExposeState) bool { return s.Protocol == rule.Protocol && s.Port == rule.Port })
 			if i < 0 { // removed in the meantime
-				return errors.New("rule saved but removed since; run `gst expose list`")
+				return errors.New("the rule is saved but was removed since; see `gst expose`")
 			}
 			state := states[i]
 			switch {
 			case state.State == wire.StateFailed:
-				return withHint(fmt.Errorf("rule saved but not listening: %s", state.Error), "inspect it with `gst expose list`")
+				return withHint(fmt.Errorf("the rule is saved but does not listen: %s", state.Error), "see it with `gst expose`")
 			case state.State == wire.StateStopped && !down:
-				return withHint(errors.New("rule saved but daemon has not reported it"), "inspect it with `gst expose list`")
+				return withHint(errors.New("the rule is saved but gst has not reported it"), "see it with `gst expose`")
 			}
 			return writeExposes(a.stdout, []wire.ExposeState{state})
 		}),
 	}
-	cmd.Flags().IntVar(&port, "port", 0, "port to expose on the gst IP (default: target port)")
+	cmd.Flags().IntVar(&port, "port", 0, "port on the gst IP (default: the target's port)")
 	cmd.Flags().BoolVar(&udp, "udp", false, "expose UDP instead of TCP")
-	var json bool
-	list := &cobra.Command{Use: "list", Short: "List this machine's exposed ports", Args: a.args(0, 0), RunE: run(func(cmd *cobra.Command, _ []string) error {
-		states, _, err := a.exposeStates(cmd.Context())
-		if err != nil {
-			return err
-		}
-		if json {
-			return writeJSON(a.stdout, states)
-		}
-		return writeExposes(a.stdout, states)
-	})}
-	list.Flags().BoolVar(&json, "json", false, "print JSON")
-	var removeUDP bool
-	remove := &cobra.Command{Use: "remove <port>", Short: "Remove an exposed port and close its connections", Args: a.args(1, 1), RunE: run(func(cmd *cobra.Command, args []string) error {
-		port, err := config.ParsePort(args[0])
-		if err != nil {
-			return &usageError{err}
-		}
-		protocol := "tcp"
-		if removeUDP {
-			protocol = "udp"
-		}
-		err = a.update(func(f *config.File) error {
-			i := slices.IndexFunc(f.Exposes, func(e config.Expose) bool { return e.Protocol == protocol && e.Port == port })
-			if i < 0 {
-				return fmt.Errorf("no expose rule for %s", config.ExposeKey(protocol, port))
+	return cmd
+}
+
+// unexposeArgs is what gst unexpose takes to remove rule.
+func unexposeArgs(rule config.Expose) string {
+	if rule.Protocol == "udp" {
+		return strconv.Itoa(rule.Port) + " --udp"
+	}
+	return strconv.Itoa(rule.Port)
+}
+
+func (a *app) unexposeCommand() *cobra.Command {
+	var udp bool
+	cmd := &cobra.Command{
+		Use:     "unexpose <port>",
+		Short:   "Stop exposing a port and close its connections",
+		Example: "  gst unexpose 5999\n  gst unexpose 5353 --udp",
+		Args:    a.args(1, 1),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			port, err := config.ParsePort(args[0])
+			if err != nil {
+				return &usageError{err}
 			}
-			f.Exposes = slices.Delete(f.Exposes, i, i+1)
+			protocol := "tcp"
+			if udp {
+				protocol = "udp"
+			}
+			err = a.update(func(f *config.File) error {
+				i := slices.IndexFunc(f.Exposes, func(e config.Expose) bool { return e.Protocol == protocol && e.Port == port })
+				if i < 0 {
+					return withHint(fmt.Errorf("%s is not exposed", config.ExposeKey(protocol, port)), "see the exposed ports with `gst expose`")
+				}
+				f.Exposes = slices.Delete(f.Exposes, i, i+1)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if err := a.sync(cmd.Context()); err != nil {
+				return withHint(fmt.Errorf("the rule is removed from the configuration, but may still run: %w", err), "retry with `gst up`")
+			}
+			fmt.Fprintf(a.stdout, "Unexposed %s.\n", config.ExposeKey(protocol, port))
 			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if err := a.sync(cmd.Context()); err != nil {
-			return fmt.Errorf("rule removed from config but daemon did not apply it: %w", err)
-		}
-		fmt.Fprintf(a.stdout, "Removed expose %s.\n", config.ExposeKey(protocol, port))
-		return nil
-	})}
-	remove.Flags().BoolVar(&removeUDP, "udp", false, "remove the UDP rule instead of TCP")
-	cmd.AddCommand(list, remove)
-	// Keep Cobra's usage for a command that accepts both a target and subcommands.
-	cmd.SetUsageTemplate(cmd.UsageTemplate())
+		}),
+	}
+	cmd.Flags().BoolVar(&udp, "udp", false, "the UDP port instead of the TCP one")
 	return cmd
 }
 
@@ -142,7 +155,7 @@ func (a *app) exposeStates(ctx context.Context) ([]wire.ExposeState, bool, error
 	if err != nil {
 		return nil, false, err
 	}
-	// Configuration remains inspectable while the daemon is stopped.
+	// The rules can be seen while gst is not running.
 	states := []wire.ExposeState{}
 	var live []wire.ExposeState
 	if !f.Down {

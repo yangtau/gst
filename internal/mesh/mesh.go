@@ -65,7 +65,7 @@ type Node struct {
 
 // link is a running link: the peer session with another node.
 type link struct {
-	name    string // the link's name, for links that this node opened
+	id      string // the link's id, for links that this node opened
 	peer    wire.NodeInfo
 	session session
 	opened  bool // this node opened it
@@ -167,7 +167,7 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.
 	var refusal *wire.Error
 	switch {
 	case n.Self().ID == "":
-		refusal = wire.Errorf(wire.CodeFailed, "gst on this machine has no node identity yet")
+		refusal = wire.Errorf(wire.CodeFailed, "gst on this machine has no identity yet")
 	case !slices.Contains(theirs.Features, wire.FeatureYamux):
 		refusal = wire.Errorf(wire.CodeUnsupportedRole, "the peer does not support yamux")
 	}
@@ -187,13 +187,13 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.
 // handshakeTimeout bounds the start of the remote gst and its Hello.
 const handshakeTimeout = 30 * time.Second
 
-// Link runs the link called name over conn, which leads to the other
+// Link runs the link with id over conn, which leads to the other
 // node's daemon, until the link ends or ctx is done, and closes conn.
 // onUp is called with the other node once the link runs. Link returns why
 // the link ended, or nil when ctx is done. When conn has a Failure method,
 // as an sshconn.Session does, what it returns explains a remote gst that
 // did not answer.
-func (n *Node) Link(ctx context.Context, name string, conn io.ReadWriteCloser, onUp func(peer wire.NodeInfo)) error {
+func (n *Node) Link(ctx context.Context, id string, conn io.ReadWriteCloser, onUp func(peer wire.NodeInfo)) error {
 	defer conn.Close()
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
 
@@ -221,7 +221,7 @@ func (n *Node) Link(ctx context.Context, name string, conn io.ReadWriteCloser, o
 	if err != nil {
 		return err
 	}
-	return n.run(ctx, &link{name: name, opened: true, session: session{yamuxed}}, onUp)
+	return n.run(ctx, &link{id: id, opened: true, session: session{yamuxed}}, onUp)
 }
 
 // run serves the peer's calls, learns who the peer is, and keeps the link

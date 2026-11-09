@@ -12,12 +12,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"maps"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -37,11 +35,11 @@ type Config struct {
 	Software   string // reported in Hello and Status, such as "gst 0.5.0+a2ffc87"
 	Build      string // identifies the executable; see Build
 
-	// Connect opens a connection to the daemon on the machine of the link
-	// called name, as gst peer-bridge there does; closing it ends
-	// everything under it. Its errors are logged, so they must not quote
-	// addresses, users, or paths.
-	Connect func(ctx context.Context, name string, l *config.Link) (io.ReadWriteCloser, error)
+	// Connect opens a connection to the daemon on the machine at the other
+	// end of l, as gst peer-bridge there does; closing it ends everything
+	// under it. Its errors are logged, so they must not quote addresses,
+	// users, or paths.
+	Connect func(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error)
 	// Addresses returns the local addresses that UDP paths use; they are
 	// off when it is nil.
 	Addresses func() []netip.Addr
@@ -69,9 +67,9 @@ type Daemon struct {
 	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
-	ops   sync.Mutex // serializes reloads and restarts
-	mu    sync.Mutex // guards links
-	links map[string]*supervisor
+	ops   sync.Mutex             // serializes reloads and restarts
+	mu    sync.Mutex             // guards links
+	links map[string]*supervisor // by destination
 }
 
 // New returns a daemon for cfg.
@@ -236,10 +234,9 @@ func (d *Daemon) Status() wire.Status {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, name := range slices.Sorted(maps.Keys(f.Links)) {
-		l := f.Links[name]
-		state := wire.LinkState{Name: name, Destination: l.Destination, State: wire.StateDown}
-		if s := d.links[name]; s != nil {
+	for _, l := range f.Links {
+		state := wire.LinkState{Destination: l.Destination, State: wire.StateDown}
+		if s := d.links[l.Destination]; s != nil {
 			state = s.state()
 		}
 		st.Links = append(st.Links, state)
@@ -259,10 +256,10 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 		return wire.NetPing{}, err
 	}
 	if st := d.net.Status(); st == nil || st.Interface == "" {
-		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "this machine is not on the virtual network; run `gst up`")
+		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "this machine is not on the gst network; run `gst up`")
 	}
 	if dest.Net == nil {
-		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%s is not on the virtual network; run `gst up` there", dest.Name)
+		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%s is not on the gst network; run `gst up` there", dest.Name)
 	}
 	rtt, err := d.net.Ping(ctx, dest.Net.Address, size)
 	if err != nil {
@@ -300,20 +297,20 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	var stop []*supervisor
 	var removed []string
 	d.mu.Lock()
-	for name, s := range d.links {
-		l := f.Links[name]
+	for destination, s := range d.links {
+		l := f.Link(destination)
 		if l == nil {
-			removed = append(removed, name)
+			removed = append(removed, s.id)
 		}
 		if l == nil || *l != s.spec {
 			stop = append(stop, s)
-			delete(d.links, name)
+			delete(d.links, destination)
 		}
 	}
 	d.mu.Unlock()
 	var told sync.WaitGroup
-	for _, name := range removed {
-		told.Go(func() { d.mesh.Unlink(ctx, name) })
+	for _, id := range removed {
+		told.Go(func() { d.mesh.Unlink(ctx, id) })
 	}
 	told.Wait()
 	stopAll(stop)
@@ -322,10 +319,10 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for name, l := range f.Links {
-		if d.links[name] == nil {
-			s := newSupervisor(d, name, *l)
-			d.links[name] = s
+	for _, l := range f.Links {
+		if d.links[l.Destination] == nil {
+			s := newSupervisor(d, l)
+			d.links[l.Destination] = s
 			go s.run()
 			s.logf("started")
 		}
@@ -337,9 +334,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 func (d *Daemon) stopAll() {
 	d.mu.Lock()
 	all := make([]*supervisor, 0, len(d.links))
-	for name, s := range d.links {
+	for destination, s := range d.links {
 		all = append(all, s)
-		delete(d.links, name)
+		delete(d.links, destination)
 	}
 	d.mu.Unlock()
 	stopAll(all)

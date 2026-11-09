@@ -15,12 +15,15 @@
 //	gst-it udp-count ADDR                       count UDP datagrams, and answer "?" with the count, which starts over
 //	gst-it udp-burst ADDR MBITS SECONDS         send to a udp-count server at MBITS Mbit/s, a burst for each of 60 frames
 //	                                            a second, as video does, and print the share that arrived
+//	gst-it call METHOD [PARAMS]                 call METHOD of this user's gst daemon with the JSON PARAMS and print the
+//	                                            JSON result, for what gst prints only for people
 //
 // It exits with status 1 and a message on stderr when something fails.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,6 +35,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yangtau/ssh-tunnel/internal/service"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func main() {
@@ -60,6 +66,8 @@ func main() {
 		err = udpCount(args)
 	case "udp-burst":
 		err = udpBurst(args)
+	case "call":
+		err = daemonCall(args)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -247,6 +255,34 @@ func udpBurst(args []string) error {
 	}
 	fmt.Printf("%.3f\n", float64(received)/float64(sent))
 	return nil
+}
+
+func daemonCall(args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return errors.New("usage: call METHOD [PARAMS]")
+	}
+	socket, err := service.Socket()
+	if err != nil {
+		return err
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := wire.Dial(conn, wire.Hello{Software: "gst-it", Role: wire.RoleControl}); err != nil {
+		return err
+	}
+	var params any
+	if len(args) == 2 {
+		params = json.RawMessage(args[1])
+	}
+	var result json.RawMessage
+	if err := wire.Call(conn, args[0], params, &result); err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(append(result, '\n'))
+	return err
 }
 
 func fail(err error) {

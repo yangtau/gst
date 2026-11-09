@@ -62,7 +62,7 @@ func TestDirectPath(t *testing.T) {
 		t.Fatal("the topology does not show the path")
 	}
 	// A path is no link: only the SSH link counts.
-	if edges := a.Topology().Edges; len(edges) != 1 || edges[0].Link != "b" {
+	if edges := a.Topology().Edges; len(edges) != 1 || edges[0].Link != config.LinkID("b") {
 		t.Fatalf("edges = %+v", edges)
 	}
 
@@ -238,7 +238,7 @@ func TestRemovingALinkEndsDirectAtTheOtherEnd(t *testing.T) {
 	linkUp(t, b, c, "c")
 	goDirect(t, a, c)
 
-	b.Unlink(t.Context(), "c")
+	b.Unlink(t.Context(), config.LinkID("c"))
 	waitFor(t, "the path ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
 }
 
@@ -260,7 +260,7 @@ func TestRemovingALinkKeepsDirectInTheMesh(t *testing.T) {
 	})
 	goDirect(t, a, c)
 
-	b.Unlink(t.Context(), "c")
+	b.Unlink(t.Context(), config.LinkID("c"))
 	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
 		t.Fatal("the path ended with SSH links left")
 	}

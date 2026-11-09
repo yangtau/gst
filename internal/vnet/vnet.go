@@ -316,7 +316,7 @@ func (m *Manager) load(id string) error {
 	if !m.loaded {
 		data, err := os.ReadFile(m.cfg.StatePath)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("read the state of the virtual network: %w", err)
+			return fmt.Errorf("read the state of the network: %w", err)
 		}
 		if err == nil && json.Unmarshal(data, &m.state) != nil {
 			m.state = state{}
@@ -360,7 +360,7 @@ func (m *Manager) save() error {
 	}
 	tmp := m.cfg.StatePath + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write the state of the virtual network: %w", err)
+		return fmt.Errorf("write the state of the network: %w", err)
 	}
 	return os.Rename(tmp, m.cfg.StatePath)
 }
@@ -456,7 +456,7 @@ func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wir
 	wg.Wait()
 	subnet, ok := chooseSubnet(self.ID, used)
 	if !ok {
-		return netip.Prefix{}, &hintError{"no subnet is free on the machines of the mesh", "choose one with `gst subnet <cidr>`"}
+		return netip.Prefix{}, &hintError{"no subnet is free on the machines of the network", "choose one with `gst subnet <cidr>`"}
 	}
 	return subnet, nil
 }
@@ -478,11 +478,6 @@ func names(topo wire.Topology) []string {
 	var list []string
 	for _, n := range topo.Nodes {
 		list = append(list, n.Name)
-	}
-	for _, e := range topo.Edges {
-		if e.Link != "" {
-			list = append(list, e.Link)
-		}
 	}
 	slices.Sort(list)
 	return slices.Compact(list)
@@ -510,7 +505,7 @@ func (m *Manager) apply(self wire.NodeInfo, topo wire.Topology) error {
 	name, err := m.iface.Set(m.wanted(topo))
 	if err != nil {
 		m.down()
-		return fmt.Errorf("the helper of the virtual network failed: %w", err)
+		return fmt.Errorf("the network helper failed: %w", err)
 	}
 	m.name = name
 	return m.syncPeers(self, topo)
@@ -531,7 +526,7 @@ func (m *Manager) up(ctx context.Context) error {
 	iface, err := m.cfg.Open(tun.Spec{Subnet: m.state.Subnet, Address: m.state.Address})
 	if err != nil {
 		if errors.Is(err, tun.ErrNoHelper) {
-			return &hintError{"the helper of the virtual network does not run", "run `gst up` on this machine"}
+			return &hintError{"the network helper is not running", "run `gst up` on this machine"}
 		}
 		return fmt.Errorf("set up the interface: %w", err)
 	}

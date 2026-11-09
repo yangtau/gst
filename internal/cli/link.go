@@ -3,7 +3,9 @@ package cli
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,49 +15,39 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-func (a *app) addCommand() *cobra.Command {
+func (a *app) linkCommand() *cobra.Command {
 	var remoteGst string
 	cmd := &cobra.Command{
-		Use:        "add <name> [destination]",
-		SuggestFor: []string{"link"},
-		Short:      "Link this machine with another machine over SSH",
-		Long: `Add a link: an SSH connection from this machine to another machine that
-also runs gst. Over it, the gst daemons of the two machines join each
-other's mesh: each learns every machine that the other knows, and the
-traffic of the virtual network can pass through it in both directions. A
+		Use:   "link <destination>",
+		Short: "Link this machine to another machine over SSH",
+		Long: `Link this machine to another machine over SSH. The two machines then
+share one network: each reaches every machine that the other reaches. The
 link runs in the background, starts at login, and reconnects after
-failures; gst status shows its state.
+failures.
 
-The other machine needs a gst of the same protocol, which gst version
-shows, in the PATH of its login shell or set with --remote-gst, and
-someone must have run gst up there: gst never sets up another machine. If it has not, this command says so and
-keeps the link, which connects by itself after gst up there.
+<destination> is an ssh destination: a host of your ssh configuration,
+user@host, or ssh://user@host:port. gst resolves it with "ssh -G" each
+time the link connects, so the link follows HostName, Port, User,
+IdentityFile, known_hosts files, ConnectTimeout, ServerAliveInterval, and
+ServerAliveCountMax. ProxyJump, ProxyCommand, and HostKeyAlias are not
+supported.
 
-<name> uses 1-32 lowercase letters, digits, and '-', and also names the
-machine at the other end until it reports its own name. <destination> is
-an ssh destination such as host, user@host, or ssh://user@host:port, and
-defaults to <name>. It is resolved with "ssh -G" every time the link
-connects, so the link follows your ssh configuration: HostName, Port,
-User, IdentityFile, known_hosts files, ConnectTimeout, ServerAliveInterval,
-and ServerAliveCountMax. ProxyJump, ProxyCommand, and HostKeyAlias are
-not supported.
+The other machine needs:
+  - gst up run there. gst never sets up another machine; until then the
+    link waits, and connects by itself after gst up there.
+  - a gst of the same protocol (see gst version), in the PATH of its login
+    shell, or given with --remote-gst.
+And this one needs a private key without a passphrase for it, and the
+server's host key in known_hosts. gst checks both before it saves the
+link.
 
-Before saving, gst checks that an identity without a passphrase exists
-and that known_hosts records the server; it never accepts unknown host
-keys. To change a link, remove it and add it again.`,
-		Example: `  gst add devbox    # the "devbox" entry of ~/.ssh/config
-  gst add db admin@db.example.com
-  gst add web ssh://deploy@203.0.113.7:2200 --remote-gst ~/bin/gst`,
-		Args: a.args(1, 2),
+To change a link, unlink it and link it again.`,
+		Example: `  gst link devbox                    # the "devbox" host of ~/.ssh/config
+  gst link admin@db.example.com
+  gst link ssh://deploy@203.0.113.7:2200 --remote-gst ~/bin/gst`,
+		Args: a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			if err := config.ValidateName(name); err != nil {
-				return &usageError{err}
-			}
-			l := &config.Link{Destination: name, RemoteGst: remoteGst}
-			if len(args) == 2 {
-				l.Destination = args[1]
-			}
+			l := config.Link{Destination: args[0], RemoteGst: remoteGst}
 			if err := l.Validate(); err != nil {
 				return &usageError{err}
 			}
@@ -63,95 +55,162 @@ keys. To change a link, remove it and add it again.`,
 				return err
 			}
 			err := a.update(func(f *config.File) error {
-				if f.Links[name] != nil {
-					return withHint(fmt.Errorf("link %s already exists", name),
-						fmt.Sprintf("to change it, remove it with `gst remove %s` and add it again", name))
+				if f.Link(l.Destination) != nil {
+					return withHint(fmt.Errorf("this machine already links to %s", l.Destination),
+						fmt.Sprintf("to change the link, run `gst unlink %s` and link again", l.Destination))
 				}
-				if err := a.preflight(cmd.Context(), l); err != nil {
+				if err := a.preflight(cmd.Context(), &l); err != nil {
 					return err
 				}
-				f.Links[name] = l
+				f.Links = append(f.Links, l)
 				return nil
 			})
 			if err != nil {
 				return err
 			}
 			if err := a.sync(cmd.Context()); err != nil {
-				return withHint(fmt.Errorf("link %s was added but did not start: %w", name, err), "retry with `gst up`")
+				return withHint(fmt.Errorf("linked to %s, but gst did not start: %w", l.Destination, err), "retry with `gst up`")
 			}
-			if err := a.watchLink(cmd.Context(), name, l); err != nil {
+			peer, err := a.watchLink(cmd.Context(), &l)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "Added link %s; it connects in the background. See it with: gst status\n", name)
+			switch {
+			case peer != nil && peer.Name == l.Destination:
+				fmt.Fprintf(a.stdout, "Linked to %s.\n", l.Destination)
+			case peer != nil:
+				fmt.Fprintf(a.stdout, "Linked to %s, which is %s.\n", l.Destination, peer.Name)
+			default:
+				fmt.Fprintf(a.stdout, "Linked to %s. It connects in the background; see it with `gst status`.\n", l.Destination)
+			}
 			return nil
 		}),
 	}
-	cmd.Flags().StringVar(&remoteGst, "remote-gst", "", "gst command on the server, when gst is not in the PATH of its login shell (default: gst)")
+	cmd.Flags().StringVar(&remoteGst, "remote-gst", "", "gst command on the other machine, when gst is not in the PATH of its login shell (default: gst)")
 	return cmd
 }
 
-// linkWatch bounds how long gst add watches a new link.
+// linkWatch bounds how long gst link watches a new link.
 const linkWatch = 10 * time.Second
 
-// watchLink watches a new link until it shows how it goes, and fails if
-// the other machine needs gst up. It only tells the person so: gst never
-// sets up another machine.
-func (a *app) watchLink(ctx context.Context, name string, l *config.Link) error {
+// watchLink watches a new link until it shows how it goes, returns the
+// machine at its other end once it runs, and fails if that machine needs
+// gst up. It only tells the person so: gst never sets up another machine.
+func (a *app) watchLink(ctx context.Context, l *config.Link) (*wire.NodeInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, linkWatch)
 	defer cancel()
 	for {
 		st := a.status(ctx)
 		if st == nil {
-			return nil
+			return nil, nil
 		}
 		for _, state := range st.Links {
 			switch {
-			case state.Name != name:
+			case state.Destination != l.Destination:
 			case strings.Contains(state.Error, notUp):
-				return withHint(fmt.Errorf("link %s was added, but gst is not up on that machine", name),
-					fmt.Sprintf("run `gst up` there, for example with `ssh -t %s %s up`; the link then connects by itself", l.Destination, cmp.Or(l.RemoteGst, "gst")))
-			case state.State == wire.StateRunning, state.Error != "":
-				return nil
+				return nil, withHint(fmt.Errorf("linked to %s, but gst is not up there", l.Destination),
+					fmt.Sprintf("run `ssh -t %s %s up`; the link then connects by itself", l.Destination, cmp.Or(l.RemoteGst, "gst")))
+			case state.State == wire.StateRunning:
+				return state.Peer, nil
+			case state.Error != "":
+				return nil, nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return nil, nil
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
 
-func (a *app) removeCommand() *cobra.Command {
+func (a *app) unlinkCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:               "remove <name>...",
-		Aliases:           []string{"rm"},
-		Short:             "Remove links to other machines",
-		Example:           "  gst remove devbox\n  gst remove devbox db",
+		Use:   "unlink <machine>...",
+		Short: "Remove this machine's links to other machines",
+		Long: `Remove this machine's links to the machines given. A machine is given by
+its name, its id or an id prefix, or the destination of the link.
+
+A link belongs to the machine that made it: to remove a link that another
+machine made to this one, run gst unlink there.`,
+		Example:           "  gst unlink devbox\n  gst unlink devbox admin@db.example.com",
 		Args:              a.args(1, -1),
 		ValidArgsFunction: a.completeLinks,
 		RunE: run(func(cmd *cobra.Command, args []string) error {
+			var running []wire.LinkState
+			if st := a.status(cmd.Context()); st != nil {
+				running = st.Links
+			}
+			var removed []string
 			err := a.update(func(f *config.File) error {
-				for _, name := range args {
-					if f.Links[name] == nil {
-						return namesHint(f, fmt.Errorf("no link named %s", name))
+				var gone []string
+				for _, ref := range args {
+					found := linksTo(f, running, ref)
+					if len(found) == 0 {
+						return linksHint(f, fmt.Errorf("this machine has no link to %s", ref))
+					}
+					for _, destination := range found {
+						if !slices.Contains(gone, destination) {
+							gone = append(gone, destination)
+						}
 					}
 				}
-				for _, name := range args {
-					delete(f.Links, name)
-				}
+				f.Links = slices.DeleteFunc(f.Links, func(l config.Link) bool { return slices.Contains(gone, l.Destination) })
+				removed = gone
 				return nil
 			})
 			if err != nil {
 				return err
 			}
 			if err := a.sync(cmd.Context()); err != nil {
-				return withHint(fmt.Errorf("the links were removed from the configuration, but the daemon may still run them: %w", err), "retry with `gst up`")
+				return withHint(fmt.Errorf("the links are removed from the configuration, but may still run: %w", err), "retry with `gst up`")
 			}
-			for _, name := range args {
-				fmt.Fprintf(a.stdout, "Removed link %s.\n", name)
+			for _, destination := range removed {
+				fmt.Fprintf(a.stdout, "Unlinked %s.\n", destination)
 			}
 			return nil
 		}),
 	}
 }
+
+// linksTo returns the destinations of the links of f that ref names: by
+// its destination, or by the name, id, or id prefix of the machine that a
+// running link leads to.
+func linksTo(f *config.File, running []wire.LinkState, ref string) []string {
+	var found []string
+	if f.Link(ref) != nil {
+		found = append(found, ref)
+	}
+	machine, err := config.ParseMachine(ref)
+	if err != nil {
+		return found
+	}
+	for _, l := range running {
+		p := l.Peer
+		if p == nil || f.Link(l.Destination) == nil || slices.Contains(found, l.Destination) {
+			continue
+		}
+		if p.ID == machine || p.Name == machine || len(machine) >= 4 && strings.HasPrefix(p.ID, machine) {
+			found = append(found, l.Destination)
+		}
+	}
+	return found
+}
+
+// linksHint adds this machine's links to err.
+func linksHint(f *config.File, err error) error {
+	if len(f.Links) == 0 {
+		return withHint(err, "this machine has no links yet; add one with `gst link <destination>`")
+	}
+	return withHint(err, "this machine links to "+strings.Join(destinations(f), ", "))
+}
+
+func destinations(f *config.File) []string {
+	list := make([]string, len(f.Links))
+	for i, l := range f.Links {
+		list[i] = l.Destination
+	}
+	return list
+}
+
+var errNoDaemon = errors.New("gst is not running on this machine")

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -17,7 +18,7 @@ var now = time.Now()
 func rec(name string, peers ...string) wire.Record {
 	r := wire.Record{Node: wire.NodeInfo{ID: nid(name), Name: name, Software: "gst test"}, Seq: 1, Expires: now.Add(time.Hour), Links: []wire.Edge{}}
 	for _, p := range peers {
-		r.Links = append(r.Links, wire.Edge{Name: "to-" + p, Peer: nid(p)})
+		r.Links = append(r.Links, wire.Edge{Link: config.LinkID(p), Peer: nid(p)})
 	}
 	return r
 }
@@ -66,7 +67,7 @@ func TestBuildTopology(t *testing.T) {
 			self:  "a",
 			recs:  []wire.Record{selfNoExpiry, rec("b", "c"), rec("lonely")},
 			paths: map[string][]string{"a": {"a"}, "b": {"a", "b"}, "c": {"a", "b", "c"}},
-			nodes: []string{"a", "b", "lonely", "to-c"}, // c is named after the link until its record arrives
+			nodes: []string{"a", nid("c")[:8], "b", "lonely"}, // c is named by its id until its record arrives
 			edges: 2,
 		},
 		{
@@ -117,8 +118,12 @@ func TestBuildTopology(t *testing.T) {
 			if !slices.Equal(got, tt.nodes) {
 				t.Fatalf("nodes = %v, want %v", got, tt.nodes)
 			}
+			paths := map[string][]string{}
+			for name, path := range tt.paths {
+				paths[nid(name)] = path
+			}
 			for _, n := range topo.Nodes {
-				want, reachable := tt.paths[strings.TrimPrefix(n.Name, "to-")]
+				want, reachable := paths[n.ID]
 				if n.ID == nid(tt.self) {
 					want, reachable = []string{tt.self}, true
 				}
@@ -173,7 +178,7 @@ func TestBuildTopologySortsAndCarriesNodeInfo(t *testing.T) {
 	if topo.Nodes[1].Software != "gst test" || topo.Nodes[1].Expires.IsZero() {
 		t.Fatalf("nodes = %+v", topo.Nodes)
 	}
-	if e := topo.Edges[0]; e.From != nid("bob") || e.To != nid("alice") || e.Link != "to-alice" {
+	if e := topo.Edges[0]; e.From != nid("bob") || e.To != nid("alice") || e.Link != config.LinkID("alice") {
 		t.Fatalf("edge = %+v", e)
 	}
 }
@@ -190,7 +195,7 @@ func TestMerge(t *testing.T) {
 	manyLinks := func(n int) func(*wire.Record) {
 		return func(r *wire.Record) {
 			for i := 0; i < n; i++ {
-				r.Links = append(r.Links, wire.Edge{Name: "x", Peer: nid("p")})
+				r.Links = append(r.Links, wire.Edge{Link: config.LinkID("x"), Peer: nid("p")})
 			}
 		}
 	}

@@ -3,12 +3,9 @@
 package integration
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func TestExpose(t *testing.T) {
@@ -48,9 +45,12 @@ func TestExpose(t *testing.T) {
 	if _, err := a.helper("udp", c.addr(5999), "hidden"); err == nil {
 		t.Fatal("UDP exposed on physical IP")
 	}
-	var states []wire.ExposeState
-	if err := json.Unmarshal([]byte(c.mustGst("expose", "list", "--json")), &states); err != nil || len(states) != 3 {
-		t.Fatalf("states: %+v %v", states, err)
+	states := c.status().Exposes
+	if len(states) != 3 {
+		t.Fatalf("states: %+v", states)
+	}
+	if out := c.mustGst("expose"); len(strings.Split(strings.TrimSpace(out), "\n")) != 4 || !strings.Contains(out, "running") {
+		t.Fatalf("gst expose: %q", out)
 	}
 	for _, s := range states {
 		if s.State != "running" || !strings.HasPrefix(s.Address, c.net().Address+":") {
@@ -70,14 +70,14 @@ func TestExpose(t *testing.T) {
 	if old == c.net().Address {
 		t.Fatal("subnet did not change the address")
 	}
-	c.mustGst("expose", "remove", "5999", "--udp")
+	c.mustGst("unexpose", "5999", "--udp")
 	if err := a.roundtrip("c.gst:5999"); err != nil {
 		t.Fatal("UDP removal stopped TCP:", err)
 	}
 	if _, err := a.helper("udp", "c.gst:5999", "removed"); err == nil {
 		t.Fatal("removed UDP still answered")
 	}
-	c.mustGst("expose", "remove", "5999")
+	c.mustGst("unexpose", "5999")
 	if _, err := a.sh(`nc -z -w 1 c.gst 5999`); err == nil {
 		t.Fatal("removed TCP still answered")
 	}

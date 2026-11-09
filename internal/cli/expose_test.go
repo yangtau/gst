@@ -1,11 +1,11 @@
 package cli
 
 import (
-	"encoding/json"
-	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/wire"
 	"strings"
 	"testing"
+
+	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func TestExposeCommands(t *testing.T) {
@@ -24,16 +24,15 @@ func TestExposeCommands(t *testing.T) {
 	if err != nil || len(f.Exposes) != 3 {
 		t.Fatalf("%+v %v", f, err)
 	}
-	if code, _, err := e.gst("expose", "9090", "--port", "5999"); code != 1 || !strings.Contains(err, "gst expose remove 5999") {
+	if code, _, err := e.gst("expose", "9090", "--port", "5999"); code != 1 || !strings.Contains(err, "hint: unexpose it first with `gst unexpose 5999`") {
 		t.Fatalf("conflict: %d %s", code, err)
 	}
-	code, out, errText := e.gst("expose", "list", "--json")
-	var states []wire.ExposeState
-	if code != 0 || json.Unmarshal([]byte(out), &states) != nil || len(states) != 3 {
+	code, out, errText := e.gst("expose")
+	if code != 0 || len(rows(out)) != 4 || !strings.Contains(out, "unix:///tmp/service.sock") {
 		t.Fatalf("list: %d %s %s", code, out, errText)
 	}
-	if code, _, err := e.gst("expose", "remove", "5999", "--udp"); code != 0 {
-		t.Fatalf("remove: %d %s", code, err)
+	if out := e.mustGst("unexpose", "5999", "--udp"); out != "Unexposed udp/5999.\n" {
+		t.Fatalf("unexpose: %q", out)
 	}
 	f, _ = config.Load(e.config)
 	if len(f.Exposes) != 2 || f.Exposes[0].Protocol != "tcp" {
@@ -42,22 +41,29 @@ func TestExposeCommands(t *testing.T) {
 	if code, _, err := e.gst("down"); code != 0 {
 		t.Fatalf("down: %d %s", code, err)
 	}
-	if code, out, err := e.gst("expose", "list"); code != 0 || !strings.Contains(out, "stopped") {
+	if code, out, err := e.gst("expose"); code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("offline list: %d %s %s", code, out, err)
 	}
-	if code, _, err := e.gst("expose", "remove", "5999"); code != 0 {
+	if code, _, err := e.gst("unexpose", "5999"); code != 0 {
 		t.Fatalf("offline remove: %d %s", code, err)
 	}
 	if len(e.rootRuns) != 0 {
 		t.Fatal("expose requested root")
 	}
+	e.expectError(exitFailure, []string{"unexpose", "5999"}, "error: tcp/5999 is not exposed\n", "hint: see the exposed ports with `gst expose`\n")
+	if out := e.mustGst("unexpose", "6000"); out != "Unexposed tcp/6000.\n" {
+		t.Fatalf("unexpose: %q", out)
+	}
+	if out := e.mustGst("expose"); out != "No exposed ports. Expose one with `gst expose <target>`.\n" {
+		t.Fatalf("empty list: %q", out)
+	}
 }
 
 func TestExposeUsage(t *testing.T) {
 	for _, args := range [][]string{
-		{"expose"}, {"expose", "0"}, {"expose", "8080", "--port", "0"},
+		{"expose", "--udp"}, {"expose", "--port", "5999"}, {"expose", "0"}, {"expose", "8080", "--port", "0"},
 		{"expose", "unix:///tmp/socket"}, {"expose", "unix:///tmp/socket", "--port", "5999", "--udp"},
-		{"expose", "remove"}, {"expose", "remove", "65536"},
+		{"expose", "8080", "9090"}, {"unexpose"}, {"unexpose", "65536"}, {"unexpose", "5999", "6000"},
 	} {
 		e := newEnv(t)
 		if code, _, err := e.gst(args...); code != 2 || !strings.Contains(err, "usage:") {
@@ -79,7 +85,7 @@ func TestExposeBindFailureIsReportedAndRetained(t *testing.T) {
 	if len(e.load().Exposes) != 1 {
 		t.Fatal("failed rule was not retained")
 	}
-	if out := e.mustGst("status"); !strings.Contains(out, "expose tcp/5999: failed") {
+	if out := e.mustGst("status"); !strings.Contains(out, "exposed tcp/5999: failed") {
 		t.Fatal(out)
 	}
 }

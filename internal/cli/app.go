@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"time"
 
@@ -174,18 +172,6 @@ func (a *app) update(fn func(*config.File) error) error {
 	return config.Update(path, fn)
 }
 
-// namesHint adds f's link names to err.
-func namesHint(f *config.File, err error) error {
-	if len(f.Links) == 0 {
-		return withHint(err, "there are no links yet; add one with `gst add <name>`")
-	}
-	return withHint(err, "links: "+strings.Join(sortedNames(f), ", "))
-}
-
-func sortedNames(f *config.File) []string {
-	return slices.Sorted(maps.Keys(f.Links))
-}
-
 func (a *app) backend() (backend, error) {
 	if a.back == nil {
 		b, err := a.newBackend()
@@ -259,7 +245,7 @@ func remoteGst(l *config.Link) string {
 
 // connectLink connects to the daemon on the machine of link l over SSH,
 // for the daemon. Its errors omit addresses, users, and paths.
-func (a *app) connectLink(ctx context.Context, _ string, l *config.Link) (io.ReadWriteCloser, error) {
+func (a *app) connectLink(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error) {
 	opts, err := a.options(ctx, l)
 	if err != nil {
 		// Resolution errors quote the ssh configuration.

@@ -55,8 +55,8 @@ func TestUI(t *testing.T) {
 	p := startPair(t)
 	client := p.client
 	client.mustGst("name", "cli")
-	client.mustGst("add", "srv", p.destination())
-	client.waitLink("srv", "running")
+	client.mustGst("link", p.destination())
+	client.waitLink(p.destination(), "running")
 	ui := client.startUI()
 
 	if code, _ := ui.request("GET", "api/state", false); code != "401" {
@@ -70,7 +70,7 @@ func TestUI(t *testing.T) {
 	if code != "200" || json.Unmarshal([]byte(body), &state) != nil {
 		t.Fatalf("state: %s %q", code, body)
 	}
-	if state.Status == nil || len(state.Status.Links) != 1 || state.Status.Links[0].Name != "srv" || state.Status.Links[0].State != wire.StateRunning ||
+	if state.Status == nil || len(state.Status.Links) != 1 || state.Status.Links[0].Destination != p.destination() || state.Status.Links[0].State != wire.StateRunning ||
 		state.Topology == nil || len(state.Topology.Nodes) != 2 {
 		t.Fatalf("gst ui shows %+v", state)
 	}
@@ -81,7 +81,7 @@ func TestUI(t *testing.T) {
 			t.Fatalf("%s from gst ui: %s", action, code)
 		}
 	}
-	if state := client.links()["srv"].State; state != wire.StateRunning {
+	if state := client.links()[p.destination()].State; state != wire.StateRunning {
 		t.Fatalf("link is %s after the actions", state)
 	}
 }

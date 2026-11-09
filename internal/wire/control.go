@@ -73,7 +73,6 @@ type NetPeer struct {
 // failure, which may quote the remote gst. Peer is the node at the other
 // end while the link runs.
 type LinkState struct {
-	Name        string    `json:"name"`
 	Destination string    `json:"destination"`
 	State       string    `json:"state"`
 	Since       time.Time `json:"since,omitzero"`
@@ -179,7 +178,7 @@ type TopoNode struct {
 type TopoEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-	Link string `json:"link"` // its name on From
+	Link string `json:"link"` // its id on From
 }
 
 // States of exposed ports; StateRunning means listening.

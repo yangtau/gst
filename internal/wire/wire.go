@@ -23,8 +23,10 @@ import (
 // made the virtual network the only way to reach machines: it has no
 // connections to addresses, and a UDP path carries WireGuard's packets
 // rather than QUIC. Version 4 shares one UDP port among all paths, and
-// changes the packets on them. It does not talk to earlier versions.
-const Protocol = 4
+// changes the packets on them. Version 5 identifies links by an id
+// rather than a name that people choose and address machines by. It does
+// not talk to earlier versions.
+const Protocol = 5
 
 // MaxFrame is the largest frame payload accepted, in bytes.
 const MaxFrame = 1 << 20

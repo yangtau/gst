@@ -76,39 +76,42 @@ function statusOf(id) {
   return (answer && answer.status) || null;
 }
 
-// linkText shows a link as the machines at its ends, as gst status does,
-// with the link's own name when it differs from the machine it leads to.
-function linkText(from, to, name) {
-  return !to || to === name ? `${from}->${name}` : `${from}->${to} (${name})`;
+// destinationText is a link's destination, with the machine at its other
+// end when its name differs, as gst status does.
+function destinationText(l) {
+  return !l.peer || l.peer.name === l.destination ? l.destination : `${l.destination} (${l.peer.name})`;
 }
 
 // problems names what does not work on a machine, as gst status does.
 function problems(st) {
   if (!st) return [];
   const found = [];
-  for (const l of st.links || []) if (l.state !== "running") found.push(`link ${linkText(st.node.name, l.peer && l.peer.name, l.name)} is ${l.state}`);
-  if (st.net && st.net.error) found.push(`virtual network: ${st.net.error}`);
+  for (const l of st.links || []) if (l.state !== "running") found.push(`link to ${destinationText(l)}: ${l.state}`);
+  if (st.net && st.net.error) found.push(`network: ${st.net.error}`);
   for (const e of st.exposes || []) {
-    if (e.state !== "running") found.push(`expose ${e.protocol}/${e.port}: ${e.state}${e.error ? `: ${e.error}` : ""}`);
+    if (e.state !== "running") found.push(`exposed ${e.protocol}/${e.port}: ${e.state}${e.error ? `: ${e.error}` : ""}`);
   }
   return found;
 }
 
-// findMachine finds the machine that a report names, as far as the
-// page can tell: by its name, the name of a link to it, or an id prefix.
+// findMachine finds the machine that a report names: by its name, its
+// id, or an id prefix.
 function findMachine(ref) {
-  const nodes = machines();
   const name = ref.replace(/\.gst$/, "");
-  const byName = nodes.find((n) => n.name === name || n.id === name || (name.length >= 4 && n.id.startsWith(name)));
-  if (byName) return byName;
-  const topo = topology();
-  const edge = topo && topo.edges.find((e) => e.link === name);
-  return edge ? nodes.find((n) => n.id === edge.to) : undefined;
+  return machines().find((n) => n.name === name || n.id === name || (name.length >= 4 && n.id.startsWith(name)));
 }
 
 // via names the machines on the way to n, after this one and before n.
 function via(n, names) {
   return n.path && n.path.length > 2 ? n.path.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ") : "";
+}
+
+// way says how packets go to another machine, as gst status does.
+function way(n, names) {
+  if (n.direct) return "direct";
+  if (!n.reachable) return "offline";
+  const route = via(n, names);
+  return route ? "relay via " + route : "relay";
 }
 
 function age(since) {
@@ -134,7 +137,7 @@ function mark(kind, title) {
 
 const linkMark = (l) => mark({ running: "ok", connecting: "wait" }[l.state] || "bad", l.state);
 
-// jump names a machine and selects it when clicked, if the mesh knows it.
+// jump names a machine and selects it when clicked, if the page knows it.
 function jump(ref, cls, text) {
   const n = findMachine(ref);
   if (!n) return el("span", { class: "cell " + (cls || "") }, text || ref);
@@ -178,39 +181,39 @@ function linksGroup(st, isSelf) {
     return el("li", { class: "row" },
       linkMark(l),
       l.peer && l.peer.id
-        ? jump(l.peer.name, "row-name", linkText(st.node.name, l.peer.name, l.name))
-        : el("span", { class: "cell row-name" }, linkText(st.node.name, "", l.name)),
+        ? jump(l.peer.id, "row-name", l.peer.name)
+        : el("span", { class: "cell row-name" }, "—"),
       el("span", { class: "cell mono sub row-wide", title: l.destination }, l.destination),
       end,
       !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
   });
   return group("Links", count(down ? `${links.length - down} of ${links.length} running` : links.length, down), rows,
-    isSelf && ["Add one with ", el("code", null, "gst add <name> [destination]")]);
+    isSelf && ["Add one with ", el("code", null, "gst link <destination>")]);
 }
 
-// linkedFrom lists the links that other machines opened to this one,
-// which only the mesh knows.
+// linkedFromGroup lists the links that other machines made to this one,
+// which only the network knows.
 function linkedFromGroup(id, names) {
   const topo = topology();
   const edges = topo ? topo.edges.filter((e) => e.to === id) : [];
   if (edges.length === 0) return null;
   const rows = edges.map((e) => el("li", { class: "row" },
     mark("ok", "running"),
-    jump(names[e.from] || shortID(e.from), "row-name", linkText(names[e.from] || shortID(e.from), names[e.to], e.link))));
-  return group("Linked from", count(edges.length), rows);
+    jump(e.from, "row-name", names[e.from] || shortID(e.from))));
+  return group("Incoming links", count(edges.length), rows);
 }
 
-// peersGroup lists the other machines of the virtual network, with how
-// packets go to each.
-function peersGroup(st) {
+// machinesGroup lists the other machines of the network, with how packets
+// go to each.
+function machinesGroup(st) {
   const peers = (st.net && st.net.peers) || [];
   if (peers.length === 0) return null;
   const rows = peers.map((p) => el("li", { class: "row" },
     p.handshake ? mark("ok", "WireGuard confirmed its key") : mark("off", "no handshake yet"),
-    jump(p.name, "row-name"),
+    jump(p.node, "row-name", p.name),
     el("span", { class: "cell mono sub row-wide", title: p.address }, p.address),
-    el("span", { class: "row-end" }, p.path === "direct" ? "UDP" : "SSH")));
-  return group("Network", count(peers.length), rows);
+    el("span", { class: "row-end" }, p.path === "direct" ? "direct" : "relay")));
+  return group("Machines", count(peers.length), rows);
 }
 
 function exposesGroup(st) {
@@ -246,25 +249,25 @@ function drawDetail(n, names) {
   const isSelf = !n || n.id === selfID();
   const st = n ? statusOf(n.id) : state.status;
   if (isSelf && !st) {
-    const title = state.down ? "gst is down on this machine" : "The gst daemon is not running";
+    const title = state.down ? "gst is down on this machine" : "gst is not running on this machine";
     detail.replaceChildren(blank(title, "Start it with ", el("code", null, "gst up"), "."));
     return;
   }
   if (!st) {
     const answer = answers.get(n.id);
     if (!n.reachable) {
-      detail.replaceChildren(blank(`${names[n.id]} cannot report`, "No running link leads to it now, so it cannot be asked. Its UDP path still carries packets."));
+      detail.replaceChildren(blank(`${names[n.id]} cannot report`, "No running link leads to it now, so it cannot be asked. Direct traffic to it still flows."));
     } else if (answer && answer.error) {
       detail.replaceChildren(blank(`${names[n.id]} did not answer`, answer.error));
     } else {
-      detail.replaceChildren(blank("Asking…", `Waiting for ${names[n.id]} to answer through the mesh.`));
+      detail.replaceChildren(blank("Asking…", `Waiting for ${names[n.id]} to answer.`));
     }
     return;
   }
   detail.replaceChildren(...[
     linksGroup(st, isSelf),
     n && linkedFromGroup(n.id, names),
-    peersGroup(st),
+    machinesGroup(st),
     exposesGroup(st),
   ].filter(Boolean));
 }
@@ -273,7 +276,7 @@ function drawDetail(n, names) {
 
 function nodeMark(n) {
   if (n.id === selfID()) return state.status ? mark("ok", "this machine, running") : mark("off", "this machine, not running");
-  return mark("ok", "online");
+  return n.reachable || n.direct ? mark("ok", "reachable") : mark("off", "offline");
 }
 
 function drawMachines(nodes, names) {
@@ -281,14 +284,13 @@ function drawMachines(nodes, names) {
   const focused = nav.contains(document.activeElement) ? document.activeElement.dataset.id : "";
   nav.replaceChildren(...nodes.map((n) => {
     const found = problems(statusOf(n.id)).length;
-    const route = via(n, names);
+    const how = n.id === selfID() ? "" : way(n, names);
     const b = el("button", { type: "button", class: "machine", "data-id": n.id, "aria-current": n.id === selected ? "true" : "false" },
       nodeMark(n),
       el("span", { class: "truncate machine-name" }, names[n.id]),
       el("span", { class: "machine-meta" },
         found ? el("span", { class: "count", title: plural(found, "problem") }, found) : null,
-        route ? el("span", { class: "truncate", title: "via " + route }, "via " + route) : null,
-        n.direct ? el("span", { class: "tag" }, "direct") : null));
+        how ? el("span", { class: how === "direct" ? "tag" : "truncate", title: how }, how) : null));
     b.addEventListener("click", () => select(n.id));
     return b;
   }));
@@ -300,7 +302,7 @@ function drawMachines(nodes, names) {
 
 function drawSummary(nodes) {
   const found = nodes.reduce((sum, n) => sum + problems(statusOf(n.id)).length, 0);
-  const text = !state.status ? "not running" : `${nodes.length} online`;
+  const text = !state.status ? "not running" : plural(nodes.length, "machine");
   $("summary").replaceChildren(text, ...(found ? [", ", el("span", { class: "bad" }, plural(found, "problem"))] : []));
 }
 
@@ -345,7 +347,7 @@ function drawRing(nodes, names) {
     const p = away(a, 9), q = away(b, 12);
     const on = e.from === selected || e.to === selected ? " on" : "";
     links.push(svg("path", { d: `M${p.x},${p.y} Q${c.x},${c.y} ${q.x},${q.y}`, class: "ring-link" + on },
-      svg("title", null, linkText(names[e.from], names[e.to], e.link))));
+      svg("title", null, `${names[e.from]} -> ${names[e.to]}`)));
     // The arrowhead, along the line's last stretch.
     const angle = Math.atan2(q.y - c.y, q.x - c.x);
     const at = (d, turn) => `${q.x + d * Math.cos(angle + turn)},${q.y + d * Math.sin(angle + turn)}`;

@@ -27,7 +27,7 @@ func (n *Node) Dial(ctx context.Context, ref string) (net.Conn, error) {
 		return nil, err
 	}
 	if !dest.Reachable {
-		return nil, wire.Errorf(wire.CodeNotFound, "no route to %s: no running links lead there; see gst status", dest.Name)
+		return nil, wire.Errorf(wire.CodeNotFound, "no way to %s: no running links lead there; see `gst status`", dest.Name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, relayTimeout)
 	defer cancel()
@@ -51,7 +51,7 @@ func (n *Node) open(ctx context.Context, path []string) (net.Conn, error) {
 	}
 	s, ok := n.sessionTo(path[1])
 	if !ok {
-		return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see gst status", self.Name)
+		return nil, wire.Errorf(wire.CodeNotFound, "%s has no running link to the next machine on the way; see `gst status`", self.Name)
 	}
 	conn, err := call(ctx, s, wire.MethodRelayOpen, wire.RelayParams{Path: path[1:]}, nil)
 	if err == nil {
@@ -167,19 +167,17 @@ func call(ctx context.Context, s session, method string, params, result any) (ne
 	return conn, nil
 }
 
-// FindNode finds a node of topo by ref: its id, its name, the name of a
-// link to it, or a prefix of at least four characters of its id, after
-// dropping a ".gst" suffix. Names and prefixes must be unique.
+// FindNode finds a node of topo by ref: its id, its name, or a prefix of
+// at least four characters of its id, after dropping a ".gst" suffix.
+// Names and prefixes must be unique.
 func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 	ref = strings.TrimSuffix(strings.ToLower(ref), ".gst")
-	byID := map[string]wire.TopoNode{}
 	for _, node := range topo.Nodes {
 		if node.ID == ref {
 			return node, nil
 		}
-		byID[node.ID] = node
 	}
-	var byName, byLink, byPrefix []wire.TopoNode
+	var byName, byPrefix []wire.TopoNode
 	for _, node := range topo.Nodes {
 		switch {
 		case node.Name == ref:
@@ -188,14 +186,7 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 			byPrefix = append(byPrefix, node)
 		}
 	}
-	seen := map[string]bool{}
-	for _, e := range topo.Edges {
-		if e.Link == ref && !seen[e.To] {
-			seen[e.To] = true
-			byLink = append(byLink, byID[e.To])
-		}
-	}
-	for _, found := range [][]wire.TopoNode{byName, byLink, byPrefix} {
+	for _, found := range [][]wire.TopoNode{byName, byPrefix} {
 		switch len(found) {
 		case 0:
 			continue
@@ -206,7 +197,7 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 		for i, node := range found {
 			ids[i] = node.ID[:min(8, len(node.ID))]
 		}
-		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from gst status", ref, strings.Join(ids, ", "))
+		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from `gst status`", ref, strings.Join(ids, ", "))
 	}
-	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the mesh; see gst status", ref)
+	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the network; see `gst status`", ref)
 }

@@ -18,7 +18,7 @@ const maxRetry = 5 * time.Minute
 // is stopped, waiting longer after each failure in a row.
 type supervisor struct {
 	d       *Daemon
-	name    string
+	id      string      // the link's id, which the log names it by
 	spec    config.Link // the configuration it was started with
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -32,11 +32,11 @@ type supervisor struct {
 	peer       *wire.NodeInfo
 }
 
-func newSupervisor(d *Daemon, name string, spec config.Link) *supervisor {
+func newSupervisor(d *Daemon, spec config.Link) *supervisor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &supervisor{
 		d:       d,
-		name:    name,
+		id:      config.LinkID(spec.Destination),
 		spec:    spec,
 		ctx:     ctx,
 		cancel:  cancel,
@@ -48,7 +48,7 @@ func newSupervisor(d *Daemon, name string, spec config.Link) *supervisor {
 
 // logf writes to the daemon's log about this link.
 func (s *supervisor) logf(format string, args ...any) {
-	s.d.cfg.Log.Printf("link %s: "+format, append([]any{s.name}, args...)...)
+	s.d.cfg.Log.Printf("link %s: "+format, append([]any{s.id}, args...)...)
 }
 
 func (s *supervisor) set(state, lastErr string, peer *wire.NodeInfo) {
@@ -66,7 +66,7 @@ func (s *supervisor) set(state, lastErr string, peer *wire.NodeInfo) {
 func (s *supervisor) state() wire.LinkState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return wire.LinkState{Name: s.name, Destination: s.spec.Destination, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
+	return wire.LinkState{Destination: s.spec.Destination, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
 }
 
 // run connects until stop. The log leaves out what the other machine
@@ -107,11 +107,11 @@ func (s *supervisor) run() {
 }
 
 func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
-	conn, err := s.d.cfg.Connect(s.ctx, s.name, &s.spec)
+	conn, err := s.d.cfg.Connect(s.ctx, &s.spec)
 	if err != nil {
 		return err
 	}
-	return s.d.mesh.Link(s.ctx, s.name, conn, onUp)
+	return s.d.mesh.Link(s.ctx, s.id, conn, onUp)
 }
 
 // stop ends the link and waits until it has shut down.

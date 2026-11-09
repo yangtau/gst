@@ -26,9 +26,9 @@ func meshTopology() wire.Topology {
 			{ID: dup2, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup2}},
 		},
 		Edges: []wire.TopoEdge{
-			{From: devbox, To: dup1, Link: "d1"},
-			{From: self, To: devbox, Link: "devbox"},
-			{From: devbox, To: far, Link: "far"},
+			{From: devbox, To: dup1, Link: "0123456789ab"},
+			{From: self, To: devbox, Link: "123456789abc"},
+			{From: devbox, To: far, Link: "23456789abcd"},
 		},
 	}
 }
@@ -80,7 +80,7 @@ func TestName(t *testing.T) {
 func TestUpDown(t *testing.T) {
 	e := newEnv(t)
 	out := e.mustGst("up")
-	if !regexp.MustCompile(`^gst is up; this machine is [a-z0-9-]+ \([0-9a-f]{8}\)\.\n$`).MatchString(out) {
+	if !regexp.MustCompile(`^gst is up\. This machine is [a-z0-9-]+ \([0-9a-f]{8}\)\.\n$`).MatchString(out) {
 		t.Fatalf("output %q", out)
 	}
 	if !e.back.installed || !slices.Equal(e.back.command, []string{e.exe, "--config", e.config, "daemon"}) {
@@ -91,7 +91,7 @@ func TestUpDown(t *testing.T) {
 	}
 
 	e.resetCalls()
-	if out := e.mustGst("down"); !strings.HasPrefix(out, "gst is down; run gst up to start it again.\n") {
+	if out := e.mustGst("down"); !strings.HasPrefix(out, "gst is down. Start it again with `gst up`.\n") {
 		t.Fatalf("output %q", out)
 	}
 	if e.back.installed || e.back.command != nil || !e.load().Down || !slices.Equal(e.back.calls, []string{"sync (uninstall)"}) {
@@ -113,14 +113,14 @@ func TestChangesWhileDown(t *testing.T) {
 	e.mustGst("down")
 	e.resetCalls()
 
-	code, stdout, stderr := e.gst("add", "myhost")
+	code, stdout, stderr := e.gst("link", "myhost")
 	if code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	if want := "note: gst is down on this machine; changes apply after `gst up`\n"; stderr != want {
 		t.Fatalf("stderr %q, want %q", stderr, want)
 	}
-	contains(t, stdout, "Added link myhost")
+	contains(t, stdout, "Linked to myhost")
 	if e.back.installed || !slices.Equal(e.back.calls, []string{"sync (uninstall)"}) {
 		t.Fatalf("a down machine must not run the daemon: installed %v, calls %v", e.back.installed, e.back.calls)
 	}

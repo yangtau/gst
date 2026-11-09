@@ -92,7 +92,7 @@ func (d *darwin) changes() []string {
 	return []string{
 		"creates a utun network interface and sets its address",
 		"routes the subnet of the network to that interface",
-		"writes " + d.resolver + ", which sends names under .gst, and only those, to the gst daemon",
+		"writes " + d.resolver + ", which sends names under .gst, and only those, to gst",
 	}
 }
 
@@ -162,7 +162,7 @@ func (l *linux) unresolve() {
 func (l *linux) changes() []string {
 	names := "adds the names of the machines to " + l.hosts + ", between lines that mark them as gst's"
 	if l.usesResolved() {
-		names = "writes " + l.dropIn + " and restarts systemd-resolved, which sends names under .gst, and only those, to the gst daemon"
+		names = "writes " + l.dropIn + " and restarts systemd-resolved, which sends names under .gst, and only those, to gst"
 	}
 	return []string{
 		"creates the network interface " + interfaceName + " and sets its address",

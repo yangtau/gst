@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -74,8 +75,8 @@ func (w *world) socket(name string) string {
 }
 
 type attempt struct {
-	name, destination string
-	at                time.Time
+	destination string
+	at          time.Time
 }
 
 // machine is a daemon with its own configuration, whose links connect to
@@ -187,10 +188,11 @@ func (m *machine) apply(fn func(*config.File)) wire.Status {
 // connect is Config.Connect. Destinations: "refuse" fails, "hang" waits
 // for the link to stop, "secret" leads to a remote gst that failed with a
 // message that quotes a host, "flaky" fails its first flakyOpen attempts,
-// and any other is the name of a machine to connect to.
-func (m *machine) connect(ctx context.Context, name string, l *config.Link) (io.ReadWriteCloser, error) {
+// and any other is the name of a machine to connect to, after a user and
+// "@".
+func (m *machine) connect(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error) {
 	m.mu.Lock()
-	m.attempts = append(m.attempts, attempt{name, l.Destination, time.Now()})
+	m.attempts = append(m.attempts, attempt{l.Destination, time.Now()})
 	flakyFails := 0
 	for _, a := range m.attempts {
 		if a.destination == "flaky" {
@@ -216,6 +218,9 @@ func (m *machine) connect(ctx context.Context, name string, l *config.Link) (io.
 			return nil, errors.New("connection refused")
 		}
 		dest = "b"
+	}
+	if _, host, ok := strings.Cut(dest, "@"); ok {
+		dest = host
 	}
 	socket := m.w.socket(dest)
 	if socket == "" {
@@ -254,21 +259,36 @@ func (m *machine) attemptsTo(destination string) []attempt {
 	return out
 }
 
-func (m *machine) link(name string) (wire.LinkState, bool) {
+func (m *machine) link(dest string) (wire.LinkState, bool) {
 	for _, l := range m.d.Status().Links {
-		if l.Name == name {
+		if l.Destination == dest {
 			return l, true
 		}
 	}
 	return wire.LinkState{}, false
 }
 
-// linkTo adds a link called name to the machine called dest and waits until it runs.
-func (m *machine) linkTo(name, dest string) {
+// linkTo adds a link to dest and waits until it runs.
+func (m *machine) linkTo(dest string) {
 	m.t.Helper()
-	m.apply(func(f *config.File) { f.Links[name] = &config.Link{Destination: dest} })
-	waitFor(m.t, m.name+" link "+name+" runs", func() bool { l, _ := m.link(name); return l.State == wire.StateRunning })
+	m.apply(func(f *config.File) { addLinks(f, dest) })
+	waitFor(m.t, m.name+" link to "+dest+" runs", func() bool { l, _ := m.link(dest); return l.State == wire.StateRunning })
 }
+
+// addLinks adds links to the destinations dests.
+func addLinks(f *config.File, dests ...string) {
+	for _, dest := range dests {
+		f.Links = append(f.Links, config.Link{Destination: dest})
+	}
+}
+
+// removeLink removes the link to dest.
+func removeLink(f *config.File, dest string) {
+	f.Links = slices.DeleteFunc(f.Links, func(l config.Link) bool { return l.Destination == dest })
+}
+
+// linkLog is how the daemon log names the link to dest.
+func linkLog(dest string) string { return "link " + config.LinkID(dest) }
 
 // reaches reports whether this machine's daemon can route to the node called name.
 func (m *machine) reaches(name string) bool {
@@ -298,7 +318,7 @@ func pair(t *testing.T) (a, b *machine) {
 	w := newWorld(t)
 	b = startMachine(t, w, "b")
 	a = startMachine(t, w, "a")
-	a.linkTo("bee", "b")
+	a.linkTo("b")
 	waitFor(t, "b reaches a", func() bool { return b.reaches("a") })
 	return a, b
 }
@@ -324,7 +344,7 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("links = %+v", st.Links)
 	}
 	l := st.Links[0]
-	if l.Name != "bee" || l.State != wire.StateRunning || l.Error != "" || l.Since.IsZero() || l.Peer == nil || l.Peer.ID != nid("b") || l.Peer.Name != "b" {
+	if l.Destination != "b" || l.State != wire.StateRunning || l.Error != "" || l.Since.IsZero() || l.Peer == nil || l.Peer.ID != nid("b") || l.Peer.Name != "b" {
 		t.Fatalf("link = %+v", l)
 	}
 
@@ -333,9 +353,9 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("b links = %+v", links)
 	}
 
-	// The link logs into the daemon's log, with its name.
-	if log := a.log.String(); !strings.Contains(log, "link bee: up") {
-		t.Fatalf("daemon log = %q, want link bee: up", log)
+	// The link logs into the daemon's log, with its id.
+	if log, want := a.log.String(), linkLog("b")+": up"; !strings.Contains(log, want) {
+		t.Fatalf("daemon log = %q, want %s", log, want)
 	}
 }
 
@@ -357,18 +377,16 @@ func TestLinkStates(t *testing.T) {
 	bare.start()
 	a := startMachine(t, w, "a")
 	a.apply(func(f *config.File) {
-		for name, dest := range map[string]string{"refused": "refuse", "waiting": "hang", "failed": "secret", "bare": "bare", "me": "a"} {
-			f.Links[name] = &config.Link{Destination: dest}
-		}
+		addLinks(f, "refuse", "hang", "secret", "bare", "a")
 	})
 	for _, tt := range []struct {
 		link, state, errText string
 	}{
-		{"refused", wire.StateDown, "connection refused"},
-		{"waiting", wire.StateConnecting, ""},
-		{"failed", wire.StateDown, "the remote gst failed: " + secret},
-		{"bare", wire.StateDown, "no node identity"},
-		{"me", wire.StateDown, "this machine"},
+		{"refuse", wire.StateDown, "connection refused"},
+		{"hang", wire.StateConnecting, ""},
+		{"secret", wire.StateDown, "the remote gst failed: " + secret},
+		{"bare", wire.StateDown, "no identity"},
+		{"a", wire.StateDown, "this machine"},
 	} {
 		waitFor(t, tt.link+" is "+tt.state, func() bool {
 			l, _ := a.link(tt.link)
@@ -379,17 +397,17 @@ func TestLinkStates(t *testing.T) {
 		}
 	}
 	// A link that keeps failing keeps trying.
-	waitFor(t, "reconnects", func() bool { l, _ := a.link("refused"); return l.Reconnects >= 3 })
-	if l, _ := a.link("waiting"); l.Reconnects != 0 || l.Error != "" {
-		t.Fatalf("waiting = %+v", l)
+	waitFor(t, "reconnects", func() bool { l, _ := a.link("refuse"); return l.Reconnects >= 3 })
+	if l, _ := a.link("hang"); l.Reconnects != 0 || l.Error != "" {
+		t.Fatalf("hang = %+v", l)
 	}
-	// The sorted list.
-	var names []string
+	// In the order of the configuration.
+	var dests []string
 	for _, l := range a.d.Status().Links {
-		names = append(names, l.Name)
+		dests = append(dests, l.Destination)
 	}
-	if strings.Join(names, " ") != "bare failed me refused waiting" {
-		t.Fatalf("links = %v", names)
+	if strings.Join(dests, " ") != "refuse hang secret bare a" {
+		t.Fatalf("links = %v", dests)
 	}
 }
 
@@ -399,8 +417,8 @@ func TestLinkRecoversAfterFailures(t *testing.T) {
 	a := newMachine(t, w, "a", false, time.Millisecond)
 	a.flakyOpen = 2
 	a.start()
-	a.linkTo("f", "flaky")
-	l, _ := a.link("f")
+	a.linkTo("flaky")
+	l, _ := a.link("flaky")
 	if l.Reconnects != 2 || l.Peer == nil {
 		t.Fatalf("link = %+v, want up after 2 reconnects", l)
 	}
@@ -416,7 +434,7 @@ func TestBackoffDoublesAndResets(t *testing.T) {
 	a := newMachine(t, w, "a", false, base)
 	a.flakyOpen = 3
 	a.start()
-	a.linkTo("f", "flaky")
+	a.linkTo("flaky")
 
 	at := a.attemptsTo("flaky")
 	if len(at) != 4 {
@@ -445,16 +463,16 @@ func TestBackoffDoublesAndResets(t *testing.T) {
 func TestLinkLogsLeaveOutRemoteText(t *testing.T) {
 	w := newWorld(t)
 	a := startMachine(t, w, "a")
-	a.apply(func(f *config.File) { f.Links["x"] = &config.Link{Destination: "secret"} })
-	waitFor(t, "link fails", func() bool { l, _ := a.link("x"); return strings.Contains(l.Error, secret) })
-	a.apply(func(f *config.File) { delete(f.Links, "x") })
+	a.apply(func(f *config.File) { addLinks(f, "secret") })
+	waitFor(t, "link fails", func() bool { l, _ := a.link("secret"); return strings.Contains(l.Error, secret) })
+	a.apply(func(f *config.File) { removeLink(f, "secret") })
 	a.shutdown()
 
 	log := a.log.String()
 	if strings.Contains(log, secret) {
 		t.Errorf("daemon log quotes the remote gst:\n%s", log)
 	}
-	for _, want := range []string{"link x: started", "link x: the remote gst failed; see gst status", "link x: stopped"} {
+	for _, want := range []string{linkLog("secret") + ": started", linkLog("secret") + ": the remote gst failed; see gst status", linkLog("secret") + ": stopped"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("daemon log lacks %q:\n%s", want, log)
 		}
@@ -486,42 +504,39 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 	startMachine(t, w, "b")
 	a := startMachine(t, w, "a")
 
-	st := a.apply(func(f *config.File) {
-		f.Links["x"] = &config.Link{Destination: "b"}
-		f.Links["y"] = &config.Link{Destination: "b"}
-	})
-	if len(st.Links) != 2 || st.Links[0].Name != "x" || st.Links[1].Name != "y" {
+	st := a.apply(func(f *config.File) { addLinks(f, "x@b", "y@b") })
+	if len(st.Links) != 2 || st.Links[0].Destination != "x@b" || st.Links[1].Destination != "y@b" {
 		t.Fatalf("links = %+v", st.Links)
 	}
 	waitFor(t, "both run", func() bool {
-		x, _ := a.link("x")
-		y, _ := a.link("y")
+		x, _ := a.link("x@b")
+		y, _ := a.link("y@b")
 		return x.State == wire.StateRunning && y.State == wire.StateRunning
 	})
-	since, _ := a.link("x")
+	since, _ := a.link("x@b")
 
 	// Removing a link ends it and leaves the other running, untouched.
-	st = a.apply(func(f *config.File) { delete(f.Links, "y") })
-	if len(st.Links) != 1 || st.Links[0].Name != "x" {
-		t.Fatalf("links = %+v, want only x", st.Links)
+	st = a.apply(func(f *config.File) { removeLink(f, "y@b") })
+	if len(st.Links) != 1 || st.Links[0].Destination != "x@b" {
+		t.Fatalf("links = %+v, want only x@b", st.Links)
 	}
-	if again, _ := a.link("x"); !again.Since.Equal(since.Since) || again.Reconnects != 0 || again.State != wire.StateRunning {
-		t.Fatalf("removing y restarted x: %+v -> %+v", since, again)
+	if again, _ := a.link("x@b"); !again.Since.Equal(since.Since) || again.Reconnects != 0 || again.State != wire.StateRunning {
+		t.Fatalf("removing y@b restarted x@b: %+v -> %+v", since, again)
 	}
-	if !strings.Contains(a.log.String(), "link y: stopped") {
-		t.Errorf("daemon log = %q, want link y: stopped", a.log.String())
+	if want := linkLog("y@b") + ": stopped"; !strings.Contains(a.log.String(), want) {
+		t.Errorf("daemon log = %q, want %s", a.log.String(), want)
 	}
 
 	// Removing the last one makes b unreachable.
-	a.apply(func(f *config.File) { delete(f.Links, "x") })
+	a.apply(func(f *config.File) { removeLink(f, "x@b") })
 	waitFor(t, "b is no longer linked to", func() bool { return !a.reaches("b") })
 
 	// Adding a link brings it up; reloading leaves a running one alone.
-	a.apply(func(f *config.File) { f.Links["z"] = &config.Link{Destination: "b"} })
-	waitFor(t, "z runs", func() bool { l, _ := a.link("z"); return l.State == wire.StateRunning })
-	since, _ = a.link("z")
+	a.apply(func(f *config.File) { addLinks(f, "b") })
+	waitFor(t, "b runs", func() bool { l, _ := a.link("b"); return l.State == wire.StateRunning })
+	since, _ = a.link("b")
 	a.apply(func(f *config.File) {})
-	if again, _ := a.link("z"); !again.Since.Equal(since.Since) || again.Reconnects != 0 {
+	if again, _ := a.link("b"); !again.Since.Equal(since.Since) || again.Reconnects != 0 {
 		t.Fatalf("a reload restarted a running link: %+v -> %+v", since, again)
 	}
 }
@@ -530,40 +545,35 @@ func TestReloadRestartsChangedLink(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
 	a := startMachine(t, w, "a")
-	a.apply(func(f *config.File) {
-		f.Links["h"] = &config.Link{Destination: "hang"}
-		f.Links["same"] = &config.Link{Destination: "b"}
-	})
-	waitFor(t, "h connects", func() bool { return len(a.attemptsTo("hang")) == 1 })
-	waitFor(t, "same runs", func() bool { l, _ := a.link("same"); return l.State == wire.StateRunning })
-	same, _ := a.link("same")
+	a.apply(func(f *config.File) { addLinks(f, "hang", "b") })
+	waitFor(t, "hang connects", func() bool { return len(a.attemptsTo("hang")) == 1 })
+	waitFor(t, "b runs", func() bool { l, _ := a.link("b"); return l.State == wire.StateRunning })
+	same, _ := a.link("b")
 
-	// A changed destination replaces the supervisor: the old attempt is
-	// canceled and the link connects to the new destination.
-	st := a.apply(func(f *config.File) { f.Links["h"].Destination = "b" })
+	// Replacing a link cancels the old attempt, and the new link connects.
+	st := a.apply(func(f *config.File) { removeLink(f, "hang"); addLinks(f, "x@b") })
 	if len(st.Links) != 2 {
 		t.Fatalf("links = %+v", st.Links)
 	}
-	waitFor(t, "h runs with the new destination", func() bool {
-		l, _ := a.link("h")
-		return l.State == wire.StateRunning && l.Destination == "b"
-	})
+	waitFor(t, "x@b runs", func() bool { l, _ := a.link("x@b"); return l.State == wire.StateRunning })
 	if len(a.attemptsTo("hang")) != 1 {
 		t.Errorf("attempts to the old destination = %d, want 1", len(a.attemptsTo("hang")))
 	}
 
-	// A changed remote gst restarts a link too, which connects again.
-	before := len(a.attemptsTo("b"))
-	a.apply(func(f *config.File) { f.Links["h"].RemoteGst = "/opt/gst" })
-	waitFor(t, "h connects again", func() bool { return len(a.attemptsTo("b")) > before })
-	waitFor(t, "h runs again", func() bool { l, _ := a.link("h"); return l.State == wire.StateRunning })
+	// A changed remote gst restarts a link, which connects again.
+	before := len(a.attemptsTo("x@b"))
+	a.apply(func(f *config.File) { f.Link("x@b").RemoteGst = "/opt/gst" })
+	waitFor(t, "x@b connects again", func() bool { return len(a.attemptsTo("x@b")) > before })
+	waitFor(t, "x@b runs again", func() bool { l, _ := a.link("x@b"); return l.State == wire.StateRunning })
 
 	// The links that did not change keep running as they are.
-	if again, _ := a.link("same"); !again.Since.Equal(same.Since) || again.Reconnects != 0 {
+	if again, _ := a.link("b"); !again.Since.Equal(same.Since) || again.Reconnects != 0 {
 		t.Fatalf("an unrelated link restarted: %+v -> %+v", same, again)
 	}
-	if log := a.log.String(); strings.Count(log, "link h: started") != 3 || strings.Count(log, "link h: stopped") != 2 {
-		t.Errorf("daemon log = %q, want link h started 3 times and stopped twice", log)
+	log := a.log.String()
+	if strings.Count(log, linkLog("x@b")+": started") != 2 || strings.Count(log, linkLog("x@b")+": stopped") != 1 ||
+		strings.Count(log, linkLog("hang")+": stopped") != 1 {
+		t.Errorf("daemon log = %q, want x@b started twice and stopped once, and hang stopped", log)
 	}
 }
 
@@ -591,7 +601,7 @@ func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 	}
 	a.update(func(f *config.File) {
 		f.Node = &config.Node{ID: nid("a"), Name: "a"}
-		f.Links["h"] = &config.Link{Destination: "hang"}
+		addLinks(f, "hang")
 	})
 	st, err := c.Reload(t.Context())
 	if err != nil || len(st.Links) != 1 || st.Node.ID != nid("a") {
@@ -640,7 +650,7 @@ func TestControlClient(t *testing.T) {
 			t.Fatalf("node %+v is not reachable", n)
 		}
 	}
-	a.update(func(f *config.File) { f.Links["more"] = &config.Link{Destination: "hang"} })
+	a.update(func(f *config.File) { addLinks(f, "hang") })
 	if st, err = c.Reload(t.Context()); err != nil || len(st.Links) != 2 {
 		t.Fatalf("Reload = %+v, %v", st, err)
 	}
@@ -668,10 +678,9 @@ func TestControlClient(t *testing.T) {
 func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	a, b := pair(t)
 	b.apply(func(f *config.File) {
-		f.Links["back"] = &config.Link{Destination: "a"}
-		f.Links["off"] = &config.Link{Destination: "ssh.example.com"}
+		addLinks(f, "a", "ssh.example.com")
 	})
-	waitFor(t, "b's link back runs", func() bool { l, _ := b.link("back"); return l.State == wire.StateRunning })
+	waitFor(t, "b's link back runs", func() bool { l, _ := b.link("a"); return l.State == wire.StateRunning })
 
 	c, err := Dial(t.Context(), a.socket, "gst cli", "sha256:cli")
 	if err != nil {
@@ -687,8 +696,8 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	if st.Node.ID != nid("b") {
 		t.Fatalf("node = %+v", st.Node)
 	}
-	if len(st.Links) != 2 || st.Links[0].Name != "back" || st.Links[0].Destination != "a" || st.Links[0].State != wire.StateRunning ||
-		st.Links[1].Name != "off" || st.Links[1].Destination != "ssh.example.com" || st.Links[1].State == wire.StateRunning {
+	if len(st.Links) != 2 || st.Links[0].Destination != "a" || st.Links[0].State != wire.StateRunning ||
+		st.Links[1].Destination != "ssh.example.com" || st.Links[1].State == wire.StateRunning {
 		t.Fatalf("links = %+v, want back running and off not", st.Links)
 	}
 
@@ -697,7 +706,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Node.ID != nid("a") || len(st.Links) != 1 || st.Links[0].Name != "bee" || st.Links[0].Destination != "b" {
+	if st.Node.ID != nid("a") || len(st.Links) != 1 || st.Links[0].Destination != "b" {
 		t.Fatalf("status of a = %+v", st)
 	}
 
@@ -772,7 +781,7 @@ func TestServeStopsEverything(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
 	a := startMachine(t, w, "a")
-	a.linkTo("bee", "b")
+	a.linkTo("b")
 
 	if err := a.shutdown(); err != nil {
 		t.Fatal(err)

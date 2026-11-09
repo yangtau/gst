@@ -157,7 +157,7 @@ func (n *Node) servePackets(_ context.Context, conn net.Conn, params wire.Packet
 		return wire.Errorf(wire.CodeInvalidParams, "invalid node")
 	}
 	if n.onPacket.Load() == nil {
-		return wire.Errorf(wire.CodeFailed, "%s is not on the virtual network", n.Self().Name)
+		return wire.Errorf(wire.CodeFailed, "%s is not on the gst network", n.Self().Name)
 	}
 	if err := accept(nil); err != nil {
 		return err

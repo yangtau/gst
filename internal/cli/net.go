@@ -33,15 +33,14 @@ const (
 func (a *app) subnetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "subnet [cidr]",
-		Short: "Show or change the subnet of the virtual network",
-		Long: `Show the private subnet that the machines of the mesh share, or change it
-for all of them. The first machine chooses a /16 that the machines that
-answer do not use; later ones take the subnet of the others.
+		Short: "Show or change the subnet of the network",
+		Long: `Show the private subnet that the gst IPs of all the machines are in, or
+change it. gst chooses a free /16 by itself, so this is needed only when
+that one collides with another network.
 
-The latest choice wins, on every machine of the network, and they all
-change their addresses to it. It must be private: inside 10.0.0.0/8,
-172.16.0.0/12, 192.168.0.0/16, or 100.64.0.0/10, with a prefix length of 8
-to 28.`,
+A change applies to every machine of the network, and all of them change
+their gst IPs. The subnet must be private: inside 10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16, or 100.64.0.0/10, with a prefix length of 8 to 28.`,
 		Example: "  gst subnet\n  gst subnet 10.99.0.0/16",
 		Args:    a.args(0, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
@@ -74,7 +73,7 @@ to 28.`,
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "This machine is %s on %s (subnet %s).\n", st.Address, st.Interface, st.Subnet)
+			fmt.Fprintf(a.stdout, "The subnet is %s. This machine's gst IP is %s.\n", st.Subnet, st.Address)
 			return nil
 		}),
 	}
@@ -83,7 +82,7 @@ to 28.`,
 func (a *app) showSubnet(ctx context.Context) error {
 	st := a.status(ctx)
 	if st == nil {
-		return withHint(errors.New("the gst daemon does not answer"), "start it with `gst up`")
+		return withHint(errNoDaemon, "start it with `gst up`")
 	}
 	if st.Net == nil || st.Net.Subnet == "" {
 		return withHint(errors.New("this machine has no subnet yet"), "see why with `gst status`")
@@ -115,7 +114,7 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 			case last == nil:
 				return nil, noDaemon(ctx.Err())
 			case last.Error == "":
-				return nil, withHint(errors.New("the virtual network did not come up in time"), "see how it goes with `gst status`")
+				return nil, withHint(errors.New("the network did not come up in time"), "see how it goes with `gst status`")
 			}
 			return nil, errors.New(last.Error)
 		case <-time.After(netPoll):
@@ -198,7 +197,7 @@ func (a *app) confirm(plan rootPlan, yes bool) bool {
 		fmt.Fprintf(a.stderr, "  - %s\n", line)
 	}
 	if len(plan.then) > 0 {
-		fmt.Fprintln(a.stderr, "\nThe service then does only this, for your gst daemon:")
+		fmt.Fprintln(a.stderr, "\nThe network helper then does only this, for your gst:")
 		for _, line := range plan.then {
 			fmt.Fprintf(a.stderr, "  - %s\n", line)
 		}
@@ -238,7 +237,7 @@ func (a *app) joinNetwork(yes bool) error {
 		return nil
 	}
 	if !yes && !a.interactive() {
-		fmt.Fprintln(a.stderr, "note: this machine is not on the virtual network: that takes root, and gst asks first")
+		fmt.Fprintln(a.stderr, "note: this machine is not on the gst network yet: that takes root, and gst asks first")
 		fmt.Fprintln(a.stderr, "note: run `gst up` in a terminal to see what it does, or `gst up --yes` to go ahead")
 		return nil
 	}
@@ -250,13 +249,13 @@ func (a *app) joinNetwork(yes bool) error {
 	if err != nil {
 		return err
 	}
-	why := "gst needs root to put this machine on the virtual network."
+	why := "gst needs root to put this machine on the gst network."
 	if h.Installed() {
-		why = "The helper of the virtual network needs an update, which takes root."
+		why = "The network helper needs an update, which takes root."
 	}
 	plan := rootPlan{why: why, argv: argv, does: h.Installs(), then: tun.Changes(), undo: "gst down removes all of this.", again: "gst up"}
 	if !a.confirm(plan, yes) {
-		fmt.Fprintln(a.stderr, "note: nothing was run; this machine stays off the virtual network until you agree to this with `gst up`")
+		fmt.Fprintln(a.stderr, "note: nothing was run. This machine stays off the gst network until you agree with `gst up`.")
 		return nil
 	}
 	return a.runPlan(plan)
@@ -274,20 +273,20 @@ func (a *app) leaveNetwork(yes bool) error {
 		return nil
 	}
 	if a.removeHelper() == nil {
-		fmt.Fprintln(a.stdout, "The helper of the virtual network is removed; gst up asks to install it again.")
+		fmt.Fprintln(a.stdout, "The network helper is removed. `gst up` asks to install it again.")
 		return nil
 	}
 	if !yes && !a.interactive() {
-		return withHint(errors.New("the helper of the virtual network does not answer, and removing it takes root, which gst asks for first"),
+		return withHint(errors.New("the network helper does not answer, so removing it takes root, which gst asks for first"),
 			"run `gst down` in a terminal, or `gst down --yes` to go ahead")
 	}
 	argv, err := a.asRoot("uninstall")
 	if err != nil {
 		return err
 	}
-	plan := rootPlan{why: "The helper of the virtual network does not answer, so removing it takes root.", argv: argv, does: h.Removes(), again: "gst down"}
+	plan := rootPlan{why: "The network helper does not answer, so removing it takes root.", argv: argv, does: h.Removes(), again: "gst down"}
 	if !a.confirm(plan, yes) {
-		return withHint(errors.New("the helper of the virtual network is still installed"), "remove it with `gst down`")
+		return withHint(errors.New("the network helper is still installed"), "remove it with `gst down`")
 	}
 	return a.runPlan(plan)
 }
@@ -297,8 +296,8 @@ func (a *app) installCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
 		Use:    "install",
-		Short:  "Install the helper of the virtual network, as root",
-		Long:   "Install the system service that creates the interface of the virtual network, as root, for one user's daemon. gst up runs this command, after saying what it does.",
+		Short:  "Install the network helper, as root",
+		Long:   "Install the system service that creates the interface of the gst network, as root, for one user's daemon. gst up runs this command, after saying what it does.",
 		Hidden: true,
 		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -323,7 +322,7 @@ func (a *app) installCommand() *cobra.Command {
 			if err := h.Install(exe, name); err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "The helper runs for %s. This machine joins the network in a few seconds; see it with: gst status\n", name)
+			fmt.Fprintf(a.stdout, "The network helper runs for %s. This machine joins the network in a few seconds; see it with `gst status`.\n", name)
 			return nil
 		}),
 	}
@@ -336,7 +335,7 @@ func (a *app) installCommand() *cobra.Command {
 func (a *app) uninstallCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:    "uninstall",
-		Short:  "Remove the helper of the virtual network, as root",
+		Short:  "Remove the network helper, as root",
 		Long:   "Remove the helper's service and its copy of gst. gst down runs this command, after saying what it does, when the helper does not answer.",
 		Hidden: true,
 		Args:   a.args(0, 0),
@@ -372,7 +371,7 @@ func (a *app) netHelperCommand() *cobra.Command {
 	var userName string
 	cmd := &cobra.Command{
 		Use:    "net-helper",
-		Short:  "Run the helper of the virtual network in the foreground",
+		Short:  "Run the network helper in the foreground",
 		Hidden: true,
 		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {

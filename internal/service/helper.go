@@ -34,7 +34,7 @@ type helperManager interface {
 type systemdHelper struct{ *systemd }
 
 func (s systemdHelper) install(command []string) error {
-	return s.systemd.install(helperUnit, systemdUnit("gst virtual network helper", command, "multi-user.target"), true)
+	return s.systemd.install(helperUnit, systemdUnit("gst network helper", command, "multi-user.target"), true)
 }
 
 func (s systemdHelper) remove() error { return s.systemd.remove(helperUnit) }

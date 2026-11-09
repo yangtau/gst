@@ -94,7 +94,7 @@ func (b *daemonBackend) Sync(ctx context.Context, command []string) error {
 	}
 	defer c.Close()
 	if _, err := c.Reload(ctx); err != nil {
-		return withHint(fmt.Errorf("the gst daemon could not reload: %w", err), b.manager.LogHint())
+		return withHint(fmt.Errorf("gst could not apply the change: %w", err), b.manager.LogHint())
 	}
 	return nil
 }
@@ -120,11 +120,11 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 		case err == nil:
 			c.Close()
 		case build == "" || !otherProtocol(err):
-			return nil, withHint(fmt.Errorf("the gst daemon does not answer: %w", err), b.manager.LogHint())
+			return nil, withHint(fmt.Errorf("%w: %w", errNoDaemon, err), b.manager.LogHint())
 		}
 		select {
 		case <-ctx.Done():
-			return nil, withHint(errors.New("the gst daemon still runs another gst after a restart"), b.manager.LogHint())
+			return nil, withHint(errors.New("gst still runs another version after a restart"), b.manager.LogHint())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

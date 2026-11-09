@@ -101,10 +101,10 @@ func (n *Node) Changed() <-chan struct{} {
 func (n *Node) edges() []wire.Edge {
 	edges := []wire.Edge{}
 	for l := range n.links {
-		edges = append(edges, wire.Edge{Name: l.name, Peer: l.peer.ID})
+		edges = append(edges, wire.Edge{Link: l.id, Peer: l.peer.ID})
 	}
 	slices.SortFunc(edges, func(a, b wire.Edge) int {
-		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Peer, b.Peer))
+		return cmp.Or(cmp.Compare(a.Link, b.Link), cmp.Compare(a.Peer, b.Peer))
 	})
 	return edges
 }
@@ -168,7 +168,7 @@ func valid(r wire.Record) bool {
 		return false
 	}
 	for _, e := range r.Links {
-		if !config.ValidNodeID(e.Peer) || e.Name != "" && config.ValidateName(e.Name) != nil {
+		if !config.ValidNodeID(e.Peer) || e.Link != "" && !config.ValidLinkID(e.Link) {
 			return false
 		}
 	}
@@ -367,20 +367,21 @@ func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology
 	edges := []wire.TopoEdge{}
 	for _, r := range live {
 		for _, e := range r.Links {
-			if e.Name == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
+			if e.Link == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
 				// Accepted links show as the opening node's; a link
 				// that the other end no longer lists is gone.
 				continue
 			}
 			if nodes[e.Peer] == nil {
-				// Its record has not arrived yet.
-				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Name}
+				// Its record has not arrived yet: until then its id
+				// names it.
+				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Peer[:8]}
 			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Name})
+			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Link})
 		}
 	}
 	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
-		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.Link, b.Link), cmp.Compare(a.To, b.To))
+		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.To, b.To), cmp.Compare(a.Link, b.Link))
 	})
 
 	prev := reach(edges, self)

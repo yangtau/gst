@@ -28,15 +28,14 @@ var built = readBuildInfo(commit, committed, buildSettings())
 // Only the build tells executables apart.
 var software = "gst " + built.short()
 
-// buildInfo is what gst version prints. Its JSON form is part of the CLI
-// contract.
+// buildInfo is what gst version prints.
 type buildInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit,omitempty"`
-	Dirty     bool   `json:"dirty"`
-	Committed string `json:"committed,omitempty"`
-	Protocol  int    `json:"protocol"`
-	Helper    int    `json:"helper"`
+	Version   string
+	Commit    string
+	Dirty     bool
+	Committed string
+	Protocol  int
+	Helper    int
 }
 
 func buildSettings() map[string]string {
@@ -92,8 +91,7 @@ func (b buildInfo) write(out io.Writer) {
 }
 
 func (a *app) versionCommand() *cobra.Command {
-	var asJSON bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "version",
 		Short: "Show the gst version",
 		Long: `Show the gst release, the git commit it was built from (dirty when built
@@ -101,14 +99,8 @@ with uncommitted changes) and that commit's time, the gst protocol, which
 must be the same on linked machines, and the version of the helper that
 gst up installs.`,
 		Args: a.args(0, 0),
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if asJSON {
-				return writeJSON(a.stdout, built)
-			}
+		Run: func(*cobra.Command, []string) {
 			built.write(a.stdout)
-			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	return cmd
 }

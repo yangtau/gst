@@ -111,15 +111,15 @@ func (n *Node) onNetwork(addr netip.Addr) bool {
 	return subnet != nil && subnet.Contains(addr)
 }
 
-// Unlink tells the node at the other end of the link called name, if the
+// Unlink tells the node at the other end of the link with id, if the
 // link runs, that the link is being removed, before it stops. A node that
 // does not hear it keeps its UDP paths until they end by themselves.
-func (n *Node) Unlink(ctx context.Context, name string) {
+func (n *Node) Unlink(ctx context.Context, id string) {
 	n.mu.Lock()
 	var s session
 	found := false
 	for l := range n.links {
-		if l.opened && l.name == name {
+		if l.opened && l.id == id {
 			s, found = l.session, true
 		}
 	}
@@ -130,7 +130,7 @@ func (n *Node) Unlink(ctx context.Context, name string) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, removeTimeout)
 	defer cancel()
-	if conn, err := call(ctx, s, wire.MethodLinkRemove, wire.LinkRemove{Node: self, Link: name}, nil); err == nil {
+	if conn, err := call(ctx, s, wire.MethodLinkRemove, wire.LinkRemove{Node: self, Link: id}, nil); err == nil {
 		conn.Close()
 	}
 }
@@ -326,7 +326,7 @@ func (n *Node) directFailed(ctx context.Context, id, reason string) {
 // goes on.
 func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error) {
 	if n.onPacket.Load() == nil {
-		return nil, wire.Errorf(wire.CodeFailed, "%s is not on the virtual network", n.Self().Name)
+		return nil, wire.Errorf(wire.CodeFailed, "%s is not on the gst network", n.Self().Name)
 	}
 	if !config.ValidNodeID(offer.Node) {
 		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the offer")

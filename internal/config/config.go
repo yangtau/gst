@@ -6,15 +6,18 @@ package config
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"unicode"
@@ -22,15 +25,17 @@ import (
 
 // Version is the current configuration format. Version 4 left out the
 // proxy, maps, and routes of version 3, as the virtual network replaced them.
-const Version = 4
+// Version 5 lists links without names; Load reads version 4 too.
+const Version = 5
 
 // File is the configuration file.
 type File struct {
 	Version int   `json:"version"`
 	Node    *Node `json:"node,omitempty"` // set by Update
 	// Down keeps the daemon from running until gst up.
-	Down  bool             `json:"down,omitempty"`
-	Links map[string]*Link `json:"links"`
+	Down bool `json:"down,omitempty"`
+	// Links are this machine's links, one per destination.
+	Links []Link `json:"links"`
 	// Net is what the user chose for the virtual network; nil leaves it
 	// to the machines.
 	Net     *Net     `json:"net,omitempty"`
@@ -55,7 +60,7 @@ type Node struct {
 // Link is an SSH connection to another machine's gst. Destination is
 // resolved with "ssh -G" each time the link connects, so the user's ssh
 // configuration supplies host, port, user, identities, known_hosts files,
-// and timeouts.
+// and timeouts. It also identifies the link.
 type Link struct {
 	Destination string `json:"destination"`
 	// RemoteGst is the server's gst command; "gst" in the login shell's
@@ -78,7 +83,7 @@ func DefaultPath() (string, error) {
 }
 
 func empty() *File {
-	return &File{Version: Version, Links: map[string]*Link{}}
+	return &File{Version: Version, Links: []Link{}}
 }
 
 // Load reads and validates the configuration file. A missing file is an
@@ -107,12 +112,39 @@ func parse(data []byte) (*File, error) {
 	if err := json.Unmarshal(data, &head); err != nil {
 		return nil, errors.New("invalid JSON")
 	}
+	if head.Version == 4 {
+		return parseV4(data)
+	}
 	if head.Version < Version {
 		return nil, fmt.Errorf("config version %d is too old: remove the file and add the links again", head.Version)
 	}
 	f := empty()
 	if err := decodeStrict(data, f); err != nil {
 		return nil, err
+	}
+	if err := f.normalize(); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// parseV4 reads version 4, whose links have names, which version 5
+// drops.
+func parseV4(data []byte) (*File, error) {
+	var v4 struct {
+		File
+		Links map[string]*Link `json:"links"`
+	}
+	if err := decodeStrict(data, &v4); err != nil {
+		return nil, err
+	}
+	f := &v4.File
+	f.Version = Version
+	f.Links = []Link{}
+	for _, name := range slices.Sorted(maps.Keys(v4.Links)) {
+		if l := v4.Links[name]; l != nil && f.Link(l.Destination) == nil {
+			f.Links = append(f.Links, *l)
+		}
 	}
 	if err := f.normalize(); err != nil {
 		return nil, err
@@ -135,7 +167,7 @@ func decodeStrict(data []byte, v any) error {
 // normalize fills in empty collections and validates f.
 func (f *File) normalize() error {
 	if f.Links == nil {
-		f.Links = map[string]*Link{}
+		f.Links = []Link{}
 	}
 	return f.validate()
 }
@@ -147,16 +179,15 @@ func (f *File) validate() error {
 	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil) {
 		return errors.New("invalid node id or name")
 	}
-	for name, l := range f.Links {
-		if err := ValidateName(name); err != nil {
-			return err
-		}
-		if l == nil {
-			return fmt.Errorf("link %s is null", name)
-		}
+	links := map[string]bool{}
+	for i, l := range f.Links {
 		if err := l.Validate(); err != nil {
-			return fmt.Errorf("link %s: %w", name, err)
+			return fmt.Errorf("link %d: %w", i+1, err)
 		}
+		if links[l.Destination] {
+			return fmt.Errorf("link %d: another link has the same destination", i+1)
+		}
+		links[l.Destination] = true
 	}
 	seen := map[string]bool{}
 	for _, e := range f.Exposes {
@@ -170,7 +201,7 @@ func (f *File) validate() error {
 	}
 	if f.Net != nil {
 		if _, err := ParseSubnet(f.Net.Subnet); err != nil {
-			return errors.New("invalid subnet of the virtual network")
+			return errors.New("invalid subnet")
 		}
 	}
 	return nil
@@ -277,7 +308,7 @@ func NewNodeID() string {
 	return hex.EncodeToString(b)
 }
 
-// ValidateName checks a link or node name. Names become parts of file
+// ValidateName checks a machine's name. Names become parts of file
 // names and of host names under .gst, so they are restricted to a
 // portable character set.
 func ValidateName(name string) error {
@@ -320,6 +351,27 @@ func ValidateDestination(destination string) error {
 	}
 	return nil
 }
+
+// Link returns the link to destination, or nil.
+func (f *File) Link(destination string) *Link {
+	i := slices.IndexFunc(f.Links, func(l Link) bool { return l.Destination == destination })
+	if i < 0 {
+		return nil
+	}
+	return &f.Links[i]
+}
+
+// LinkID identifies the link to destination to the machines of the
+// network, without telling them the destination.
+func LinkID(destination string) string {
+	sum := sha256.Sum256([]byte(destination))
+	return hex.EncodeToString(sum[:6])
+}
+
+var linkIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// ValidLinkID reports whether id is a link id.
+func ValidLinkID(id string) bool { return linkIDPattern.MatchString(id) }
 
 // Validate checks a link.
 func (l *Link) Validate() error {

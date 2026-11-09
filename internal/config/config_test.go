@@ -13,7 +13,7 @@ import (
 const nodeID = "0123456789abcdef0123456789abcdef"
 
 func TestParseValidation(t *testing.T) {
-	const ok = `"version": 4`
+	const ok = `"version": 5`
 	tests := []struct {
 		name string
 		body string
@@ -23,18 +23,17 @@ func TestParseValidation(t *testing.T) {
 		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop"}`, ""},
 		{"node bad id", ok + `, "node": {"id": "xyz", "name": "laptop"}`, "invalid node"},
 		{"node bad name", ok + `, "node": {"id": "` + nodeID + `", "name": "Laptop"}`, "invalid node"},
-		{"link", ok + `, "links": {"myhost": {"destination": "user@myhost", "remote_gst": "/opt/gst"}}`, ""},
-		{"link removed field", ok + `, "links": {"myhost": {"destination": "myhost", "identity_file": "/k"}}`, "unknown field"},
-		{"link control in remote gst", ok + `, "links": {"myhost": {"destination": "myhost", "remote_gst": "a\nb"}}`, "remote gst"},
-		{"link bad name", ok + `, "links": {"My_Host": {"destination": "myhost"}}`, "invalid name"},
-		{"link null", ok + `, "links": {"myhost": null}`, "null"},
-		{"link option destination", ok + `, "links": {"myhost": {"destination": "-oProxyCommand=x"}}`, "link myhost"},
+		{"link", ok + `, "links": [{"destination": "user@myhost", "remote_gst": "/opt/gst"}]`, ""},
+		{"link removed field", ok + `, "links": [{"destination": "myhost", "identity_file": "/k"}]`, "unknown field"},
+		{"link control in remote gst", ok + `, "links": [{"destination": "myhost", "remote_gst": "a\nb"}]`, "remote gst"},
+		{"link option destination", ok + `, "links": [{"destination": "-oProxyCommand=x"}]`, "link 1"},
+		{"version 4 link", `"version": 4, "links": {"myhost": {"destination": "-oProxyCommand=x"}}`, "link 1"},
 		{"subnet", ok + `, "net": {"subnet": "10.99.0.0/16", "since": 1}`, ""},
 		{"bad subnet", ok + `, "net": {"subnet": "8.8.8.0/24", "since": 1}`, "invalid subnet"},
 		{"no subnet", ok + `, "net": {}`, "invalid subnet"},
 		{"proxy is gone", ok + `, "proxy": "127.0.0.1:1"`, "unknown field"},
 		{"unknown field", ok + `, "bogus": 1`, "unknown field"},
-		{"future version", `"version": 5`, "unsupported config version"},
+		{"future version", `"version": 6`, "unsupported config version"},
 		{"old version", `"version": 3`, "too old"},
 		{"no version", ``, "too old"},
 	}
@@ -72,17 +71,49 @@ func TestLoadMissing(t *testing.T) {
 
 func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"version": 4, "links": {"myhost": {"destination": "secret host"}}}`), 0o600)
+	os.WriteFile(path, []byte(`{"version": 5, "links": [{"destination": "myhost"}, {"destination": "secret host"}]}`), 0o600)
 	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "link myhost") || strings.Contains(err.Error(), "secret") {
+	if err == nil || !strings.Contains(err.Error(), "link 2") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadDuplicateDestination(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"version": 5, "links": [{"destination": "myhost"}, {"destination": "myhost"}]}`), 0o600)
+	if _, err := Load(path); err == nil || strings.Contains(err.Error(), "myhost\"") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadVersion4(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"version": 4, "down": true, "links": {
+		"web": {"destination": "deploy@ssh.example.com", "remote_gst": "/opt/gst"},
+		"db": {"destination": "myhost"},
+		"also": {"destination": "myhost"}
+	}}`), 0o600)
+	f, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Link{{Destination: "myhost"}, {Destination: "deploy@ssh.example.com", RemoteGst: "/opt/gst"}}
+	if f.Version != Version || !f.Down || !reflect.DeepEqual(f.Links, want) {
+		t.Fatalf("Load = %+v, want version %d, down, and links %+v", f, Version, want)
+	}
+}
+
+func TestLinkID(t *testing.T) {
+	a, b := LinkID("myhost"), LinkID("user@myhost")
+	if !ValidLinkID(a) || !ValidLinkID(b) || a == b || a != LinkID("myhost") || strings.Contains(a, "myhost") {
+		t.Fatalf("LinkID = %q, %q", a, b)
 	}
 }
 
 func TestUpdateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gst", "config.json")
 	err := Update(path, func(f *File) error {
-		f.Links["myhost"] = &Link{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}
+		f.Links = append(f.Links, Link{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"})
 		f.Net = &Net{Subnet: "10.99.0.0/16", Since: 7}
 		return nil
 	})
@@ -105,7 +136,7 @@ func TestUpdateRoundTrip(t *testing.T) {
 	}
 	want := &File{
 		Version: Version, Node: f.Node,
-		Links: map[string]*Link{"myhost": {Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
+		Links: []Link{{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
 		Net:   &Net{Subnet: "10.99.0.0/16", Since: 7},
 	}
 	if !reflect.DeepEqual(f, want) {
@@ -131,7 +162,7 @@ func TestUpdateFailureWritesNothing(t *testing.T) {
 	before, _ := os.ReadFile(path)
 	for name, fn := range map[string]func(*File) error{
 		"fn error": func(*File) error { return fmt.Errorf("refused") },
-		"invalid":  func(f *File) error { f.Links["Bad Name"] = &Link{Destination: "h"}; return nil },
+		"invalid":  func(f *File) error { f.Links = append(f.Links, Link{Destination: "-oProxyCommand=x"}); return nil },
 	} {
 		if err := Update(path, fn); err == nil {
 			t.Errorf("%s: no error", name)
@@ -151,7 +182,7 @@ func TestConcurrentUpdates(t *testing.T) {
 	for i := range 20 {
 		wg.Go(func() {
 			err := Update(path, func(f *File) error {
-				f.Links[fmt.Sprintf("l%d", i)] = &Link{Destination: "myhost"}
+				f.Links = append(f.Links, Link{Destination: fmt.Sprintf("host%d", i)})
 				return nil
 			})
 			if err != nil {

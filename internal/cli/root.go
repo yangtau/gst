@@ -10,28 +10,29 @@ import (
 )
 
 func (a *app) rootCommand() *cobra.Command {
-	// Help lists commands in the order they are added, grouped by task.
+	// Help lists commands in the order they are added: the order of use.
 	cobra.EnableCommandSorting = false
 	root := asGroup(&cobra.Command{
 		Use:   "gst",
 		Short: "Link your machines into a private network over SSH",
-		Long: `gst links your machines into a private network.
+		Long: `gst links your machines into a private network over SSH.
 
-Each machine runs a gst daemon in the background. A link is an SSH
-connection from one machine to another that also has gst; linked
-machines pass on what they know, so every machine learns of every other
-one. Each gets an IP address and the name <machine>.gst, for every
-program and any protocol. WireGuard encrypts the traffic end to end; it
-goes directly over UDP where the network allows, and along the SSH links
-where not. Run gst up once on each machine: the network interface needs
-root, and gst says what it runs and asks first.
+Every machine gets a gst IP and the name <machine>.gst, which any program
+can use with any protocol. You link machines with SSH, and linked machines
+tell each other what they reach, so every machine reaches every other.
+WireGuard encrypts the traffic end to end. It goes directly over UDP where
+the network allows, and is relayed along the SSH links where not.
+
+Getting started:
+  1. Run gst up on each machine. It asks before it uses sudo.
+  2. Run gst link <destination> on one machine to link it to another.
+  3. Reach the other machine as <machine>.gst; see them all with gst status.
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
-1 when the work failed, and 2 for invalid arguments. Commands that
-report state accept --json.`,
-		Example: `  gst up                                # once on each machine
-  gst add devbox                        # link to the ssh config host "devbox"
-  gst status                            # every machine and its address
+1 when the work failed, and 2 for invalid arguments.`,
+		Example: `  gst up
+  gst link devbox
+  gst status
   ping devbox.gst`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -45,20 +46,11 @@ report state accept --json.`,
 		"{{.CommandPath}} [command] --help", "{{.CommandPath}} <command> --help",
 	).Replace(root.UsageTemplate()))
 
-	root.AddGroup(
-		&cobra.Group{ID: "mesh", Title: "Build the mesh:"},
-		&cobra.Group{ID: "network", Title: "The virtual network:"},
-		&cobra.Group{ID: "machine", Title: "This machine:"},
+	root.AddCommand(
+		a.upCommand(), a.linkCommand(), a.statusCommand(), a.pingCommand(),
+		a.exposeCommand(), a.unexposeCommand(), a.unlinkCommand(),
+		a.nameCommand(), a.subnetCommand(), a.uiCommand(), a.downCommand(), a.versionCommand(),
 	)
-	addGroup := func(id string, cmds ...*cobra.Command) {
-		for _, cmd := range cmds {
-			cmd.GroupID = id
-			root.AddCommand(cmd)
-		}
-	}
-	addGroup("mesh", a.addCommand(), a.removeCommand(), a.statusCommand(), a.pingCommand())
-	addGroup("network", a.subnetCommand(), a.exposeCommand())
-	addGroup("machine", a.nameCommand(), a.upCommand(), a.downCommand(), a.uiCommand(), a.versionCommand())
 	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.installCommand(), a.uninstallCommand(), a.netHelperCommand(), a.helperVersionCommand())
 	setHelpColors(root)
 	return root
@@ -124,13 +116,13 @@ func placeholders(cmd *cobra.Command) []string {
 
 var placeholderPattern = regexp.MustCompile(`<[^>]*>([^\s<]*<[^>]*>)*(\.\.\.)?`)
 
-// linksHint adds the existing link names to err.
+// linksHint adds this machine's links to err.
 func (a *app) linksHint(err error) error {
 	f, loadErr := a.load()
 	if loadErr != nil {
 		return err
 	}
-	return namesHint(f, err)
+	return linksHint(f, err)
 }
 
 func quoteAll(values []string, sep string) string {
@@ -141,11 +133,11 @@ func quoteAll(values []string, sep string) string {
 	return strings.Join(quoted, sep)
 }
 
-// completeLinks completes link names.
+// completeLinks completes the destinations of this machine's links.
 func (a *app) completeLinks(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	f, err := a.load()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return sortedNames(f), cobra.ShellCompDirectiveNoFileComp
+	return destinations(f), cobra.ShellCompDirectiveNoFileComp
 }
