@@ -338,3 +338,76 @@ func TestDirectReport(t *testing.T) {
 func hasText(text string) func(wire.DirectEvent) bool {
 	return func(e wire.DirectEvent) bool { return strings.Contains(e.Text, text) }
 }
+
+// A packet that UDP cannot send takes the links, as one too long for UDP.
+func TestPacketsThatUDPCannotSend(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	boxes := enableDirect(t, a, c)
+	linkUp(t, a, c, "c")
+	goDirect(t, a, c)
+	big := wg(strings.Repeat("x", 65520)) // more than a UDP packet holds, not than a stream does
+	a.SendPacket(nid("c"), big)
+	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(big)) })
+	if got := a.packetPeer(nid("c")).writeErrors.Load(); got != 1 {
+		t.Fatalf("%d write errors", got)
+	}
+	r, err := a.DirectReport(t.Context(), "c")
+	if err != nil || r.Stats.WriteErrors != 1 || r.Stats.Port == 0 {
+		t.Fatalf("report: %+v, %v", r.Stats, err)
+	}
+}
+
+// Moving to another network ends the wait after failures, and a running
+// path measures again, on both sides.
+func TestNetworkChange(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	enableDirect(t, a, c)
+	linkUp(t, a, c, "c")
+	goDirect(t, a, c)
+	a.backOff(nid("gone"))
+
+	a.networkChanged(t.Context())
+	a.mu.Lock()
+	waits := len(a.directWaits)
+	a.mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("%d waits left", waits)
+	}
+	waitFor(t, "c hears of it", func() bool {
+		r, err := c.DirectReport(t.Context(), "a")
+		return err == nil && slices.ContainsFunc(r.Local.Events, func(e wire.DirectEvent) bool {
+			return strings.HasPrefix(e.Text, "update over SSH")
+		})
+	})
+	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
+		t.Fatal("the path ended")
+	}
+}
+
+func TestDirectUpdateInvalid(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	enableDirect(t, a, c)
+	linkUp(t, a, c, "c")
+	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: "nonsense"}); err == nil {
+		t.Error("took an update from no node")
+	}
+	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: nid("c")}); err != nil {
+		t.Errorf("an update without a path: %v", err)
+	}
+	goDirect(t, a, c)
+	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: nid("c"), Token: "00"}); err == nil {
+		t.Error("took the update of another path")
+	}
+}
+
+// The trace keeps the latest events.
+func TestTraceKeepsTheLatest(t *testing.T) {
+	a := newNode(t, "a")
+	for i := range maxTrace + 10 {
+		a.trace("x", "event %d", i)
+	}
+	events := a.directTrace["x"]
+	if len(events) != maxTrace || events[0].Text != "event 10" || events[maxTrace-1].Text != "event 209" {
+		t.Fatalf("%d events, from %q", len(events), events[0].Text)
+	}
+}

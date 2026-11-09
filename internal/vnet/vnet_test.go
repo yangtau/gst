@@ -735,7 +735,7 @@ func TestProblemsAreReported(t *testing.T) {
 
 func TestBind(t *testing.T) {
 	var sent []string
-	b := newBind(func(node string, packet []byte) { sent = append(sent, node+" "+string(packet)) })
+	b := newBind(func(node string, packet []byte) { sent = append(sent, node+" "+string(packet)) }, &atomic.Uint64{})
 	receive, _, err := b.Open(0)
 	if err != nil {
 		t.Fatal(err)

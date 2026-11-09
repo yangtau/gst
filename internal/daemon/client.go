@@ -78,8 +78,8 @@ func (c *Client) NodeStatus(ctx context.Context, node string) (s wire.Status, er
 }
 
 // NetPing sends a packet to a machine and back over the virtual network.
-func (c *Client) NetPing(ctx context.Context, node string) (p wire.NetPing, err error) {
-	err = c.call(ctx, wire.MethodNetPing, wire.NodeParams{Node: node}, &p)
+func (c *Client) NetPing(ctx context.Context, node string, size int) (p wire.NetPing, err error) {
+	err = c.call(ctx, wire.MethodNetPing, wire.NetPingParams{Node: node, Size: size}, &p)
 	return p, err
 }
 

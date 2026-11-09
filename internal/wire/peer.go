@@ -20,6 +20,10 @@ const (
 	// MethodDirectOffer ("direct.offer") takes a DirectOffer and returns
 	// the callee's, after which the two nodes look for a UDP path.
 	MethodDirectOffer = "direct.offer"
+	// MethodDirectUpdate ("direct.update") takes the DirectOffer of a
+	// running UDP path, with the caller's addresses now, and returns nothing:
+	// the callee measures the path again.
+	MethodDirectUpdate = "direct.update"
 	// MethodLinkRemove ("link.remove") takes LinkRemove and returns
 	// nothing: the caller is about to remove the link for good.
 	MethodLinkRemove = "link.remove"

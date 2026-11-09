@@ -17,16 +17,22 @@ import (
 
 const (
 	pingTimeout = 2 * time.Second
-	pingSize    = 16
+	pingSize    = 16 // the size of a Ping that names none
+	// MaxPingSize is the largest packet of a Ping: past the interface's
+	// MTU it goes in fragments.
+	MaxPingSize = 65000
 )
 
-// Ping sends a packet to the daemon at address in the network and waits
-// for it to come back.
-func (m *Manager) Ping(ctx context.Context, address string) (time.Duration, error) {
-	return ping(ctx, net.JoinHostPort(address, strconv.Itoa(m.cfg.Echo)))
+// Ping sends a packet of size bytes to the daemon at address in the network
+// and waits for it to come back.
+func (m *Manager) Ping(ctx context.Context, address string, size int) (time.Duration, error) {
+	return ping(ctx, net.JoinHostPort(address, strconv.Itoa(m.cfg.Echo)), size)
 }
 
-func ping(ctx context.Context, address string) (time.Duration, error) {
+func ping(ctx context.Context, address string, size int) (time.Duration, error) {
+	if size <= 0 {
+		size = pingSize
+	}
 	ctx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 	var d net.Dialer
@@ -36,13 +42,13 @@ func ping(ctx context.Context, address string) (time.Duration, error) {
 	}
 	defer conn.Close()
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
-	sent := make([]byte, pingSize)
+	sent := make([]byte, size)
 	rand.Read(sent)
 	start := time.Now()
 	if _, err := conn.Write(sent); err != nil {
 		return 0, err
 	}
-	got := make([]byte, pingSize+1)
+	got := make([]byte, size+1)
 	for {
 		n, err := conn.Read(got)
 		if err != nil {
@@ -82,7 +88,7 @@ func (m *Manager) stopAnswering() {
 // to this address.
 func serveEcho(ctx context.Context, conn net.PacketConn) {
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
-	packet := make([]byte, pingSize+1)
+	packet := make([]byte, MaxPingSize+1)
 	for {
 		n, from, err := conn.ReadFrom(packet)
 		if err != nil {

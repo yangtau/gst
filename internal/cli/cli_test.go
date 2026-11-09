@@ -41,6 +41,7 @@ type fakeBackend struct {
 	linkStates map[string]wire.LinkState // replaces the state of a running link
 	nodeStatus func(node string) (wire.Status, error)
 	ping       func(node string) (wire.NetPing, error)
+	pingSize   int
 	links      func(node string) (wire.Ping, error)
 	direct     func(node string) (wire.DirectReport, error)
 	topology   wire.Topology
@@ -104,7 +105,8 @@ func (f *fakeBackend) NodeStatus(ctx context.Context, node string) (wire.Status,
 	return st, nil
 }
 
-func (f *fakeBackend) NetPing(_ context.Context, node string) (wire.NetPing, error) {
+func (f *fakeBackend) NetPing(_ context.Context, node string, size int) (wire.NetPing, error) {
+	f.pingSize = size
 	f.calls = append(f.calls, "ping "+node)
 	if f.ping != nil {
 		return f.ping(node)

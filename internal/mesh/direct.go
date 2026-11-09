@@ -19,7 +19,7 @@ const (
 	directRetry   = 5 * time.Second  // first wait after a try fails or a path ends
 	directMaxWait = 5 * time.Minute
 	removeTimeout = 3 * time.Second // to tell a peer that its link is being removed
-	maxTrace      = 200             // events kept of a try
+	maxTrace      = 200             // latest events kept of a try
 )
 
 // A UDP path (internal/direct) carries the WireGuard packets between two
@@ -47,6 +47,59 @@ func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.directCtx, n.udp = ctx, udp
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-udp.Changed():
+				n.networkChanged(ctx)
+			}
+		}
+	}()
+}
+
+// networkChanged starts over after this machine moved to another network:
+// what failed may work now, and what was measured no longer holds. Each
+// running path measures again, and the other side learns the addresses.
+func (n *Node) networkChanged(ctx context.Context) {
+	n.mu.Lock()
+	clear(n.directWaits)
+	n.mu.Unlock()
+	self := n.Self().ID
+	n.packets.Range(func(key, value any) bool {
+		id := key.(string)
+		path := value.(*packetPeer).direct.Load()
+		if path == nil {
+			return true
+		}
+		n.trace(id, "this machine's addresses changed")
+		path.Refresh(wire.DirectOffer{})
+		offer := path.Offer()
+		offer.Node = self
+		go func() {
+			ctx, cancel := context.WithTimeout(ctx, directTimeout)
+			defer cancel()
+			if err := n.Call(ctx, id, wire.MethodDirectUpdate, offer, nil); err != nil {
+				n.trace(id, "the update failed: %v", err)
+			}
+		}()
+		return true
+	})
+}
+
+// serveUpdate answers direct.update: the other machine moved.
+func (n *Node) serveUpdate(_ context.Context, offer wire.DirectOffer) (any, error) {
+	if !config.ValidNodeID(offer.Node) {
+		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the update")
+	}
+	if path := n.packetPeer(offer.Node).direct.Load(); path != nil {
+		if err := path.Refresh(offer); err != nil {
+			return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
+		}
+		n.trace(offer.Node, "update over SSH: %s", strings.Join(offer.Addresses, ", "))
+	}
+	return struct{}{}, nil
 }
 
 // onNetwork reports whether addr is in the virtual network. Such an
@@ -113,9 +166,11 @@ func (n *Node) endStrandedDirect(gone func(wire.TopoEdge) bool) {
 func (n *Node) trace(id, format string, args ...any) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if len(n.directTrace[id]) < maxTrace {
-		n.directTrace[id] = append(n.directTrace[id], wire.DirectEvent{Time: time.Now(), Text: fmt.Sprintf(format, args...)})
+	events := n.directTrace[id]
+	if len(events) >= maxTrace {
+		events = slices.Delete(events, 0, len(events)-maxTrace+1)
 	}
+	n.directTrace[id] = append(events, wire.DirectEvent{Time: time.Now(), Text: fmt.Sprintf(format, args...)})
 }
 
 func (n *Node) serveTrace(_ context.Context, p wire.DirectTraceParams) (any, error) {
@@ -141,8 +196,15 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	if c := n.packetPeer(dest.ID).direct.Load(); c != nil {
 		r.Path = &wire.DirectPath{Local: c.Local(), Remote: c.Remote()}
 	}
+	peer := n.packetPeer(dest.ID)
+	r.Stats.WriteErrors, r.Stats.QueueDrops = peer.writeErrors.Load(), peer.queueDrops.Load()
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.udp != nil {
+		s := n.udp.Stats()
+		r.Stats.Port, r.Stats.Interfaces, r.Stats.Strays = s.Port, s.Interfaces, s.Strays
+		r.Stats.ReadBuffer, r.Stats.WriteBuffer = s.ReadBuffer, s.WriteBuffer
+	}
 	r.Off = n.directCtx == nil
 	r.Trying = n.directTries[dest.ID] != nil
 	if next := n.directWaits[dest.ID].next; next.After(time.Now()) {

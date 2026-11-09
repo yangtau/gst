@@ -5,8 +5,10 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -364,6 +366,87 @@ func TestNetDirect(t *testing.T) {
 	})
 	t.Logf("UDP again after %s", time.Since(start).Round(time.Millisecond))
 	client.waitPing(address)
+}
+
+// A UDP path that fails one way only ends on both sides: each side goes by
+// what it hears, and programs carry on over SSH.
+func TestNetDirectOneWay(t *testing.T) {
+	t.Parallel()
+	client, server, address := directPair(t)
+	block := func(flag string) {
+		t.Helper()
+		for _, tables := range []string{"iptables", "ip6tables"} {
+			if _, err := server.exec("root", tables, flag, "INPUT", "-p", "udp", "-j", "DROP"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	block("-A")
+	start := time.Now()
+	eventually(t, 20*time.Second, "packets did not fall back to SSH", func() bool { return client.pingable(address) })
+	client.waitPath("devbox", wire.PathSSH, 15*time.Second)
+	server.waitPath("laptop", wire.PathSSH, 15*time.Second)
+	t.Logf("both sides on SSH after %s", time.Since(start).Round(time.Millisecond))
+
+	block("-D")
+	eventually(t, 150*time.Second, "packets did not return to UDP", func() bool {
+		client.pingable(address)
+		return slices.ContainsFunc(client.net().Peers, func(p wire.NetPeer) bool { return p.Path == wire.PathDirect })
+	})
+}
+
+// Behind a NAT that gives the socket another port and lets in only answers,
+// the address that the other side sees is the only way in.
+func TestNetDirectThroughAPortChange(t *testing.T) {
+	t.Parallel()
+	client, server, address := directPair(t, func(client, _ *node) {
+		for _, tables := range []string{"iptables", "ip6tables"} {
+			for _, rule := range [][]string{
+				{"-t", "nat", "-A", "POSTROUTING", "-p", "udp", "--sport", "15355", "-j", "MASQUERADE", "--to-ports", "40000-40100"},
+				{"-A", "INPUT", "-p", "udp", "--dport", "15355", "-m", "conntrack", "--ctstate", "NEW", "-j", "DROP"},
+			} {
+				if _, err := client.exec("root", append([]string{tables}, rule...)...); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	})
+	client.waitPing(address)
+	eventually(t, 15*time.Second, "the server does not see the other port", func() bool {
+		for _, p := range server.net().Peers {
+			if _, port, err := net.SplitHostPort(p.Endpoint); err == nil && strings.HasPrefix(port, "400") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// directPair starts two machines with a UDP path between them, and returns
+// the second's address. prepare, if any, runs first.
+func directPair(t *testing.T, prepare ...func(client, server *node)) (client, server *node, address string) {
+	t.Helper()
+	client, server = startNode(t), startNode(t)
+	client.direct, server.direct = true, true
+	for _, f := range prepare {
+		f(client, server)
+	}
+	p := trust(t, client, server)
+	client.mustGst("name", "laptop")
+	server.mustGst("name", "devbox")
+	client.mustGst("add", "devbox", p.destination())
+	client.waitReachable("devbox")
+	for _, n := range []*node{client, server} {
+		n.installHelper()
+	}
+	eventually(t, 30*time.Second, "the machines did not agree on a subnet", func() bool {
+		c, s := client.waitNet(1), server.waitNet(1)
+		address = s.Address
+		return c.Subnet == s.Subnet
+	})
+	client.waitPing(address)
+	client.waitPath("devbox", wire.PathDirect, 30*time.Second)
+	return client, server, address
 }
 
 // The network needs the helper, says so, and starts by itself once the

@@ -41,6 +41,9 @@ type packetPeer struct {
 	streams atomic.Int32                // running
 	dialing atomic.Bool
 	asked   atomic.Int64 // when traffic last asked for a UDP path, in Unix nanoseconds
+
+	writeErrors atomic.Uint64 // packets that UDP could not send
+	queueDrops  atomic.Uint64 // packets lost as the queue was full
 }
 
 func (n *Node) packetPeer(id string) *packetPeer {
@@ -73,12 +76,16 @@ func (n *Node) deliver(node string, packet []byte) {
 func (n *Node) SendPacket(id string, packet []byte) {
 	p := n.packetPeer(id)
 	if c := p.direct.Load(); c != nil {
-		c.WritePacket(packet)
-		return
+		err := c.WritePacket(packet)
+		if err == nil {
+			return
+		}
+		p.writeErrors.Add(1) // Such as a network gone: the links may still lead there.
 	}
 	select {
 	case p.queue <- slices.Clone(packet):
 	default:
+		p.queueDrops.Add(1)
 	}
 	if p.streams.Load() == 0 && p.dialing.CompareAndSwap(false, true) {
 		go n.dialPackets(p)

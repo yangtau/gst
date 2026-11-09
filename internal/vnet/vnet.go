@@ -118,7 +118,8 @@ type Manager struct {
 	echoing  string // the address that answers Ping
 	stopEcho context.CancelFunc
 
-	live atomic.Pointer[wireguard] // for Status
+	live    atomic.Pointer[wireguard] // for Status
+	dropped atomic.Uint64             // packets lost on the way to WireGuard
 }
 
 // wireguard is the device and what it was told, while it runs.
@@ -132,6 +133,10 @@ type peer struct {
 	node    string
 	address string
 }
+
+// Dropped counts the packets lost on the way to WireGuard, as it could not
+// keep up.
+func (m *Manager) Dropped() uint64 { return m.dropped.Load() }
 
 // New returns a manager; Run does the work.
 func New(cfg Config) *Manager {
@@ -508,7 +513,7 @@ func (m *Manager) up(ctx context.Context) error {
 	}
 	m.iface = iface
 	m.name, _ = iface.Device().Name()
-	m.bind = newBind(m.cfg.Mesh.SendPacket)
+	m.bind = newBind(m.cfg.Mesh.SendPacket, &m.dropped)
 	m.loop = &loopback{Device: iface.Device()}
 	m.loop.setAddress(m.state.Address)
 	m.dev = device.NewDevice(m.loop, m.bind, device.NewLogger(device.LogLevelSilent, ""))

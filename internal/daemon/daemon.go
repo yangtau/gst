@@ -113,11 +113,13 @@ func New(cfg Config) *Daemon {
 	wire.Handle(&d.control, wire.MethodPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		return m.Ping(ctx, p.Node)
 	})
-	wire.Handle(&d.control, wire.MethodNetPing, func(ctx context.Context, p wire.NodeParams) (any, error) {
-		return d.netPing(ctx, p.Node)
+	wire.Handle(&d.control, wire.MethodNetPing, func(ctx context.Context, p wire.NetPingParams) (any, error) {
+		return d.netPing(ctx, p.Node, p.Size)
 	})
 	wire.Handle(&d.control, wire.MethodDirect, func(ctx context.Context, p wire.NodeParams) (any, error) {
-		return m.DirectReport(ctx, p.Node)
+		r, err := m.DirectReport(ctx, p.Node)
+		r.Stats.InboundDrops = d.net.Dropped()
+		return r, err
 	})
 	wire.Handle(m.Peer(), wire.MethodNetNetworks, none(func() any { return d.net.Networks() }))
 	return d
@@ -247,7 +249,10 @@ func (d *Daemon) Status() wire.Status {
 
 // netPing sends a packet to the machine that ref names and back, over the
 // virtual network, and reports the way it went.
-func (d *Daemon) netPing(ctx context.Context, ref string) (wire.NetPing, error) {
+func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPing, error) {
+	if size < 0 || size > vnet.MaxPingSize {
+		return wire.NetPing{}, wire.Errorf(wire.CodeInvalidParams, "the size must be at most %d", vnet.MaxPingSize)
+	}
 	topo := d.mesh.Machines()
 	dest, err := mesh.FindNode(topo, ref)
 	if err != nil {
@@ -259,7 +264,7 @@ func (d *Daemon) netPing(ctx context.Context, ref string) (wire.NetPing, error) 
 	if dest.Net == nil {
 		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%s is not on the virtual network; run `gst up` there", dest.Name)
 	}
-	rtt, err := d.net.Ping(ctx, dest.Net.Address)
+	rtt, err := d.net.Ping(ctx, dest.Net.Address, size)
 	if err != nil {
 		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%v", err)
 	}

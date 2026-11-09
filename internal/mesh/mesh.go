@@ -93,6 +93,7 @@ func New(software string, daemonLog *log.Logger, status func() wire.Status) *Nod
 	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
 	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
 	wire.Handle(&n.peer, wire.MethodDirectOffer, n.serveOffer)
+	wire.Handle(&n.peer, wire.MethodDirectUpdate, n.serveUpdate)
 	wire.Handle(&n.peer, wire.MethodLinkRemove, n.serveLinkRemove)
 	wire.Handle(&n.peer, wire.MethodDirectTrace, n.serveTrace)
 	wire.HandleStream(&n.peer, wire.MethodNetPackets, n.servePackets)

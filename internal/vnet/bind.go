@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -33,16 +34,17 @@ type inbound struct {
 // WireGuard sends goes to mesh.SendPacket, and what the mesh hands to
 // deliver comes out of the receive function.
 type bind struct {
-	send func(node string, packet []byte)
-	in   chan inbound
-	pool sync.Pool
+	send    func(node string, packet []byte)
+	dropped *atomic.Uint64 // packets that found the queue full
+	in      chan inbound
+	pool    sync.Pool
 
 	mu   sync.Mutex
 	done chan struct{} // closed by Close; nil while closed
 }
 
-func newBind(send func(node string, packet []byte)) *bind {
-	b := &bind{send: send, in: make(chan inbound, inboundQueue)}
+func newBind(send func(node string, packet []byte), dropped *atomic.Uint64) *bind {
+	b := &bind{send: send, dropped: dropped, in: make(chan inbound, inboundQueue)}
 	b.pool.New = func() any {
 		buf := make([]byte, 1<<16)
 		return &buf
@@ -58,6 +60,7 @@ func (b *bind) deliver(node string, packet []byte) {
 	case b.in <- inbound{endpoint(node), buf, length}:
 	default:
 		b.pool.Put(buf)
+		b.dropped.Add(1)
 	}
 }
 

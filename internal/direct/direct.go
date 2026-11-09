@@ -27,6 +27,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -41,7 +42,7 @@ const (
 	maxPublic    = 4                // addresses that others saw this machine at, kept for offers
 	publicLife   = 10 * time.Minute // for how long such an address counts
 	maxRTT       = 10 * time.Second // an answer that took longer is no measure
-	bindEvery    = 5 * time.Second  // how often the sockets look for their interface again
+	watchEvery   = 5 * time.Second  // how often the machine's network is checked
 
 	tokenLen = 16
 	idLen    = 8
@@ -77,6 +78,9 @@ type Transport struct {
 	public  map[netip.AddrPort]time.Time // this machine as others see it
 	closed  bool
 	done    chan struct{}                            // closed by Close
+	changed chan struct{}                            // for Changed
+	known   []netip.Addr                             // what addrs said last; owned by watch
+	strays  atomic.Uint64                            // WireGuard packets from unknown sources
 	sources atomic.Pointer[map[netip.AddrPort]*Path] // by the addresses that proved themselves; replaced, never changed
 }
 
@@ -84,7 +88,7 @@ type socket struct {
 	udp     *net.UDPConn
 	network string
 	port    uint16
-	bound   int // the interface it sends through; 0 when the routes decide
+	bound   atomic.Int64 // the interface it sends through; 0 when the routes decide
 }
 
 // Listen opens the sockets, on port if it is free. addrs returns this
@@ -101,6 +105,7 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 		tokens:     map[[tokenLen]byte]*Path{},
 		public:     map[netip.AddrPort]time.Time{},
 		done:       make(chan struct{}),
+		changed:    make(chan struct{}, 1),
 	}
 	rand.Read(t.id[:])
 	t.sources.Store(&map[netip.AddrPort]*Path{})
@@ -112,7 +117,8 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 		return nil, errors.New("no UDP socket")
 	}
 	t.bind()
-	go t.keepBound()
+	t.addressesChanged()
+	go t.watch()
 	for _, s := range []*socket{t.v4, t.v6} {
 		if s != nil {
 			go t.read(s)
@@ -121,14 +127,16 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 	return t, nil
 }
 
-// bind points the sockets at the interfaces that reach the internet now.
-func (t *Transport) bind() {
+// bind points the sockets at the interfaces that reach the internet now,
+// and reports whether that changed anything.
+func (t *Transport) bind() bool {
+	changed := false
 	v4, v6 := defaultInterfaces()
 	for _, b := range []struct {
 		s     *socket
 		index int
 	}{{t.v4, v4}, {t.v6, v6}} {
-		if b.s == nil || b.s.bound == b.index {
+		if b.s == nil || b.s.bound.Load() == int64(b.index) {
 			continue
 		}
 		c, err := b.s.udp.SyscallConn()
@@ -136,23 +144,84 @@ func (t *Transport) bind() {
 			err = bindSocket(c, b.s.network, b.index)
 		}
 		if err == nil {
-			b.s.bound = b.index
+			b.s.bound.Store(int64(b.index))
+			changed = true
 		}
 	}
+	return changed
 }
 
-// keepBound follows the machine from one network to another.
-func (t *Transport) keepBound() {
-	tick := time.NewTicker(bindEvery)
+// addressesChanged reports whether this machine's addresses are not the
+// ones of the last look, in the same order: the first says where packets
+// leave from, which a new default route changes while the addresses stay.
+// What others saw of the machine then says nothing any more.
+func (t *Transport) addressesChanged() bool {
+	list := slices.DeleteFunc(slices.Clone(t.addrs()), t.skip)
+	if slices.Equal(list, t.known) {
+		return false
+	}
+	t.known = list
+	t.mu.Lock()
+	clear(t.public)
+	t.mu.Unlock()
+	return true
+}
+
+// watch follows the machine from one network to another.
+func (t *Transport) watch() {
+	tick := time.NewTicker(watchEvery)
 	defer tick.Stop()
 	for {
 		select {
 		case <-tick.C:
-			t.bind()
+			t.look()
 		case <-t.done:
 			return
 		}
 	}
+}
+
+// look tells Changed if the machine is on another network now.
+func (t *Transport) look() {
+	moved := t.bind()
+	if t.addressesChanged() || moved {
+		select {
+		case t.changed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Changed receives when this machine's addresses or interfaces changed.
+func (t *Transport) Changed() <-chan struct{} { return t.changed }
+
+// Stats reports the sockets, and what they could not place.
+func (t *Transport) Stats() Stats {
+	stats := Stats{Strays: t.strays.Load()}
+	for _, s := range []*socket{t.v4, t.v6} {
+		if s == nil {
+			continue
+		}
+		stats.Port = int(s.port)
+		if i, err := net.InterfaceByIndex(int(s.bound.Load())); err == nil && !slices.Contains(stats.Interfaces, i.Name) {
+			stats.Interfaces = append(stats.Interfaces, i.Name)
+		}
+		if c, err := s.udp.SyscallConn(); err == nil {
+			c.Control(func(fd uintptr) {
+				stats.ReadBuffer, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+				stats.WriteBuffer, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF)
+			})
+		}
+	}
+	return stats
+}
+
+// Stats is what Transport.Stats reports.
+type Stats struct {
+	Port                    int
+	Interfaces              []string // that the sockets are bound to
+	ReadBuffer, WriteBuffer int      // in bytes, as the system reports them
+	Strays                  uint64   // WireGuard packets from unknown sources
 }
 
 func listen(network string, port int) *socket {
@@ -299,6 +368,8 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
 	if wireGuard(packet) {
 		if p := (*t.sources.Load())[source]; p != nil {
 			p.packet(packet)
+		} else {
+			t.strays.Add(1)
 		}
 		return
 	}

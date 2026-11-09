@@ -139,8 +139,8 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `mesh.nodes` | 无 | `Topology` |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`：经 mesh 以 `node.status` 向它查询（`<machine>` 可以是本机，也可以是任意可达的机器）；找不到、不可达或对方不支持时返回错误 |
 | `mesh.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经 link 以 `node.info` 向该机器调用一次；`node` 是它的应答，`via` 是路径上按顺序的中间机器（有 link 直达时为空），`time_ms` 是从发起调用到收到应答的毫秒数（含沿途每台机器上建立中转的时间）；找不到或不可达时返回错误。`gst ping -v` 用它检查 link |
-| `net.ping` | `{"node": <machine>}`（`NodeParams`） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "endpoint": UDP 路径对端的 IP:port, "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
-| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 UDP 路径）、`trying`（有尝试在进行）、`path`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
+| `net.ping` | `{"node": <machine>, "size": 字节数}`（`NetPingParams`；`size` 可省略） | `{"node": NodeInfo, "address": 地址, "path": "direct" 或 "ssh", "endpoint": UDP 路径对端的 IP:port, "via": [NodeInfo...], "time_ms": 数字}`：经虚拟网络向该机器的 daemon 发一个包并收回；`path` 是回来时包走的路，本机为空，`via` 是走 SSH 时途中的机器。本机或对方不在虚拟网络上、没有回复时返回错误。`gst ping` 每秒调用一次 |
+| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：`node`、`off`（本机关闭了 UDP 路径）、`trying`（有尝试在进行）、`path`（`local`、`remote`，本机看到的两端 `IP:port`）、`next`（失败后下一次可以尝试的时间）、`stats`（UDP socket 的端口、绑定的网卡和实际缓冲区，以及丢包计数）、`local` 与 `peer`（双方最近一次尝试的 `DirectTrace`；对方的经 `direct.trace` 取得）、`peer_error`（取不到对方记录的原因）。`gst ping -v` 用它 |
 
 link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer 会话已建立）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
 
@@ -154,6 +154,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 | `node.status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同）；不提供状态的节点返回 `unsupported_method` |
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方寻找 UDP 路径，见下文 |
 | `link.remove` | `{"node": 调用方 id, "link": link 名}` | 无；调用方即将删除这条 link，见 UDP 路径一节 |
+| `direct.update` | `DirectOffer`（运行中路径的 token 和调用方现在的地址） | 无；被调方加入这些地址，重新测量这条路径 |
 | `direct.trace` | `{"node": 调用方 id}` | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次寻找 UDP 路径的过程 |
 | `net.packets` | `{"node": 调用方 id}` | 无；之后该流双向运送虚拟网络的包，见[虚拟网络](#虚拟网络)。被调方不在虚拟网络上时返回 `failed` |
 | `net.networks` | 无 | `{"prefixes": ["10.0.0.0/24", …]}`：被调方在用的 IPv4 网段，供选择网段时避开 |
@@ -210,6 +211,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **socket**：daemon 启动时开 IPv4 和 IPv6 各一个通配 socket（`direct.Transport`），所有路径共用，端口默认 15355，被占用时由系统分配，每次 offer 都带上，所以不用记住。不绑定具体地址：发包听系统路由，走别的 VPN 也可以，只要能通。macOS 例外：代理的 TUN 接管路由时，它用自己的 socket 重新发送每个流，规则是直连也一样（实测 Shadowrocket：本机的端口 15411 发出的包，由它从端口 58259 重新发出），端口变了，对方防火墙为原端口开的洞就对不上。分不清代理和路由型 VPN，所以 socket 用 `IP_BOUND_IF` 和 `IPV6_BOUND_IF` 绑到有网关、不是点对点的默认路由所在的网卡，优先不带 scope 的默认路由，每 5 秒重新看一次，直接改 socket 选项，端口不变；没有这样的网卡时交给路由。代价是 macOS 上经 VPN 才能到的地址走不了 UDP。socket 收发缓冲 4 MiB。
 - **区分对端**：probe、answer、bye 靠 token 找到路径。WireGuard 的包靠来源 `IP:port` 找到路径，只有用 token 证明过的来源才放行，其余丢弃。这个归属不一定准：同一个 NAT 后的两台机器访问本机不同的 IP 时，来源可能相同。所以 WireGuard 关掉了 roaming，endpoint 始终是记录里的 node id，包的来源只用于投递；解密靠 WireGuard 自己的索引，回包不会被这种归属带偏。
 - **候选地址**：系统发包用的源地址排在最前（向公网地址 connect 一个 UDP socket，再读本地地址，不发包），然后是本机所有接口上的地址（跳过回环和 link-local，每个地址族最多 8 个），加上最近 10 分钟别的节点看到的本机地址（最多 4 个）。源地址必须在列：socket 是通配的，不管探测发到本机哪个地址，回包都从这个地址出去，而对方的防火墙只放行它发过包的地址。只排除 gst 网段里的地址，否则包会钻进它自己组成的路径：提供、收到和从来包学到的地址都过滤。
+- **换网络**：每 5 秒检查一次本机地址和绑定的网卡。有变化时清掉退避和别的节点看到的本机地址，所有运行中的路径从头测量，并经 `direct.update` 把新地址告诉对方。
 - **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 的包和 `-v` 也会）。尝试不阻塞包。失败或路径结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。
 - **信令**：发起方经 mesh 调用对方的 `direct.offer`（`Node.Call`）。`DirectOffer` 是 `{"node": 发起方 id, "token": …, "addresses": ["IP:port", …]}`，响应是对方的 `addresses`。候选地址只出现在这次调用中，不进记录，不进日志。
 - **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的路径，说明它已失效，先关闭。
@@ -217,7 +219,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **公网地址**：answer 带着对方看到的来源。NAT 对一个 socket 保持同一个公网端口时，这个地址对所有节点都有效，所以写进之后给别的节点的 offer，两台都在 NAT 后的机器也有机会打通。不需要 STUN 服务器。
 - **选路**：两端各自选，不用协商，来回可以走不同的路。第一个回 answer 的地址证明路径可用，开始承载包。成绩记在 probe 的目标地址上，不看 answer 从哪个地址来，多地址的机器不一定从收到探测的地址回复。之后持续比较来回时间（平滑后）：新地址至少测过 3 次，比当前的低 2 ms 以上且低一成才切换。路径刚建好后的 1 秒，以及之后每 30 秒，向所有地址探测 1 秒。切换不换 socket，WireGuard 不用重新握手。整次尝试限时 15 秒。
 - **认证**：token 只用来找路径，不用于认证。身份和加密都是 WireGuard 的：对方拿不出记录里那把公钥对应的私钥，握手就不成立。
-- **维持**：每秒向在用的地址发 probe，同时让 NAT 和防火墙的表项不过期。在用的地址 2 秒没有 answer，就重新探测所有地址，有回应的地址立刻顶替，所以一端换了网络时路径不用重建。3 秒什么都没收到（answer 和 WireGuard 的包都算），路径结束，包回到 SSH，WireGuard 的会话不受影响，所以程序的连接不断。关闭时发 bye，对方立即知道。
+- **维持**：每秒向在用的地址发 probe，同时让 NAT 和防火墙的表项不过期。在用的地址 2 秒没有 answer，就重新探测所有地址，有回应的地址立刻顶替，所以一端换了网络时路径不用重建。3 秒什么都没收到（answer 和 WireGuard 的包都算），路径结束，包回到 SSH，WireGuard 的会话不受影响，所以程序的连接不断。只有一个方向断了时，听不到对方的一端先结束，另一端随后也收不到包，约 6 秒后两端都回到 SSH。UDP 发送出错的包当场改走 SSH。关闭时发 bye，对方立即知道。
 - **SSH 决定成员**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
@@ -234,7 +236,7 @@ link 状态：`connecting`（建立 SSH 与 peer 会话中）、`running`（peer
 - **路径**：`Node.SendPacket` 有 UDP 路径就直接发，否则放进队列，由一条 `net.packets` 流沿 mesh 运送（帧：2 字节大端长度加包，两个方向都走，1 分钟空闲关闭）。任何一方都可以开这条流。包在 mesh 上不需要保护：途中只有密文，丢了就是丢了。队列满时丢包，和拥塞的网络一样。
 - **MTU**：网卡 MTU 是 1168，加上 WireGuard 的 32 字节是 1200 字节的 UDP 载荷，几乎所有路径都能承载，所以不需要路径 MTU 发现。
 - **网段**：每个节点把 `{subnet, since, address, public_key}` 放进自己的记录（`net` 字段）。`since` 最大的网段胜出，相同时取字符串较小的，所以所有节点独立算出同一个结果。`gst subnet` 把 `since` 写成当前时间；gst 自己选的网段写成当前时间的相反数，所以它让位给任何人选的网段，自己选的之间最早的留下：一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。第一个节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个不重叠的 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）。网段和本机其他网络重叠时不阻止运行，只报告。
-- **gst ping**：每个 daemon 在自己的网络地址上监听 UDP 端口 15354，把收到的包原样发回。发送方是普通的 UDP socket，所以包经过路由、网卡、WireGuard 和实际路径，和程序的包完全一样：有回复说明这些都通，时间就是程序感受到的延迟。标签来自回复时的路径。
+- **gst ping**：每个 daemon 在自己的网络地址上监听 UDP 端口 15354，把收到的包原样发回。发送方是普通的 UDP socket，所以包经过路由、网卡、WireGuard 和实际路径，和程序的包完全一样：有回复说明这些都通，时间就是程序感受到的延迟。标签来自回复时的路径。`-s` 指定包的大小，超过网卡 MTU 时分片。
 - **本机地址**：Linux 自己投递发往本机地址的包。macOS 把 utun 的地址路由进 utun，这些包到了 WireGuard，而 WireGuard 没有这个地址的 peer，所以 `vnet` 在 WireGuard 之前把它们写回网卡（`loopback`）。
 - **地址**：由 node id 的哈希决定，发生冲突时 id 较小的节点保留，较大的重选。网段、地址和私钥存在 `net.json`，重启后不变。私钥和地址属于一个身份，`net.json` 记下这个 node id；id 变了就换新私钥、重选地址，只留下属于网络的网段，否则别的机器手里旧身份的记录会和新身份共用一把公钥。
 - **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 link 名和 id 前缀也能用），未知名字 NXDOMAIN，AAAA 返回空。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。

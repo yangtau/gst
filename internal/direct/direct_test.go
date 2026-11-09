@@ -526,3 +526,131 @@ func waitFor(t *testing.T, msg string, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// Answers from ever new sources stay within the limit on addresses, and
+// answers to a probe of no address of the path count for nothing.
+func TestAnswerSourcesAreBounded(t *testing.T) {
+	first := netip.MustParseAddrPort("192.0.2.1:1")
+	p := newTestPath(t, first)
+	p.record(first, time.Millisecond, time.Now())
+	for i := range 3 * maxTargets {
+		p.answered(first, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1000+i)), time.Millisecond)
+	}
+	waitFor(t, "the old sources go", func() bool {
+		count := 0
+		for _, q := range *p.t.sources.Load() {
+			if q == p {
+				count++
+			}
+		}
+		return count <= maxTargets
+	})
+	if len(p.targets) > maxTargets {
+		t.Fatalf("%d targets", len(p.targets))
+	}
+
+	stranger := netip.MustParseAddrPort("192.0.2.3:3")
+	p.answered(netip.MustParseAddrPort("192.0.2.4:4"), stranger, time.Millisecond)
+	if p.knows(stranger) || (*p.t.sources.Load())[stranger] != nil {
+		t.Fatal("an answer to no probe of this path counted")
+	}
+}
+
+// What an address measured long ago says nothing of it now: it must prove
+// itself again before it takes over.
+func TestOldMeasuresDoNotCount(t *testing.T) {
+	fast, slow := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
+	p := newTestPath(t, fast, slow)
+	now := time.Now()
+	p.record(slow, 50*time.Millisecond, now)
+	for range minSamples {
+		p.record(fast, time.Millisecond, now)
+	}
+	if got := *p.best.Load(); got != fast {
+		t.Fatalf("best = %s", got)
+	}
+	p.best.Store(&slow)
+
+	later := now.Add(measureLife + time.Second)
+	p.record(slow, 50*time.Millisecond, later)
+	p.record(fast, 60*time.Millisecond, later)
+	if got := *p.best.Load(); got != slow {
+		t.Fatalf("moved to %s on an old measure", got)
+	}
+	if got := p.targets[fast]; got.samples != 1 || got.rtt != 60*time.Millisecond {
+		t.Fatalf("target: %+v", got)
+	}
+}
+
+func TestRefresh(t *testing.T) {
+	addr, fresh := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
+	p := newTestPath(t, addr)
+	p.record(addr, time.Millisecond, time.Now())
+
+	if err := p.Refresh(wire.DirectOffer{Token: "00", Addresses: []string{fresh.String()}}); err == nil {
+		t.Fatal("took the update of another path")
+	}
+	if err := p.Refresh(wire.DirectOffer{Token: p.Offer().Token, Addresses: []string{fresh.String()}}); err != nil {
+		t.Fatal(err)
+	}
+	if !p.knows(fresh) || p.targets[addr].samples != 0 {
+		t.Fatalf("targets: %v", p.targets)
+	}
+	if got := p.due(time.Now()); len(got) != 2 {
+		t.Fatalf("probing %v", got)
+	}
+}
+
+// A change of addresses is told once, and what others saw is gone with it.
+func TestAddressesChange(t *testing.T) {
+	addrs := []netip.Addr{loopback}
+	tr, err := Listen(0, func() []netip.Addr { return slices.Clone(addrs) }, never)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tr.Close)
+	changed := func() bool {
+		select {
+		case <-tr.Changed():
+			return true
+		default:
+			return false
+		}
+	}
+	tr.look()
+	if changed() {
+		t.Fatal("nothing changed")
+	}
+	public := netip.MustParseAddrPort("203.0.113.7:4000")
+	tr.sawPublic(public)
+	addrs = []netip.Addr{netip.MustParseAddr("192.0.2.1"), loopback}
+	tr.look()
+	if !changed() {
+		t.Fatal("no word of new addresses")
+	}
+	if slices.Contains(tr.offerAddresses(), public.String()) {
+		t.Fatal("kept what others saw on the old network")
+	}
+	// A new default route: the same addresses, but packets leave from
+	// another.
+	addrs = []netip.Addr{loopback, netip.MustParseAddr("192.0.2.1")}
+	tr.look()
+	if !changed() {
+		t.Fatal("no word of another address to leave from")
+	}
+	tr.look()
+	if changed() {
+		t.Fatal("nothing changed since")
+	}
+}
+
+func TestStats(t *testing.T) {
+	tr := transport(t)
+	tr.receive(tr.v4, wg(), netip.MustParseAddrPort("192.0.2.1:1"))
+	s := tr.Stats()
+	if s.Port == 0 || s.ReadBuffer <= 0 || s.WriteBuffer <= 0 || s.Strays != 1 {
+		t.Fatalf("stats: %+v", s)
+	}
+}
+
+func wg() []byte { return []byte{4, 0, 0, 0} }

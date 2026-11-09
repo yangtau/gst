@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/vnet"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -206,7 +207,7 @@ func writeStatus(out io.Writer, st wire.Status) error {
 }
 
 func (a *app) pingCommand() *cobra.Command {
-	var count int
+	var count, size int
 	var asJSON, verbose bool
 	cmd := &cobra.Command{
 		Use:   "ping <machine>",
@@ -222,15 +223,22 @@ is 1 if no reply came.
 Traffic to a machine tries a UDP path to it, so the first replies may come
 over SSH and the next over UDP.
 
+With -s, send packets of that size. Small packets can pass where large ones
+do not; past the interface's MTU they go in fragments.
+
 With -v, after the replies and any try still running, also check the SSH
 links, which carry the control of the network, and show the UDP path, or
 why there is none, and what both machines did in their latest try: the
-addresses they offered and the probes they heard.`,
-		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -v",
+addresses they offered and the probes they heard, and where this machine
+lost packets.`,
+		Example: "  gst ping devbox\n  gst ping gateway -c 10\n  gst ping devbox -s 1140\n  gst ping devbox -v",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			if count < 1 {
 				return usage("-c must be at least 1")
+			}
+			if size < 16 || size > vnet.MaxPingSize {
+				return usage("-s must be from 16 to %d", vnet.MaxPingSize)
 			}
 			machine, err := config.ParseMachine(args[0])
 			if err != nil {
@@ -250,7 +258,7 @@ addresses they offered and the probes they heard.`,
 					case <-time.After(time.Second):
 					}
 				}
-				p, err := b.NetPing(cmd.Context(), machine)
+				p, err := b.NetPing(cmd.Context(), machine, size)
 				if err != nil {
 					last = err
 					if !asJSON {
@@ -265,6 +273,9 @@ addresses they offered and the probes they heard.`,
 			}
 			if pings == nil {
 				pings = []wire.NetPing{}
+			}
+			if !asJSON && count > 1 {
+				writePingSummary(a.stdout, count, pings)
 			}
 			switch {
 			case verbose:
@@ -300,7 +311,8 @@ addresses they offered and the probes they heard.`,
 		}),
 	}
 	cmd.Flags().IntVarP(&count, "count", "c", 3, "number of answers to ask for")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the UDP path and how the latest try at one went")
+	cmd.Flags().IntVarP(&size, "size", "s", 16, "bytes of data in each packet")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the UDP path, how the latest try at one went, and lost packets")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -340,6 +352,16 @@ func writeDirect(out io.Writer, r wire.DirectReport) {
 	default:
 		fmt.Fprintf(out, "UDP path to %s: none\n", r.Node.Name)
 	}
+	if !r.Off {
+		s := r.Stats
+		fmt.Fprintf(out, "UDP sockets: port %d, ", s.Port)
+		if len(s.Interfaces) > 0 {
+			fmt.Fprintf(out, "bound to %s, ", strings.Join(s.Interfaces, " and "))
+		}
+		fmt.Fprintf(out, "buffers of %d and %d bytes\n", s.ReadBuffer, s.WriteBuffer)
+	}
+	fmt.Fprintf(out, "Packets lost: %d to UDP errors (these took SSH), %d to the SSH queue, %d from unknown sources, %d on the way to WireGuard\n",
+		r.Stats.WriteErrors, r.Stats.QueueDrops, r.Stats.Strays, r.Stats.InboundDrops)
 	writeTrace(out, "This machine", r.Local, "")
 	writeTrace(out, r.Node.Name, r.Peer, r.PeerError)
 }
@@ -372,6 +394,19 @@ func writePing(out io.Writer, p wire.NetPing) {
 		}
 	}
 	fmt.Fprintf(out, "reply from %s (%s)%s in %.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
+}
+
+// writePingSummary prints what came of count packets.
+func writePingSummary(out io.Writer, count int, pings []wire.NetPing) {
+	fmt.Fprintf(out, "%d sent, %d received, %.0f%% lost", count, len(pings), 100*float64(count-len(pings))/float64(count))
+	if len(pings) > 0 {
+		lowest, highest, sum := pings[0].TimeMS, pings[0].TimeMS, 0.0
+		for _, p := range pings {
+			lowest, highest, sum = min(lowest, p.TimeMS), max(highest, p.TimeMS), sum+p.TimeMS
+		}
+		fmt.Fprintf(out, "; %.1f/%.1f/%.1f ms min/avg/max", lowest, sum/float64(len(pings)), highest)
+	}
+	fmt.Fprintln(out)
 }
 
 func viaText(machines []wire.NodeInfo) string {

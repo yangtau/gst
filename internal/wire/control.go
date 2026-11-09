@@ -13,7 +13,7 @@ const (
 	// MethodPing ("mesh.ping") takes NodeParams, calls node.info on that
 	// machine through the mesh, and returns Ping.
 	MethodPing = "mesh.ping"
-	// MethodNetPing ("net.ping") takes NodeParams and returns NetPing: a
+	// MethodNetPing ("net.ping") takes NetPingParams and returns NetPing: a
 	// packet to that machine and back over the virtual network.
 	MethodNetPing = "net.ping"
 	// MethodDirect ("mesh.direct") takes NodeParams and returns
@@ -96,6 +96,12 @@ type Ping struct {
 	TimeMS float64    `json:"time_ms"`
 }
 
+// NetPingParams asks for a reply over the virtual network.
+type NetPingParams struct {
+	Node string `json:"node"`
+	Size int    `json:"size,omitempty"` // of the packet's UDP payload, in bytes
+}
+
 // NetPing is a reply over the virtual network: it took the way that every
 // program's packets take, through the interface and WireGuard.
 type NetPing struct {
@@ -122,6 +128,24 @@ type DirectReport struct {
 	Peer  DirectTrace `json:"peer"`
 	// PeerError says why the machine's own trace is missing.
 	PeerError string `json:"peer_error,omitempty"`
+	// Stats says where packets get lost on this machine.
+	Stats DirectStats `json:"stats"`
+}
+
+// DirectStats is what this machine knows of the packets of the network.
+type DirectStats struct {
+	Port        int      `json:"port,omitempty"`       // of the UDP sockets
+	Interfaces  []string `json:"interfaces,omitempty"` // that they are bound to
+	ReadBuffer  int      `json:"read_buffer,omitempty"`
+	WriteBuffer int      `json:"write_buffer,omitempty"`
+	// To the machine of the report: packets that UDP could not send, which
+	// then took the SSH links, and packets lost as the queue of those was full.
+	WriteErrors uint64 `json:"write_errors"`
+	QueueDrops  uint64 `json:"queue_drops"`
+	// From any machine: WireGuard packets from a source of no UDP path,
+	// and packets lost as WireGuard could not keep up.
+	Strays       uint64 `json:"strays"`
+	InboundDrops uint64 `json:"inbound_drops"`
 }
 
 // DirectPath is a running UDP path as this node sees it: the IP:port at

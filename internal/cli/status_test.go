@@ -312,6 +312,28 @@ func TestPing(t *testing.T) {
 	}
 }
 
+func TestPingSizeAndSummary(t *testing.T) {
+	e := newEnv(t)
+	calls := 0
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		calls++
+		if calls == 2 {
+			return wire.NetPing{}, errors.New("timed out")
+		}
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", TimeMS: float64(calls)}, nil
+	}
+	out := e.mustGst("ping", "far", "-c", "3", "-s", "1140")
+	if e.back.pingSize != 1140 {
+		t.Fatalf("size %d", e.back.pingSize)
+	}
+	contains(t, out, "3 sent, 2 received, 33% lost; 1.0/2.0/3.0 ms min/avg/max\n")
+	for _, size := range []string{"15", "65001"} {
+		if code, _, _ := e.gst("ping", "far", "-s", size); code != 2 {
+			t.Fatalf("-s %s: exit %d", size, code)
+		}
+	}
+}
+
 func TestPingJSON(t *testing.T) {
 	e := newEnv(t)
 	e.back.ping = func(node string) (wire.NetPing, error) {

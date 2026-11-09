@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/vnet"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -335,6 +336,18 @@ func TestStatus(t *testing.T) {
 	// The link logs into the daemon's log, with its name.
 	if log := a.log.String(); !strings.Contains(log, "link bee: up") {
 		t.Fatalf("daemon log = %q, want link bee: up", log)
+	}
+}
+
+// The control socket checks a ping's size by itself: gst is not its only
+// client, and the size becomes a buffer.
+func TestPingSizeIsChecked(t *testing.T) {
+	a, _ := pair(t)
+	for _, size := range []int{-1, vnet.MaxPingSize + 1} {
+		_, err := a.d.netPing(t.Context(), "b", size)
+		if err == nil || !strings.Contains(err.Error(), "size") {
+			t.Fatalf("size %d: %v", size, err)
+		}
 	}
 }
 

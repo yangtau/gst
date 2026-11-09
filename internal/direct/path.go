@@ -16,13 +16,14 @@ import (
 
 const (
 	probeInterval = 200 * time.Millisecond
-	beatInterval  = time.Second      // how often the address in use is probed; also keeps it open through NATs
-	staleLimit    = 2 * time.Second  // an address in use this quiet gives way to any other that answers
-	silenceLimit  = 3 * time.Second  // a path this quiet has ended
-	sweepInterval = 30 * time.Second // how often all the addresses are measured
-	sweepTime     = time.Second      // for how long, at probeInterval
-	maxAddresses  = 32               // accepted in an offer
-	maxTargets    = 2 * maxAddresses // also counts addresses learned from packets
+	beatInterval  = time.Second       // how often the address in use is probed; also keeps it open through NATs
+	staleLimit    = 2 * time.Second   // an address in use this quiet gives way to any other that answers
+	silenceLimit  = 3 * time.Second   // a path this quiet has ended
+	sweepInterval = 30 * time.Second  // how often all the addresses are measured
+	sweepTime     = time.Second       // for how long, at probeInterval
+	measureLife   = 2 * sweepInterval // an address this quiet starts its measures again
+	maxAddresses  = 32                // accepted in an offer
+	maxTargets    = 2 * maxAddresses  // also counts addresses learned from packets
 
 	// A faster address must have this many measures, and beat the one in
 	// use by minGain and a tenth, or paths would hop between equals.
@@ -187,6 +188,28 @@ func (p *Path) knows(addr netip.AddrPort) bool {
 	return p.targets[addr] != nil
 }
 
+// Refresh makes the path measure its addresses from scratch, those of theirs
+// included, after a change of network on either side.
+func (p *Path) Refresh(theirs wire.DirectOffer) error {
+	if theirs.Token != "" && theirs.Token != hex.EncodeToString(p.token[:]) {
+		return errors.New("the update is for another path")
+	}
+	targets, err := p.t.addresses(theirs)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, addr := range targets {
+		p.add(addr)
+	}
+	for _, t := range p.targets {
+		t.samples = 0
+	}
+	p.sweepUntil = time.Now().Add(sweepTime)
+	return nil
+}
+
 // probed handles a probe from source, which the token proves to be the
 // other side: that is how a side learns the address of another behind NAT.
 func (p *Path) probed(source netip.AddrPort) {
@@ -208,7 +231,19 @@ func (p *Path) probed(source netip.AddrPort) {
 // ago. The address probed gets the credit, wherever the answer came from:
 // a machine with several addresses need not answer from the one it was
 // sent to.
+//
+// The source becomes an address of the path like any other, so that the
+// bound on those holds for sources too.
 func (p *Path) answered(addr, source netip.AddrPort, rtt time.Duration) {
+	p.mu.Lock()
+	known := p.targets[addr] != nil
+	if known {
+		p.add(source)
+	}
+	p.mu.Unlock()
+	if !known {
+		return
+	}
 	p.t.allow(source, p)
 	p.heard.Store(time.Now().UnixNano())
 	p.mu.Lock()
@@ -227,9 +262,14 @@ func (p *Path) record(addr netip.AddrPort, rtt time.Duration, now time.Time) []s
 	if t == nil {
 		return nil
 	}
+	if t.heard.IsZero() {
+		events = append(events, fmt.Sprintf("answer from %s in %s: the path works", addr, ms(rtt)))
+	}
+	if now.Sub(t.heard) > measureLife {
+		t.samples = 0
+	}
 	if t.samples == 0 {
 		t.rtt = rtt
-		events = append(events, fmt.Sprintf("answer from %s in %s: the path works", addr, ms(rtt)))
 	} else {
 		t.rtt += (rtt - t.rtt) / 4
 	}
