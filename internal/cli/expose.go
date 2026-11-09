@@ -36,7 +36,7 @@ rule first. Repeating the same rule is harmless.`,
 		Example: "  gst expose 8080 --port 5999\n  gst expose 5353 --udp\n  gst expose unix:///tmp/service.sock --port 5999",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			if cmd.Flags().Changed("port") && (port < 1 || port > 65535) {
+			if cmd.Flags().Changed("port") && port == 0 { // ParseExpose takes 0 for the target port
 				return usage("port must be between 1 and 65535")
 			}
 			rule, err := config.ParseExpose(args[0], port, udp)
@@ -56,7 +56,11 @@ rule first. Repeating the same rule is harmless.`,
 						return withHint(fmt.Errorf("expose %s already has a different target", rule.Key()), "remove it with `gst expose remove "+strconv.Itoa(rule.Port)+flag+"`")
 					}
 				}
-				f.Exposes = append(f.Exposes, rule)
+				// In order of port, which is how everything lists them.
+				i, _ := slices.BinarySearchFunc(f.Exposes, rule, func(a, b config.Expose) int {
+					return cmp.Or(cmp.Compare(a.Port, b.Port), strings.Compare(a.Protocol, b.Protocol))
+				})
+				f.Exposes = slices.Insert(f.Exposes, i, rule)
 				return nil
 			})
 			if err != nil {
@@ -65,36 +69,29 @@ rule first. Repeating the same rule is harmless.`,
 			if err := a.sync(cmd.Context()); err != nil {
 				return withHint(fmt.Errorf("rule saved but not applied: %w", err), "retry with `gst up`")
 			}
-			states, err := a.exposeStates(cmd.Context())
+			states, down, err := a.exposeStates(cmd.Context())
 			if err != nil {
 				return err
 			}
-			for _, state := range states {
-				if state.Protocol != rule.Protocol || state.Port != rule.Port {
-					continue
-				}
-				if state.State == "failed" {
-					return withHint(fmt.Errorf("rule saved but not listening: %s", state.Error), "inspect it with `gst expose list`")
-				}
-				if state.State == "stopped" {
-					f, err := a.load()
-					if err != nil {
-						return err
-					}
-					if !f.Down {
-						return withHint(errors.New("rule saved but daemon has not reported it"), "inspect it with `gst expose list`")
-					}
-				}
-				return writeExposes(a.stdout, []wire.ExposeState{state})
+			i := slices.IndexFunc(states, func(s wire.ExposeState) bool { return s.Protocol == rule.Protocol && s.Port == rule.Port })
+			if i < 0 { // removed in the meantime
+				return errors.New("rule saved but removed since; run `gst expose list`")
 			}
-			return errors.New("rule saved but daemon has not reported it; run `gst expose list`")
+			state := states[i]
+			switch {
+			case state.State == wire.StateFailed:
+				return withHint(fmt.Errorf("rule saved but not listening: %s", state.Error), "inspect it with `gst expose list`")
+			case state.State == wire.StateStopped && !down:
+				return withHint(errors.New("rule saved but daemon has not reported it"), "inspect it with `gst expose list`")
+			}
+			return writeExposes(a.stdout, []wire.ExposeState{state})
 		}),
 	}
 	cmd.Flags().IntVar(&port, "port", 0, "port to expose on the gst IP (default: target port)")
 	cmd.Flags().BoolVar(&udp, "udp", false, "expose UDP instead of TCP")
 	var json bool
 	list := &cobra.Command{Use: "list", Short: "List this machine's exposed ports", Args: a.args(0, 0), RunE: run(func(cmd *cobra.Command, _ []string) error {
-		states, err := a.exposeStates(cmd.Context())
+		states, _, err := a.exposeStates(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -117,7 +114,7 @@ rule first. Repeating the same rule is harmless.`,
 		err = a.update(func(f *config.File) error {
 			i := slices.IndexFunc(f.Exposes, func(e config.Expose) bool { return e.Protocol == protocol && e.Port == port })
 			if i < 0 {
-				return fmt.Errorf("no expose rule for %s/%d", protocol, port)
+				return fmt.Errorf("no expose rule for %s", config.ExposeKey(protocol, port))
 			}
 			f.Exposes = slices.Delete(f.Exposes, i, i+1)
 			return nil
@@ -128,7 +125,7 @@ rule first. Repeating the same rule is harmless.`,
 		if err := a.sync(cmd.Context()); err != nil {
 			return fmt.Errorf("rule removed from config but daemon did not apply it: %w", err)
 		}
-		fmt.Fprintf(a.stdout, "Removed expose %s/%d.\n", protocol, port)
+		fmt.Fprintf(a.stdout, "Removed expose %s.\n", config.ExposeKey(protocol, port))
 		return nil
 	})}
 	remove.Flags().BoolVar(&removeUDP, "udp", false, "remove the UDP rule instead of TCP")
@@ -138,10 +135,12 @@ rule first. Repeating the same rule is harmless.`,
 	return cmd
 }
 
-func (a *app) exposeStates(ctx context.Context) ([]wire.ExposeState, error) {
+// exposeStates lists the rules of the configuration in its order, as the
+// daemon reports them, and whether gst is down here.
+func (a *app) exposeStates(ctx context.Context) ([]wire.ExposeState, bool, error) {
 	f, err := a.load()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Configuration remains inspectable while the daemon is stopped.
 	states := []wire.ExposeState{}
@@ -152,7 +151,7 @@ func (a *app) exposeStates(ctx context.Context) ([]wire.ExposeState, error) {
 		}
 	}
 	for _, e := range f.Exposes {
-		s := wire.ExposeState{Protocol: e.Protocol, Port: e.Port, Target: e.Target, State: "stopped"}
+		s := wire.ExposeState{Protocol: e.Protocol, Port: e.Port, Target: e.Target, State: wire.StateStopped}
 		for _, v := range live {
 			if v.Protocol == e.Protocol && v.Port == e.Port && v.Target == e.Target {
 				s = v
@@ -161,25 +160,18 @@ func (a *app) exposeStates(ctx context.Context) ([]wire.ExposeState, error) {
 		}
 		states = append(states, s)
 	}
-	slices.SortFunc(states, func(a, b wire.ExposeState) int {
-		return cmp.Or(cmp.Compare(a.Port, b.Port), strings.Compare(a.Protocol, b.Protocol))
-	})
-	return states, nil
+	return states, f.Down, nil
 }
 
 func writeExposes(out io.Writer, states []wire.ExposeState) error {
 	w := table(out)
 	fmt.Fprintln(w, "PROTOCOL\tPORT\tADDRESS\tTARGET\tSTATE")
 	for _, s := range states {
-		state := s.State
-		if s.Error != "" {
-			state += ": " + s.Error
-		}
 		address := s.Address
 		if address == "" {
 			address = "-"
 		}
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", s.Protocol, s.Port, address, s.Target, state)
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", s.Protocol, s.Port, address, s.Target, exposeStateText(s))
 	}
 	return w.Flush()
 }

@@ -161,11 +161,7 @@ func writeMesh(out io.Writer, st wire.Status, topo wire.Topology, all bool) erro
 	}
 	for _, e := range st.Exposes {
 		if e.State != wire.StateRunning {
-			text := fmt.Sprintf("expose %s/%d: %s", e.Protocol, e.Port, e.State)
-			if e.Error != "" {
-				text += ": " + e.Error
-			}
-			problems = append(problems, text)
+			problems = append(problems, "expose "+config.ExposeKey(e.Protocol, e.Port)+": "+exposeStateText(e))
 		}
 	}
 	if len(problems) > 0 {

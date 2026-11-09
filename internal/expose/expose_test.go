@@ -212,7 +212,7 @@ func TestUDPIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	socket, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestUDPIdle(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		udpSession(context.Background(), socket, socket.LocalAddr(), rule, queue, 50*time.Millisecond)
+		udpSession(context.Background(), socket, socket.LocalAddr().(*net.UDPAddr).AddrPort(), rule, queue, 50*time.Millisecond)
 	}()
 	select {
 	case <-done:

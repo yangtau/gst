@@ -2,14 +2,12 @@
 package expose
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net"
 	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +24,9 @@ const dialTimeout = 5 * time.Second
 type Manager struct {
 	mu      sync.Mutex
 	address string
-	running map[string]*listener
-	states  []wire.ExposeState
+	rules   []config.Expose
+	running map[string]*listener // by rule key
+	states  []wire.ExposeState   // of rules, in their order
 }
 
 type listener struct {
@@ -40,6 +39,17 @@ type listener struct {
 func (m *Manager) Apply(ctx context.Context, address string, rules []config.Expose) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.apply(ctx, address, rules)
+}
+
+// Close stops all traffic, as Apply does without an address.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.apply(context.Background(), "", m.rules)
+}
+
+func (m *Manager) apply(ctx context.Context, address string, rules []config.Expose) {
 	if m.running == nil {
 		m.running = map[string]*listener{}
 	}
@@ -50,10 +60,10 @@ func (m *Manager) Apply(ctx context.Context, address string, rules []config.Expo
 			delete(m.running, key)
 		}
 	}
-	m.address = address
+	m.address, m.rules = address, rules
 	m.states = []wire.ExposeState{}
 	for _, rule := range rules {
-		state := wire.ExposeState{Protocol: rule.Protocol, Port: rule.Port, Target: rule.Target, State: "waiting"}
+		state := wire.ExposeState{Protocol: rule.Protocol, Port: rule.Port, Target: rule.Target, State: wire.StateWaiting}
 		if address != "" {
 			state.Address = net.JoinHostPort(address, strconv.Itoa(rule.Port))
 			l := m.running[rule.Key()]
@@ -70,7 +80,7 @@ func (m *Manager) Apply(ctx context.Context, address string, rules []config.Expo
 				l, err = start(ctx, address, rule)
 			}
 			if err != nil {
-				state.State, state.Error = "failed", err.Error()
+				state.State, state.Error = wire.StateFailed, err.Error()
 			} else {
 				m.running[rule.Key()] = l
 				state.State = wire.StateRunning
@@ -78,21 +88,18 @@ func (m *Manager) Apply(ctx context.Context, address string, rules []config.Expo
 		}
 		m.states = append(m.states, state)
 	}
-	slices.SortFunc(m.states, func(a, b wire.ExposeState) int {
-		return cmp.Or(cmp.Compare(a.Port, b.Port), strings.Compare(a.Protocol, b.Protocol))
-	})
 }
 
 func (m *Manager) Status() []wire.ExposeState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	states := slices.Clone(m.states)
-	for i := range states {
-		s := &states[i]
-		if l := m.running[s.Protocol+"/"+strconv.Itoa(s.Port)]; l != nil {
+	for i, rule := range m.rules {
+		if l := m.running[rule.Key()]; l != nil {
 			select {
 			case <-l.done:
-				s.State = "failed"
+				s := &states[i]
+				s.State = wire.StateFailed
 				if l.err != nil {
 					s.Error = l.err.Error()
 				}
@@ -103,37 +110,18 @@ func (m *Manager) Status() []wire.ExposeState {
 	return states
 }
 
-func (m *Manager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for key, l := range m.running {
-		l.stop()
-		<-l.done
-		delete(m.running, key)
-	}
-	for i := range m.states {
-		m.states[i].State = "waiting"
-		m.states[i].Address = ""
-		m.states[i].Error = ""
-	}
-	m.address = ""
-}
-
 func start(parent context.Context, address string, rule config.Expose) (*listener, error) {
 	ip, err := netip.ParseAddr(address)
 	if err != nil || !ip.Is4() || ip.IsUnspecified() {
 		return nil, fmt.Errorf("no IPv4 gst address")
 	}
-	if err := rule.Validate(); err != nil {
-		return nil, err
-	}
 	ctx, stop := context.WithCancel(parent)
 	l := &listener{rule: rule, stop: stop, done: make(chan struct{})}
-	addr := net.JoinHostPort(address, strconv.Itoa(rule.Port))
+	addr := netip.AddrPortFrom(ip, uint16(rule.Port))
 	var serve func() error
 	var closeSocket func() error
 	if rule.Protocol == "udp" {
-		c, err := net.ListenPacket("udp4", addr)
+		c, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(addr))
 		if err != nil {
 			stop()
 			return nil, err
@@ -141,7 +129,7 @@ func start(parent context.Context, address string, rule config.Expose) (*listene
 		closeSocket = c.Close
 		serve = func() error { return serveUDP(ctx, c, rule) }
 	} else {
-		ln, err := net.Listen("tcp4", addr)
+		ln, err := net.Listen("tcp4", addr.String())
 		if err != nil {
 			stop()
 			return nil, err
@@ -151,9 +139,9 @@ func start(parent context.Context, address string, rule config.Expose) (*listene
 	}
 	go func() {
 		defer close(l.done)
-		defer stop()
 		defer closeSocket()
-		defer context.AfterFunc(ctx, func() { closeSocket() })()
+		defer stop()
+		context.AfterFunc(ctx, func() { closeSocket() }) // to end serve
 		l.err = serve()
 	}()
 	return l, nil

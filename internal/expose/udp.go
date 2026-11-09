@@ -3,6 +3,7 @@ package expose
 import (
 	"context"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -17,27 +18,26 @@ const (
 
 // Each source has its own connected socket, so replies cannot cross clients.
 // Dialing and a slow destination never hold up the shared receive loop.
-func serveUDP(ctx context.Context, socket net.PacketConn, rule config.Expose) error {
+func serveUDP(ctx context.Context, socket *net.UDPConn, rule config.Expose) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
 	var mu sync.Mutex
-	sessions := map[string]chan []byte{}
+	sessions := map[netip.AddrPort]chan []byte{}
 	buf := make([]byte, 65535)
 	for {
-		n, from, err := socket.ReadFrom(buf)
+		n, from, err := socket.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return err
 		}
-		key := from.String()
 		mu.Lock()
-		queue := sessions[key]
+		queue := sessions[from]
 		if queue == nil && len(sessions) < maxUDPSessions {
 			queue = make(chan []byte, udpQueue)
-			sessions[key] = queue
+			sessions[from] = queue
 			wg.Go(func() {
-				defer func() { mu.Lock(); delete(sessions, key); mu.Unlock() }()
+				defer func() { mu.Lock(); delete(sessions, from); mu.Unlock() }()
 				udpSession(ctx, socket, from, rule, queue, udpIdle)
 			})
 		}
@@ -51,7 +51,7 @@ func serveUDP(ctx context.Context, socket net.PacketConn, rule config.Expose) er
 	}
 }
 
-func udpSession(ctx context.Context, socket net.PacketConn, client net.Addr, rule config.Expose, queue <-chan []byte, idle time.Duration) {
+func udpSession(ctx context.Context, socket *net.UDPConn, client netip.AddrPort, rule config.Expose, queue <-chan []byte, idle time.Duration) {
 	network, target := rule.Destination()
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, network, target)
@@ -60,8 +60,6 @@ func udpSession(ctx context.Context, socket net.PacketConn, client net.Addr, rul
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer conn.Close()
-	defer context.AfterFunc(ctx, func() { conn.Close() })()
 	// Read deadlines are refreshed by traffic in either direction.
 	conn.SetReadDeadline(time.Now().Add(idle))
 	done := make(chan struct{})
@@ -75,7 +73,7 @@ func udpSession(ctx context.Context, socket net.PacketConn, client net.Addr, rul
 				return
 			}
 			conn.SetReadDeadline(time.Now().Add(idle))
-			if _, err := socket.WriteTo(buf[:n], client); err != nil {
+			if _, err := socket.WriteToUDPAddrPort(buf[:n], client); err != nil {
 				return
 			}
 		}

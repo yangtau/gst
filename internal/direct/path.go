@@ -209,10 +209,10 @@ func (p *Path) knows(addr netip.AddrPort) bool {
 	return p.targets[addr] != nil
 }
 
-// Refresh makes the path measure its addresses from scratch, those of theirs
-// included, after a change of network on either side.
+// Refresh adds theirs, the addresses of the other side after it changed
+// network, and measures all addresses from scratch.
 func (p *Path) Refresh(theirs wire.DirectOffer) error {
-	if theirs.Token != "" && theirs.Token != hex.EncodeToString(p.token[:]) {
+	if theirs.Token != hex.EncodeToString(p.token[:]) {
 		return errors.New("the update is for another path")
 	}
 	targets, err := p.t.addresses(theirs)
@@ -224,11 +224,23 @@ func (p *Path) Refresh(theirs wire.DirectOffer) error {
 	for _, addr := range targets {
 		p.add(addr)
 	}
+	p.remeasure()
+	return nil
+}
+
+// Remeasure makes the path measure its addresses from scratch, after this
+// side changed network.
+func (p *Path) Remeasure() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.remeasure()
+}
+
+func (p *Path) remeasure() {
 	for _, t := range p.targets {
 		t.samples = 0
 	}
 	p.sweepUntil = time.Now().Add(sweepTime)
-	return nil
 }
 
 // probed handles a probe from source, which the token proves to be the

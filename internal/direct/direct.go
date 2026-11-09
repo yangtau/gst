@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // Port is the UDP port a daemon asks for. Several users of a machine each
@@ -195,9 +197,10 @@ func (t *Transport) look() {
 // Changed receives when this machine's addresses or interfaces changed.
 func (t *Transport) Changed() <-chan struct{} { return t.changed }
 
-// Stats reports the sockets, and what they could not place.
-func (t *Transport) Stats() Stats {
-	stats := Stats{Strays: t.strays.Load()}
+// Stats reports the sockets, and what they could not place: the fields of
+// wire.DirectStats that belong to this machine's UDP sockets.
+func (t *Transport) Stats() wire.DirectStats {
+	stats := wire.DirectStats{Strays: t.strays.Load()}
 	for _, s := range []*socket{t.v4, t.v6} {
 		if s == nil {
 			continue
@@ -214,14 +217,6 @@ func (t *Transport) Stats() Stats {
 		}
 	}
 	return stats
-}
-
-// Stats is what Transport.Stats reports.
-type Stats struct {
-	Port                    int
-	Interfaces              []string // that the sockets are bound to
-	ReadBuffer, WriteBuffer int      // in bytes, as the system reports them
-	Strays                  uint64   // WireGuard packets from unknown sources
 }
 
 func listen(network string, port int) *socket {

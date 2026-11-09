@@ -51,16 +51,13 @@ func chooseSubnet(seed string, used []Networks) (netip.Prefix, bool) {
 	for i := range 12 { // 172.20.0.0 to 172.31.0.0
 		candidates = append(candidates, netip.PrefixFrom(netip.AddrFrom4([4]byte{172, byte(20 + (start+i)%12), 0, 0}), 16))
 	}
-	taken := func(c netip.Prefix, n Networks, strict bool) bool {
-		if strict {
-			return overlaps(c, n)
-		}
+	conflicts := func(c netip.Prefix, n Networks) bool {
 		_, found := conflict(c, n)
 		return found
 	}
-	for _, strict := range []bool{true, false} {
+	for _, taken := range []func(netip.Prefix, Networks) bool{overlaps, conflicts} {
 		for _, c := range candidates {
-			if !slices.ContainsFunc(used, func(n Networks) bool { return taken(c, n, strict) }) {
+			if !slices.ContainsFunc(used, func(n Networks) bool { return taken(c, n) }) {
 				return c, true
 			}
 		}

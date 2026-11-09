@@ -17,7 +17,10 @@ type Expose struct {
 	Target   string `json:"target"`
 }
 
-func (e Expose) Key() string { return e.Protocol + "/" + strconv.Itoa(e.Port) }
+// Key names the rule by what it listens on, such as tcp/8080.
+func (e Expose) Key() string { return ExposeKey(e.Protocol, e.Port) }
+
+func ExposeKey(protocol string, port int) string { return protocol + "/" + strconv.Itoa(port) }
 
 // Destination returns the network and address understood by net.Dialer.
 func (e Expose) Destination() (string, string) {

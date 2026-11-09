@@ -17,6 +17,15 @@ func linkStateText(l wire.LinkState) string {
 	return l.State
 }
 
+// exposeStateText is an exposed port's state with the error of one that
+// failed.
+func exposeStateText(e wire.ExposeState) string {
+	if e.Error != "" {
+		return e.State + ": " + e.Error
+	}
+	return e.State
+}
+
 // linkText shows a link as the machines at its ends, such as laptop->gateway,
 // and adds the link's own name, which gst remove takes, when it differs
 // from the machine it leads to.

@@ -75,7 +75,7 @@ func (n *Node) networkChanged(ctx context.Context) {
 			return true
 		}
 		n.trace(id, "this machine's addresses changed")
-		path.Refresh(wire.DirectOffer{})
+		path.Remeasure()
 		offer := path.Offer()
 		offer.Node = self
 		go func() {
@@ -194,18 +194,16 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	if err := n.Call(ctx, dest.ID, wire.MethodDirectTrace, wire.DirectTraceParams{Node: n.Self().ID}, &r.Peer); err != nil {
 		r.PeerError = err.Error()
 	}
-	if c := n.packetPeer(dest.ID).direct.Load(); c != nil {
+	peer := n.packetPeer(dest.ID)
+	if c := peer.direct.Load(); c != nil {
 		r.Path = &wire.DirectPath{Local: c.Local(), Remote: c.Remote()}
 	}
-	peer := n.packetPeer(dest.ID)
-	r.Stats.WriteErrors, r.Stats.QueueDrops = peer.writeErrors.Load(), peer.queueDrops.Load()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.udp != nil {
-		s := n.udp.Stats()
-		r.Stats.Port, r.Stats.Interfaces, r.Stats.Strays = s.Port, s.Interfaces, s.Strays
-		r.Stats.ReadBuffer, r.Stats.WriteBuffer = s.ReadBuffer, s.WriteBuffer
+		r.Stats = n.udp.Stats()
 	}
+	r.Stats.WriteErrors, r.Stats.QueueDrops = peer.writeErrors.Load(), peer.queueDrops.Load()
 	r.Off = n.directCtx == nil
 	r.Trying = n.directTries[dest.ID] != nil
 	if next := n.directWaits[dest.ID].next; next.After(time.Now()) {

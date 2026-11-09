@@ -182,6 +182,13 @@ type TopoEdge struct {
 	Link string `json:"link"` // its name on From
 }
 
+// States of exposed ports; StateRunning means listening.
+const (
+	StateWaiting = "waiting" // for the virtual network
+	StateFailed  = "failed"  // could not listen; Error says why
+	StateStopped = "stopped" // the daemon does not run the rule: gst is down or not reachable
+)
+
 // ExposeState distinguishes a listening port from one waiting for the network
 // or unable to bind. Running does not imply that the target is reachable.
 type ExposeState struct {
