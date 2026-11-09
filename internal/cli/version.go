@@ -13,7 +13,7 @@ import (
 )
 
 // version is the gst release. `make release` sets it; see AGENTS.md.
-const version = "0.5.0"
+const version = "0.6.0"
 
 // commit ("<revision>[-dirty]") and committed (RFC 3339) describe the git
 // commit gst is built from, for builds without Go's VCS stamp, such as
