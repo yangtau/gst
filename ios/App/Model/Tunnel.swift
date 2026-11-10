@@ -90,3 +90,12 @@ final class Tunnel: GstTransport {
         }
     }
 }
+
+#if DEBUG
+extension Tunnel {
+    /// Shows a state that the system is not in, for a made-up network.
+    func pretend(_ state: State) {
+        self.state = state
+    }
+}
+#endif

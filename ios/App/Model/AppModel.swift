@@ -27,6 +27,8 @@ final class AppModel {
     private let app = Gst(transport: LocalTransport())
     private var daemon: Gst { Gst(transport: tunnel) }
     private static let topologyKey = "topology"
+    /// The model shows a made-up network, and asks gst nothing; see Demo.
+    private var isDemo = false
 
     var isOn: Bool { tunnel.state == .on }
 
@@ -71,6 +73,7 @@ final class AppModel {
 
     /// Opens gst and finds the VPN. Called once, when the app starts.
     func start() async {
+        guard !isDemo else { return }
         if let data = UserDefaults.standard.data(forKey: Self.topologyKey) {
             topology = try? JSONDecoder().decode(Topology.self, from: data)
         }
@@ -88,6 +91,7 @@ final class AppModel {
     /// Asks the daemon how things are. The app calls it every few
     /// seconds while it is on the screen.
     func refresh() async {
+        guard !isDemo else { return }
         guard isOn else {
             status = nil
             return
@@ -214,3 +218,18 @@ final class AppModel {
         await refresh()
     }
 }
+
+#if DEBUG
+extension AppModel {
+    /// A model that shows what it is given and asks gst nothing, for
+    /// Xcode's previews and for screenshots; see Demo.
+    convenience init(demo info: AppInfo, topology: Topology?, status: DaemonStatus?) {
+        self.init()
+        isDemo = true
+        self.info = info
+        self.topology = topology
+        self.status = status
+        tunnel.pretend(status == nil ? .off : .on)
+    }
+}
+#endif

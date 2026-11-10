@@ -1,5 +1,6 @@
-# Builds the iOS app with Xcode, for a device and for the simulator, and
-# runs its tests in the simulator. See ios/README.md.
+# Builds the iOS app with Xcode, for a device and for the simulator, runs
+# its tests in the simulator, and takes screenshots of it there, which
+# the run keeps as an artifact. See ios/README.md.
 name: iOS
 
 on:
@@ -17,7 +18,7 @@ permissions:
 
 concurrency:
   group: ios-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,5 +41,12 @@ jobs:
       - name: Test in the simulator
         if: always()
         run: |
-          xcodebuild -project ios/Gst.xcodeproj -scheme Gst \
+          xcodebuild -project ios/Gst.xcodeproj -scheme Gst -derivedDataPath ios/build/derived \
             -destination "id=$(ios/simulator.sh)" -quiet test
+      - name: Take screenshots
+        run: |
+          ios/screenshots.sh ios/build/derived/Build/Products/Debug-iphonesimulator/gst.app ios/build/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: ios/build/screenshots

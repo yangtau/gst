@@ -2,7 +2,16 @@ import SwiftUI
 
 @main
 struct GstApp: App {
-    @State private var model = AppModel()
+    @State private var model = GstApp.makeModel()
+
+    private static func makeModel() -> AppModel {
+        #if DEBUG
+        if let demo = Demo.current {
+            return demo.model
+        }
+        #endif
+        return AppModel()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -23,7 +32,11 @@ struct RootView: View {
             if let failure = model.failure {
                 ContentUnavailableView("gst cannot start", systemImage: "exclamationmark.triangle", description: Text(failure))
             } else {
+                #if DEBUG
+                HomeView(sheet: Demo.current?.sheet, addStep: Demo.current?.addStep ?? .form)
+                #else
                 HomeView()
+                #endif
             }
         }
         .task {

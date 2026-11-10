@@ -8,10 +8,14 @@ struct AddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var server = ""
     @State private var port = ""
-    @State private var step: Step = .form
+    @State private var step: Step
     @FocusState private var isServerFocused: Bool
 
-    private enum Step: Equatable {
+    init(step: Step = .form) {
+        _step = State(initialValue: step)
+    }
+
+    enum Step: Equatable {
         /// Asking where the machine is.
         case form
         /// Logging in to see how it goes.
@@ -113,7 +117,7 @@ struct AddMachineSheet: View {
             primaryButton("Continue", action: check)
                 .disabled(destination == nil)
         }
-        .onAppear { isServerFocused = true }
+        .onAppear { isServerFocused = server.isEmpty }
     }
 
     private func hostKey(_ check: ServerCheck) -> some View {

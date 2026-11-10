@@ -7,6 +7,14 @@ struct HomeView: View {
     @State private var sheet: Sheet?
     @State private var failure: String?
     @State private var isSwitching = false
+    private let addStep: AddMachineSheet.Step
+
+    /// The network; `sheet` and `addStep` open it on a sheet, and on a
+    /// step of adding a machine, which a demo does.
+    init(sheet: Sheet? = nil, addStep: AddMachineSheet.Step = .form) {
+        _sheet = State(initialValue: sheet)
+        self.addStep = addStep
+    }
 
     enum Sheet: Identifiable {
         case add, settings
@@ -61,7 +69,7 @@ struct HomeView: View {
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
-            case .add: AddMachineSheet()
+            case .add: AddMachineSheet(step: addStep)
             case .settings: SettingsSheet()
             case .machine(let id): MachineSheet(machineID: id)
             }
