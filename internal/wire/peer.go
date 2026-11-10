@@ -24,10 +24,10 @@ const (
 	// DirectTrace: what the callee did in its latest try at a UDP path
 	// with the caller.
 	MethodDirectTrace = "direct.trace"
-	// MethodNetNetworks ("net.networks") takes no params and returns
-	// Networks: what the subnet of the virtual network must not overlap
+	// MethodNetPrefixes ("net.prefixes") takes no params and returns
+	// UsedPrefixes: what the subnet of the virtual network must not overlap
 	// on the callee's machine.
-	MethodNetNetworks = "net.networks"
+	MethodNetPrefixes = "net.prefixes"
 )
 
 // NodeInfo identifies a gst node.
@@ -37,8 +37,8 @@ type NodeInfo struct {
 	Software string `json:"software,omitempty"`
 }
 
-// Member is what a peer's Hello says of its place in the network.
-type Member struct {
+// Membership is what a peer's Hello says of its place in the network.
+type Membership struct {
 	// Generation counts the times the node was added back after a
 	// removal; a removal record covers the generations up to its own.
 	Generation int64 `json:"generation"`
@@ -51,14 +51,14 @@ type Member struct {
 
 // Bye is the last frame of a link that a side ends on purpose.
 type Bye struct {
-	Error  *Error  `json:"error"`
-	Member *Member `json:"member,omitempty"`
+	Error      *Error      `json:"error"`
+	Membership *Membership `json:"membership,omitempty"`
 }
 
 // Entry is an entry of the table that every node keeps of the network
 // (internal/mesh/state). Of two entries with one key, the higher Version
 // counts; Value depends on the key: NodeValue for "node/<id>",
-// RemovedValue for "removed/<id>", and NetworkValue for "network".
+// RemovedValue for "removed/<id>", and SubnetValue for "subnet".
 type Entry struct {
 	Key     string          `json:"key"`
 	Version []int64         `json:"version"`
@@ -103,17 +103,17 @@ type RemovedValue struct {
 	At     time.Time `json:"at"`
 }
 
-// NetworkValue is the subnet of the virtual network. Its version is
+// SubnetValue is the subnet of the virtual network. Its version is
 // [1, order] for a person's choice, which beats gst's; [0, -time] for
 // gst's, where the earlier one counts; and [-1, -time] for gst's on a
-// machine alone, which loses to every network's.
-type NetworkValue struct {
+// node alone, which loses to every network's.
+type SubnetValue struct {
 	Subnet string `json:"subnet"`
 }
 
-// Networks lists the IPv4 prefixes in use on a machine: the networks of
+// UsedPrefixes lists the IPv4 prefixes in use on a machine: the prefixes of
 // its interfaces, and the destinations of its routes.
-type Networks struct {
+type UsedPrefixes struct {
 	Interfaces []string `json:"interfaces"`
 	Routes     []string `json:"routes"`
 }

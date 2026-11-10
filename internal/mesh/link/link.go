@@ -1,5 +1,5 @@
 // Package link runs the links of the mesh. A link is a connection to
-// another machine's daemon, which one side opens over SSH by running
+// another node's daemon, which one side opens over SSH by running
 // "gst peer-bridge" there. After a handshake, an exchange of Hello frames
 // in which each side says who it is, a link is an ordered, reliable pipe of
 // typed frames in both directions: sync frames for the replicated table
@@ -56,16 +56,16 @@ var DefaultTiming = Timing{Alive: 15 * time.Second, Dead: 45 * time.Second}
 
 // Refusal is how a side refuses the other in the handshake.
 type Refusal struct {
-	Err    *wire.Error
-	Member *wire.Member // sent along, such as the other's removal record
+	Err        *wire.Error
+	Membership *wire.Membership // sent along, such as the other's removal record
 }
 
 // RefusedError is a handshake that a side refused.
 type RefusedError struct {
-	Peer   *wire.NodeInfo // the other node, when it said who it is
-	Err    *wire.Error
-	Member *wire.Member // what the refusal carried
-	ByPeer bool         // the other side refused; otherwise this one did
+	Peer       *wire.NodeInfo // the other node, when it said who it is
+	Err        *wire.Error
+	Membership *wire.Membership // what the refusal carried
+	ByPeer     bool             // the other side refused; otherwise this one did
 }
 
 func (e *RefusedError) Error() string {
@@ -78,46 +78,46 @@ func (e *RefusedError) Error() string {
 // Handshake is this node's side of handshakes.
 type Handshake struct {
 	Self wire.NodeInfo // ID, Name, and Software
-	// Member returns this node's member field for its Hello. On the
+	// Membership returns this node's membership field for its Hello. On the
 	// accepting side it is asked after Check, which may change it.
-	Member func() *wire.Member
+	Membership func() *wire.Membership
 	// Check judges the other node once its protocol and identity passed;
 	// it returns nil to accept it.
-	Check  func(peer wire.NodeInfo, m wire.Member) *Refusal
+	Check  func(peer wire.NodeInfo, m wire.Membership) *Refusal
 	Timing Timing
 }
 
 func (h Handshake) hello() wire.Hello {
 	self := h.Self
 	mine := wire.Hello{Software: self.Software, Role: wire.RolePeer, Node: &wire.NodeInfo{ID: self.ID, Name: self.Name}}
-	if h.Member != nil {
-		mine.Member = h.Member()
+	if h.Membership != nil {
+		mine.Membership = h.Membership()
 	}
 	return mine
 }
 
 // judge checks the other side's Hello.
-func (h Handshake) judge(theirs wire.Hello) (wire.NodeInfo, wire.Member, *Refusal) {
+func (h Handshake) judge(theirs wire.Hello) (wire.NodeInfo, wire.Membership, *Refusal) {
 	var peer wire.NodeInfo
-	var member wire.Member
+	var membership wire.Membership
 	if theirs.Node != nil {
 		peer = wire.NodeInfo{ID: theirs.Node.ID, Name: theirs.Node.Name, Software: theirs.Software}
 	}
-	if theirs.Member != nil {
-		member = *theirs.Member
+	if theirs.Membership != nil {
+		membership = *theirs.Membership
 	}
 	switch {
 	case !config.ValidNodeID(peer.ID) || config.ValidateName(peer.Name) != nil:
-		return peer, member, &Refusal{Err: wire.Errorf(wire.CodeInvalidParams, "the other machine sent no valid node id or name")}
+		return peer, membership, &Refusal{Err: wire.Errorf(wire.CodeInvalidParams, "the other machine sent no valid id or name")}
 	case peer.ID == h.Self.ID:
-		return peer, member, &Refusal{Err: wire.Errorf(wire.CodeInvalidParams, "the other machine is this machine")}
+		return peer, membership, &Refusal{Err: wire.Errorf(wire.CodeInvalidParams, "the other machine is this machine")}
 	}
 	if h.Check != nil {
-		if r := h.Check(peer, member); r != nil {
-			return peer, member, r
+		if r := h.Check(peer, membership); r != nil {
+			return peer, membership, r
 		}
 	}
-	return peer, member, nil
+	return peer, membership, nil
 }
 
 // Dial shakes hands on conn as the side that opened it, and returns the
@@ -126,28 +126,28 @@ func (h Handshake) Dial(conn io.ReadWriteCloser) (*Link, error) {
 	timeout := time.AfterFunc(HandshakeTimeout, func() { conn.Close() })
 	theirs, err := wire.Dial(conn, h.hello())
 	if !timeout.Stop() && err == nil {
-		err = errors.New("the peer handshake timed out")
+		err = errors.New("the other machine did not answer in time")
 	}
 	if err != nil {
 		conn.Close()
 		var refused *wire.Error
 		if errors.As(err, &refused) {
-			return nil, &RefusedError{Peer: theirs.Node, Err: refused, Member: theirs.Member, ByPeer: true}
+			return nil, &RefusedError{Peer: theirs.Node, Err: refused, Membership: theirs.Membership, ByPeer: true}
 		}
 		return nil, err
 	}
-	peer, member, refusal := h.judge(theirs)
+	peer, membership, refusal := h.judge(theirs)
 	if refusal != nil {
 		// The other side already took this link; a bye tells it why not.
 		// Dial returns once the bye is on its way, so that the caller
 		// may close what carries conn.
 		stop := time.AfterFunc(byeWait, func() { conn.Close() })
-		writeBye(conn, wire.Bye{Error: refusal.Err, Member: refusal.Member})
+		writeBye(conn, wire.Bye{Error: refusal.Err, Membership: refusal.Membership})
 		stop.Stop()
 		conn.Close()
-		return nil, &RefusedError{Peer: &peer, Err: refusal.Err, Member: refusal.Member}
+		return nil, &RefusedError{Peer: &peer, Err: refusal.Err, Membership: refusal.Membership}
 	}
-	return newLink(conn, peer, member, true, h.Timing), nil
+	return newLink(conn, peer, membership, true, h.Timing), nil
 }
 
 // Accept answers theirs, the Hello that opened conn, as the side that
@@ -155,15 +155,15 @@ func (h Handshake) Dial(conn io.ReadWriteCloser) (*Link, error) {
 // when it fails.
 func (h Handshake) Accept(conn io.ReadWriteCloser, theirs wire.Hello) (*Link, error) {
 	var peer wire.NodeInfo
-	var member wire.Member
+	var membership wire.Membership
 	var refusal *Refusal
 	if theirs.Protocol >= wire.Protocol {
-		peer, member, refusal = h.judge(theirs)
+		peer, membership, refusal = h.judge(theirs)
 	}
 	mine := h.hello()
 	var refused *wire.Error
 	if refusal != nil {
-		mine.Member, refused = refusal.Member, refusal.Err
+		mine.Membership, refused = refusal.Membership, refusal.Err
 	}
 	if err := wire.Answer(conn, theirs, mine, refused); err != nil {
 		conn.Close()
@@ -174,13 +174,13 @@ func (h Handshake) Accept(conn io.ReadWriteCloser, theirs wire.Hello) (*Link, er
 				r.Peer = &peer
 			}
 			if refusal != nil {
-				r.Member = refusal.Member
+				r.Membership = refusal.Membership
 			}
 			return nil, r
 		}
 		return nil, err
 	}
-	return newLink(conn, peer, member, false, h.Timing), nil
+	return newLink(conn, peer, membership, false, h.Timing), nil
 }
 
 func writeBye(w io.Writer, bye wire.Bye) error {
@@ -215,9 +215,9 @@ var ErrClosed = errors.New("the link was closed")
 
 // Link is a link after the handshake.
 type Link struct {
-	Peer   wire.NodeInfo
-	Member wire.Member // the peer's, from its Hello
-	Opened bool        // this side opened it
+	Peer       wire.NodeInfo
+	Membership wire.Membership // the peer's, from its Hello
+	Opened     bool            // this side opened it
 
 	conn   io.ReadWriteCloser
 	timing Timing
@@ -236,7 +236,7 @@ type Link struct {
 	lastRecv atomic.Int64
 }
 
-func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, member wire.Member, opened bool, t Timing) *Link {
+func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, membership wire.Membership, opened bool, t Timing) *Link {
 	if t.Alive <= 0 {
 		t.Alive = DefaultTiming.Alive
 	}
@@ -244,7 +244,7 @@ func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, member wire.Member, op
 		t.Dead = DefaultTiming.Dead
 	}
 	l := &Link{
-		Peer: peer, Member: member, Opened: opened,
+		Peer: peer, Membership: membership, Opened: opened,
 		conn: conn, timing: t,
 		wake: make(chan struct{}, 1), bulk: make(chan []byte, bulkQueue), done: make(chan struct{}),
 	}

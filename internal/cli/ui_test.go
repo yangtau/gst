@@ -221,7 +221,7 @@ func TestUIStateShape(t *testing.T) {
 		st.Links[1].Destination != "db" || st.Links[1].State != wire.StateRunning || st.Links[1].Peer == nil || st.Links[1].Peer.Name != "db" {
 		t.Fatalf("links %+v", st.Links)
 	}
-	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Edges) != 3 {
+	if s.Topology == nil || s.Topology.Self != nodeID("aaaa1111") || len(s.Topology.Nodes) != 5 || len(s.Topology.Links) != 3 {
 		t.Fatalf("topology %+v", s.Topology)
 	}
 

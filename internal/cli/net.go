@@ -128,7 +128,7 @@ func writePeers(out io.Writer, st *wire.NetState) error {
 		if !p.Handshake.IsZero() {
 			handshake = time.Since(p.Handshake).Round(time.Second).String() + " ago"
 		}
-		path := strings.TrimSpace(p.Path + " " + p.Endpoint)
+		path := strings.TrimSpace(p.Way + " " + p.Endpoint)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, path, handshake, byteCount(p.Received), byteCount(p.Sent))
 	}
 	return w.Flush()

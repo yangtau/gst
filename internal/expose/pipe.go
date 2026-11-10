@@ -1,15 +1,14 @@
-// Package relay copies a connection's bytes to another connection.
-package relay
+package expose
 
 import (
 	"io"
 	"sync"
 )
 
-// Pipe copies data in both directions until both sides are done, and
+// pipe copies data in both directions until both sides are done, and
 // closes both. A clean EOF is passed on as a half-close, so that the
 // other direction keeps flowing; any error tears down both connections.
-func Pipe(a, b io.ReadWriteCloser) {
+func pipe(a, b io.ReadWriteCloser) {
 	defer a.Close()
 	defer b.Close()
 	abort := func() {

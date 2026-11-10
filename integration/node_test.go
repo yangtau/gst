@@ -367,7 +367,7 @@ func (n *node) waitLink(destination, state string) wire.LinkState {
 func (n *node) nodes() wire.Topology {
 	n.t.Helper()
 	var topo wire.Topology
-	n.call(wire.MethodNodes, nil, &topo)
+	n.call(wire.MethodTopology, nil, &topo)
 	return topo
 }
 
@@ -393,8 +393,8 @@ func self(topo wire.Topology) wire.TopoNode {
 
 // path names the machines on the way to node, from n's machine.
 func path(topo wire.Topology, node wire.TopoNode) string {
-	names := make([]string, len(node.Path))
-	for i, id := range node.Path {
+	names := make([]string, len(node.Route))
+	for i, id := range node.Route {
 		for _, v := range topo.Nodes {
 			if v.ID == id {
 				names[i] = v.Name

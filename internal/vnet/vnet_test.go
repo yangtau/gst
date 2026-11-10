@@ -31,7 +31,7 @@ func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
 // macOS routes a machine's own address into the interface, and only this
 // brings such packets back.
-func TestPacketsToThisMachine(t *testing.T) {
+func TestPacketsToThisNode(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
@@ -59,17 +59,17 @@ func TestConflict(t *testing.T) {
 	subnet := prefix("192.168.199.0/24")
 	for _, c := range []struct {
 		name     string
-		networks Networks
+		networks UsedPrefixes
 		want     string // what conflicts; none when empty
 	}{
-		{"a network inside", Networks{Interfaces: []netip.Prefix{prefix("192.168.199.0/25")}}, "192.168.199.0/25"},
-		{"a network around", Networks{Interfaces: []netip.Prefix{prefix("192.168.0.0/16")}}, "192.168.0.0/16"},
-		{"another network", Networks{Interfaces: []netip.Prefix{prefix("192.168.31.0/24")}}, ""},
-		{"a route inside", Networks{Routes: []netip.Prefix{prefix("192.168.199.7/32")}}, "192.168.199.7/32"},
-		{"the same route", Networks{Routes: []netip.Prefix{prefix("192.168.199.0/24")}}, "192.168.199.0/24"},
+		{"a network inside", UsedPrefixes{Interfaces: []netip.Prefix{prefix("192.168.199.0/25")}}, "192.168.199.0/25"},
+		{"a network around", UsedPrefixes{Interfaces: []netip.Prefix{prefix("192.168.0.0/16")}}, "192.168.0.0/16"},
+		{"another network", UsedPrefixes{Interfaces: []netip.Prefix{prefix("192.168.31.0/24")}}, ""},
+		{"a route inside", UsedPrefixes{Routes: []netip.Prefix{prefix("192.168.199.7/32")}}, "192.168.199.7/32"},
+		{"the same route", UsedPrefixes{Routes: []netip.Prefix{prefix("192.168.199.0/24")}}, "192.168.199.0/24"},
 		// A VPN that takes all addresses, in halves, apart from private
 		// networks, which go to the local router.
-		{"wider routes", Networks{Routes: []netip.Prefix{prefix("128.0.0.0/1"), prefix("192.168.0.0/16")}}, ""},
+		{"wider routes", UsedPrefixes{Routes: []netip.Prefix{prefix("128.0.0.0/1"), prefix("192.168.0.0/16")}}, ""},
 	} {
 		p, found := conflict(subnet, c.networks)
 		if got := map[bool]string{true: p.String()}[found]; got != c.want {
@@ -86,25 +86,25 @@ func TestChooseSubnet(t *testing.T) {
 	if b, _ := chooseSubnet("one", nil); b != a {
 		t.Fatal("the choice is not stable")
 	}
-	used := []Networks{{Interfaces: []netip.Prefix{a, prefix("192.168.1.0/24")}}}
+	used := []UsedPrefixes{{Interfaces: []netip.Prefix{a, prefix("192.168.1.0/24")}}}
 	b, ok := chooseSubnet("one", used)
 	if !ok || b == a {
 		t.Fatalf("chose %v, %v with %v in use", b, ok, a)
 	}
 	// All of 10/8 in use leaves the rest.
-	c, ok := chooseSubnet("one", []Networks{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8")}}})
+	c, ok := chooseSubnet("one", []UsedPrefixes{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8")}}})
 	if !ok || !prefix("172.16.0.0/12").Contains(c.Addr()) {
 		t.Fatalf("chose %v, %v", c, ok)
 	}
-	if d, ok := chooseSubnet("one", []Networks{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8"), prefix("172.16.0.0/12")}}}); ok {
+	if d, ok := chooseSubnet("one", []UsedPrefixes{{Interfaces: []netip.Prefix{prefix("10.0.0.0/8"), prefix("172.16.0.0/12")}}}); ok {
 		t.Fatalf("chose %v with nothing free", d)
 	}
 	// A wide route may lead to machines, so it is avoided when it can be,
 	// but it takes no addresses.
-	if d, ok := chooseSubnet("one", []Networks{{Routes: []netip.Prefix{prefix("10.0.0.0/8")}}}); !ok || !prefix("172.16.0.0/12").Contains(d.Addr()) {
+	if d, ok := chooseSubnet("one", []UsedPrefixes{{Routes: []netip.Prefix{prefix("10.0.0.0/8")}}}); !ok || !prefix("172.16.0.0/12").Contains(d.Addr()) {
 		t.Fatalf("chose %v, %v beside a route to 10.0.0.0/8", d, ok)
 	}
-	if d, ok := chooseSubnet("one", []Networks{{Routes: []netip.Prefix{prefix("0.0.0.0/1"), prefix("128.0.0.0/1")}}}); d != a || !ok {
+	if d, ok := chooseSubnet("one", []UsedPrefixes{{Routes: []netip.Prefix{prefix("0.0.0.0/1"), prefix("128.0.0.0/1")}}}); d != a || !ok {
 		t.Fatalf("chose %v, %v beside routes to all addresses", d, ok)
 	}
 }
@@ -127,11 +127,11 @@ func TestChooseAddress(t *testing.T) {
 	}
 }
 
-func TestLocalNetworksLeaveOutWhatCannotConflict(t *testing.T) {
-	n := LocalNetworks("")
+func TestLocalPrefixesLeaveOutWhatCannotConflict(t *testing.T) {
+	n := LocalPrefixes("")
 	for _, p := range slices.Concat(n.Interfaces, n.Routes) {
 		if p.Bits() == 0 || p.Addr().IsLoopback() || !p.Addr().Is4() {
-			t.Errorf("LocalNetworks has %s", p)
+			t.Errorf("LocalPrefixes has %s", p)
 		}
 	}
 }
@@ -268,7 +268,7 @@ type fakeMesh struct {
 	network  *netEntry // its own, while it is alone
 	changed  chan struct{}
 	handle   func(string, []byte)
-	networks wire.Networks
+	networks wire.UsedPrefixes
 	alone    bool   // sees no other node, and none sees it
 	sendAs   string // the id that packets seem to come from, when not empty
 }
@@ -293,19 +293,19 @@ func (m *fakeMesh) networkLocked() *netEntry {
 	return m.world.network
 }
 
-func (m *fakeMesh) Network() (wire.NetworkValue, bool) {
+func (m *fakeMesh) Subnet() (wire.SubnetValue, bool) {
 	m.world.mu.Lock()
 	defer m.world.mu.Unlock()
 	e := m.networkLocked()
 	if e == nil {
-		return wire.NetworkValue{}, false
+		return wire.SubnetValue{}, false
 	}
-	return wire.NetworkValue{Subnet: e.subnet}, true
+	return wire.SubnetValue{Subnet: e.subnet}, true
 }
 
 var orders atomic.Int64
 
-func (m *fakeMesh) SetNetwork(subnet string, manual bool) error {
+func (m *fakeMesh) SetSubnet(subnet string, manual bool) error {
 	e := &netEntry{subnet: subnet, manual: manual, order: orders.Add(1)}
 	if !manual {
 		e.order = -e.order
@@ -364,17 +364,17 @@ func (m *fakeMesh) HandlePackets(handle func(string, []byte)) {
 	defer m.world.mu.Unlock()
 	m.handle = handle
 }
-func (m *fakeMesh) PacketPath(string) string     { return wire.PathSSH }
+func (m *fakeMesh) PacketWay(string) string      { return wire.WayRelay }
 func (m *fakeMesh) PacketEndpoint(string) string { return "" }
 func (m *fakeMesh) Call(_ context.Context, ref, method string, _, result any) error {
-	if method != wire.MethodNetNetworks {
+	if method != wire.MethodNetPrefixes {
 		return errors.New("unknown method")
 	}
 	m.world.mu.Lock()
 	defer m.world.mu.Unlock()
 	for _, n := range m.world.nodes {
 		if n.info.ID == ref {
-			*result.(*wire.Networks) = n.networks
+			*result.(*wire.UsedPrefixes) = n.networks
 			return nil
 		}
 	}
@@ -475,7 +475,7 @@ func (n *testNode) run(t *testing.T, networks ...netip.Prefix) {
 			n.iface = f
 			return f, nil
 		},
-		Networks: func(string) Networks { return Networks{Interfaces: networks} },
+		UsedPrefixes: func(string) UsedPrefixes { return UsedPrefixes{Interfaces: networks} },
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -541,7 +541,7 @@ func up(n *testNode, peers int) func() bool {
 	}
 }
 
-func TestTwoMachines(t *testing.T) {
+func TestTwoNodes(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop", prefix("192.168.1.0/24"))
 	b := start(t, &w, "b0", "devbox")
@@ -561,7 +561,7 @@ func TestTwoMachines(t *testing.T) {
 		p := a.manager.Status().Peers[0]
 		return !p.Handshake.IsZero() && p.Sent > 0 && p.Received > 0
 	})
-	if p := a.manager.Status().Peers[0]; p.Name != "devbox" || p.Address != sb.Address || p.Path != wire.PathSSH {
+	if p := a.manager.Status().Peers[0]; p.Name != "devbox" || p.Address != sb.Address || p.Way != wire.WayRelay {
 		t.Fatalf("peer: %+v", p)
 	}
 	spec := a.device().current()
@@ -578,7 +578,7 @@ func TestTwoMachines(t *testing.T) {
 }
 
 func TestChoosingASubnetAsksTheOthers(t *testing.T) {
-	// Whatever the first choice would be, it is taken on the other machine.
+	// Whatever the first choice would be, it is taken on the other node.
 	var w world
 	first, _ := chooseSubnet("a0"+strings.Repeat("0", 30), nil)
 	w.add("b0", "devbox").networks.Interfaces = []string{first.String()}
@@ -593,12 +593,12 @@ func TestLatestSubnetWins(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
-	a.mesh.SetNetwork("10.50.0.0/16", true)
+	a.mesh.SetSubnet("10.50.0.0/16", true)
 	waitFor(t, "b follows", func() bool {
 		st := b.manager.Status()
 		return st != nil && st.Subnet == "10.50.0.0/16" && st.Interface != ""
 	})
-	b.mesh.SetNetwork("10.60.0.0/16", true)
+	b.mesh.SetSubnet("10.60.0.0/16", true)
 	waitFor(t, "a follows", func() bool {
 		st := a.manager.Status()
 		return st.Subnet == "10.60.0.0/16" && strings.HasPrefix(st.Address, "10.60.") && len(st.Peers) == 1
@@ -610,7 +610,7 @@ func TestLatestSubnetWins(t *testing.T) {
 	}
 }
 
-// A machine that picked a subnet on its own, before it knew of the others,
+// A node that picked a subnet on its own, before it knew of the others,
 // must not move the network it then joins.
 func TestAutomaticChoiceYields(t *testing.T) {
 	var w world
@@ -632,16 +632,16 @@ func TestAutomaticChoiceYields(t *testing.T) {
 	}
 
 	// Any choice of a person beats them.
-	lone.mesh.SetNetwork("10.55.0.0/16", true)
+	lone.mesh.SetSubnet("10.55.0.0/16", true)
 	waitFor(t, "a follows", func() bool { return a.manager.Status().Subnet == "10.55.0.0/16" })
 }
 
 func TestAddressConflict(t *testing.T) {
-	// Two machines that settled on one address, as after a merge of two
+	// Two nodes that settled on one address, as after a merge of two
 	// networks: the higher id moves.
 	var w world
 	a := start(t, &w, "a0", "laptop")
-	a.mesh.SetNetwork("10.70.0.0/16", true)
+	a.mesh.SetSubnet("10.70.0.0/16", true)
 	waitFor(t, "a is up", func() bool { return up(a, 0)() && a.manager.Status().Subnet == "10.70.0.0/16" })
 	address := a.manager.Status().Address
 
@@ -678,7 +678,7 @@ func TestStateSurvivesARestart(t *testing.T) {
 	}
 }
 
-// A new identity is a new machine, so it must not share the old one's key
+// A new identity is a new node, so it must not share the old one's key
 // or address. The subnet stays, as it belongs to the network.
 func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
 	var w world
@@ -705,7 +705,7 @@ func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
 		t.Fatalf("state: %s, %v", data, err)
 	}
 
-	// The two machines find each other again by the new key.
+	// The two nodes find each other again by the new key.
 	w.changed()
 	waitFor(t, "a is up", up(a, 1))
 	waitFor(t, "b knows the new key", up(b, 1))
@@ -753,9 +753,9 @@ func TestANewIdentityThatCannotBeSaved(t *testing.T) {
 	wantPacket(t, b, a, "back")
 }
 
-// The node that a packet seems to come from may be wrong: two machines
+// The node that a packet seems to come from may be wrong: two nodes
 // behind one NAT can have the same source. The answers still go to the
-// machine that WireGuard knows, not to that node.
+// node that WireGuard knows, not to that node.
 func TestPacketsFromTheWrongNode(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
@@ -793,8 +793,8 @@ func TestProblemsAreReported(t *testing.T) {
 			}
 			return newFakeInterface(spec), nil
 		},
-		Networks: func(string) Networks {
-			return Networks{Routes: []netip.Prefix{prefix("10.80.0.0/24"), prefix("128.0.0.0/1")}}
+		UsedPrefixes: func(string) UsedPrefixes {
+			return UsedPrefixes{Routes: []netip.Prefix{prefix("10.80.0.0/24"), prefix("128.0.0.0/1")}}
 		},
 	})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -813,13 +813,13 @@ func TestProblemsAreReported(t *testing.T) {
 	if !strings.Contains(st.Hint, "gst up") || st.Interface != "" {
 		t.Fatalf("without the helper: %+v", st)
 	}
-	// The other machines must not send to a machine that cannot answer.
+	// The other nodes must not send to a node that cannot answer.
 	if published(&w, mesh) != nil {
 		t.Fatal("published the machine without an interface")
 	}
 
 	helper.Store(true)
-	mesh.SetNetwork("10.80.0.0/16", true)
+	mesh.SetSubnet("10.80.0.0/16", true)
 	m.Configure(t.Context())
 	st = m.Status()
 	if published(&w, mesh) == nil {
@@ -868,9 +868,9 @@ func TestBind(t *testing.T) {
 	}
 }
 
-// Members that are offline keep their addresses, and the name of one
+// Nodes that are offline keep their addresses, and the name of one
 // that has an address in the subnet resolves.
-func TestOfflineMembers(t *testing.T) {
+func TestOfflineNodes(t *testing.T) {
 	subnet := "10.90.0.0/16"
 	topo := wire.Topology{Self: "a", Subnet: subnet, Nodes: []wire.TopoNode{
 		{ID: "a", Name: "laptop", Net: &wire.NodeNet{Address: "10.90.0.1"}},

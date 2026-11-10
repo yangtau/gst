@@ -11,7 +11,7 @@ mesh 分三层，每层只用它下面的层：
 │ ③ 路由层  send(to, msg)：按路由表逐跳转发；请求 / 应答 / 包         │
 │           路由表由状态层里的链路图算出                              │
 ├────────────────────────────────────────────────────────────────┤
-│ ② 状态层  全网复制的一张表：node/<id>、removed/<id>、network       │
+│ ② 状态层  全网复制的一张表：node/<id>、removed/<id>、subnet        │
 │           只和相邻机器说话：连上时互发整张表，之后洪泛变化           │
 ├────────────────────────────────────────────────────────────────┤
 │ ① 链路层  SSH 链路：到一台相邻机器的、有序可靠的帧管道               │
@@ -22,9 +22,9 @@ mesh 分三层，每层只用它下面的层：
 | --- | --- | --- | --- | --- |
 | ① 链路 | 发一帧（`urgent` 与否）、收到的帧、对端是谁 | SSH | 帧里是什么、网络里还有谁 | `internal/mesh/link` |
 | ② 状态 | 表的读写、变化通知，按条目类型合并 | 链路 | 消息怎么转发 | `internal/mesh/state` |
-| ③ 路由 | `Call(ctx, to, method, params)`、`Handle(method, fn)`、`SendPacket(to, packet)` | 链路、状态算出的路由 | 状态怎么同步、谁是成员 | `internal/mesh/route` |
+| ③ 路由 | `Call(ctx, to, method, params)`、`Handle(method, fn)`、`SendPacket(to, packet)` | 链路、状态算出的路由 | 状态怎么同步、谁在网络里 | `internal/mesh/route` |
 
-**状态层在路由层下面**，和 OSPF 一样：先靠相邻机器之间的同步得到全网的链路图，才算得出路由表。所以同步不经过路由，只在一条链路的两端之间进行；路由层的消息可以跨多跳。`internal/mesh` 的 `Node` 把三层接起来，并实现成员规则、UDP 打洞的信令和给人看的拓扑。
+**状态层在路由层下面**，和 OSPF 一样：先靠相邻机器之间的同步得到全网的链路图，才算得出路由表。所以同步不经过路由，只在一条链路的两端之间进行；路由层的消息可以跨多跳。`internal/mesh` 的 `Node` 把三层接起来，并实现加入与移除的规则、UDP 打洞的信令和拓扑。
 
 UDP 路径不是链路：它不运帧，只是两台机器之间给 WireGuard 包走的捷径（`internal/direct`）。虚拟网络（`internal/vnet`）是唯一的数据通路。
 
@@ -32,10 +32,10 @@ UDP 路径不是链路：它不运帧，只是两台机器之间给 WireGuard �
 
 | 概念 | 是什么 | 命令 |
 | --- | --- | --- |
-| **node**（机器） | 一台运行 gst 的机器，以 128 位随机 id 标识，名字只用于显示和寻址 | `gst name`、`gst status` |
-| **成员** | 表里有它的 `node` 条目、且没有被移除的机器。离线不影响成员身份 | `gst add`、`gst remove` |
+| **node**（用户叫 machine） | 机器上的 gst，以 128 位随机 id 标识，名字只用于显示和寻址。本文的“机器”只指计算机本身：网卡、路由、SSH 服务、系统服务 | `gst name`、`gst status` |
+| **网络** | 加入了、没有被移除的所有 node。node 在网络里，离线也在 | `gst add`、`gst remove` |
 | **link**（链路） | 本机到另一台 gst 机器的 SSH 连接，以 destination 区分，没有自己的名字 | `gst add`、`gst unlink` |
-| **UDP 路径** | 两台机器之间打洞得到的一对 `IP:port`，只运送 WireGuard 的包，不是 link | `gst status` |
+| **UDP 路径** | 两个 node 之间打洞得到的一对 `IP:port`，只运送 WireGuard 的包，不是 link | `gst status` |
 | **虚拟网络** | 一个私有网段，每台机器有 IP 地址和 `<machine>.gst` | `gst up`、`gst subnet` |
 
 ```
@@ -45,19 +45,19 @@ laptop ──link──► devbox
 
 homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由把包交给网卡，WireGuard 加密后经 UDP 路径发给 devbox，没有 UDP 路径时经 laptop 转发。homelab 不需要 devbox 的 SSH 凭据。
 
-用户看到的术语比这里少：machine（node）、link、network（mesh 和虚拟网络合称）、gst IP、direct / relay / offline（UDP 路径 / 沿 SSH link 转发 / 成员但此刻没有路）、network helper（helper）。node、peer、mesh、daemon、拓扑、握手、UDP 路径等只出现在 `-v`、日志和本文档中；术语表见 `AGENTS.md`。
+每个概念只用一个词。用户看到的词和代码里的词一一对应：machine ↔ node、network ↔ network、direct / relay ↔ way（`WayDirect` / `WayRelay`）、relay via X ↔ route（沿 link 经过的 node）、gst IP ↔ address、network helper ↔ helper。mesh、peer、拓扑、表、条目、代数、握手、UDP 路径只出现在代码、日志、`-v` 和本文档中；“路径”只指 UDP 路径，“网络”从不指网段（网段叫 subnet，机器上已占用的网段叫 used prefixes）。完整的术语表见 `AGENTS.md`。
 
 ## 决策
 
 - **mesh 不可关闭**：gst 本身就是 mesh。机器第一次写配置时生成 node 身份（`node.id`、`node.name`，名字默认取主机名）。别的机器绝不替它做设置：没有身份的机器拒绝 `gst peer-bridge`，要有人在那台机器上执行 `gst up`。
 - **up / down**：`gst down` 是 `gst up` 的逆操作：在配置里写 `down: true`，停止 daemon 并删除服务，再删除 helper；之后修改配置的命令不再启动 daemon，`gst peer-bridge` 也拒绝连接。`gst up` 清除它，启动 daemon，并处理 helper（见“虚拟网络”）。除 down 外，daemon 总在运行（即使没有 link），因为它要运行虚拟网络，并接受别人的 link。
-- **成员和在线分开**：机器加入后一直是成员，离线只是状态：名字照样解析，gst IP 照样占用，WireGuard 照样认识它，它一回来就能用。只有 `gst remove` 让它离开。
-- **link 只是连接方式**：`gst add` 管成员和 link，`gst unlink` 只删本机的一条 link，不通知任何机器，也不改变成员。
+- **在网络里和在线分开**：node 加入后一直在网络里，离线只是状态：名字照样解析，gst IP 照样占用，WireGuard 照样认识它，它一回来就能用。只有 `gst remove` 让它离开。
+- **link 只是连接方式**：`gst add` 管加入和 link，`gst unlink` 只删本机的一条 link，不通知任何 node，也不改变谁在网络里。
 - **最终一致**：不用共识；每类共享状态有一条写明的合并规则，任意两台机器连上就收敛。
 - **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`gst up` 装好 helper 就是加入，`gst down` 删除 helper 就是离开，所以没有单独的开关。
-- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。网络里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。任何成员都能移除任何成员。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务需要显式用 `gst expose` 暴露。
+- **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。网络里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。网络里任何 node 都能移除任何 node。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务需要显式用 `gst expose` 暴露。
 - **只有一条数据通路**：应用的数据只走 WireGuard，没有按连接中转字节流的第二条路。路由层只运送控制消息和 WireGuard 的包。
-- **SSH 决定成员**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
+- **SSH 决定谁在网络里**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
 ## 单进程 daemon
@@ -93,19 +93,19 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 }
 ```
 
-- `node.generation`：这台机器第几次加入网络，见[成员](#成员)。它和 id 一样是身份，所以在配置里，不在 `state.json` 里：表丢了可以从邻居补回来，代数丢了，这台机器会带着旧代数被当成已移除而拒绝。
+- `node.generation`：这台机器第几次加入网络，见[加入与移除](#加入与移除)。它和 id 一样是身份，所以在配置里，不在 `state.json` 里：表丢了可以从邻居补回来，代数丢了，这台机器会带着旧代数被当成已移除而拒绝。
 - link 的字段：
   - `destination`：ssh destination，每次连接用 `ssh -G [ssh_args] -- <destination>` 解析（`GST_SSH_CONFIG` 设置时加 `-F`）；地址、用户、私钥、known_hosts、超时都来自 ssh 配置，link 不另设。每个 destination 最多一条 link，它就是 link 的标识。
   - `ssh_args`：`gst add` 里 `--` 之后的参数，原样保存。
   - `target`：这条 link 第一次握手时对方的 node id；为空表示还没连上过。同一个 `target` 最多一条 link：带 `admit` 的新 link 第一次连上时替换到同一台机器的旧 link；不带 `admit` 的 link（比如从旧配置来的）连上时发现已有别的 link 到同一台机器，就从配置里删掉自己，记一条日志。
   - `admit`：只在 `gst add` 之后、第一次握手成功之前存在，见[加入](#加入gst-add)。
 - **link id**：`config.LinkID(destination)`，destination 的 SHA-256 的前 6 字节（12 位十六进制），只用于日志（`link <id>: …`），不泄露 destination。
-- 网段不在配置里，在表的 `network` 条目里。
+- 网段不在配置里，在表的 `subnet` 条目里。
 - **旧版本**：版本 5 读取时丢掉 `remote_gst` 和 `net`（网段由网络重新选，或用 `gst subnet` 再设一次），下次写入时成为版本 6。更早的版本不转换：报错，说明要删除文件并重新 add。
 
 ## 机器寻址
 
-命令里的 `<machine>` 和 DNS 里的 `<machine>.gst` 按顺序解析，只在成员中查找：
+命令里的 `<machine>` 和 DNS 里的 `<machine>.gst` 按顺序解析，只在网络里的 node 中查找：
 
 1. 去掉末尾的 `.gst`；
 2. 节点 id；
@@ -124,7 +124,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 
 ```json
 {"protocol": 6, "software": "gst 0.7.0+a2ffc87", "role": "peer", "build": "sha256:…",
- "node": {"id": "…", "name": "laptop"}, "member": {"generation": 0, "admit": true}}
+ "node": {"id": "…", "name": "laptop"}, "membership": {"generation": 0, "admit": true}}
 ```
 
 | 字段 | 含义 |
@@ -134,7 +134,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `role` | `control`（CLI → 本机 daemon）或 `peer`（daemon ↔ daemon，一条 link） |
 | `build` | 可执行文件标识，CLI 用它判断 daemon 是否需要重启 |
 | `node` | `peer`：发送方是谁 |
-| `member` | `peer`：发送方的 `generation`，`admit`（这条 link 来自 `gst add`、还没连上过），拒绝时可带对方的移除记录 `removed` |
+| `membership` | `peer`：发送方的 `generation`，`admit`（这条 link 来自 `gst add`、还没连上过），拒绝时可带对方的移除记录 `removed` |
 | `error` | 仅出现在回复中：拒绝原因，随后连接关闭 |
 
 接收方忽略未知 JSON 字段。删除字段或改变字段含义必须提升协议版本。
@@ -155,12 +155,12 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | --- | --- | --- |
 | `daemon.status` | 无 | `Status`：software、build、pid、config、`node`、`links`（配置中的每条 link，按配置中的顺序：`destination`、`ssh_args`、state、since、error、reconnects、对端 `peer`）、`exposes`、`net`（`NetState`；daemon 不能运行网络时没有）、`removed`（本机被移除时：谁、什么时候） |
 | `daemon.reload` | 无 | 重新读取配置并同步后的 `Status` |
-| `mesh.nodes` | 无 | `Topology`，见[拓扑](#拓扑) |
+| `mesh.topology` | 无 | `Topology`，见[拓扑](#拓扑) |
 | `mesh.status` | `{"node": <machine>}` | 该机器 daemon 的 `Status`，经路由层调用它的 `status` |
 | `mesh.ping` | `{"node": <machine>}` | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经路由层调用一次 `ping`；`via` 是路由上的中间机器。`gst ping -v` 用它检查 link |
 | `mesh.remove` | `{"node": <machine>}` | `Removal`：`node`、`self`（移除的是本机）、`stranded`（只经它连到本机、移除后会离线的机器），见[移除](#移除gst-remove-machine) |
-| `mesh.subnet` | `{"subnet": cidr}` | 无：写入人选的 `network` 条目 |
-| `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "path": "direct" 或 "ssh", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
+| `mesh.subnet` | `{"subnet": cidr}` | 无：写入人选的 `subnet` 条目 |
+| `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近一次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
 
 link 状态：`connecting`（建立 SSH 与握手中）、`running`（握手完成）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
@@ -177,7 +177,7 @@ link 状态：`connecting`（建立 SSH 与握手中）、`running`（握手完�
    ```
 
    也就是 `gst up` 放好的那份 gst，没有时用 `PATH` 里的。`sh -c` 让它不受登录 shell 的影响。peer-bridge 把标准输入输出接到服务器 daemon 的 control socket；服务器还没有 node 身份或 `down` 时报错退出（`gst is not up on this machine`），`gst add` 看到这个错误后提示在那台机器上执行 `gst up`，并给出 `ssh -t` 的命令，但不替用户执行；link 保留，之后自动连上。daemon 只是意外停止或运行别的 gst 时，peer-bridge 重启它。远端 gst 失败时，其 stderr 的第一行出现在 `Status` 的 error 中，不进日志。
-3. 双方以 `peer` 角色握手，30 秒内完成。接收方检查发起方，拒绝时在回复的 `Hello` 里带 `error`；发起方检查接收方，拒绝时发一个 `bye` 帧再关闭。两边检查的内容一样：协议版本、不是自己、成员规则（见[成员](#成员)）。
+3. 双方以 `peer` 角色握手，30 秒内完成。接收方检查发起方，拒绝时在回复的 `Hello` 里带 `error`；发起方检查接收方，拒绝时发一个 `bye` 帧再关闭。两边检查的内容一样：协议版本、不是自己、加入与移除的规则（见[加入与移除](#加入与移除)）。
 4. 握手之后双方把整张表发给对方（[同步](#同步)），link 进入 running。
 
 SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒时带回的移除记录可能让本机改变代数后立即可以通过（见[加入](#加入gst-add)），这时 daemon 立即重试一次，不等退避。
@@ -196,7 +196,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | 1 | `sync` | `{"entries": [...]}`，一批表的条目 | 状态层 |
 | 2 | `msg` | 一条路由消息，见下文的路由层 | 路由层 |
 | 3 | `alive` | 空 | 链路层 |
-| 4 | `bye` | `{"error": …, "member": …}`：主动结束的原因，可带移除记录 | 链路层 |
+| 4 | `bye` | `{"error": …, "membership": …}`：主动结束的原因，可带移除记录 | 链路层 |
 
 - body 不超过 1 MiB。链路层只按 `type` 分发，不解析 `sync` 和 `msg` 的内容。
 - **保活**：15 秒没发过任何帧就发一个 `alive`；45 秒一个字节都没收到，link 结束（收到大帧的一部分也算，慢 link 上的大批同步不会被当成断开）。
@@ -235,26 +235,26 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 ```
 
 - `version` 是 `[generation, seq]`，先比 `generation`，相同再比 `seq`。
-- **`seq`**：内容变化（改名、link 建立或断开、换地址）时加大，取 max(上次 + 1, 当前 Unix 纳秒, 表里自己条目的 seq + 1)。所以 `seq` 也就是这台机器最后一次发布的时间：别的机器用它显示离线成员 `offline, seen 3h ago`。在线的机器每 10 分钟重新发布一次，精度是 10 分钟。这是唯一的定时发布，只用于显示：没有东西会因为它旧而过期。
+- **`seq`**：内容变化（改名、link 建立或断开、换地址）时加大，取 max(上次 + 1, 当前 Unix 纳秒, 表里自己条目的 seq + 1)。所以 `seq` 也就是这台机器最后一次发布的时间：别的机器用它显示离线的 node `offline, seen 3h ago`。在线的机器每 10 分钟重新发布一次，精度是 10 分钟。这是唯一的定时发布，只用于显示：没有东西会因为它旧而过期。
 - **`generation`**：这台机器第几次加入网络。一直是 0，只有被移除之后又被 `gst add` 加回来时才加 1，存在配置里。只有 `seq` 的话，移除记录只能写成"`seq` 不超过 N 的都作废"，被移除的机器在收到消息之前继续发布更大的 `seq`，又回到网络里；`generation` 只在有人执行 `gst add` 时才变，所以移除压得住这一代的所有条目。
 - `links` 是此刻 running 的 link，`opened` 表示是不是本机发起的。`net` 在本机还没进入虚拟网络时为空。
 - 收到自己的条目、版本比自己发布的大（`state.json` 丢了、或旧进程发布过）时，用更大的 `seq` 重新发布；代数更大时先采用那个代数。
 
 #### `removed/<id>`：一条移除记录
 
-- 任何成员都能写（`gst remove`）。
+- 网络里任何 node 都能写（`gst remove`）。
 - 版本 `[generation]`：被移除时那台机器的代数。值 `{"by": <id>, "by_name": <名字>, "at": <时间>}`，`by_name` 让被移除的机器在忘掉整个网络之后还能说出是谁移除了它。版本相同而值不同时（两台机器同时移除它），`at` 较早的胜，再相同则 `by` 较小的胜。
-- 生效：`node/<id>` 的 `generation` 不大于移除记录的版本，这台机器就不是成员，它的 `node` 条目从表里删除、也不再接受和转发。
+- 生效：`node/<id>` 的 `generation` 不大于移除记录的版本，这个 node 就不在网络里了，它的 `node` 条目从表里删除、也不再接受和转发。
 - 永久保存。每条几十字节；如果回收，长期离线的机器回来时会把被移除的机器带回网络。
 
-#### `network`：网络的 subnet
+#### `subnet`：网络的 subnet
 
-- 任何成员都能写：`gst subnet`，或网络里第一台机器自动选。
+- 网络里任何 node 都能写：`gst subnet`，或网络里第一台机器自动选。
 - 值 `{"subnet": "10.99.0.0/16"}`，版本 `[kind, order]`：
   - 人选的 `kind` 为 1，网络自动选的为 0，独自一台的机器自动选的为 −1。人选的总是胜过自动选的，网络的胜过独自一台的。
   - 人选的 `order` = max(当前 Unix 纳秒, 见过的最大人选 order + 1)：在看到别人的选择之后再选，一定胜出，不受时钟偏差影响。
   - 自动选的 `order` = −(当前 Unix 纳秒)，更早的胜：两个网络合并时，先有的网络保留它的 subnet。
-  - 自动选的总是先写成 −1；表里有了另一个没被移除的成员，节点就把它原样升为 `[0, order]`（同一条升级在各节点上结果相同，不会来回覆盖）。所以一台很早就独自 `gst up` 的机器被加进网络时，它的选择输给网络的，不会把整个网络搬走。这依赖同步的顺序：表按键排序发送，`network` 排在 `node/…` 之前，新加入的节点先收到网络的选择，再看到其他成员。
+  - 自动选的总是先写成 −1；表里有了另一个没被移除的 node，节点就把它原样升为 `[0, order]`（同一条升级在各节点上结果相同，不会来回覆盖）。所以一台很早就独自 `gst up` 的机器被加进网络时，它的选择输给网络的，不会把整个网络搬走。这依赖同步的顺序：整张表发送时 `subnet` 条目排在最前，新加入的 node 先收到网络的选择，再看到其他 node。
   - 版本相同时，subnet 字符串较小的胜。
 
 ### 同步
@@ -294,7 +294,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 ### 转发和路由表
 
 - 每台机器收到 `to` 不是自己的消息，查路由表找到下一跳，从到它的最新 link 发出；没有路由时，对请求回一个 `unreachable` 的应答，对包直接丢弃。
-- 路由表由本机从表里算：图的边是本机此刻 running 的 link，加上两端的 `node` 条目都列出对方的两台其他成员之间的 link（只有一端列出时不算：失去 link 的一端可能已经无法把新条目传出来）。按跳数做逐层的 BFS，跳数相同时取 id 较小的第一跳，所以结果是确定的。表或 link 变化时重算。
+- 路由表由本机从表里算：图的边是本机此刻 running 的 link，加上两端的 `node` 条目都列出对方的两个其他 node 之间的 link（只有一端列出时不算：失去 link 的一端可能已经无法把新条目传出来）。按跳数做逐层的 BFS，跳数相同时取 id 较小的第一跳，所以结果是确定的。表或 link 变化时重算。
 - 中间的机器只转发，从不改走 UDP 路径：是否用 UDP 路径只由两端决定（见[UDP 路径](#udp-路径)）。
 
 ### 调用
@@ -308,25 +308,25 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方寻找 UDP 路径 |
 | `direct.update` | `DirectOffer`（运行中路径的 token 和调用方现在的地址） | 无；被调方加入这些地址，重新测量这条路径 |
 | `direct.trace` | 无 | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次寻找 UDP 路径的过程 |
-| `net.networks` | 无 | `{"interfaces": [...], "routes": [...]}`：被调方网卡的网段和路由的目的网段（IPv4），供选择网段时避开 |
+| `net.prefixes` | 无 | `UsedPrefixes`：`{"interfaces": [...], "routes": [...]}`，被调方网卡的网段和路由的目的网段（IPv4），供选择网段时避开 |
 
 ### 拓扑
 
-`Topology`（`mesh.nodes`、`gst status`、`gst ui`）由查看方从表算出：
+`Topology`（`mesh.topology`、`gst status`、`gst ui`）由查看方从表算出：
 
-- `nodes`：所有成员（id、name、software、`reachable`：有路由、`path`：路由上的节点 id、`direct`：有 UDP 路径、`seen`：`seq` 换算的时间、`net`），本机排第一。本机 link 的对端还不在表里时，也先列出来。
-- `edges`：本机 running 的 link，加上两端都列出对方的其他 link，方向从发起方到接受方。
-- `subnet`：`network` 条目的网段。
+- `nodes`：网络里所有的 node（id、name、software、`reachable`：有路由、`route`：路由上的 node id、`direct`：有 UDP 路径、`seen`：`seq` 换算的时间，和本机发现它离线的时间取较晚的、`net`），本机排第一。本机 link 的对端还不在表里时，也先列出来。
+- `links`：本机 running 的 link，加上两端都列出对方的其他 link，方向从发起方到接受方。
+- `subnet`：`subnet` 条目的网段。
 
-一台成员 `reachable` 或 `direct` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告。
+一个 node `reachable` 或 `direct` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告。
 
-## 成员
+## 加入与移除
 
 ### 规则
 
-- **成员**：表里有 `node/<id>`，且没有压过它的 `removed/<id>`。
+- **在网络里**：表里有 `node/<id>`，且没有压过它的 `removed/<id>`。
 - **在线**：本机现在有到它的路由，或有到它的 UDP 路径。
-- **离线**：成员但不在线。名字照样解析，gst IP 照样占用，WireGuard 照样认识它。
+- **离线**：在网络里但不在线。名字照样解析，gst IP 照样占用，WireGuard 照样认识它。
 
 握手时双方都按这些规则检查对方：
 
@@ -372,7 +372,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | B 和 X 都不知道，回来后 B 先连上 X | 暂时组成一个小岛；任意一方连上知情的机器后收敛 |
 | B 离线期间，X 被移除又被 `add` 回来 | B 手里 X 的代数较旧；互发表之后按代数收敛到新的 |
 | 两台机器同时 `remove X` | 两条记录版本相同，按 `at`、`by` 留下同一条 |
-| 一台 `remove X`，另一台同时对已是成员的 X 执行 `add` | 不提升代数，移除胜 |
+| 一台 `remove X`，另一台同时对已在网络里的 X 执行 `add` | 不提升代数，移除胜 |
 | 网络分开时一边移除了 X | 合并后移除记录胜，另一边也移除 X |
 
 ## UDP 路径
@@ -393,7 +393,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 - **区分对端**：probe、answer、bye 靠 token 找到路径。WireGuard 的包靠来源 `IP:port` 找到路径，只有用 token 证明过的来源才放行，其余丢弃。这个归属不一定准：同一个 NAT 后的两台机器访问本机不同的 IP 时，来源可能相同。所以 WireGuard 关掉了 roaming，endpoint 始终是 node id，包的来源只用于投递；解密靠 WireGuard 自己的索引，回包不会被这种归属带偏。
 - **候选地址**：系统发包用的源地址排在最前（向公网地址 connect 一个 UDP socket，再读本地地址，不发包），然后是本机所有接口上的地址（跳过回环和 link-local，每个地址族最多 8 个），加上最近 10 分钟别的节点看到的本机地址（最多 4 个）。源地址必须在列：socket 是通配的，不管探测发到本机哪个地址，回包都从这个地址出去，而对方的防火墙只放行它发过包的地址。只排除 gst 网段里的地址，否则包会钻进它自己组成的路径：提供、收到和从来包学到的地址都过滤。
 - **换网络**：每 5 秒检查一次本机地址和绑定的网卡。有变化时清掉退避和别的节点看到的本机地址，所有运行中的路径从头测量，并经 `direct.update` 把新地址告诉对方。
-- **谁用**：只有成员之间，只运送两端自己的包。是否走 UDP 路径由 `Node.SendPacket` 决定：有路径就直接发，否则交给路由层；中间的机器只按路由表转发，从不改走自己的 UDP 路径。
+- **谁用**：只在网络里的 node 之间，只运送两端自己的包。是否走 UDP 路径由 `Node.SendPacket` 决定：有路径就直接发，否则交给路由层；中间的机器只按路由表转发，从不改走自己的 UDP 路径。
 - **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 的包和 `-v` 也会）。尝试不阻塞包。失败或路径因对方沉默而结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。一方主动关闭的路径（空闲、对方被移除、新 offer 顶替）不算失败，不等待。
 - **信令**：发起方经路由层调用对方的 `direct.offer`。`DirectOffer` 是 `{"token": …, "addresses": ["IP:port", …]}`，调用方是谁由消息的 `from` 得知，响应是对方的 `addresses`。被移除的机器发来的 offer、或本机已被移除时收到的 offer 一律拒绝。候选地址只出现在这次调用中，不进表，不进日志。
 - **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的路径，说明它已失效，先关闭。
@@ -407,21 +407,21 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 
 ## 虚拟网络
 
-虚拟网络（`internal/vnet`）让机器在一个私有网段里互相用 IP 通信，是 gst 唯一的数据通路。机器身份、成员、路径和信令都来自 mesh，所以没有协调服务器。
+虚拟网络（`internal/vnet`）让机器在一个私有网段里互相用 IP 通信，是 gst 唯一的数据通路。node 的身份、谁在网络里、UDP 路径和信令都来自 mesh，所以没有协调服务器。
 
 ```
 程序 ── 网卡（utun / gst0）── wireguard-go ── bind ── Node.SendPacket ─┬─ UDP 路径
                                                                        └─ 路由层的包消息
 ```
 
-- **WireGuard**：daemon 里跑 wireguard-go，加密和重放保护都用它的。mesh 对它来说是一张网（`conn.Bind`）：endpoint 是 node id，不是地址，所以路径怎么变都不需要 WireGuard 知道，切换时不用重新握手，也不用 PersistentKeepalive（打洞由 probe 维持）。私钥只在 `net.json`（control socket 旁边，`0600`），公钥在 `node` 条目的 `net` 里，信任来自 SSH。WireGuard 的 peer 是所有带 `net`、地址在当前网段里的成员，包括离线的：它们一回来就能通。
+- **WireGuard**：daemon 里跑 wireguard-go，加密和重放保护都用它的。mesh 对它来说是一张网（`conn.Bind`）：endpoint 是 node id，不是地址，所以路径怎么变都不需要 WireGuard 知道，切换时不用重新握手，也不用 PersistentKeepalive（打洞由 probe 维持）。私钥只在 `net.json`（control socket 旁边，`0600`），公钥在 `node` 条目的 `net` 里，信任来自 SSH。WireGuard 的 peer 是所有带 `net`、地址在当前网段里的 node，包括离线的：它们一回来就能通。
 - **路径**：`Node.SendPacket` 有 UDP 路径就直接发，否则作为路由层 kind 3 的消息逐跳转发，进每条 link 的普通队列。包在 mesh 上不需要保护：途中只有密文，丢了就是丢了。队列满时丢包，和拥塞的网络一样。
 - **MTU**：网卡 MTU 是 1168，加上 WireGuard 的 32 字节是 1200 字节的 UDP 载荷，几乎所有路径都能承载，所以不需要路径 MTU 发现。
-- **网段**：表的 `network` 条目，合并规则见[状态层](#network网络的-subnet)：人选的胜过自动选的，自动选的之间最早的留下，所以一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。`gst subnet` 经 `mesh.subnet` 写入人选的条目。表里还没有 `network` 时，第一个进入虚拟网络的节点用 `net.networks` 问所有能到达的节点各自的网卡和路由，选一个 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）：先找和这些网段都不重叠的，因为宽路由后面也可能有机器；找不到时只避开冲突的。冲突指网卡的网段和它重叠，或者路由落在它里面（前缀不短于它）。更宽的路由输给网段自己更窄的那条，不占它的地址：VPN 常把所有地址分成几半来路由，有的还把所有私网路由给本地路由器，这时没有一个网段完全不重叠。网段和本机其他网络冲突时不阻止运行，只报告。
+- **网段**：表的 `subnet` 条目，合并规则见[状态层](#subnet网络的-subnet)：人选的胜过自动选的，自动选的之间最早的留下，所以一台新机器在还不知道别人时选的网段，不会把已有的网络搬走。`gst subnet` 经 `mesh.subnet` 写入人选的条目。表里还没有 `subnet` 条目时，第一个进入虚拟网络的节点用 `net.prefixes` 问所有能到达的节点各自的网卡和路由，选一个 `/16`（优先 `10.64.0.0` 到 `10.255.0.0`，起点由 node id 决定）：先找和这些网段都不重叠的，因为宽路由后面也可能有机器；找不到时只避开冲突的。冲突指网卡的网段和它重叠，或者路由落在它里面（前缀不短于它）。更宽的路由输给网段自己更窄的那条，不占它的地址：VPN 常把所有地址分成几半来路由，有的还把所有私网路由给本地路由器，这时没有一个网段完全不重叠。网段和本机其他网络冲突时不阻止运行，只报告。
 - **gst ping**：每个 daemon 在自己的网络地址上监听 UDP 端口 15354，把收到的包原样发回。发送方是普通的 UDP socket，所以包经过路由、网卡、WireGuard 和实际路径，和程序的包完全一样：有回复说明这些都通，时间就是程序感受到的延迟。标签来自回复时的路径。`-s` 指定包的大小，超过网卡 MTU 时分片。
 - **本机地址**：Linux 自己投递发往本机地址的包。macOS 把 utun 的地址路由进 utun，这些包到了 WireGuard，而 WireGuard 没有这个地址的 peer，所以 `vnet` 在 WireGuard 之前把它们写回网卡（`loopback`）。
-- **地址**：每台机器在自己的 `node` 条目里写 `net.address`，由 node id 的哈希决定，必须在当前网段里；和别的成员冲突时 id 较小的保留，较大的重选。离线的成员仍然占着它的地址；地址不在当前网段里的成员（网段换了，它还没回来）暂时不解析、不进 WireGuard，回来后自己换地址。地址和私钥存在 `net.json`，重启后不变。私钥和地址属于一个身份，`net.json` 记下这个 node id；id 变了就换新私钥、重选地址，否则别的机器手里旧身份的条目会和新身份共用一把公钥。
-- **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 id 前缀也能用）：成员（包括离线的）返回 A 记录，TTL 10 秒；不是成员时 `NXDOMAIN`，名字存在但没有该类型的记录（如 AAAA）时空应答，两者都附 SOA，否定缓存 5 秒；虚拟网络还没起来时 `SERVFAIL`。DNS 的 socket 在 daemon 运行期间一直打开，不随虚拟网络开关。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。
+- **地址**：每台机器在自己的 `node` 条目里写 `net.address`，由 node id 的哈希决定，必须在当前网段里；和别的 node 冲突时 id 较小的保留，较大的重选。离线的 node 仍然占着它的地址；地址不在当前网段里的 node（网段换了，它还没回来）暂时不解析、不进 WireGuard，回来后自己换地址。地址和私钥存在 `net.json`，重启后不变。私钥和地址属于一个身份，`net.json` 记下这个 node id；id 变了就换新私钥、重选地址，否则别的机器手里旧身份的条目会和新身份共用一把公钥。
+- **名字**：daemon 在 `127.0.0.1:15353` 回答 `.gst` 的 A 记录（`mesh.FindNode`，所以 id 前缀也能用）：网络里的 node（包括离线的）返回 A 记录，TTL 10 秒；不在网络里时 `NXDOMAIN`，名字存在但没有该类型的记录（如 AAAA）时空应答，两者都附 SOA，否定缓存 5 秒；虚拟网络还没起来时 `SERVFAIL`。DNS 的 socket 在 daemon 运行期间一直打开，不随虚拟网络开关。macOS 用 `/etc/resolver/gst`，有 systemd-resolved 的 Linux 用 drop-in（`Domains=~gst`），其他 Linux 写 `/etc/hosts` 中 `# gst begin` 到 `# gst end` 之间的部分。
 - **helper**（`internal/tun`）：daemon 以用户身份运行，创建网卡、地址、路由和 DNS 配置需要 root，由系统服务（`gst net-helper --user NAME`）完成。`gst up` 用 `gst helper-version` 询问 root 那份 gst 的 `tun.HelperVersion`，这一步不需要 root；helper 缺失、版本不同或没有在监听时，它显示要执行的 `sudo <gst 的绝对路径> install --user NAME` 和这条命令的改动，询问后在当前终端执行，密码由 sudo 询问。版本号只在 helper 的代码或 daemon 对它的要求变化时提高，所以普通升级不需要 root。`gst down` 经同一个 socket 发 `Spec{Remove: true}`，不需要 root：这条消息没有参数，只能让 helper 删除固定路径上的服务和那份 gst。helper 先删文件，回复，最后让服务管理器停止自己，因为这一步会结束进程。helper 没有应答时，`gst down` 才说明并询问后用 `sudo <gst> uninstall`。它运行 root 拥有的一份 gst（Linux `/usr/local/libexec/gst-net`，macOS `/Library/PrivilegedHelperTools/local.gst.net`），绝不运行用户可写的文件。daemon 经 `/var/run/gst-net.sock`（属于该用户，`0600`）发 `Spec`（子网、地址、hosts），helper 校验后执行，把打开的设备用 `SCM_RIGHTS` 交给 daemon；包都在 daemon 里处理，helper 不碰。Spec 只能配置私有网段里的一个地址和 `.gst` 下的名字。网卡的生命周期是这条连接：daemon 退出，helper 撤销一切。新 daemon 连上时取代旧的。daemon 每轮重发 Spec，内容相同时什么也不做，兼作存活检查。
 - **管理循环**：`vnet.Manager` 在拓扑变化、配置变化和每 5 秒时比较一遍：算网段和地址、发布自己的 `net`、调 helper、同步 WireGuard 的 peer。`gst subnet` 写入条目后等 `Status` 反映新网段再返回。没有 helper 或网段重叠是 `NetState` 里的 `error` 和 `hint`，不是失败退出，装好 helper 后下一轮就启动。
 - **没有 IPv6**：网段只有 IPv4，AAAA 返回空。

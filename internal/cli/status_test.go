@@ -27,7 +27,7 @@ func devboxStatus() wire.Status {
 	}
 }
 
-func TestStatusOfAnotherMachine(t *testing.T) {
+func TestStatusOfAnotherNode(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(node string) (wire.Status, error) { return devboxStatus(), nil }
 	e.mustGst("up")
@@ -50,7 +50,7 @@ func TestStatusOfAnotherMachine(t *testing.T) {
 	}
 }
 
-func TestStatusOfAMachineWithNothingConfigured(t *testing.T) {
+func TestStatusOfANodeWithNothingConfigured(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(string) (wire.Status, error) {
 		return wire.Status{Software: "gst 0.4.0", Node: wire.NodeInfo{ID: nodeID("cccc3333"), Name: "far"}}, nil
@@ -61,7 +61,7 @@ func TestStatusOfAMachineWithNothingConfigured(t *testing.T) {
 	}
 }
 
-func TestStatusMachineReference(t *testing.T) {
+func TestStatusNodeReference(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(string) (wire.Status, error) { return wire.Status{}, nil }
 	for _, tc := range []struct{ arg, node string }{
@@ -86,7 +86,7 @@ func TestStatusMachineReference(t *testing.T) {
 	}
 }
 
-func TestStatusOfAnotherMachineErrors(t *testing.T) {
+func TestStatusOfAnotherNodeErrors(t *testing.T) {
 	e := newEnv(t)
 	e.back.nodeStatus = func(string) (wire.Status, error) {
 		return wire.Status{}, errors.New(`no machine "nowhere" in the network`)
@@ -103,7 +103,7 @@ func lines(out string) []string {
 	return ls
 }
 
-func TestStatusListsTheMachines(t *testing.T) {
+func TestStatusListsTheNodes(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
@@ -113,7 +113,7 @@ func TestStatusListsTheMachines(t *testing.T) {
 	if want := []string{"nodes"}; !slices.Equal(e.back.calls, want) {
 		t.Fatalf("calls %v, want %v; this machine is asked directly", e.back.calls, want)
 	}
-	// One line per machine, this one first, without a header or an edge table.
+	// One line per machine, this one first, without a header or a table of links.
 	want := []string{
 		"aaaa1111 laptop gst 0.4.0 -",
 		"bbbb2222 devbox gst 0.4.0 relay",
@@ -156,15 +156,15 @@ func TestStatusVerboseListsTheLinks(t *testing.T) {
 	}
 }
 
-func TestStatusViaListsEveryMachineOnTheWay(t *testing.T) {
+func TestStatusViaListsEveryNodeOnTheWay(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	ids := []string{nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333"), nodeID("dddd4444")}
 	e.back.topology = wire.Topology{Self: ids[0], Nodes: []wire.TopoNode{
-		{ID: ids[0], Name: "a", Reachable: true, Path: ids[:1]},
-		{ID: ids[1], Name: "b", Reachable: true, Path: ids[:2]},
-		{ID: ids[2], Name: "c", Reachable: true, Path: ids[:3]},
-		{ID: ids[3], Name: "d", Reachable: true, Path: ids},
+		{ID: ids[0], Name: "a", Reachable: true, Route: ids[:1]},
+		{ID: ids[1], Name: "b", Reachable: true, Route: ids[:2]},
+		{ID: ids[2], Name: "c", Reachable: true, Route: ids[:3]},
+		{ID: ids[3], Name: "d", Reachable: true, Route: ids},
 	}}
 	want := []string{"aaaa1111 a - -", "bbbb2222 b - relay", "cccc3333 c - relay via b", "dddd4444 d - relay via b, c"}
 	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
@@ -177,9 +177,9 @@ func TestStatusShowsUDPPaths(t *testing.T) {
 	e.mustGst("up")
 	a, b, c := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333")
 	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
-		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
-		{ID: b, Name: "b", Reachable: true, Path: []string{a, b}},
-		{ID: c, Name: "c", Reachable: true, Direct: true, Path: []string{a, b, c}},
+		{ID: a, Name: "a", Reachable: true, Route: []string{a}},
+		{ID: b, Name: "b", Reachable: true, Route: []string{a, b}},
+		{ID: c, Name: "c", Reachable: true, Direct: true, Route: []string{a, b, c}},
 	}}
 	want := []string{"aaaa1111 a - -", "bbbb2222 b - relay", "cccc3333 c - direct"}
 	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
@@ -191,7 +191,7 @@ func TestStatusWithoutLinks(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	self := nodeID("aaaa1111")
-	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop", Reachable: true, Path: []string{self}}}}
+	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop", Reachable: true, Route: []string{self}}}}
 	out := e.mustGst("status")
 	want := []string{"aaaa1111 laptop - -", "", "No links yet. Add another machine with `gst add <destination>`."}
 	if got := lines(out); !slices.Equal(got, want) {
@@ -216,12 +216,12 @@ func TestStatusListsProblems(t *testing.T) {
 	e.back.linkStates["db"] = wire.LinkState{Destination: "db", State: wire.StateConnecting}
 
 	out := e.mustGst("status")
-	machines, problems, found := strings.Cut(out, "\nProblems:\n")
+	nodeLines, problems, found := strings.Cut(out, "\nProblems:\n")
 	if !found {
 		t.Fatalf("no problems section:\n%s", out)
 	}
-	if n := len(lines(machines)); n != 5 {
-		t.Errorf("%d lines before the problems, want 5 machines:\n%s", n, machines)
+	if n := len(lines(nodeLines)); n != 5 {
+		t.Errorf("%d lines before the problems, want 5 machines:\n%s", n, nodeLines)
 	}
 	want := []string{
 		"  - link to myhost: down (last error: SSH keepalive timed out)",
@@ -259,7 +259,7 @@ func TestPing(t *testing.T) {
 
 	// Machines on the way are named in order.
 	e.back.ping = func(node string) (wire.NetPing, error) {
-		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Path: wire.PathSSH, Via: []wire.NodeInfo{peerOf("a"), peerOf("b")}, TimeMS: 12.345}, nil
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Way: wire.WayRelay, Via: []wire.NodeInfo{peerOf("a"), peerOf("b")}, TimeMS: 12.345}, nil
 	}
 	out = e.mustGst("ping", "far", "--count", "1")
 	if want := "reply from far (10.99.5.6): relay via a, b, 12.3 ms\n"; out != want {
@@ -436,13 +436,13 @@ func TestPingVerbose(t *testing.T) {
 
 }
 
-// Members that are offline show when they were last online.
-func TestStatusShowsOfflineMembers(t *testing.T) {
+// Nodes that are offline show when they were last online.
+func TestStatusShowsOfflineNodes(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	a, b := nodeID("aaaa1111"), nodeID("bbbb2222")
 	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
-		{ID: a, Name: "laptop", Reachable: true, Path: []string{a}},
+		{ID: a, Name: "laptop", Reachable: true, Route: []string{a}},
 		{ID: b, Name: "tablet", Seen: time.Now().Add(-3 * time.Hour)},
 	}}
 	contains(t, e.mustGst("status"), "offline, seen 3h ago")

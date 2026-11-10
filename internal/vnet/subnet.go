@@ -16,7 +16,7 @@ import (
 // route loses to the subnet's own, which is narrower, so it takes nothing;
 // VPNs route all addresses in halves, and some route all private networks
 // to the local router.
-func conflict(subnet netip.Prefix, n Networks) (netip.Prefix, bool) {
+func conflict(subnet netip.Prefix, n UsedPrefixes) (netip.Prefix, bool) {
 	for _, p := range n.Interfaces {
 		if p.Overlaps(subnet) {
 			return p, true
@@ -31,17 +31,17 @@ func conflict(subnet netip.Prefix, n Networks) (netip.Prefix, bool) {
 }
 
 // overlaps reports whether any network in n shares addresses with subnet.
-func overlaps(subnet netip.Prefix, n Networks) bool {
+func overlaps(subnet netip.Prefix, n UsedPrefixes) bool {
 	return slices.ContainsFunc(slices.Concat(n.Interfaces, n.Routes), subnet.Overlaps)
 }
 
 // chooseSubnet finds a /16 that conflicts with nothing in used, and
 // overlaps nothing if it can: a wide route may still lead to machines of
-// some network. The choice depends on seed, so that machines of different
+// some network. The choice depends on seed, so that nodes of different
 // meshes that see the same network do not all take the same subnet. It
 // prefers 10.0.0.0/8, which has the most room, and leaves out the parts
 // that home routers, containers, and VPNs often take.
-func chooseSubnet(seed string, used []Networks) (netip.Prefix, bool) {
+func chooseSubnet(seed string, used []UsedPrefixes) (netip.Prefix, bool) {
 	sum := sha256.Sum256([]byte(seed))
 	start := int(binary.BigEndian.Uint16(sum[:2]))
 	var candidates []netip.Prefix
@@ -51,13 +51,13 @@ func chooseSubnet(seed string, used []Networks) (netip.Prefix, bool) {
 	for i := range 12 { // 172.20.0.0 to 172.31.0.0
 		candidates = append(candidates, netip.PrefixFrom(netip.AddrFrom4([4]byte{172, byte(20 + (start+i)%12), 0, 0}), 16))
 	}
-	conflicts := func(c netip.Prefix, n Networks) bool {
+	conflicts := func(c netip.Prefix, n UsedPrefixes) bool {
 		_, found := conflict(c, n)
 		return found
 	}
-	for _, taken := range []func(netip.Prefix, Networks) bool{overlaps, conflicts} {
+	for _, taken := range []func(netip.Prefix, UsedPrefixes) bool{overlaps, conflicts} {
 		for _, c := range candidates {
-			if !slices.ContainsFunc(used, func(n Networks) bool { return taken(c, n) }) {
+			if !slices.ContainsFunc(used, func(n UsedPrefixes) bool { return taken(c, n) }) {
 				return c, true
 			}
 		}
@@ -87,10 +87,10 @@ func chooseAddress(id string, subnet netip.Prefix, taken map[netip.Addr]bool) (n
 // hexKey writes a key as WireGuard's interface wants it.
 func hexKey(key [32]byte) string { return hex.EncodeToString(key[:]) }
 
-// usedNetworks reads the networks that a machine reported, ignoring what
+// parseUsedPrefixes reads the prefixes that a node reported, ignoring what
 // it should not have sent.
-func usedNetworks(n wire.Networks) Networks {
-	return Networks{Interfaces: usedPrefixes(n.Interfaces), Routes: usedPrefixes(n.Routes)}
+func parseUsedPrefixes(n wire.UsedPrefixes) UsedPrefixes {
+	return UsedPrefixes{Interfaces: usedPrefixes(n.Interfaces), Routes: usedPrefixes(n.Routes)}
 }
 
 func usedPrefixes(list []string) []netip.Prefix {

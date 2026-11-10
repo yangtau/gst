@@ -77,7 +77,7 @@ func (f *fakeBackend) Call(_ context.Context, method string, params, result any)
 			return errors.New("no daemon")
 		}
 		r = st
-	case wire.MethodNodes:
+	case wire.MethodTopology:
 		r, err = f.nodes()
 	case wire.MethodNodeStatus:
 		r, err = f.nodeStatusOf(p.Node)
@@ -200,7 +200,7 @@ func (f *fakeBackend) netPing(node string, size int) (wire.NetPing, error) {
 	if f.ping != nil {
 		return f.ping(node)
 	}
-	return wire.NetPing{Node: peerOf(node), Address: "10.99.3.4", Path: wire.PathDirect, Endpoint: "192.0.2.2:6000", Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
+	return wire.NetPing{Node: peerOf(node), Address: "10.99.3.4", Way: wire.WayDirect, Endpoint: "192.0.2.2:6000", Via: []wire.NodeInfo{}, TimeMS: 1.5}, nil
 }
 
 func (f *fakeBackend) linksPing(node string) (wire.Ping, error) {
@@ -572,7 +572,7 @@ func TestAdd(t *testing.T) {
 }
 
 // gst add says when the other machine needs gst up.
-func TestAddToAMachineThatIsNotUp(t *testing.T) {
+func TestAddToANodeThatIsNotUp(t *testing.T) {
 	e := newEnv(t)
 	e.back.linkStates["devbox"] = wire.LinkState{Destination: "devbox", State: wire.StateDown, Error: "the remote gst failed: error: " + notUp + "; run `gst up` there"}
 	e.expectError(exitFailure, []string{"add", "devbox", "--", "-l", "deploy"},

@@ -21,12 +21,11 @@ gst links a user's machines into a private network over SSH: one background daem
 - `internal/sshconfig`: resolves a destination with `ssh -G`.
 - `internal/sshconn`: SSH connections, remote commands, and `Check`, the offline preflight behind `gst add`.
 - `internal/daemon`: the daemon, which supervises the links, runs the virtual network, and answers the control socket, and its client, whose one `Call` takes any control method; the CLI's `backend` has the same shape, so a new control method needs only its handler and its callers.
-- `internal/mesh`: the node, on three layers that each use only the ones below: `link` (a link: `gst peer-bridge` carrying typed frames, with its handshake, `alive`, and `bye`), `state` (the table every node keeps of the network, `node/<id>`, `removed/<id>`, and `network` entries, flooded over the links and kept in `state.json`), and `route` (messages to any node, hop by hop along routes computed from the table: calls and packets). `Node` (`mesh.go`) joins them and holds the membership rules (generation, removal, admit), the topology people see (`topology.go`), the choice of a UDP path or the routes for packets (`packets.go`), and signaling for UDP paths (`direct.go`).
+- `internal/mesh`: the node, on three layers that each use only the ones below: `link` (a link: `gst peer-bridge` carrying typed frames, with its handshake, `alive`, and `bye`), `state` (the table every node keeps of the network, `node/<id>`, `removed/<id>`, and `subnet` entries, flooded over the links and kept in `state.json`), and `route` (messages to any node, hop by hop along routes computed from the table: calls and packets). `Node` (`mesh.go`) joins them and holds the rules of joining and leaving the network (generation, removal, admit; `standsRemoved`), the topology (`topology.go`), the way packets take, a UDP path or the route (`packets.go`), and signaling for UDP paths (`direct.go`).
 - `internal/direct`: UDP paths: `Transport`, one wildcard socket per IP family on one port that all paths share (on macOS bound to the interface below any VPN, `bind_darwin.go`), and `Path`, one per node, which probes the node's addresses, sends to the fastest, and carries raw packets. No encryption: that is WireGuard's. Signaling is `mesh`'s.
-- `internal/vnet`: the virtual network, in the daemon, and the only data path: wireguard-go over the mesh (`bind`), the choice of subnet and addresses, packets to this machine's own address (`loopback`), and DNS for `.gst`. `mesh` carries its packets (`packets.go`).
+- `internal/vnet`: the virtual network, in the daemon, and the only way data goes: wireguard-go over the mesh (`bind`), the choice of subnet and addresses, packets to this machine's own address (`loopback`), and DNS for `.gst`. `mesh` carries its packets (`packets.go`).
 - `internal/tun`: the root helper that creates the interface and sets addresses, routes, and name resolution, and the daemon's client of it. Commands that take root stay here; `internal/service` installs it.
-- `internal/expose`: the exposed ports, bound to this machine's gst IP; the virtual network applies the rules.
-- `internal/relay`: copies bytes between two connections, for `expose`.
+- `internal/expose`: the exposed ports, bound to this machine's gst IP, which the virtual network applies; it copies bytes between the connections.
 - `internal/wire`: the gst protocol: the handshake, calls, and `Server`, which dispatches calls to registered methods, for the control socket, and the types that links carry.
 - `internal/logfile`: rotating log files.
 - `internal/service`: installs the daemon as a systemd or launchd service, and the network helper as a system one.
@@ -35,7 +34,32 @@ gst links a user's machines into a private network over SSH: one background daem
 ## Conventions
 
 - **CLI contract.** Results go to stdout. Errors go to stderr as `error:` plus an optional `hint:` that names the next command to run. Usage errors also print `usage:` and exit 2; failed work exits 1. Output is for people: there is no `--json`; integration tests read structured state through `gst-it call`, which calls the daemon's control methods. Commands never prompt, with one exception: before running anything as root, `gst up` and `gst down` say what `sudo` will run and what it changes, and ask on a terminal, because `sudo` may not ask for a password (`--yes` skips only the question; without a terminal they run nothing). `gst down` needs that only when the helper does not answer: it normally asks the helper to remove itself. gst never reads the password, and never sets up another machine: `gst peer-bridge` refuses until someone ran `gst up` there. Positional arguments are validated with `a.args`, which names the missing argument from the `Use` line.
-- **Words.** Users see only: *machine* (a computer running gst), *link* (an SSH connection from one machine to another, named by its destination; links have no names of their own), *network* (all the machines added to it; "gst network" where ambiguous), *add* / *remove* (a machine to or from the network; *removed*), *name* and `<name>.gst`, *gst IP* (`IP` in table headers), *direct* / *relay* / *relay via X* / *offline*, *up* / *down* ("gst is not running", never "daemon"), *network helper*, *id*, *subnet*, *expose*. Node, peer, member, mesh, daemon, topology, table, entry, generation, handshake, UDP path, probe, bridge, and MTU belong to code, logs, `-v` output, and `docs/design`. Commands are flat verbs, in the order of `gst --help`: `up`, `add`, `status`, `ping`, `expose`, `unexpose`, `unlink`, `remove`, `name`, `subnet`, `ui`, `down`, `version`; no aliases. `gst <noun> [value]` shows or sets one value; `-v` is the only switch for more detail. Text quotes commands in backticks; a success message is a short statement plus, when useful, the next step.
+- **Words.** One word for each concept. People see the user's word, in output, help, errors, hints, the README, and `gst ui`; identifiers, comments, logs, `-v` output, and `docs/design` use the code's word. A concept with no user word stays out of what people see.
+
+  | User's word | Code's word | Meaning |
+  | --- | --- | --- |
+  | machine | node | gst on a computer, known by its id and name (`wire.NodeInfo`). In code, *machine* means only the computer itself: its interfaces, routes, SSH server, and services. |
+  | network | network | the nodes that were added and not removed. A node is *in the network*; there is no "member". |
+  | — | mesh | what joins the nodes: links, the table, and routes (`internal/mesh`) |
+  | link | link | an SSH connection from one node to another, named by its destination; it has no name of its own |
+  | — | peer | the node at the other end of a link, or the other node of a call between nodes (`wire.RolePeer`) |
+  | add, remove, removed | admit, removal, generation | joining the network, and leaving it for good until added again |
+  | name, `<name>.gst` | name | a node's name |
+  | id | id | a node's id |
+  | gst IP | address | a node's address in the virtual network |
+  | — | virtual network, `net`, `vnet` | the interface, WireGuard, addresses, and DNS (`internal/vnet`) |
+  | subnet | subnet | the virtual network's prefix; the table's `subnet` entry |
+  | — | used prefixes | the IPv4 prefixes in use on a machine, which the subnet avoids |
+  | direct, relay | way (`WayDirect`, `WayRelay`) | how packets reach a node: over its UDP path, or along the links |
+  | relay via X | route | the nodes along the links from one node to another (`TopoNode.Route`) |
+  | — | UDP path | a UDP shortcut to one node (`internal/direct`); in code, *path* means nothing else |
+  | offline | — | a node in the network that no way reaches now |
+  | — | topology | a node's view of the network: its nodes and links (`wire.Topology`) |
+  | up, down, "gst is not running" | daemon | gst's background process |
+  | network helper | helper | the root service that sets up the interface |
+  | expose | expose | a port bound to this machine's gst IP |
+
+  Table, entry, generation, handshake, probe, bridge, and MTU are code's words too. Commands are flat verbs, in the order of `gst --help`: `up`, `add`, `status`, `ping`, `expose`, `unexpose`, `unlink`, `remove`, `name`, `subnet`, `ui`, `down`, `version`; no aliases. `gst <noun> [value]` shows or sets one value; `-v` is the only switch for more detail. Text quotes commands in backticks; a success message is a short statement plus, when useful, the next step.
 - **Resolution.** The config stores a link's destination and the ssh arguments given after `--` (besides the machine it reached and the admit mark); every link connection resolves them with `ssh -G <args> -- <destination>` (`-F $GST_SSH_CONFIG` when set), runs the fixed remote command in `internal/cli/app.go` (the gst that `gst up` linked at `~/.local/state/gst/bin/gst`, else the one in `PATH`), and settings the ssh config leaves unset take the defaults in `internal/cli/app.go`.
 - **Log privacy.** The daemon log (which holds the link events and names links by `config.LinkID`, never by destination), and the errors from `internal/sshconn`, `internal/mesh`, and config parsing that reach it, never include server addresses, users, key paths, or what a remote gst reports. Interactive output may include them, so `Check`'s errors may name paths and addresses.
 - **No personal data.** Code, tests, docs, and commits use placeholders such as `myhost` and `ssh.example.com`, never real hostnames, users, or emails.

@@ -30,7 +30,7 @@ func TestLinkLifecycle(t *testing.T) {
 	if link.Peer == nil || link.Peer.ID != srv.ID || link.Peer.Name != srv.Name || link.Peer.Software == "" || link.Destination != p.destination() {
 		t.Fatalf("the client sees its peer as %+v; the server is %+v", link, srv)
 	}
-	if len(topo.Nodes) != 2 || len(topo.Edges) != 1 || topo.Edges[0].From != cli.ID || topo.Edges[0].To != srv.ID || path(topo, cli) != srv.Name+",cli" {
+	if len(topo.Nodes) != 2 || len(topo.Links) != 1 || topo.Links[0].From != cli.ID || topo.Links[0].To != srv.ID || path(topo, cli) != srv.Name+",cli" {
 		t.Fatalf("the server's mesh: %+v", topo)
 	}
 
@@ -178,7 +178,7 @@ func TestLinkRunsTheGstOfUp(t *testing.T) {
 
 // gst never sets up another machine: a link to one where nobody ran gst up
 // says what to run there, and connects by itself once someone has.
-func TestLinkToAMachineThatIsNotUp(t *testing.T) {
+func TestLinkToANodeThatIsNotUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server

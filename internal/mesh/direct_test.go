@@ -42,7 +42,7 @@ func goDirect(t *testing.T, a, c *Node) {
 // those.
 func wg(text string) []byte { return append([]byte{4}, text...) }
 
-// Traffic between two machines sets up a UDP path: packets go along the
+// Traffic between two nodes sets up a UDP path: packets go along the
 // links first, then over UDP, and along the links again when it ends.
 func TestDirectPath(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
@@ -54,7 +54,7 @@ func TestDirectPath(t *testing.T) {
 	waitFor(t, "the first packet arrives", func() bool { return boxes[b].has(nid("a"), string(wg("first"))) })
 	waitFor(t, "the path runs on a", func() bool { return hasDirect(a, nid("b")) })
 	waitFor(t, "the path runs on b", func() bool { return hasDirect(b, nid("a")) })
-	if got := a.PacketPath(nid("b")); got != wire.PathDirect {
+	if got := a.PacketWay(nid("b")); got != wire.WayDirect {
 		t.Fatalf("path = %q", got)
 	}
 	node, _ := findTopo(a.Topology(), nid("b"))
@@ -62,8 +62,8 @@ func TestDirectPath(t *testing.T) {
 		t.Fatal("the topology does not show the path")
 	}
 	// A path is no link: only the SSH link counts.
-	if edges := a.Topology().Edges; len(edges) != 1 {
-		t.Fatalf("edges = %+v", edges)
+	if links := a.Topology().Links; len(links) != 1 {
+		t.Fatalf("links = %+v", links)
 	}
 
 	a.SendPacket(nid("b"), wg("over udp"))
@@ -135,7 +135,7 @@ func TestIdleDirectPathWithoutLinksStays(t *testing.T) {
 }
 
 // Two nodes that have no link between them get a path too, and the
-// machine between them sees no sign of it.
+// node between them sees no sign of it.
 func TestDirectPathAcrossTheMesh(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
@@ -144,7 +144,7 @@ func TestDirectPathAcrossTheMesh(t *testing.T) {
 	goDirect(t, a, c)
 	a.SendPacket(nid("c"), wg("hello"))
 	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("hello"))) })
-	if n, _ := findTopo(a.Topology(), nid("c")); !n.Direct || len(n.Path) != 3 {
+	if n, _ := findTopo(a.Topology(), nid("c")); !n.Direct || len(n.Route) != 3 {
 		t.Fatalf("a sees c as %+v", n)
 	}
 	if n, _ := findTopo(b.Topology(), nid("a")); n.Direct {
@@ -153,7 +153,7 @@ func TestDirectPathAcrossTheMesh(t *testing.T) {
 }
 
 // When the machine between two nodes goes away, as when it sleeps, their
-// UDP path carries on: they are members still.
+// UDP path carries on: they are in the network still.
 func TestDirectPathOutlivesSSH(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
@@ -175,7 +175,7 @@ func TestDirectPathOutlivesSSH(t *testing.T) {
 	}
 }
 
-// A new identity is a new machine: the other end knows its UDP paths by
+// A new identity is a new node: the other end knows its UDP paths by
 // the old one, so they end at once.
 func TestANewIdentityEndsDirect(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
@@ -193,7 +193,7 @@ func TestANewIdentityEndsDirect(t *testing.T) {
 	}
 }
 
-// Removing a machine ends the UDP paths to it.
+// Removing a node ends the UDP paths to it.
 func TestRemovingANodeEndsDirect(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	enableDirect(t, a, c)
@@ -252,7 +252,7 @@ func TestDirectOffOnTheOtherSide(t *testing.T) {
 	}
 }
 
-// A machine off the virtual network neither asks for a path nor takes one.
+// A node off the virtual network neither asks for a path nor takes one.
 func TestDirectNeedsTheNetwork(t *testing.T) {
 	a := newNode(t, "a")
 	a.EnableDirect(t.Context(), loopback)
@@ -279,16 +279,16 @@ func TestDirectOfferInvalid(t *testing.T) {
 	}
 }
 
-// Addresses of the virtual network are no way to a machine.
+// Addresses of the virtual network are no way to a node.
 func TestAddressesOfTheNetworkAreSkipped(t *testing.T) {
 	a := newNode(t, "a")
 	addr := netip.MustParseAddr("10.99.0.7")
-	if a.onNetwork(addr) {
+	if a.inSubnet(addr) {
 		t.Fatal("without a subnet, no address is in it")
 	}
-	a.SetNetwork("10.99.0.0/16", true)
+	a.SetSubnet("10.99.0.0/16", true)
 	waitFor(t, "the subnet decides", func() bool {
-		return a.onNetwork(addr) && !a.onNetwork(netip.MustParseAddr("192.0.2.1"))
+		return a.inSubnet(addr) && !a.inSubnet(netip.MustParseAddr("192.0.2.1"))
 	})
 }
 
@@ -361,7 +361,7 @@ func TestNetworkChange(t *testing.T) {
 	goDirect(t, a, c)
 	a.backOff(nid("gone"))
 
-	a.networkChanged(t.Context())
+	a.addressesChanged(t.Context())
 	a.mu.Lock()
 	waits := len(a.directWaits)
 	a.mu.Unlock()

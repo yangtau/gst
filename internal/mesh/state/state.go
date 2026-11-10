@@ -1,12 +1,12 @@
 // Package state keeps the table that every node holds of the network: an
-// entry per member (node/<id>), one per removal (removed/<id>), and the
+// entry per node (node/<id>), one per removal (removed/<id>), and the
 // network's subnet (network). Nodes flood the table to each other over
 // their links: each link starts with both sides sending their whole table,
 // and an entry that is new to a node goes on to its other neighbours. Of
 // two entries with one key, the one with the higher version counts, by a
 // rule per kind of entry, so that every node ends up with the same table
 // whatever order the entries come in. The table lives on disk and nothing
-// in it expires: a machine that is offline stays a member until someone
+// in it expires: a node that is offline stays in the network until someone
 // removes it.
 package state
 
@@ -43,11 +43,11 @@ const (
 const (
 	KindNode    = "node"
 	KindRemoved = "removed"
-	KindNetwork = "network"
+	KindSubnet  = "subnet"
 )
 
-// NetworkKey is the key of the network's subnet.
-const NetworkKey = KindNetwork
+// SubnetKey is the key of the network's subnet.
+const SubnetKey = KindSubnet
 
 // NodeKey is the key of node id's entry.
 func NodeKey(id string) string { return KindNode + "/" + id }
@@ -57,8 +57,8 @@ func RemovedKey(id string) string { return KindRemoved + "/" + id }
 
 // ParseKey returns the kind of an entry and the node id it is about.
 func ParseKey(key string) (kind, id string, ok bool) {
-	if key == NetworkKey {
-		return KindNetwork, "", true
+	if key == SubnetKey {
+		return KindSubnet, "", true
 	}
 	kind, id, found := strings.Cut(key, "/")
 	if !found || kind != KindNode && kind != KindRemoved || !config.ValidNodeID(id) {
@@ -102,8 +102,8 @@ func Valid(e wire.Entry) error {
 		if len(e.Version) != 1 || e.Version[0] < 0 || json.Unmarshal(e.Value, &v) != nil || !config.ValidNodeID(v.By) {
 			return errors.New("invalid removal")
 		}
-	case KindNetwork:
-		var v wire.NetworkValue
+	case KindSubnet:
+		var v wire.SubnetValue
 		if len(e.Version) != 2 || e.Version[0] < -1 || e.Version[0] > 1 || json.Unmarshal(e.Value, &v) != nil {
 			return errors.New("invalid network entry")
 		}
@@ -131,8 +131,8 @@ func Newer(a, b wire.Entry) bool {
 		if c := cmp.Or(va.At.Compare(vb.At), cmp.Compare(va.By, vb.By)); c != 0 {
 			return c < 0
 		}
-	case KindNetwork:
-		var va, vb wire.NetworkValue
+	case KindSubnet:
+		var va, vb wire.SubnetValue
 		json.Unmarshal(a.Value, &va)
 		json.Unmarshal(b.Value, &vb)
 		if c := cmp.Compare(va.Subnet, vb.Subnet); c != 0 {
@@ -209,7 +209,7 @@ func (t *Table) Get(key string) (wire.Entry, bool) {
 	return e, ok
 }
 
-// Entries returns the whole table, sorted by key.
+// Entries returns the whole table: the subnet, then the rest by key.
 func (t *Table) Entries() []wire.Entry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -221,7 +221,11 @@ func (t *Table) sorted() []wire.Entry {
 	for _, e := range t.entries {
 		list = append(list, e)
 	}
-	slices.SortFunc(list, func(a, b wire.Entry) int { return strings.Compare(a.Key, b.Key) })
+	// The subnet first: a node that joins a network learns its subnet
+	// before it sees the other nodes; see Node.promoteSubnet.
+	slices.SortFunc(list, func(a, b wire.Entry) int {
+		return cmp.Or(boolOrder(a.Key == SubnetKey, b.Key == SubnetKey), strings.Compare(a.Key, b.Key))
+	})
 	return list
 }
 
@@ -328,4 +332,15 @@ func (t *Table) save() {
 	if err != nil {
 		t.log.Printf("table: save failed: %v", err)
 	}
+}
+
+// boolOrder sorts true before false.
+func boolOrder(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return -1
+	}
+	return 1
 }

@@ -1,5 +1,5 @@
-// Package vnet runs this machine's part in the virtual network, which is
-// how machines of the mesh reach each other: each gets an IP address in one
+// Package vnet runs this node's part in the virtual network, which is
+// how nodes of the mesh reach each other: each gets an IP address in one
 // private subnet and a name under .gst, and programs reach them through a
 // network interface, with any protocol. A WireGuard device (wireguard-go)
 // encrypts the packets end to end, and the mesh carries them, over UDP
@@ -9,7 +9,7 @@
 // the whole network, and each node publishes its address and WireGuard key
 // in its own entry; every node works out the same result from the table:
 // of two nodes that picked the same address, the one with the lower id
-// keeps it. The mesh already says which machines are members, and it is
+// keeps it. The mesh already says which nodes are in the network, and it is
 // what makes the keys in the table trustworthy.
 package vnet
 
@@ -46,7 +46,7 @@ import (
 
 const (
 	retryInterval = 5 * time.Second // to look at everything again, and to retry what failed
-	askTimeout    = 3 * time.Second // for a machine to report its networks
+	askTimeout    = 3 * time.Second // for a node to report its used prefixes
 )
 
 // Mesh is what the network needs of its node; *mesh.Node has it.
@@ -55,11 +55,11 @@ type Mesh interface {
 	Topology() wire.Topology
 	Changed() <-chan struct{}
 	SetNet(*wire.NodeNet)
-	Network() (wire.NetworkValue, bool)
-	SetNetwork(subnet string, manual bool) error
+	Subnet() (wire.SubnetValue, bool)
+	SetSubnet(subnet string, manual bool) error
 	SendPacket(node string, packet []byte)
 	HandlePackets(func(node string, packet []byte))
-	PacketPath(node string) string
+	PacketWay(node string) string
 	PacketEndpoint(node string) string
 	Call(ctx context.Context, ref, method string, params, result any) error
 }
@@ -78,12 +78,12 @@ type Config struct {
 	StatePath string // holds this identity's private key and its address
 	// Open sets up the interface; the network cannot run when it is nil.
 	Open func(tun.Spec) (Interface, error)
-	// Networks returns the networks of this machine, without the
-	// interface called skip; LocalNetworks when nil.
-	Networks func(skip string) Networks
+	// UsedPrefixes returns the prefixes in use on this machine, without the
+	// interface called skip; LocalPrefixes when nil.
+	UsedPrefixes func(skip string) UsedPrefixes
 	// DNS is the UDP address to answer on; no DNS when empty.
 	DNS string
-	// Echo is the UDP port on this machine's address that answers Ping;
+	// Echo is the UDP port on this node's address that answers Ping;
 	// nothing answers when it is 0.
 	Echo int
 }
@@ -141,8 +141,8 @@ func (m *Manager) Dropped() uint64 { return m.dropped.Load() }
 
 // New returns a manager; Run does the work.
 func New(cfg Config) *Manager {
-	if cfg.Networks == nil {
-		cfg.Networks = LocalNetworks
+	if cfg.UsedPrefixes == nil {
+		cfg.UsedPrefixes = LocalPrefixes
 	}
 	return &Manager{cfg: cfg, wake: make(chan chan struct{}), ended: make(chan struct{}), peers: map[string]peer{}}
 }
@@ -182,10 +182,10 @@ func (m *Manager) Status() *wire.NetState {
 	return &now
 }
 
-// Networks reports what the subnet must not overlap on this machine.
-func (m *Manager) Networks() wire.Networks {
-	n := m.cfg.Networks(m.interfaceName())
-	list := wire.Networks{Interfaces: []string{}, Routes: []string{}}
+// UsedPrefixes reports what the subnet must not overlap on this machine.
+func (m *Manager) UsedPrefixes() wire.UsedPrefixes {
+	n := m.cfg.UsedPrefixes(m.interfaceName())
+	list := wire.UsedPrefixes{Interfaces: []string{}, Routes: []string{}}
 	for _, p := range n.Interfaces {
 		list.Interfaces = append(list.Interfaces, p.String())
 	}
@@ -271,7 +271,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 	}
 	err := m.up(ctx)
 	if err == nil {
-		// Machines learn of this one once it can answer them.
+		// Nodes learn of this one once it can answer them.
 		m.cfg.Mesh.SetNet(&wire.NodeNet{Address: m.state.Address, PublicKey: m.publicKey()})
 		topo = m.cfg.Mesh.Topology()
 		err = m.apply(self, topo)
@@ -308,15 +308,15 @@ func (m *Manager) conflict() error {
 	if err != nil {
 		return nil
 	}
-	if p, found := conflict(subnet, m.cfg.Networks(m.name)); found {
+	if p, found := conflict(subnet, m.cfg.UsedPrefixes(m.name)); found {
 		return &hintError{fmt.Sprintf("the subnet %s overlaps %s on this machine", subnet, p), "choose another subnet with `gst subnet <cidr>`"}
 	}
 	return nil
 }
 
 // load reads the state of identity id. The private key and the address
-// belong to one identity: a new identity is a new machine, and two
-// entries with one key or address would be taken for one machine. So a
+// belong to one identity: a new identity is a new node, and two
+// entries with one key or address would be taken for one node. So a
 // new identity gets its own.
 func (m *Manager) load(id string) error {
 	if !m.loaded {
@@ -375,20 +375,20 @@ func (m *Manager) publicKey() string {
 
 // settle works out the subnet and this node's address. The subnet is the
 // network's, from the table; the first node of a network chooses one. Of
-// two members that hold the same address, offline or not, the one with
+// two nodes that hold the same address, offline or not, the one with
 // the lower id keeps it.
 func (m *Manager) settle(ctx context.Context, self wire.NodeInfo, topo wire.Topology) error {
-	network, ok := m.cfg.Mesh.Network()
+	network, ok := m.cfg.Mesh.Subnet()
 	if !ok {
 		chosen, err := m.chooseSubnet(ctx, self, topo)
 		if err != nil {
 			return err
 		}
-		if err := m.cfg.Mesh.SetNetwork(chosen.String(), false); err != nil {
+		if err := m.cfg.Mesh.SetSubnet(chosen.String(), false); err != nil {
 			return err
 		}
 		// Another choice may have arrived in the meantime, and won.
-		if network, ok = m.cfg.Mesh.Network(); !ok {
+		if network, ok = m.cfg.Mesh.Subnet(); !ok {
 			return errors.New("the subnet of the network is unknown")
 		}
 	}
@@ -432,7 +432,7 @@ func (m *Manager) settle(ctx context.Context, self wire.NodeInfo, topo wire.Topo
 // chooseSubnet finds a subnet that conflicts with nothing on the machines
 // that answer now, for the first node of the network.
 func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wire.Topology) (netip.Prefix, error) {
-	used := []Networks{m.cfg.Networks("")}
+	used := []UsedPrefixes{m.cfg.UsedPrefixes("")}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, n := range topo.Nodes {
@@ -442,10 +442,10 @@ func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wir
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(ctx, askTimeout)
 			defer cancel()
-			var networks wire.Networks
-			if m.cfg.Mesh.Call(ctx, n.ID, wire.MethodNetNetworks, nil, &networks) == nil {
+			var prefixes wire.UsedPrefixes
+			if m.cfg.Mesh.Call(ctx, n.ID, wire.MethodNetPrefixes, nil, &prefixes) == nil {
 				mu.Lock()
-				used = append(used, usedNetworks(networks))
+				used = append(used, parseUsedPrefixes(prefixes))
 				mu.Unlock()
 			}
 		})
@@ -462,7 +462,7 @@ func (m *Manager) chooseSubnet(ctx context.Context, self wire.NodeInfo, topo wir
 func (m *Manager) wanted(topo wire.Topology) tun.Spec {
 	hosts := map[string]string{}
 	for _, name := range names(topo) {
-		// What the other machines call themselves must not stop this one.
+		// What the other nodes call themselves must not stop this one.
 		if a, ok := lookup(topo, name); ok && tun.ValidHost(name+".gst") && len(hosts) < tun.MaxHosts {
 			hosts[name+".gst"] = a.String()
 		}
@@ -470,7 +470,7 @@ func (m *Manager) wanted(topo wire.Topology) tun.Spec {
 	return tun.Spec{Subnet: m.subnet, Address: m.state.Address, Hosts: hosts}
 }
 
-// names lists what the machines of topo are called.
+// names lists what the nodes of topo are called.
 func names(topo wire.Topology) []string {
 	var list []string
 	for _, n := range topo.Nodes {
@@ -480,9 +480,9 @@ func names(topo wire.Topology) []string {
 	return slices.Compact(list)
 }
 
-// lookup finds the address of the machine that ref names, if it has one
+// lookup finds the address of the node that ref names, if it has one
 // in the subnet of the network: while a new subnet spreads, or while a
-// machine is offline since before it, it may have one in the old.
+// node is offline since before it, it may have one in the old.
 func lookup(topo wire.Topology, ref string) (netip.Addr, bool) {
 	n, err := mesh.FindNode(topo, ref)
 	if err != nil || n.Net == nil {
@@ -493,7 +493,7 @@ func lookup(topo wire.Topology, ref string) (netip.Addr, bool) {
 	return a, err == nil && err2 == nil && subnet.Contains(a)
 }
 
-// resolve answers the DNS: the address of the machine called name, and
+// resolve answers the DNS: the address of the node called name, and
 // whether the network runs, without which there is no answer.
 func (m *Manager) resolve(name string) (netip.Addr, bool, bool) {
 	if m.live.Load() == nil {
@@ -577,13 +577,13 @@ func (m *Manager) down() {
 	m.live.Store(nil)
 }
 
-// syncPeers makes WireGuard know the other machines of the network.
+// syncPeers makes WireGuard know the other nodes of the network.
 func (m *Manager) syncPeers(self wire.NodeInfo, topo wire.Topology) error {
 	if m.dev == nil {
 		return nil
 	}
-	// Of the members that hold one address, as offline ones may long
-	// after a merge, the lower id has it, as in settle; this machine's
+	// Of the nodes that hold one address, as offline ones may long
+	// after a merge, the lower id has it, as in settle; this node's
 	// own is its own.
 	holder := map[netip.Addr]wire.TopoNode{}
 	for _, n := range topo.Nodes {
@@ -658,7 +658,7 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 		if i < 0 {
 			continue
 		}
-		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node), Endpoint: m.cfg.Mesh.PacketEndpoint(p.node)}
+		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Way: m.cfg.Mesh.PacketWay(p.node), Endpoint: m.cfg.Mesh.PacketEndpoint(p.node)}
 		if c := seen[key]; c != nil {
 			out.Handshake, out.Received, out.Sent = c.handshake, c.rx, c.tx
 		}

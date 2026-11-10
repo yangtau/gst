@@ -69,7 +69,7 @@ func (s *supervisor) state() wire.LinkState {
 	return wire.LinkState{Destination: s.spec.Destination, State: s.current, Since: s.since, Error: s.lastErr, Reconnects: s.reconnects, Peer: s.peer}
 }
 
-// run connects until stop. The log leaves out what the other machine
+// run connects until stop. The log leaves out what the other node
 // reported, which may quote it; Status shows it.
 func (s *supervisor) run() {
 	defer close(s.stopped)

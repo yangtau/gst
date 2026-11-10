@@ -73,7 +73,7 @@ func (n *node) waitPath(peer, path string, within time.Duration) {
 	eventually(n.t, within, fmt.Sprintf("packets from %s to %s do not go along %s", n.container, peer, path), func() bool {
 		for _, p := range n.net().Peers {
 			if p.Name == peer {
-				return p.Path == path
+				return p.Way == path
 			}
 		}
 		return false
@@ -153,8 +153,8 @@ func TestNet(t *testing.T) {
 			t.Fatalf("UDP: %q, %v", out, err)
 		}
 		for _, p := range a.net().Peers {
-			if p.Path != wire.PathSSH {
-				t.Fatalf("path to %s is %q without UDP paths", p.Name, p.Path)
+			if p.Way != wire.WayRelay {
+				t.Fatalf("path to %s is %q without UDP paths", p.Name, p.Way)
 			}
 		}
 	})
@@ -236,15 +236,15 @@ func TestNet(t *testing.T) {
 	// gst ping goes where programs' packets go, and says which way.
 	t.Run("Ping", func(t *testing.T) {
 		reply := regexp.MustCompile(`^reply from (\w+) \(` + regexp.QuoteMeta(addressOfC) + `\): relay via b, [0-9]+\.[0-9] ms$`)
-		for _, machine := range []string{"c", "c.gst", "C"} {
-			out := a.mustGst("ping", machine, "-c", "1")
+		for _, ref := range []string{"c", "c.gst", "C"} {
+			out := a.mustGst("ping", ref, "-c", "1")
 			if m := reply.FindStringSubmatch(strings.TrimSpace(out)); m == nil || m[1] != "c" {
-				t.Fatalf("gst ping %s: %q", machine, out)
+				t.Fatalf("gst ping %s: %q", ref, out)
 			}
 		}
 		var p wire.NetPing
 		a.call(wire.MethodNetPing, wire.NetPingParams{Node: "c"}, &p)
-		if p.Node.Name != "c" || p.Address != addressOfC || p.Path != wire.PathSSH || len(p.Via) != 1 || p.Via[0].Name != "b" || p.TimeMS <= 0 {
+		if p.Node.Name != "c" || p.Address != addressOfC || p.Way != wire.WayRelay || len(p.Via) != 1 || p.Via[0].Name != "b" || p.TimeMS <= 0 {
 			t.Fatalf("net.ping c: %+v", p)
 		}
 		if out := a.mustGst("ping", "a", "-c", "1"); !strings.HasPrefix(out, "reply from a (") || strings.Contains(out, "relay") || strings.Contains(out, "direct") {
@@ -294,8 +294,8 @@ func TestNetDirect(t *testing.T) {
 	})
 
 	client.waitPing(address)
-	client.waitPath("devbox", wire.PathDirect, 30*time.Second)
-	server.waitPath("laptop", wire.PathDirect, 30*time.Second)
+	client.waitPath("devbox", wire.WayDirect, 30*time.Second)
+	server.waitPath("laptop", wire.WayDirect, 30*time.Second)
 	client.waitPing(address)
 
 	server.mustSh(`setsid gst-it sink 0.0.0.0:7002 </dev/null >/dev/null 2>&1 &`)
@@ -343,7 +343,7 @@ func TestNetDirect(t *testing.T) {
 	start := time.Now()
 	eventually(t, 15*time.Second, "packets did not fall back to SSH", func() bool { return client.pingable(address) })
 	t.Logf("packets back after %s without UDP", time.Since(start).Round(time.Millisecond))
-	client.waitPath("devbox", wire.PathSSH, 5*time.Second)
+	client.waitPath("devbox", wire.WayRelay, 5*time.Second)
 	if rate("SSH") < 1 {
 		t.Fatal("packets over SSH are too slow")
 	}
@@ -353,7 +353,7 @@ func TestNetDirect(t *testing.T) {
 	eventually(t, 150*time.Second, "packets did not return to UDP", func() bool {
 		client.pingable(address)
 		for _, peer := range client.net().Peers {
-			if peer.Path == wire.PathDirect {
+			if peer.Way == wire.WayDirect {
 				return true
 			}
 		}
@@ -379,14 +379,14 @@ func TestNetDirectOneWay(t *testing.T) {
 	block("-A")
 	start := time.Now()
 	eventually(t, 20*time.Second, "packets did not fall back to SSH", func() bool { return client.pingable(address) })
-	client.waitPath("devbox", wire.PathSSH, 15*time.Second)
-	server.waitPath("laptop", wire.PathSSH, 15*time.Second)
+	client.waitPath("devbox", wire.WayRelay, 15*time.Second)
+	server.waitPath("laptop", wire.WayRelay, 15*time.Second)
 	t.Logf("both sides on SSH after %s", time.Since(start).Round(time.Millisecond))
 
 	block("-D")
 	eventually(t, 150*time.Second, "packets did not return to UDP", func() bool {
 		client.pingable(address)
-		return slices.ContainsFunc(client.net().Peers, func(p wire.NetPeer) bool { return p.Path == wire.PathDirect })
+		return slices.ContainsFunc(client.net().Peers, func(p wire.NetPeer) bool { return p.Way == wire.WayDirect })
 	})
 }
 
@@ -440,7 +440,7 @@ func directPair(t *testing.T, prepare ...func(client, server *node)) (client, se
 		return c.Subnet == s.Subnet
 	})
 	client.waitPing(address)
-	client.waitPath("devbox", wire.PathDirect, 30*time.Second)
+	client.waitPath("devbox", wire.WayDirect, 30*time.Second)
 	return client, server, address
 }
 

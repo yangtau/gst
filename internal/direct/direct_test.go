@@ -241,7 +241,7 @@ func TestInvalidOffers(t *testing.T) {
 // A machine may reach an address of its own, when another machine has the
 // same one, as on the bridge of a container runtime, and the same port. A
 // try must not take itself for the other side.
-func TestProbesThatReachThisMachine(t *testing.T) {
+func TestProbesThatReachThisNode(t *testing.T) {
 	tr := transport(t)
 	p, err := tr.Start(nil)
 	if err != nil {

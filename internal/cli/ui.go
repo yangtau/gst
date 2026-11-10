@@ -109,7 +109,7 @@ func (a *app) uiState(ctx context.Context) (uiState, error) {
 	if s.Status == nil {
 		return s, nil
 	}
-	if topo, err := call[wire.Topology](ctx, b, wire.MethodNodes, nil); err != nil {
+	if topo, err := call[wire.Topology](ctx, b, wire.MethodTopology, nil); err != nil {
 		s.Errors = append(s.Errors, "machines: "+err.Error())
 	} else {
 		s.Topology = &topo

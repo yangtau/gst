@@ -38,7 +38,7 @@ func network(subnet string, manual bool, order int64) wire.Entry {
 	if manual {
 		m = 1
 	}
-	return wire.Entry{Key: NetworkKey, Version: []int64{m, order}, Value: value(wire.NetworkValue{Subnet: subnet})}
+	return wire.Entry{Key: SubnetKey, Version: []int64{m, order}, Value: value(wire.SubnetValue{Subnet: subnet})}
 }
 
 func keys(t *Table) []string {
@@ -76,7 +76,7 @@ func TestMergeRules(t *testing.T) {
 	if got := tb.Merge([]wire.Entry{node('a', 0, 99, "laptop")}); len(got) != 0 {
 		t.Fatal("a removed generation came back")
 	}
-	// The next generation is a member again.
+	// The next generation is in the network again.
 	if got := tb.Merge([]wire.Entry{node('a', 1, 1, "laptop")}); len(got) != 1 {
 		t.Fatal("the next generation was refused")
 	}
@@ -117,8 +117,8 @@ func TestNetworkRules(t *testing.T) {
 	}
 	// Equal versions: the lower subnet.
 	tb.Merge([]wire.Entry{network("10.97.0.0/16", true, 6)})
-	e, _ := tb.Get(NetworkKey)
-	var v wire.NetworkValue
+	e, _ := tb.Get(SubnetKey)
+	var v wire.SubnetValue
 	json.Unmarshal(e.Value, &v)
 	if v.Subnet != "10.97.0.0/16" {
 		t.Fatalf("subnet %s", v.Subnet)
@@ -135,7 +135,7 @@ func TestInvalidEntries(t *testing.T) {
 		"name":       {Key: NodeKey(id('a')), Version: []int64{0, 1}, Value: value(wire.NodeValue{Name: "Bad Name"})},
 		"address":    {Key: NodeKey(id('a')), Version: []int64{0, 1}, Value: value(wire.NodeValue{Name: "x", Net: &wire.NodeNet{Address: "nope", PublicKey: strings.Repeat("00", 32)}})},
 		"subnet":     network("8.8.0.0/16", true, 1),
-		"kind":       {Key: NetworkKey, Version: []int64{2, 1}, Value: value(wire.NetworkValue{Subnet: "10.99.0.0/16"})},
+		"kind":       {Key: SubnetKey, Version: []int64{2, 1}, Value: value(wire.SubnetValue{Subnet: "10.99.0.0/16"})},
 		"removed by": {Key: RemovedKey(id('a')), Version: []int64{0}, Value: value(wire.RemovedValue{By: "x"})},
 		"size":       big,
 	} {

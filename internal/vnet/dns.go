@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	dnsTTL      = 10 // seconds; machines change little, but addresses may move
+	dnsTTL      = 10 // seconds; nodes change little, but addresses may move
 	dnsNegative = 5  // seconds that resolvers keep the news that a name has no address
 )
 
@@ -55,8 +55,8 @@ func answer(query []byte, lookup func(string) (netip.Addr, bool, bool)) []byte {
 	}
 	name := strings.ToLower(strings.TrimSuffix(q.Name.String(), "."))
 	address, found, up := netip.Addr{}, false, true
-	if machine, ok := strings.CutSuffix(name, ".gst"); ok {
-		address, found, up = lookup(machine)
+	if name, ok := strings.CutSuffix(name, ".gst"); ok {
+		address, found, up = lookup(name)
 	}
 	switch {
 	case !up:

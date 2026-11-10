@@ -1,4 +1,4 @@
-package relay
+package expose
 
 import (
 	"errors"
@@ -41,7 +41,7 @@ func TestPipeHalfClose(t *testing.T) {
 	b1, b2 := tcpPair(t)
 	done := make(chan struct{})
 	go func() {
-		Pipe(a2, b1)
+		pipe(a2, b1)
 		close(done)
 	}()
 
@@ -79,7 +79,7 @@ func TestPipeHalfClose(t *testing.T) {
 func TestPipeCopiesBothWaysConcurrently(t *testing.T) {
 	a1, a2 := tcpPair(t)
 	b1, b2 := tcpPair(t)
-	go Pipe(a2, b1)
+	go pipe(a2, b1)
 	for _, step := range []struct {
 		from, to net.Conn
 		text     string
@@ -97,7 +97,7 @@ func TestPipeErrorClosesBoth(t *testing.T) {
 	b1, b2 := tcpPair(t)
 	done := make(chan struct{})
 	go func() {
-		Pipe(a2, b1)
+		pipe(a2, b1)
 		close(done)
 	}()
 	// Resetting a1 makes the read from a2 fail, which must also end the
@@ -125,7 +125,7 @@ func TestPipeWithoutHalfClose(t *testing.T) {
 	defer b2.Close()
 	done := make(chan struct{})
 	go func() {
-		Pipe(noHalfClose{a2}, noHalfClose{b1})
+		pipe(noHalfClose{a2}, noHalfClose{b1})
 		close(done)
 	}()
 	a1.Close()

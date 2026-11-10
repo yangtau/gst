@@ -63,11 +63,11 @@ back a machine that was removed from the network, from either end.`,
 			if err := a.preflight(cmd.Context(), &l); err != nil {
 				return err
 			}
-			members := map[string]bool{}
+			inNetwork := map[string]bool{}
 			if b, err := a.backend(); err == nil && a.status(cmd.Context()) != nil {
-				if topo, err := call[wire.Topology](cmd.Context(), b, wire.MethodNodes, nil); err == nil {
+				if topo, err := call[wire.Topology](cmd.Context(), b, wire.MethodTopology, nil); err == nil {
 					for _, n := range topo.Nodes {
-						members[n.ID] = true
+						inNetwork[n.ID] = true
 					}
 				}
 			}
@@ -96,7 +96,7 @@ back a machine that was removed from the network, from either end.`,
 				fmt.Fprintf(a.stdout, "Changed this machine's link to %s.\n", l.Destination)
 			case peer == nil:
 				fmt.Fprintf(a.stdout, "Added the link to %s. It connects in the background; see it with `gst status`.\n", l.Destination)
-			case members[peer.ID]:
+			case inNetwork[peer.ID]:
 				fmt.Fprintf(a.stdout, "%s is already in the network; this machine now also links to it.\n", peer.Name)
 			default:
 				if address := a.addressOf(cmd.Context(), peer.ID); address != "" {
@@ -156,7 +156,7 @@ func (a *app) addressOf(ctx context.Context, id string) string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	for {
-		if topo, err := call[wire.Topology](ctx, b, wire.MethodNodes, nil); err == nil {
+		if topo, err := call[wire.Topology](ctx, b, wire.MethodTopology, nil); err == nil {
 			for _, n := range topo.Nodes {
 				if n.ID == id && n.Net != nil {
 					return n.Net.Address
@@ -222,7 +222,7 @@ machines' authorized_keys.`,
 		Example: "  gst remove tablet\n  gst remove 3f2a",
 		Args:    a.args(1, 1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
-			machine, err := config.ParseMachine(args[0])
+			ref, err := config.ParseNodeRef(args[0])
 			if err != nil {
 				return &usageError{err}
 			}
@@ -233,7 +233,7 @@ machines' authorized_keys.`,
 			if a.status(cmd.Context()) == nil {
 				return withHint(errNoDaemon, "start it with `gst up`")
 			}
-			r, err := call[wire.Removal](cmd.Context(), b, wire.MethodRemove, wire.NodeParams{Node: machine})
+			r, err := call[wire.Removal](cmd.Context(), b, wire.MethodRemove, wire.NodeParams{Node: ref})
 			if err != nil {
 				return err
 			}

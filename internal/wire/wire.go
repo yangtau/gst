@@ -21,14 +21,14 @@ import (
 )
 
 // Protocol is the protocol version this implementation speaks. Version 3
-// made the virtual network the only way to reach machines: it has no
+// made the virtual network the only way to reach nodes: it has no
 // connections to addresses, and a UDP path carries WireGuard's packets
 // rather than QUIC. Version 4 shares one UDP port among all paths, and
 // changes the packets on them. Version 5 identifies links by an id
 // rather than a name that people choose and address machines by. Version
 // 6 splits the mesh into links, a replicated table, and routing: a link is
-// a stream of typed frames rather than a yamux session, machines stay
-// members while offline, and a removal is a record of the table. It does
+// a stream of typed frames rather than a yamux session, nodes stay in
+// the network while offline, and a removal is a record of the table. It does
 // not talk to earlier versions.
 const Protocol = 6
 
@@ -44,15 +44,15 @@ const (
 // Hello opens a connection. The connecting side sends one; the accepting
 // side answers with its own, setting Error when it refuses the connection.
 // Peers say who they are (Node) and whether they belong to the network
-// (Member).
+// (Membership).
 type Hello struct {
-	Protocol int       `json:"protocol"`
-	Software string    `json:"software"`
-	Role     string    `json:"role"`
-	Build    string    `json:"build,omitempty"`
-	Node     *NodeInfo `json:"node,omitempty"`
-	Member   *Member   `json:"member,omitempty"`
-	Error    *Error    `json:"error,omitempty"`
+	Protocol   int         `json:"protocol"`
+	Software   string      `json:"software"`
+	Role       string      `json:"role"`
+	Build      string      `json:"build,omitempty"`
+	Node       *NodeInfo   `json:"node,omitempty"`
+	Membership *Membership `json:"membership,omitempty"`
+	Error      *Error      `json:"error,omitempty"`
 }
 
 // Request calls a method.
@@ -76,8 +76,8 @@ const (
 	CodeNotFound          = "not_found"
 	CodeForbidden         = "forbidden"
 	CodeFailed            = "failed"
-	CodeUnreachable       = "unreachable" // no way to the machine a message is for
-	CodeRemoved           = "removed"     // the machine was removed from the network
+	CodeUnreachable       = "unreachable" // no way to the node a message is for
+	CodeRemoved           = "removed"     // the node was removed from the network
 )
 
 // Error is a failure reported by the other side.

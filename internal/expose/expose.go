@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
-	"github.com/yangtau/ssh-tunnel/internal/relay"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -167,7 +166,7 @@ func serveTCP(ctx context.Context, ln net.Listener, rule config.Expose) error {
 				return
 			}
 			defer context.AfterFunc(ctx, func() { upstream.Close() })()
-			relay.Pipe(client, upstream)
+			pipe(client, upstream)
 		})
 	}
 }

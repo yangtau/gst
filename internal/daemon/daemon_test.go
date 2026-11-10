@@ -47,7 +47,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// world is the machines of a test; a link's destination names the machine
+// world is the nodes of a test; a link's destination names the node
 // that it leads to.
 type world struct {
 	t   *testing.T
@@ -79,10 +79,10 @@ type attempt struct {
 	at          time.Time
 }
 
-// machine is a daemon with its own configuration, whose links connect to
-// the daemons of the other machines of its world through their control
+// testNode is a daemon with its own configuration, whose links connect to
+// the daemons of the other nodes of its world through their control
 // sockets, as gst peer-bridge does.
-type machine struct {
+type testNode struct {
 	t       *testing.T
 	w       *world
 	name    string
@@ -109,12 +109,12 @@ type failConn struct {
 
 func (c failConn) Failure() string { return c.text }
 
-// newMachine prepares a machine named name with node identity (unless
+// newTestNode prepares a node named name with node identity (unless
 // bare) and no links.
-func newMachine(t *testing.T, w *world, name string, bare bool, retry time.Duration) *machine {
+func newTestNode(t *testing.T, w *world, name string, bare bool, retry time.Duration) *testNode {
 	t.Helper()
 	dir := filepath.Join(w.dir, name)
-	m := &machine{t: t, w: w, name: name, cfgPath: filepath.Join(dir, "config.json"), socket: filepath.Join(dir, "run", "gst.sock"),
+	m := &testNode{t: t, w: w, name: name, cfgPath: filepath.Join(dir, "config.json"), socket: filepath.Join(dir, "run", "gst.sock"),
 		log: &syncBuffer{}}
 	if !bare {
 		m.update(func(f *config.File) {
@@ -131,15 +131,15 @@ func newMachine(t *testing.T, w *world, name string, bare bool, retry time.Durat
 	return m
 }
 
-// startMachine creates a machine and serves its daemon until the test ends.
-func startMachine(t *testing.T, w *world, name string) *machine {
+// startTestNode creates a node and serves its daemon until the test ends.
+func startTestNode(t *testing.T, w *world, name string) *testNode {
 	t.Helper()
-	m := newMachine(t, w, name, false, time.Millisecond)
+	m := newTestNode(t, w, name, false, time.Millisecond)
 	m.start()
 	return m
 }
 
-func (m *machine) start() {
+func (m *testNode) start() {
 	m.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.stop = cancel
@@ -156,7 +156,7 @@ func (m *machine) start() {
 }
 
 // shutdown stops the daemon and returns what Serve returned.
-func (m *machine) shutdown() error {
+func (m *testNode) shutdown() error {
 	m.stop()
 	select {
 	case err := <-m.served:
@@ -168,7 +168,7 @@ func (m *machine) shutdown() error {
 	}
 }
 
-func (m *machine) update(fn func(*config.File)) {
+func (m *testNode) update(fn func(*config.File)) {
 	m.t.Helper()
 	if err := config.Update(m.cfgPath, func(f *config.File) error { fn(f); return nil }); err != nil {
 		m.t.Fatal(err)
@@ -176,7 +176,7 @@ func (m *machine) update(fn func(*config.File)) {
 }
 
 // apply changes the configuration and reloads the daemon.
-func (m *machine) apply(fn func(*config.File)) wire.Status {
+func (m *testNode) apply(fn func(*config.File)) wire.Status {
 	m.t.Helper()
 	m.update(fn)
 	if err := m.d.Reload(context.Background()); err != nil {
@@ -188,9 +188,9 @@ func (m *machine) apply(fn func(*config.File)) wire.Status {
 // connect is Config.Connect. Destinations: "refuse" fails, "hang" waits
 // for the link to stop, "secret" leads to a remote gst that failed with a
 // message that quotes a host, "flaky" fails its first flakyOpen attempts,
-// and any other is the name of a machine to connect to, after a user and
+// and any other is the name of a node to connect to, after a user and
 // "@".
-func (m *machine) connect(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error) {
+func (m *testNode) connect(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error) {
 	m.mu.Lock()
 	m.attempts = append(m.attempts, attempt{l.Destination, time.Now()})
 	flakyFails := 0
@@ -237,8 +237,8 @@ func (m *machine) connect(ctx context.Context, l *config.Link) (io.ReadWriteClos
 	return c, nil
 }
 
-// dropConnections breaks every link connection that this machine opened.
-func (m *machine) dropConnections() {
+// dropConnections breaks every link connection that this node opened.
+func (m *testNode) dropConnections() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, c := range m.conns {
@@ -247,7 +247,7 @@ func (m *machine) dropConnections() {
 	m.conns = nil
 }
 
-func (m *machine) attemptsTo(destination string) []attempt {
+func (m *testNode) attemptsTo(destination string) []attempt {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []attempt
@@ -259,7 +259,7 @@ func (m *machine) attemptsTo(destination string) []attempt {
 	return out
 }
 
-func (m *machine) link(dest string) (wire.LinkState, bool) {
+func (m *testNode) link(dest string) (wire.LinkState, bool) {
 	for _, l := range m.d.Status().Links {
 		if l.Destination == dest {
 			return l, true
@@ -269,7 +269,7 @@ func (m *machine) link(dest string) (wire.LinkState, bool) {
 }
 
 // linkTo adds a link to dest and waits until it runs.
-func (m *machine) linkTo(dest string) {
+func (m *testNode) linkTo(dest string) {
 	m.t.Helper()
 	m.apply(func(f *config.File) { addLinks(f, dest) })
 	waitFor(m.t, m.name+" link to "+dest+" runs", func() bool { l, _ := m.link(dest); return l.State == wire.StateRunning })
@@ -290,8 +290,8 @@ func removeLink(f *config.File, dest string) {
 // linkLog is how the daemon log names the link to dest.
 func linkLog(dest string) string { return "link " + config.LinkID(dest) }
 
-// reaches reports whether this machine's daemon can route to the node called name.
-func (m *machine) reaches(name string) bool {
+// reaches reports whether this node's daemon can route to the node called name.
+func (m *testNode) reaches(name string) bool {
 	for _, n := range m.d.mesh.Topology().Nodes {
 		if n.ID == nid(name) && n.Reachable && n.Name == name { // not a placeholder
 			return true
@@ -311,13 +311,13 @@ func waitFor(t *testing.T, msg string, cond func() bool) {
 	}
 }
 
-// pair returns running machines a and b where a has a link "bee" to b, and
+// pair returns running nodes a and b where a has a link "bee" to b, and
 // both know each other.
-func pair(t *testing.T) (a, b *machine) {
+func pair(t *testing.T) (a, b *testNode) {
 	t.Helper()
 	w := newWorld(t)
-	b = startMachine(t, w, "b")
-	a = startMachine(t, w, "a")
+	b = startTestNode(t, w, "b")
+	a = startTestNode(t, w, "a")
 	a.linkTo("b")
 	waitFor(t, "b reaches a", func() bool { return b.reaches("a") })
 	return a, b
@@ -348,7 +348,7 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("link = %+v", l)
 	}
 
-	// The accepting side lists no link: only links that a machine opened are its own.
+	// The accepting side lists no link: only links that a node opened are its own.
 	if links := b.d.Status().Links; len(links) != 0 {
 		t.Fatalf("b links = %+v", links)
 	}
@@ -373,9 +373,9 @@ func TestPingSizeIsChecked(t *testing.T) {
 
 func TestLinkStates(t *testing.T) {
 	w := newWorld(t)
-	bare := newMachine(t, w, "bare", true, time.Millisecond)
+	bare := newTestNode(t, w, "bare", true, time.Millisecond)
 	bare.start()
-	a := startMachine(t, w, "a")
+	a := startTestNode(t, w, "a")
 	a.apply(func(f *config.File) {
 		addLinks(f, "refuse", "hang", "secret", "bare", "a")
 	})
@@ -413,8 +413,8 @@ func TestLinkStates(t *testing.T) {
 
 func TestLinkRecoversAfterFailures(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
-	a := newMachine(t, w, "a", false, time.Millisecond)
+	startTestNode(t, w, "b")
+	a := newTestNode(t, w, "a", false, time.Millisecond)
 	a.flakyOpen = 2
 	a.start()
 	a.linkTo("flaky")
@@ -429,9 +429,9 @@ func TestLinkRecoversAfterFailures(t *testing.T) {
 
 func TestBackoffDoublesAndResets(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
+	startTestNode(t, w, "b")
 	const base = 50 * time.Millisecond
-	a := newMachine(t, w, "a", false, base)
+	a := newTestNode(t, w, "a", false, base)
 	a.flakyOpen = 3
 	a.start()
 	a.linkTo("flaky")
@@ -462,7 +462,7 @@ func TestBackoffDoublesAndResets(t *testing.T) {
 
 func TestLinkLogsLeaveOutRemoteText(t *testing.T) {
 	w := newWorld(t)
-	a := startMachine(t, w, "a")
+	a := startTestNode(t, w, "a")
 	a.apply(func(f *config.File) { addLinks(f, "secret") })
 	waitFor(t, "link fails", func() bool { l, _ := a.link("secret"); return strings.Contains(l.Error, secret) })
 	a.apply(func(f *config.File) { removeLink(f, "secret") })
@@ -481,7 +481,7 @@ func TestLinkLogsLeaveOutRemoteText(t *testing.T) {
 
 func TestIncomingLinkLogLeavesOutPeerText(t *testing.T) {
 	w := newWorld(t)
-	b := startMachine(t, w, "b")
+	b := startTestNode(t, w, "b")
 	// A peer that sends a Hello and then garbage.
 	c, err := net.Dial("unix", b.socket)
 	if err != nil {
@@ -500,9 +500,9 @@ func TestIncomingLinkLogLeavesOutPeerText(t *testing.T) {
 
 func TestReloadStartsAndStopsLinks(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
-	startMachine(t, w, "c")
-	a := startMachine(t, w, "a")
+	startTestNode(t, w, "b")
+	startTestNode(t, w, "c")
+	a := startTestNode(t, w, "a")
 
 	st := a.apply(func(f *config.File) { addLinks(f, "x@b", "y@c") })
 	if len(st.Links) != 2 || st.Links[0].Destination != "x@b" || st.Links[1].Destination != "y@c" {
@@ -543,9 +543,9 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 
 func TestReloadRestartsChangedLink(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
-	startMachine(t, w, "c")
-	a := startMachine(t, w, "a")
+	startTestNode(t, w, "b")
+	startTestNode(t, w, "c")
+	a := startTestNode(t, w, "a")
 	a.apply(func(f *config.File) { addLinks(f, "hang", "b") })
 	waitFor(t, "hang connects", func() bool { return len(a.attemptsTo("hang")) == 1 })
 	waitFor(t, "b runs", func() bool { l, _ := a.link("b"); return l.State == wire.StateRunning })
@@ -590,7 +590,7 @@ func TestReloadRestartsChangedLink(t *testing.T) {
 
 func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 	w := newWorld(t)
-	a := newMachine(t, w, "a", false, time.Millisecond)
+	a := newTestNode(t, w, "a", false, time.Millisecond)
 	if err := os.WriteFile(a.cfgPath, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -652,8 +652,8 @@ func TestControlClient(t *testing.T) {
 	if err != nil || st.Node.Name != "a" || len(st.Links) != 1 {
 		t.Fatalf("Status = %+v, %v", st, err)
 	}
-	topo, err := call[wire.Topology](t.Context(), c, wire.MethodNodes, nil)
-	if err != nil || topo.Self != nid("a") || len(topo.Nodes) != 2 || len(topo.Edges) != 1 {
+	topo, err := call[wire.Topology](t.Context(), c, wire.MethodTopology, nil)
+	if err != nil || topo.Self != nid("a") || len(topo.Nodes) != 2 || len(topo.Links) != 1 {
 		t.Fatalf("Nodes = %+v, %v", topo, err)
 	}
 	for _, n := range topo.Nodes {
@@ -686,7 +686,7 @@ func TestControlClient(t *testing.T) {
 	}
 }
 
-func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
+func TestNodeStatusShowsAnyNodesConfiguration(t *testing.T) {
 	a, b := pair(t)
 	b.apply(func(f *config.File) {
 		addLinks(f, "a", "ssh.example.com")
@@ -699,7 +699,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	}
 	defer c.Close()
 
-	// Another machine answers with its own configuration, not ours.
+	// Another node answers with its own configuration, not ours.
 	st, err := call[wire.Status](t.Context(), c, wire.MethodNodeStatus, wire.NodeParams{Node: "b"})
 	if err != nil {
 		t.Fatal(err)
@@ -712,7 +712,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 		t.Fatalf("links = %+v, want back running and off not", st.Links)
 	}
 
-	// This machine answers for itself.
+	// This node answers for itself.
 	st, err = call[wire.Status](t.Context(), c, wire.MethodNodeStatus, wire.NodeParams{Node: "a.gst"})
 	if err != nil {
 		t.Fatal(err)
@@ -738,7 +738,7 @@ func TestControlRefusesPeerlessRoles(t *testing.T) {
 
 func TestSingleInstance(t *testing.T) {
 	w := newWorld(t)
-	a := startMachine(t, w, "a")
+	a := startTestNode(t, w, "a")
 	second := New(Config{ConfigPath: a.cfgPath, Socket: a.socket, Software: "gst test", Log: log.New(io.Discard, "", 0)})
 	err := second.Serve(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "another gst daemon") {
@@ -769,13 +769,13 @@ func TestSingleInstance(t *testing.T) {
 	if _, err := Dial(t.Context(), a.socket, "gst cli", "sha256:cli"); err == nil {
 		t.Fatal("a stopped daemon still answers")
 	}
-	again := newMachine(t, w, "a", false, time.Millisecond)
+	again := newTestNode(t, w, "a", false, time.Millisecond)
 	again.start()
 }
 
 func TestStaleSocketIsReplaced(t *testing.T) {
 	w := newWorld(t)
-	m := newMachine(t, w, "a", false, time.Millisecond)
+	m := newTestNode(t, w, "a", false, time.Millisecond)
 	if err := os.MkdirAll(filepath.Dir(m.socket), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -790,8 +790,8 @@ func TestStaleSocketIsReplaced(t *testing.T) {
 
 func TestServeStopsEverything(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
-	a := startMachine(t, w, "a")
+	startTestNode(t, w, "b")
+	a := startTestNode(t, w, "a")
 	a.linkTo("b")
 
 	if err := a.shutdown(); err != nil {
@@ -807,7 +807,7 @@ func TestServeStopsEverything(t *testing.T) {
 // them synchronously. No listener may fall back to another local address.
 func TestReloadExposesWithoutNetwork(t *testing.T) {
 	w := newWorld(t)
-	a := startMachine(t, w, "a")
+	a := startTestNode(t, w, "a")
 	rule, _ := config.ParseExpose("8080", 5999, false)
 	st := a.apply(func(f *config.File) { f.Exposes = []config.Expose{rule} })
 	if len(st.Exposes) != 1 || st.Exposes[0].State != "waiting" || st.Exposes[0].Address != "" {
@@ -819,12 +819,12 @@ func TestReloadExposesWithoutNetwork(t *testing.T) {
 	}
 }
 
-// A link keeps the machine that it reached, and runs as any other once it
+// A link keeps the node that it reached, and runs as any other once it
 // did.
-func TestLinkKeepsItsMachine(t *testing.T) {
+func TestLinkKeepsItsNode(t *testing.T) {
 	w := newWorld(t)
-	startMachine(t, w, "b")
-	a := startMachine(t, w, "a")
+	startTestNode(t, w, "b")
+	a := startTestNode(t, w, "a")
 	a.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "b", Admit: true}) })
 	waitFor(t, "the link keeps b", func() bool {
 		f, err := config.Load(a.cfgPath)
@@ -836,23 +836,23 @@ func TestLinkKeepsItsMachine(t *testing.T) {
 		f, err := config.Load(a.cfgPath)
 		return err == nil && len(f.Links) == 1 && f.Links[0].Destination == "x@b" && f.Links[0].Target == nid("b")
 	})
-	// A link that nobody added, from an older configuration, to a machine
+	// A link that nobody added, from an older configuration, to a node
 	// that a link reaches already goes.
 	a.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "y@b"}) })
 	waitFor(t, "the second link goes", func() bool {
 		f, err := config.Load(a.cfgPath)
 		return err == nil && len(f.Links) == 1 && f.Links[0].Destination == "x@b"
 	})
-	waitFor(t, "a links to b once", func() bool { return len(a.d.mesh.Topology().Edges) == 1 && a.reaches("b") })
+	waitFor(t, "a links to b once", func() bool { return len(a.d.mesh.Topology().Links) == 1 && a.reaches("b") })
 }
 
-// Removing a machine drops the links to it, and the machine drops its
+// Removing a node drops the links to it, and the node drops its
 // own; a link that a person adds brings it back.
 func TestRemoveDropsLinks(t *testing.T) {
 	w := newWorld(t)
-	b := startMachine(t, w, "b")
-	c := startMachine(t, w, "c")
-	a := startMachine(t, w, "a")
+	b := startTestNode(t, w, "b")
+	c := startTestNode(t, w, "c")
+	a := startTestNode(t, w, "a")
 	a.linkTo("b")
 	c.linkTo("b")
 	waitFor(t, "a reaches c", func() bool { return a.reaches("c") })
@@ -877,7 +877,7 @@ func TestRemoveDropsLinks(t *testing.T) {
 	waitFor(t, "b saved its generation", func() bool { f, _ := config.Load(b.cfgPath); return f.Node.Generation == 1 })
 }
 
-// A machine that removes itself leaves the network and drops its links.
+// A node that removes itself leaves the network and drops its links.
 func TestRemoveSelf(t *testing.T) {
 	a, b := pair(t)
 	cl, err := Dial(t.Context(), a.socket, "gst test", "sha256:cli")

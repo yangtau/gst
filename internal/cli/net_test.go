@@ -14,8 +14,8 @@ func runningNet() *wire.NetState {
 	return &wire.NetState{
 		Subnet: "10.99.0.0/16", Address: "10.99.1.2", Interface: "gst0",
 		Peers: []wire.NetPeer{
-			{Node: peerOf("devbox").ID, Name: "devbox", Address: "10.99.3.4", Path: wire.PathDirect, Endpoint: "192.0.2.2:6000", Handshake: time.Now().Add(-time.Minute), Received: 2048, Sent: 5},
-			{Node: peerOf("homelab").ID, Name: "homelab", Address: "10.99.5.6", Path: wire.PathSSH},
+			{Node: peerOf("devbox").ID, Name: "devbox", Address: "10.99.3.4", Way: wire.WayDirect, Endpoint: "192.0.2.2:6000", Handshake: time.Now().Add(-time.Minute), Received: 2048, Sent: 5},
+			{Node: peerOf("homelab").ID, Name: "homelab", Address: "10.99.5.6", Way: wire.WayRelay},
 		},
 	}
 }
@@ -86,7 +86,7 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 	self, peer := peerOf("laptop"), peerOf("devbox")
 	e.back.topology = wire.Topology{Self: self.ID, Nodes: []wire.TopoNode{
 		{ID: self.ID, Name: "laptop", Reachable: true, Net: &wire.NodeNet{Address: "10.99.1.2"}},
-		{ID: peer.ID, Name: "devbox", Reachable: true, Path: []string{self.ID, peer.ID}},
+		{ID: peer.ID, Name: "devbox", Reachable: true, Route: []string{self.ID, peer.ID}},
 	}}
 	out := e.mustGst("status")
 	contains(t, out, "10.99.1.2")
@@ -114,12 +114,12 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 }
 
 // A direct path that outlives the SSH links still counts.
-func TestStatusOfAMachineWithOnlyAUDPPath(t *testing.T) {
+func TestStatusOfANodeWithOnlyAUDPPath(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
 	a, b := nodeID("aaaa1111"), nodeID("bbbb2222")
 	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
-		{ID: a, Name: "a", Reachable: true, Path: []string{a}},
+		{ID: a, Name: "a", Reachable: true, Route: []string{a}},
 		{ID: b, Name: "b", Direct: true},
 	}}
 	contains(t, e.mustGst("status"), "direct")

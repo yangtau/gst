@@ -25,8 +25,8 @@ func TestUDPPath(t *testing.T) {
 	address := c.waitNet(2).Address
 
 	a.waitPing(address)
-	a.waitPath("c", wire.PathDirect, 30*time.Second)
-	c.waitPath("a", wire.PathDirect, 30*time.Second)
+	a.waitPath("c", wire.WayDirect, 30*time.Second)
+	c.waitPath("a", wire.WayDirect, 30*time.Second)
 	eventually(t, 10*time.Second, "gst status does not show the path", func() bool {
 		return strings.Contains(a.mustGst("status"), " direct")
 	})

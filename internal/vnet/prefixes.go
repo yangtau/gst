@@ -6,10 +6,10 @@ import (
 	"slices"
 )
 
-// Networks are the IPv4 networks in use on a machine, which the subnet
+// UsedPrefixes are the IPv4 prefixes in use on a machine, which the subnet
 // must leave alone (see conflict).
-type Networks struct {
-	// Interfaces are the networks of its interfaces, where other machines
+type UsedPrefixes struct {
+	// Interfaces are the prefixes of its interfaces, where other machines
 	// may have any of the addresses.
 	Interfaces []netip.Prefix
 	// Routes are the destinations of its routes, which may be as wide as
@@ -17,10 +17,10 @@ type Networks struct {
 	Routes []netip.Prefix
 }
 
-// LocalNetworks returns the networks of this machine, apart from those of
+// LocalPrefixes returns the prefixes in use on this machine, apart from those of
 // the interface called skip, which is the virtual network's own.
-func LocalNetworks(skip string) Networks {
-	var out Networks
+func LocalPrefixes(skip string) UsedPrefixes {
+	var out UsedPrefixes
 	add := func(list *[]netip.Prefix, p netip.Prefix) {
 		p = p.Masked()
 		a := p.Addr()

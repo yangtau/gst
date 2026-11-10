@@ -19,9 +19,9 @@ var fast = Timing{Alive: 20 * time.Millisecond, Dead: 100 * time.Millisecond}
 
 func side(id, name string, gen int64) Handshake {
 	return Handshake{
-		Self:   wire.NodeInfo{ID: id, Name: name, Software: "gst test"},
-		Member: func() *wire.Member { return &wire.Member{Generation: gen} },
-		Timing: fast,
+		Self:       wire.NodeInfo{ID: id, Name: name, Software: "gst test"},
+		Membership: func() *wire.Membership { return &wire.Membership{Generation: gen} },
+		Timing:     fast,
 	}
 }
 
@@ -85,8 +85,8 @@ func TestHandshakeAndFrames(t *testing.T) {
 	if errA != nil || errB != nil {
 		t.Fatal(errA, errB)
 	}
-	if la.Peer.ID != idB || la.Peer.Name != "devbox" || la.Member.Generation != 2 || !la.Opened {
-		t.Fatalf("opener sees %+v %+v", la.Peer, la.Member)
+	if la.Peer.ID != idB || la.Peer.Name != "devbox" || la.Membership.Generation != 2 || !la.Opened {
+		t.Fatalf("opener sees %+v %+v", la.Peer, la.Membership)
 	}
 	if lb.Peer.ID != idA || lb.Opened || lb.Peer.Software != "gst test" {
 		t.Fatalf("accepter sees %+v", lb.Peer)
@@ -155,7 +155,7 @@ func TestSilentPeerEndsTheLink(t *testing.T) {
 	la, _, lb, _ := shake(t, side(idA, "laptop", 0), side(idB, "devbox", 0))
 	_ = lb // never runs: it reads nothing and sends nothing
 	go func() {
-		// Drain what la writes, as a stalled machine's buffers would.
+		// Drain what la writes, as a stalled node's buffers would.
 		buf := make([]byte, 1024)
 		for {
 			if _, err := lb.conn.Read(buf); err != nil {
@@ -177,8 +177,8 @@ func TestSilentPeerEndsTheLink(t *testing.T) {
 func TestRefusals(t *testing.T) {
 	removed := &wire.Entry{Key: "removed/" + idA, Version: []int64{0}}
 	refuse := func(h Handshake) Handshake {
-		h.Check = func(peer wire.NodeInfo, m wire.Member) *Refusal {
-			return &Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed", peer.Name), Member: &wire.Member{Removed: removed}}
+		h.Check = func(peer wire.NodeInfo, m wire.Membership) *Refusal {
+			return &Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed", peer.Name), Membership: &wire.Membership{Removed: removed}}
 		}
 		return h
 	}
@@ -186,7 +186,7 @@ func TestRefusals(t *testing.T) {
 	// The accepting side refuses in its Hello.
 	_, errA, _, errB := shake(t, side(idA, "laptop", 0), refuse(side(idB, "devbox", 0)))
 	var r *RefusedError
-	if !errors.As(errA, &r) || !r.ByPeer || r.Err.Code != wire.CodeRemoved || r.Member == nil || r.Member.Removed.Key != removed.Key || r.Peer.ID != idB {
+	if !errors.As(errA, &r) || !r.ByPeer || r.Err.Code != wire.CodeRemoved || r.Membership == nil || r.Membership.Removed.Key != removed.Key || r.Peer.ID != idB {
 		t.Fatalf("opener: %v %+v", errA, r)
 	}
 	if !errors.As(errB, &r) || r.ByPeer {
@@ -216,11 +216,11 @@ func TestRefusals(t *testing.T) {
 		t.Fatalf("opener: %v", errA)
 	}
 	var bye *ByeError
-	if err := <-ended; !errors.As(err, &bye) || bye.Bye.Member == nil || bye.Bye.Member.Removed == nil {
+	if err := <-ended; !errors.As(err, &bye) || bye.Bye.Membership == nil || bye.Bye.Membership.Removed == nil {
 		t.Fatalf("accepter: %v", err)
 	}
 
-	// A machine that reaches itself.
+	// A node that reaches itself.
 	_, errA, _, _ = shake(t, side(idA, "laptop", 0), side(idA, "laptop", 0))
 	if errA == nil || !errors.As(errA, &r) {
 		t.Fatalf("self: %v", errA)
@@ -235,17 +235,17 @@ func TestRefusals(t *testing.T) {
 func TestAcceptingSideAnswersAfterCheck(t *testing.T) {
 	gen := int64(0)
 	b := side(idB, "devbox", 0)
-	b.Member = func() *wire.Member { return &wire.Member{Generation: gen} }
-	b.Check = func(_ wire.NodeInfo, m wire.Member) *Refusal {
+	b.Membership = func() *wire.Membership { return &wire.Membership{Generation: gen} }
+	b.Check = func(_ wire.NodeInfo, m wire.Membership) *Refusal {
 		if m.Admit {
 			gen = 4
 		}
 		return nil
 	}
 	a := side(idA, "laptop", 0)
-	a.Member = func() *wire.Member { return &wire.Member{Admit: true} }
+	a.Membership = func() *wire.Membership { return &wire.Membership{Admit: true} }
 	la, err, _, _ := shake(t, a, b)
-	if err != nil || la.Member.Generation != 4 {
+	if err != nil || la.Membership.Generation != 4 {
 		t.Fatalf("%v %+v", err, la)
 	}
 }

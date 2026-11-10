@@ -79,7 +79,7 @@ func (l *launchd) install(label string, command []string, restart bool) error {
 
 func (l *launchd) Uninstall() error { return l.remove(daemonLabel) }
 
-func (l *launchd) LogHint() string { return "see the daemon log in " + l.logPath }
+func (l *launchd) LogHint() string { return "see gst's log in " + l.logPath }
 
 func (l *launchd) remove(label string) error {
 	if !fileExists(l.plistPath(label)) {

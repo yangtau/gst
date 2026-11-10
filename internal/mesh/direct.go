@@ -24,20 +24,20 @@ const (
 )
 
 // A UDP path (internal/direct) carries the WireGuard packets between two
-// members of the network, which may have no SSH link between them.
+// nodes of the network, which may have no SSH link between them.
 // Traffic to a node starts a try at one, signaling with routed calls, and
 // takes the links until the path is up, and again after it ends.
 //
 // A path is no link: it carries only the packets of its two nodes, no
 // calls, no table, and nobody else's packets, and the table says nothing
-// of it. It is a shortcut for packets between members, so it outlives
+// of it. It is a shortcut for packets between nodes of the network, so it outlives
 // the links, as when the machine between its two nodes sleeps, and ends
 // when the other node is removed from the network.
 
 // EnableDirect lets this node find and accept UDP paths until ctx is
 // done. addrs returns the local addresses to offer.
 func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
-	udp, err := direct.Listen(direct.Port, addrs, n.onNetwork)
+	udp, err := direct.Listen(direct.Port, addrs, n.inSubnet)
 	if err != nil {
 		n.log.Print("UDP paths are off: no socket")
 		return
@@ -52,16 +52,16 @@ func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
 			case <-ctx.Done():
 				return
 			case <-udp.Changed():
-				n.networkChanged(ctx)
+				n.addressesChanged(ctx)
 			}
 		}
 	}()
 }
 
-// networkChanged starts over after this machine moved to another network:
+// addressesChanged starts over after this machine moved to another network:
 // what failed may work now, and what was measured no longer holds. Each
 // running path measures again, and the other side learns the addresses.
-func (n *Node) networkChanged(ctx context.Context) {
+func (n *Node) addressesChanged(ctx context.Context) {
 	n.mu.Lock()
 	clear(n.directWaits)
 	n.mu.Unlock()
@@ -96,11 +96,11 @@ func (n *Node) serveUpdate(_ context.Context, from string, offer wire.DirectOffe
 	return struct{}{}, nil
 }
 
-// onNetwork reports whether addr is in the virtual network. Such an
-// address is no way to a machine: packets to it would take the very path
+// inSubnet reports whether addr is in the virtual network. Such an
+// address is no way to a node: packets to it would take the very path
 // that they make up.
-func (n *Node) onNetwork(addr netip.Addr) bool {
-	subnet := n.subnet.Load()
+func (n *Node) inSubnet(addr netip.Addr) bool {
+	subnet := n.subnetPrefix.Load()
 	return subnet != nil && subnet.Contains(addr)
 }
 
@@ -138,8 +138,8 @@ func (n *Node) serveTrace(_ context.Context, from string, _ struct{}) (any, erro
 	return wire.DirectTrace{Events: slices.Clone(n.directTrace[from])}, nil
 }
 
-// DirectReport reports the UDP path to the machine that ref names, and
-// what this node and that machine did in their latest try at one.
+// DirectReport reports the UDP path to the node that ref names, and
+// what this node and that node did in their latest try at one.
 func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport, error) {
 	dest, err := FindNode(n.Topology(), ref)
 	if err != nil {
@@ -245,7 +245,7 @@ func (n *Node) offerDirect(ctx context.Context, id string, try *directTry) {
 }
 
 // connectDirect offers a path to node id and finds one. Its errors are
-// logged, so they leave out what the other machine reports.
+// logged, so they leave out what the other node reports.
 func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Path, error) {
 	path, err := n.udp.Start(func(text string) { n.trace(id, "%s", text) })
 	if err != nil {
@@ -294,7 +294,7 @@ func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer
 	case from == n.info.ID:
 		return nil, wire.Errorf(wire.CodeInvalidParams, "a UDP path needs another machine")
 	case n.removed != nil || n.isRemoved(from):
-		return nil, wire.Errorf(wire.CodeRemoved, "%s is not a member of this network", n.nodeName(from))
+		return nil, wire.Errorf(wire.CodeRemoved, "%s is not in this network", n.nodeName(from))
 	}
 	if try := n.directTries[from]; try != nil && try.offering && n.info.ID < from {
 		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a path itself", n.info.Name)

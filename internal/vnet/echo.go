@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// A ping travels as any program's packets do: a UDP packet to a machine's
+// A ping travels as any program's packets do: a UDP packet to a node's
 // address goes through the routes, the interface, WireGuard, and the path
-// to that machine, whose daemon sends it back. So a reply says that all of
+// to that node, whose daemon sends it back. So a reply says that all of
 // it works, and how long it takes.
 
 const (
@@ -84,7 +84,7 @@ func (m *Manager) stopAnswering() {
 }
 
 // serveEcho sends back what arrives until ctx is done, and then closes conn.
-// A reply is as long as the request, and only machines of the network get
+// A reply is as long as the request, and only nodes of the network get
 // to this address.
 func serveEcho(ctx context.Context, conn net.PacketConn) {
 	defer context.AfterFunc(ctx, func() { conn.Close() })()

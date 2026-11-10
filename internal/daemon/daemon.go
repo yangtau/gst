@@ -1,6 +1,6 @@
 // Package daemon runs the gst daemon: one background process per user
 // that is this machine's node in the mesh. It runs the links of the
-// configuration file, accepts the links of other machines, runs the
+// configuration file, accepts the links of other nodes, runs the
 // virtual network, and answers gst commands on a Unix control socket
 // using the gst protocol (internal/wire).
 package daemon
@@ -36,7 +36,7 @@ type Config struct {
 	Software   string // reported in Hello and Status, such as "gst 0.5.0+a2ffc87"
 	Build      string // identifies the executable; see Build
 
-	// Connect opens a connection to the daemon on the machine at the other
+	// Connect opens a connection to the daemon on the node at the other
 	// end of l, as gst peer-bridge there does; closing it ends everything
 	// under it. Its errors are logged, so they must not quote addresses,
 	// users, or paths.
@@ -46,12 +46,12 @@ type Config struct {
 	Addresses func() []netip.Addr
 	// OpenNet sets up the interface of the virtual network, which cannot
 	// run when it is nil; NetDNS is the UDP address to answer for .gst on,
-	// and Networks what is in use on this machine, by default as
-	// vnet.LocalNetworks finds it.
-	OpenNet  func(tun.Spec) (vnet.Interface, error)
-	NetDNS   string
-	NetEcho  int // the UDP port that answers gst ping
-	Networks func(skip string) vnet.Networks
+	// and UsedPrefixes what is in use on this machine, by default as
+	// vnet.LocalPrefixes finds it.
+	OpenNet      func(tun.Spec) (vnet.Interface, error)
+	NetDNS       string
+	NetEcho      int // the UDP port that answers gst ping
+	UsedPrefixes func(skip string) vnet.UsedPrefixes
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
 	RetryDelay time.Duration
@@ -91,20 +91,20 @@ func New(cfg Config) *Daemon {
 	})
 	d.mesh = m
 	d.net = vnet.New(vnet.Config{
-		Mesh:      m,
-		Log:       cfg.Log,
-		StatePath: filepath.Join(filepath.Dir(cfg.Socket), "net.json"),
-		Open:      cfg.OpenNet,
-		Networks:  cfg.Networks,
-		DNS:       cfg.NetDNS,
-		Echo:      cfg.NetEcho,
+		Mesh:         m,
+		Log:          cfg.Log,
+		StatePath:    filepath.Join(filepath.Dir(cfg.Socket), "net.json"),
+		Open:         cfg.OpenNet,
+		UsedPrefixes: cfg.UsedPrefixes,
+		DNS:          cfg.NetDNS,
+		Echo:         cfg.NetEcho,
 	})
 	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
 	}
 	wire.Handle(&d.control, wire.MethodStatus, none(func() any { return d.Status() }))
-	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Topology() }))
+	wire.Handle(&d.control, wire.MethodTopology, none(func() any { return m.Topology() }))
 	wire.Handle(&d.control, wire.MethodReload, func(ctx context.Context, _ struct{}) (any, error) {
 		if err := d.Reload(ctx); err != nil {
 			return nil, err
@@ -134,9 +134,9 @@ func New(cfg Config) *Daemon {
 		if err != nil {
 			return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
 		}
-		return struct{}{}, m.SetNetwork(subnet.String(), true)
+		return struct{}{}, m.SetSubnet(subnet.String(), true)
 	})
-	mesh.Handle(m, wire.MethodNetNetworks, func(context.Context, struct{}) (any, error) { return d.net.Networks(), nil })
+	mesh.Handle(m, wire.MethodNetPrefixes, func(context.Context, struct{}) (any, error) { return d.net.UsedPrefixes(), nil })
 	return d
 }
 
@@ -264,7 +264,7 @@ func (d *Daemon) Status() wire.Status {
 	return st
 }
 
-// netPing sends a packet to the machine that ref names and back, over the
+// netPing sends a packet to the node that ref names and back, over the
 // virtual network, and reports the way it went.
 func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPing, error) {
 	if size < 0 || size > vnet.MaxPingSize {
@@ -296,7 +296,7 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 	}
 	if dest.ID != topo.Self {
 		// The path now is the one the reply took.
-		if p.Path = d.mesh.PacketPath(dest.ID); p.Path == wire.PathSSH {
+		if p.Way = d.mesh.PacketWay(dest.ID); p.Way == wire.WayRelay {
 			p.Via = mesh.Via(topo, dest)
 		}
 		p.Endpoint = d.mesh.PacketEndpoint(dest.ID)
@@ -349,9 +349,9 @@ func (d *Daemon) admitted(destination string) bool {
 	return l != nil && l.Admit
 }
 
-// linkUp keeps in the configuration which machine the link to
+// linkUp keeps in the configuration which node the link to
 // destination reached, and that it ran. A link that a person added
-// replaces the others to the same machine.
+// replaces the others to the same node.
 func (d *Daemon) linkUp(destination string, peer wire.NodeInfo) {
 	known := func(l *config.Link) bool { return l == nil || l.Target == peer.ID && !l.Admit }
 	if known(d.config.Load().Link(destination)) {
@@ -368,11 +368,11 @@ func (d *Daemon) linkUp(destination string, peer wire.NodeInfo) {
 		switch {
 		case l.Admit:
 			// A person added it: it replaces the link that reached the
-			// machine before.
+			// node before.
 			f.Links = slices.DeleteFunc(f.Links, other)
 			l = f.Link(destination)
 		case slices.ContainsFunc(f.Links, other):
-			// One link each way: the one that reached the machine first
+			// One link each way: the one that reached the node first
 			// stays.
 			f.Links = slices.DeleteFunc(f.Links, func(o config.Link) bool { return o.Destination == destination })
 			dropped = true
@@ -404,10 +404,10 @@ func (d *Daemon) saveGeneration(gen int64) error {
 	})
 }
 
-// dropRemovedLinks deletes from the configuration the links to machines
-// removed from the network, and all links when it is this machine, until
+// dropRemovedLinks deletes from the configuration the links to nodes
+// removed from the network, and all links when it is this node, until
 // ctx is done. Links that a person added since stay: they bring the
-// machines back.
+// nodes back.
 func (d *Daemon) dropRemovedLinks(ctx context.Context) {
 	for {
 		changed := d.mesh.Changed()

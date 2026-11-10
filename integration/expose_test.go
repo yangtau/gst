@@ -62,7 +62,11 @@ func TestExpose(t *testing.T) {
 	c.waitNet(2)
 	check()
 	old := c.net().Address
-	c.mustGst("subnet", "10.99.0.0/16")
+	subnet := "10.99.0.0/16"
+	if strings.HasPrefix(old, "10.99.") {
+		subnet = "10.98.0.0/16" // gst chose 10.99 itself
+	}
+	c.mustGst("subnet", subnet)
 	for _, n := range []*node{a, b, c} {
 		n.waitNet(2)
 	}

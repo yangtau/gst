@@ -104,7 +104,7 @@ function findMachine(ref) {
 
 // via names the machines on the way to n, after this one and before n.
 function via(n, names) {
-  return n.path && n.path.length > 2 ? n.path.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ") : "";
+  return n.route && n.route.length > 2 ? n.route.slice(1, -1).map((id) => names[id] || shortID(id)).join(", ") : "";
 }
 
 // way says how packets go to another machine, as gst status does.
@@ -202,7 +202,7 @@ function linksGroup(n, st, names) {
       !running && l.error ? el("p", { class: "row-error" }, l.error) : null);
   });
   const topo = topology();
-  for (const e of topo ? topo.edges.filter((e) => e.to === n.id && e.from !== n.id) : []) {
+  for (const e of topo ? topo.links.filter((e) => e.to === n.id && e.from !== n.id) : []) {
     rows.push(el("li", { class: "row" },
       mark("ok", "running"),
       arrow(name(e.from), names[n.id]),
@@ -232,7 +232,7 @@ function note(title, ...text) {
 
 function props(n, names, st) {
   const isSelf = n.id === selfID();
-  const route = !isSelf && n.path && n.path.length > 2 ? n.path.map((id) => names[id] || shortID(id)).join(" → ") : "";
+  const route = !isSelf && n.route && n.route.length > 2 ? n.route.map((id) => names[id] || shortID(id)).join(" → ") : "";
   const software = (st && st.software) || n.software;
   const row = (term, value) => (value ? [el("dt", null, term), el("dd", null, value)] : []);
   return el("dl", { class: "props" },
@@ -354,7 +354,7 @@ function drawRing(nodes, names) {
   const seen = {};
   const links = [];
   const tips = [];
-  for (const e of topo.edges) {
+  for (const e of topo.links) {
     const a = pos[e.from], b = pos[e.to];
     if (!a || !b || a === b) continue;
     const key = [e.from, e.to].sort().join("\0");

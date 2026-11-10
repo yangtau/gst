@@ -1,18 +1,18 @@
 // Package mesh is this machine's node in the mesh of gst daemons, in three
 // layers. Links (link) join it to its neighbours over SSH. The table of the
 // network (state), which every node holds and floods to its neighbours over
-// the links, says which machines are members, the links between them, and
+// the links, says which nodes are in the network, the links between them, and
 // the subnet of the virtual network. Routing (route) takes a message to
 // any node along the links, by a routing table that each node works out
 // from the links in its table. On top, this package keeps the node's own
-// entry, decides who may link and who is a member, and carries the
+// entry, decides who may link and who is in the network, and carries the
 // packets of the virtual network: over a UDP path where the network allows
 // one (direct.go), and as routed messages where not (packets.go).
 //
-// A member stays one while it is offline. Only a removal record, which any
-// member can write (gst remove), takes a machine out, for good: it covers
-// the generations of the machine up to its own, and only a person who adds
-// the machine again (gst add) lets it come back with the next generation.
+// A node stays in the network while it is offline. Only a removal record,
+// which any node can write (gst remove), takes a node out, for good: it covers
+// the generations of the node up to its own, and only a person who adds
+// the node again (gst add) lets it come back with the next generation.
 package mesh
 
 import (
@@ -57,7 +57,7 @@ type Config struct {
 	Timing link.Timing
 }
 
-// Node is this machine in the mesh.
+// Node is this machine's node in the mesh.
 type Node struct {
 	cfg    Config
 	log    *log.Logger
@@ -73,7 +73,7 @@ type Node struct {
 	links      map[*link.Link]struct{}
 	net        *wire.NodeNet        // this node's part in the virtual network; see SetNet
 	removed    *wire.Removed        // set while this node is removed from the network
-	paths      map[string][]string  // shortest paths along the links, from this node, by node id
+	routes     map[string][]string  // shortest routes along the links, from this node, by node id
 	lost       map[string]time.Time // when nodes stopped being reachable, by node id
 	changed    chan struct{}        // closed and replaced at every change
 	seenTable  <-chan struct{}      // the table's Changed at the last change
@@ -87,9 +87,9 @@ type Node struct {
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
 	directIdle  time.Duration                 // see runDirect
 
-	subnet   atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
-	onPacket atomic.Pointer[func(node string, packet []byte)]
-	packets  sync.Map // node id -> *packetPeer
+	subnetPrefix atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
+	onPacket     atomic.Pointer[func(node string, packet []byte)]
+	packets      sync.Map // node id -> *packetPeer
 }
 
 // New returns a node without an identity, which refuses links until
@@ -104,7 +104,7 @@ func New(cfg Config) *Node {
 		table: table, flood: state.NewFlood(table), router: route.New(),
 		update:  make(chan struct{}, 1),
 		links:   map[*link.Link]struct{}{},
-		paths:   map[string][]string{},
+		routes:  map[string][]string{},
 		lost:    map[string]time.Time{},
 		changed: make(chan struct{}),
 
@@ -129,7 +129,7 @@ func Handle[P any](n *Node, method string, fn func(ctx context.Context, p P) (an
 	route.Handle(n.router, method, func(ctx context.Context, _ string, p P) (any, error) { return fn(ctx, p) })
 }
 
-// Configure sets this node's identity. A new identity is a new machine: it
+// Configure sets this node's identity. A new identity is a new node: it
 // forgets the table and closes the links and UDP paths, which the other
 // ends know by the old identity.
 func (n *Node) Configure(c *config.Node) {
@@ -148,7 +148,7 @@ func (n *Node) Configure(c *config.Node) {
 		}
 		n.closeDirect(func(string) bool { return true })
 		n.generation, n.lastSeq, n.net, n.removed = gen, 0, nil, nil
-		n.subnet.Store(nil)
+		n.subnetPrefix.Store(nil)
 		if info.ID != "" && n.table.Owner() != info.ID {
 			n.table.Reset(info.ID)
 		}
@@ -167,7 +167,7 @@ func (n *Node) Self() wire.NodeInfo {
 }
 
 // Removed says who removed this node from the network, and when; nil
-// while it is a member.
+// while it is in the network.
 func (n *Node) Removed() *wire.Removed {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -201,9 +201,9 @@ func (n *Node) notifyChanges() {
 		return true
 	})
 	slices.Sort(direct)
-	table, paths := n.table.Changed(), strings.Join(direct, " ")
-	if table != n.seenTable || paths != n.seenDirect {
-		n.seenTable, n.seenDirect = table, paths
+	table, udp := n.table.Changed(), strings.Join(direct, " ")
+	if table != n.seenTable || udp != n.seenDirect {
+		n.seenTable, n.seenDirect = table, udp
 		n.notify()
 	}
 }
@@ -275,24 +275,24 @@ func (n *Node) reconcile(force bool) {
 		n.flood.Put(wire.Entry{Key: state.NodeKey(self.ID), Version: []int64{n.generation, seq}, Value: value})
 	}
 	for l := range n.links {
-		if r, ok := n.removal(l.Peer.ID, l.Member.Generation); ok {
-			l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", l.Peer.Name), Member: &wire.Member{Removed: &r}})
+		if r, ok := n.removal(l.Peer.ID, l.Membership.Generation); ok {
+			l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", l.Peer.Name), Membership: &wire.Membership{Removed: &r}})
 		}
 	}
 	entries := n.table.Entries()
-	n.promoteNetwork(entries)
+	n.promoteSubnet(entries)
 	n.closeDirect(n.isRemoved)
 	n.setRoutes(entries)
 }
 
-// promoteNetwork makes gst's choice of a subnet, made while this node was
-// alone, the choice of a network once the table knows another member. A
-// machine alone since long ago thus does not move the network that adds
-// it: its choice loses to every network's. Sync sends the network entry
-// before the node entries, so a node that joins a network learns its
-// choice before it sees the other members. n.mu is held.
-func (n *Node) promoteNetwork(entries []wire.Entry) {
-	e, ok := n.table.Get(state.NetworkKey)
+// promoteSubnet makes gst's choice of a subnet, made while this node was
+// alone, the choice of a network once the table knows another node. A
+// node alone since long ago thus does not move the network that adds it:
+// its choice loses to every network's. Sync sends the subnet entry first,
+// so a node that joins a network learns its choice before it sees the
+// other nodes. n.mu is held.
+func (n *Node) promoteSubnet(entries []wire.Entry) {
+	e, ok := n.table.Get(state.SubnetKey)
 	if !ok || e.Version[0] >= 0 {
 		return
 	}
@@ -345,7 +345,7 @@ func (n *Node) raiseGeneration(gen int64) {
 }
 
 // becomeRemoved takes this node out of the network after removal record
-// r: it ends its links and forgets the other machines. n.mu is held.
+// r: it ends its links and forgets the other nodes. n.mu is held.
 func (n *Node) becomeRemoved(r wire.Entry) {
 	var v wire.RemovedValue
 	json.Unmarshal(r.Value, &v)
@@ -356,7 +356,7 @@ func (n *Node) becomeRemoved(r wire.Entry) {
 		n.log.Printf("this machine was removed from the network by %s", cmp.Or(v.ByName, v.By[:8]))
 	}
 	for l := range n.links {
-		l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s left the network", n.info.Name), Member: &wire.Member{Removed: &r}})
+		l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s left the network", n.info.Name), Membership: &wire.Membership{Removed: &r}})
 	}
 	n.closeDirect(func(string) bool { return true })
 	n.table.Reset(n.info.ID, r)
@@ -388,33 +388,33 @@ func (n *Node) SetNet(info *wire.NodeNet) {
 }
 
 // Network returns the subnet of the virtual network, as the table has it.
-func (n *Node) Network() (wire.NetworkValue, bool) {
-	e, ok := n.table.Get(state.NetworkKey)
+func (n *Node) Subnet() (wire.SubnetValue, bool) {
+	e, ok := n.table.Get(state.SubnetKey)
 	if !ok {
-		return wire.NetworkValue{}, false
+		return wire.SubnetValue{}, false
 	}
-	var v wire.NetworkValue
+	var v wire.SubnetValue
 	return v, json.Unmarshal(e.Value, &v) == nil
 }
 
-// SetNetwork makes subnet the subnet of the whole network: as a person's
+// SetSubnet makes subnet the subnet of the whole network: as a person's
 // choice, which beats every earlier one and gst's, or as gst's, which
 // counts only until a network with an earlier one joins.
-func (n *Node) SetNetwork(subnet string, manual bool) error {
+func (n *Node) SetSubnet(subnet string, manual bool) error {
 	if n.Removed() != nil {
 		return wire.Errorf(wire.CodeRemoved, "this machine is not in a network")
 	}
-	value, _ := json.Marshal(wire.NetworkValue{Subnet: subnet})
+	value, _ := json.Marshal(wire.SubnetValue{Subnet: subnet})
 	now := time.Now().UnixNano()
 	version := []int64{-1, -now} // promoteNetwork raises it in a network
 	if manual {
 		order := now
-		if cur, ok := n.table.Get(state.NetworkKey); ok && cur.Version[0] == 1 {
+		if cur, ok := n.table.Get(state.SubnetKey); ok && cur.Version[0] == 1 {
 			order = max(order, cur.Version[1]+1)
 		}
 		version = []int64{1, order}
 	}
-	e := wire.Entry{Key: state.NetworkKey, Version: version, Value: value}
+	e := wire.Entry{Key: state.SubnetKey, Version: version, Value: value}
 	if err := state.Valid(e); err != nil {
 		return wire.Errorf(wire.CodeInvalidParams, "invalid subnet %s", subnet)
 	}
@@ -427,10 +427,10 @@ func (n *Node) SetNetwork(subnet string, manual bool) error {
 func (n *Node) handshake(admit bool) link.Handshake {
 	return link.Handshake{
 		Self: n.Self(),
-		Member: func() *wire.Member {
+		Membership: func() *wire.Membership {
 			n.mu.Lock()
 			defer n.mu.Unlock()
-			return &wire.Member{Generation: n.generation, Admit: admit}
+			return &wire.Membership{Generation: n.generation, Admit: admit}
 		},
 		Check:  n.check,
 		Timing: n.cfg.Timing,
@@ -438,14 +438,14 @@ func (n *Node) handshake(admit bool) link.Handshake {
 }
 
 // check judges a node that links with this one.
-func (n *Node) check(peer wire.NodeInfo, m wire.Member) *link.Refusal {
+func (n *Node) check(peer wire.NodeInfo, m wire.Membership) *link.Refusal {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if r, ok := n.table.Get(state.RemovedKey(peer.ID)); ok && r.Version[0] >= m.Generation {
-		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", peer.Name), Member: &wire.Member{Removed: &r}}
+		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", peer.Name), Membership: &wire.Membership{Removed: &r}}
 	}
 	if r, ok := n.table.Get(state.RemovedKey(n.info.ID)); ok && n.standsRemoved(r, m.Admit) {
-		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", n.info.Name), Member: &wire.Member{Removed: &r}}
+		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", n.info.Name), Membership: &wire.Membership{Removed: &r}}
 	}
 	return nil
 }
@@ -465,13 +465,13 @@ func (n *Node) standsRemoved(r wire.Entry, admit bool) bool {
 	return true
 }
 
-// RemoteError is a failure that the other machine reported. Its quote of
-// that machine stays out of logs, which take Logged instead.
+// RemoteError is a failure that the other node reported. Its quote of
+// that node stays out of logs, which take Logged instead.
 type RemoteError struct{ What, Quote string }
 
 func (e *RemoteError) Error() string { return e.What + ": " + e.Quote }
 
-// Logged is the error without what the other machine said.
+// Logged is the error without what the other node said.
 func (e *RemoteError) Logged() string { return e.What + "; see gst status" }
 
 // RetryError is a link that failed in a way that a new try right away
@@ -542,8 +542,8 @@ func (n *Node) refused(err error, admit bool, conn io.ReadWriteCloser) error {
 	if r.ByPeer {
 		err = &RemoteError{"the remote gst refused the link", r.Err.Message}
 	}
-	if r.Member != nil && r.Member.Removed != nil {
-		return n.learnRemoval(*r.Member.Removed, admit, err)
+	if r.Membership != nil && r.Membership.Removed != nil {
+		return n.learnRemoval(*r.Membership.Removed, admit, err)
 	}
 	return err
 }
@@ -567,7 +567,7 @@ func (n *Node) learnRemoval(e wire.Entry, admit bool, err error) error {
 		return errors.New("this machine was removed from the network")
 	}
 	if admit {
-		// The other machine learns of its removal from this side, and
+		// The other node learns of its removal from this side, and
 		// with the admit of the next try comes back.
 		return &RetryError{err}
 	}
@@ -578,7 +578,7 @@ func (n *Node) learnRemoval(e wire.Entry, admit bool, err error) error {
 func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) error {
 	peer := l.Peer.ID
 	n.mu.Lock()
-	// One link each way between two machines: a new one replaces the
+	// One link each way between two nodes: a new one replaces the
 	// one before, which is likely dead without either side knowing yet.
 	for old := range n.links {
 		if old.Peer.ID == peer && old.Opened == l.Opened {
@@ -622,9 +622,9 @@ func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) 
 	if bye.Bye.Error != nil {
 		err = &RemoteError{"the other machine ended the link", bye.Bye.Error.Message}
 	}
-	if bye.Bye.Member != nil && bye.Bye.Member.Removed != nil {
+	if bye.Bye.Membership != nil && bye.Bye.Membership.Removed != nil {
 		// The handshake took any admit: a removal now is a new one.
-		return n.learnRemoval(*bye.Bye.Member.Removed, false, err)
+		return n.learnRemoval(*bye.Bye.Membership.Removed, false, err)
 	}
 	return err
 }

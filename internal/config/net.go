@@ -40,14 +40,14 @@ func ParseSubnet(spec string) (netip.Prefix, error) {
 	return netip.Prefix{}, errors.New("invalid subnet " + quote(spec) + ": use a private range: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, or 100.64.0.0/10")
 }
 
-// ParseMachine reads a reference to a machine of the network: its name,
-// id, or id prefix, optionally followed by ".gst".
-func ParseMachine(ref string) (string, error) {
-	machine := strings.TrimSuffix(strings.ToLower(ref), ".gst")
-	if !namePattern.MatchString(machine) {
-		return "", errors.New("invalid machine " + quote(ref) + ": use a name or id from gst status")
+// ParseNodeRef reads a reference to a node of the network, as a person
+// gives it: its name, id, or id prefix, optionally followed by ".gst".
+func ParseNodeRef(ref string) (string, error) {
+	name := strings.TrimSuffix(strings.ToLower(ref), ".gst")
+	if !namePattern.MatchString(name) {
+		return "", errors.New("invalid machine " + quote(name) + ": use a name or id from gst status")
 	}
-	return machine, nil
+	return name, nil
 }
 
 func quote(s string) string { return strconv.Quote(s) }

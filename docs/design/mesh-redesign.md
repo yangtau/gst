@@ -1,5 +1,7 @@
 # gst 重新设计：分层的 mesh 与成员
 
+> 这是本版重构的方案记录。实现之后的协议和术语以 `mesh.md` 和 `AGENTS.md` 为准：`network` 条目改叫 `subnet`，`member` 字段改叫 `membership`，`mesh.nodes` 改叫 `mesh.topology`，`edges` 改叫 `links`，`path` 改叫 `route` 或 `way`，`net.networks` 改叫 `net.prefixes`，“成员”统一说成“在网络里的 node”。
+
 状态：已实现（协议 6），规格已合并进 `mesh.md`，以那份为准；本文保留作评审记录。实现与本文不同的地方：
 
 - **没有 `seen` 字段**：`node` 条目版本里的 `seq` 跟随时钟，它就是最后一次发布的时间。

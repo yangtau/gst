@@ -266,7 +266,7 @@ The address ends with a random secret after `#`, which the page needs; anyone wi
 
 ### From 0.6
 
-Machines are now members of the network: a machine stays in it while offline, until `gst remove` takes it out. gst reads a 0.6 configuration and keeps its links. Commands changed:
+A machine added to the network now stays in it while offline, until `gst remove` takes it out. gst reads a 0.6 configuration and keeps its links. Commands changed:
 
 | 0.6 | Now |
 | --- | --- |

@@ -26,7 +26,7 @@ func TestMesh(t *testing.T) {
 		if got := path(topo, cNode); got != "a,b,c" {
 			t.Fatalf("a reaches c by %s, want a,b,c", got)
 		}
-		if len(topo.Nodes) != 3 || len(topo.Edges) != 2 {
+		if len(topo.Nodes) != 3 || len(topo.Links) != 2 {
 			t.Fatalf("a sees %+v", topo)
 		}
 		bNode, _ := find(topo, "b")

@@ -13,7 +13,7 @@ import (
 // links. Its rules are two: a new link starts with both sides sending their
 // whole table, and an entry that beats what a node has goes on to every
 // neighbour but the one it came from; one that does not stops there. A
-// neighbour is a machine, which several links may lead to: entries go
+// neighbour is a node, which several links may lead to: entries go
 // over the newest, as an older one may be gone without its end knowing.
 type Flood struct {
 	table *Table

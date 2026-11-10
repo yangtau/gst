@@ -4,23 +4,23 @@ import "time"
 
 // Methods of control connections.
 const (
-	MethodStatus = "daemon.status" // no params; returns Status
-	MethodReload = "daemon.reload" // no params; returns Status after syncing with the configuration
-	MethodNodes  = "mesh.nodes"    // no params; returns Topology
+	MethodStatus   = "daemon.status" // no params; returns Status
+	MethodReload   = "daemon.reload" // no params; returns Status after syncing with the configuration
+	MethodTopology = "mesh.topology" // no params; returns Topology
 	// MethodNodeStatus ("mesh.status") takes NodeParams and returns the
-	// Status of that machine's daemon, asked through the mesh.
+	// Status of that node's daemon, asked through the mesh.
 	MethodNodeStatus = "mesh.status"
 	// MethodPing ("mesh.ping") takes NodeParams, calls ping on that
-	// machine through the mesh, and returns Ping.
+	// node through the mesh, and returns Ping.
 	MethodPing = "mesh.ping"
-	// MethodRemove ("mesh.remove") takes NodeParams, removes that machine
+	// MethodRemove ("mesh.remove") takes NodeParams, removes that node
 	// from the network, and returns Removal.
 	MethodRemove = "mesh.remove"
 	// MethodSubnet ("mesh.subnet") takes SubnetParams and makes it the
 	// subnet of the whole network; it returns nothing.
 	MethodSubnet = "mesh.subnet"
 	// MethodNetPing ("net.ping") takes NetPingParams and returns NetPing: a
-	// packet to that machine and back over the virtual network.
+	// packet to that node and back over the virtual network.
 	MethodNetPing = "net.ping"
 	// MethodDirect ("mesh.direct") takes NodeParams and returns
 	// DirectReport.
@@ -44,11 +44,11 @@ type Status struct {
 	Links    []LinkState   `json:"links"`
 	Exposes  []ExposeState `json:"exposes,omitempty"`
 	Net      *NetState     `json:"net,omitempty"` // nil while this daemon cannot run the network
-	// Removed says that this machine was removed from the network.
+	// Removed says that this node was removed from the network.
 	Removed *Removed `json:"removed,omitempty"`
 }
 
-// Removed is a removal from the network: who removed the machine, and
+// Removed is a removal from the network: who removed the node, and
 // when.
 type Removed struct {
 	By NodeInfo  `json:"by"`
@@ -57,10 +57,10 @@ type Removed struct {
 
 // Removal is what gst remove did.
 type Removal struct {
-	Node NodeInfo `json:"node"` // the machine removed
-	Self bool     `json:"self"` // it is this machine, which left the network
-	// Stranded are the machines that reached this one only through the
-	// removed machine.
+	Node NodeInfo `json:"node"` // the node removed
+	Self bool     `json:"self"` // it is this node, which left the network
+	// Stranded are the nodes that reached this one only through the
+	// removed node.
 	Stranded []NodeInfo `json:"stranded"`
 }
 
@@ -69,7 +69,7 @@ type SubnetParams struct {
 	Subnet string `json:"subnet"`
 }
 
-// NetState is this machine's part in the virtual network. Error says why
+// NetState is this node's part in the virtual network. Error says why
 // it does not work; the rest is what it reached so far.
 type NetState struct {
 	Subnet    string    `json:"subnet,omitempty"`
@@ -80,18 +80,18 @@ type NetState struct {
 	Peers     []NetPeer `json:"peers"`
 }
 
-// Ways that packets take to a peer.
+// Ways that packets take to another node.
 const (
-	PathDirect = "direct" // over UDP
-	PathSSH    = "ssh"    // along the SSH links of the mesh
+	WayDirect = "direct" // over UDP
+	WayRelay  = "relay"  // along the SSH links of the mesh
 )
 
-// NetPeer is another machine of the virtual network.
+// NetPeer is another node of the virtual network.
 type NetPeer struct {
 	Node      string    `json:"node"` // its id
 	Name      string    `json:"name"`
 	Address   string    `json:"address"`
-	Path      string    `json:"path"`               // PathDirect or PathSSH, or empty while it is offline
+	Way       string    `json:"way"`                // WayDirect or WayRelay, or empty while it is offline
 	Endpoint  string    `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
 	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
 	Received  uint64    `json:"received"`           // bytes
@@ -111,13 +111,13 @@ type LinkState struct {
 	Peer        *NodeInfo `json:"peer,omitempty"`
 }
 
-// NodeParams name a machine of the mesh, as the user refers to it.
+// NodeParams name a node of the mesh, as the user refers to it.
 type NodeParams struct {
 	Node string `json:"node"`
 }
 
-// Ping is a machine's answer over the SSH links of the mesh: the machine,
-// the machines in between, in order, and how long the answer took, in
+// Ping is a node's answer over the SSH links of the mesh: the node,
+// the nodes in between, in order, and how long the answer took, in
 // milliseconds.
 type Ping struct {
 	Node   NodeInfo   `json:"node"`
@@ -136,18 +136,18 @@ type NetPingParams struct {
 type NetPing struct {
 	Node    NodeInfo `json:"node"`
 	Address string   `json:"address"`
-	// Path is PathDirect or PathSSH, and empty for this machine.
-	Path     string     `json:"path,omitempty"`
+	// Way is WayDirect or WayRelay, and empty for this node.
+	Way      string     `json:"way,omitempty"`
 	Endpoint string     `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
-	Via      []NodeInfo `json:"via"`                // the machines on the way, over SSH
+	Via      []NodeInfo `json:"via"`                // the nodes on the way, over SSH
 	TimeMS   float64    `json:"time_ms"`
 }
 
-// DirectReport is the UDP path to a machine, or why there is none, and
-// what this node and that machine did in their latest try at one.
+// DirectReport is the UDP path to a node, or why there is none, and
+// what this node and that node did in their latest try at one.
 type DirectReport struct {
 	Node NodeInfo `json:"node"`
-	// Off says that UDP paths are off on this machine.
+	// Off says that UDP paths are off on this node.
 	Off    bool        `json:"off,omitempty"`
 	Trying bool        `json:"trying,omitempty"` // a try is running
 	Path   *DirectPath `json:"path,omitempty"`   // the running path
@@ -155,23 +155,23 @@ type DirectReport struct {
 	Next  time.Time   `json:"next,omitzero"`
 	Local DirectTrace `json:"local"`
 	Peer  DirectTrace `json:"peer"`
-	// PeerError says why the machine's own trace is missing.
+	// PeerError says why the node's own trace is missing.
 	PeerError string `json:"peer_error,omitempty"`
-	// Stats says where packets get lost on this machine.
+	// Stats says where packets get lost on this node.
 	Stats DirectStats `json:"stats"`
 }
 
-// DirectStats is what this machine knows of the packets of the network.
+// DirectStats is what this node knows of the packets of the network.
 type DirectStats struct {
 	Port        int      `json:"port,omitempty"`       // of the UDP sockets
 	Interfaces  []string `json:"interfaces,omitempty"` // that they are bound to
 	ReadBuffer  int      `json:"read_buffer,omitempty"`
 	WriteBuffer int      `json:"write_buffer,omitempty"`
-	// To the machine of the report: packets that UDP could not send, which
+	// To the node of the report: packets that UDP could not send, which
 	// then took the SSH links, and packets lost as the queue of those was full.
 	WriteErrors uint64 `json:"write_errors"`
 	QueueDrops  uint64 `json:"queue_drops"`
-	// From any machine: WireGuard packets from a source of no UDP path,
+	// From any node: WireGuard packets from a source of no UDP path,
 	// and packets lost as WireGuard could not keep up.
 	Strays       uint64 `json:"strays"`
 	InboundDrops uint64 `json:"inbound_drops"`
@@ -184,22 +184,22 @@ type DirectPath struct {
 	Remote string `json:"remote"`
 }
 
-// Topology is the network as one node knows it: its members, online or
+// Topology is the network as one node knows it: its nodes, online or
 // not, and the running links between them.
 type Topology struct {
 	Self   string     `json:"self"`   // this node's id
 	Subnet string     `json:"subnet"` // of the virtual network; empty until one is chosen
 	Nodes  []TopoNode `json:"nodes"`
-	Edges  []TopoEdge `json:"edges"`
+	Links  []TopoLink `json:"links"`
 }
 
-// TopoNode is a member of the network.
+// TopoNode is a node of the network.
 type TopoNode struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Software  string    `json:"software,omitempty"`
 	Reachable bool      `json:"reachable"`        // the SSH links lead to it now
-	Path      []string  `json:"path,omitempty"`   // node ids from this node, for reachable nodes
+	Route     []string  `json:"route,omitempty"`  // node ids from this node, for reachable nodes
 	Direct    bool      `json:"direct,omitempty"` // this node has a UDP path to it
 	Seen      time.Time `json:"seen,omitzero"`    // when it was last known online; zero for this node
 	Net       *NodeNet  `json:"net,omitempty"`    // its part in the virtual network
@@ -211,8 +211,8 @@ func (n TopoNode) Online() bool { return n.Reachable || n.Direct }
 // Info is who the node is.
 func (n TopoNode) Info() NodeInfo { return NodeInfo{ID: n.ID, Name: n.Name, Software: n.Software} }
 
-// TopoEdge is a running link, from the node that opened it.
-type TopoEdge struct {
+// TopoLink is a running link, from the node that opened it.
+type TopoLink struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 }

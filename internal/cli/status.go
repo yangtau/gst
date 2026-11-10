@@ -49,27 +49,27 @@ least 4 characters, optionally followed by .gst.`,
 				if verbose {
 					return usage("-v shows the whole network; give no machine")
 				}
-				machine, err := config.ParseMachine(args[0])
+				ref, err := config.ParseNodeRef(args[0])
 				if err != nil {
 					return &usageError{err}
 				}
-				st, err := call[wire.Status](cmd.Context(), b, wire.MethodNodeStatus, wire.NodeParams{Node: machine})
+				st, err := call[wire.Status](cmd.Context(), b, wire.MethodNodeStatus, wire.NodeParams{Node: ref})
 				if err != nil {
 					return withHint(err, "see the machines with `gst status`")
 				}
 				// The links that other machines made to it are the network's.
-				topo, _ := call[wire.Topology](cmd.Context(), b, wire.MethodNodes, nil)
+				topo, _ := call[wire.Topology](cmd.Context(), b, wire.MethodTopology, nil)
 				return writeStatus(a.stdout, st, topo)
 			}
 			st, ok := status(cmd.Context(), b)
 			if !ok {
 				return withHint(errNoDaemon, "start it with `gst up`")
 			}
-			topo, err := call[wire.Topology](cmd.Context(), b, wire.MethodNodes, nil)
+			topo, err := call[wire.Topology](cmd.Context(), b, wire.MethodTopology, nil)
 			if err != nil {
 				return noDaemon(err)
 			}
-			return writeMachines(a.stdout, st, topo, verbose)
+			return writeNodes(a.stdout, st, topo, verbose)
 		}),
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show the links between all the machines, and the traffic with each")
@@ -96,7 +96,7 @@ func wayText(direct bool, via []string) string {
 // writeMachines prints a line for each machine, this one first, with
 // all the running links between them when verbose, and then the problems
 // of this machine.
-func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bool) error {
+func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool) error {
 	names := displayNames(topo)
 	onNet := slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.Net != nil })
 	w := table(out)
@@ -112,8 +112,8 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 			}
 		default:
 			var via []string
-			if len(n.Path) > 2 {
-				for _, id := range n.Path[1 : len(n.Path)-1] {
+			if len(n.Route) > 2 {
+				for _, id := range n.Route[1 : len(n.Route)-1] {
 					via = append(via, names[id])
 				}
 			}
@@ -144,7 +144,7 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 	}
 	if verbose {
 		self := wire.NodeInfo{ID: topo.Self, Name: names[topo.Self]}
-		rows := linkRows(self, st.Links, topo, func(wire.TopoEdge) bool { return true })
+		rows := linkRows(self, st.Links, topo, func(wire.TopoLink) bool { return true })
 		if len(rows) > 0 {
 			fmt.Fprintln(out)
 			if err := writeLinkRows(out, rows); err != nil {
@@ -230,7 +230,7 @@ func writeStatus(out io.Writer, st wire.Status, topo wire.Topology) error {
 			return err
 		}
 	}
-	rows := linkRows(st.Node, st.Links, topo, func(e wire.TopoEdge) bool { return e.To == st.Node.ID })
+	rows := linkRows(st.Node, st.Links, topo, func(e wire.TopoLink) bool { return e.To == st.Node.ID })
 	fmt.Fprintln(out)
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "No links.")
@@ -244,7 +244,7 @@ func writeStatus(out io.Writer, st wire.Status, topo wire.Topology) error {
 // running links of topo that keep admits and another machine made, sorted.
 // Only the machine that made a link knows its destination and whether it
 // is down.
-func linkRows(self wire.NodeInfo, links []wire.LinkState, topo wire.Topology, keep func(wire.TopoEdge) bool) [][3]string {
+func linkRows(self wire.NodeInfo, links []wire.LinkState, topo wire.Topology, keep func(wire.TopoLink) bool) [][3]string {
 	names := displayNames(topo)
 	name := func(id, fallback string) string { return cmp.Or(names[id], fallback) }
 	from := name(self.ID, self.Name)
@@ -256,7 +256,7 @@ func linkRows(self wire.NodeInfo, links []wire.LinkState, topo wire.Topology, ke
 		}
 		rows = append(rows, [3]string{from + " -> " + to, l.Destination, linkStateText(l)})
 	}
-	for _, e := range topo.Edges {
+	for _, e := range topo.Links {
 		if e.From != self.ID && keep(e) {
 			others = append(others, [3]string{name(e.From, shortID(e.From)) + " -> " + name(e.To, shortID(e.To)), "-", wire.StateRunning})
 		}
@@ -304,7 +304,7 @@ machine lost packets.`,
 			if size < 16 || size > vnet.MaxPingSize {
 				return usage("-s must be from 16 to %d", vnet.MaxPingSize)
 			}
-			machine, err := config.ParseMachine(args[0])
+			ref, err := config.ParseNodeRef(args[0])
 			if err != nil {
 				return &usageError{err}
 			}
@@ -322,7 +322,7 @@ machine lost packets.`,
 					case <-time.After(time.Second):
 					}
 				}
-				p, err := call[wire.NetPing](cmd.Context(), b, wire.MethodNetPing, wire.NetPingParams{Node: machine, Size: size})
+				p, err := call[wire.NetPing](cmd.Context(), b, wire.MethodNetPing, wire.NetPingParams{Node: ref, Size: size})
 				if err != nil {
 					last = err
 					fmt.Fprintf(a.stdout, "no reply: %v\n", err)
@@ -335,9 +335,9 @@ machine lost packets.`,
 				writePingSummary(a.stdout, count, pings)
 			}
 			if verbose {
-				links, linksErr := call[wire.Ping](cmd.Context(), b, wire.MethodPing, wire.NodeParams{Node: machine})
+				links, linksErr := call[wire.Ping](cmd.Context(), b, wire.MethodPing, wire.NodeParams{Node: ref})
 				writeLinks(a.stdout, links, linksErr)
-				report, err := directReport(cmd.Context(), b, machine)
+				report, err := directReport(cmd.Context(), b, ref)
 				if err != nil {
 					fmt.Fprintf(a.stderr, "no report on the UDP path: %v\n", err)
 				} else {
@@ -358,9 +358,9 @@ machine lost packets.`,
 
 // directReport waits for a running try at a UDP path to end and reports
 // it.
-func directReport(ctx context.Context, b backend, machine string) (wire.DirectReport, error) {
+func directReport(ctx context.Context, b backend, ref string) (wire.DirectReport, error) {
 	for {
-		r, err := call[wire.DirectReport](ctx, b, wire.MethodDirect, wire.NodeParams{Node: machine})
+		r, err := call[wire.DirectReport](ctx, b, wire.MethodDirect, wire.NodeParams{Node: ref})
 		if err != nil || !r.Trying {
 			return r, err
 		}
@@ -398,8 +398,8 @@ func writeDirect(out io.Writer, r wire.DirectReport) {
 }
 
 // writeTrace prints a machine's events with the time since its first.
-func writeTrace(out io.Writer, machine string, t wire.DirectTrace, failure string) {
-	fmt.Fprintf(out, "\n%s:\n", machine)
+func writeTrace(out io.Writer, ref string, t wire.DirectTrace, failure string) {
+	fmt.Fprintf(out, "\n%s:\n", ref)
 	if failure != "" {
 		fmt.Fprintf(out, "  no answer: %s\n", failure)
 		return
@@ -415,14 +415,14 @@ func writeTrace(out io.Writer, machine string, t wire.DirectTrace, failure strin
 
 func writePing(out io.Writer, p wire.NetPing) {
 	way := ""
-	switch p.Path {
-	case wire.PathDirect:
+	switch p.Way {
+	case wire.WayDirect:
 		way = wayText(true, nil)
 		if p.Endpoint != "" { // The path may have just ended.
 			way += " " + p.Endpoint
 		}
 		way += ", "
-	case wire.PathSSH:
+	case wire.WayRelay:
 		way = wayText(false, nodeNames(p.Via)) + ", "
 	}
 	fmt.Fprintf(out, "reply from %s (%s): %s%.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
@@ -441,16 +441,16 @@ func writePingSummary(out io.Writer, count int, pings []wire.NetPing) {
 	fmt.Fprintln(out)
 }
 
-func viaText(machines []wire.NodeInfo) string {
-	if len(machines) == 0 {
+func viaText(nodes []wire.NodeInfo) string {
+	if len(nodes) == 0 {
 		return ""
 	}
-	return " via " + strings.Join(nodeNames(machines), ", ")
+	return " via " + strings.Join(nodeNames(nodes), ", ")
 }
 
-func nodeNames(machines []wire.NodeInfo) []string {
-	names := make([]string, len(machines))
-	for i, n := range machines {
+func nodeNames(nodes []wire.NodeInfo) []string {
+	names := make([]string, len(nodes))
+	for i, n := range nodes {
 		names[i] = n.Name
 	}
 	return names

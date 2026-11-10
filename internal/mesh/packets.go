@@ -15,7 +15,7 @@ const directInterval = 5 * time.Second
 // between them. A node's own packets take the UDP path to the other node
 // when there is one, and otherwise go as routed messages along the SSH
 // links, which works wherever the mesh does. They need no protection from
-// the mesh: WireGuard encrypts them end to end, so the machines on the way
+// the mesh: WireGuard encrypts them end to end, so the nodes on the way
 // see only ciphertext, and packets lost here count as lost on a network.
 // Traffic also asks for a UDP path, so that packets move to UDP as soon
 // as they can.
@@ -74,14 +74,14 @@ func (n *Node) SendPacket(id string, packet []byte) {
 	}
 }
 
-// PacketPath tells how packets go to node id now: wire.PathDirect,
-// wire.PathSSH, or empty when neither leads there.
-func (n *Node) PacketPath(id string) string {
+// PacketWay tells how packets go to node id now: wire.WayDirect,
+// wire.WayRelay, or empty when neither leads there.
+func (n *Node) PacketWay(id string) string {
 	switch {
 	case n.packetPeer(id).direct.Load() != nil:
-		return wire.PathDirect
+		return wire.WayDirect
 	case n.router.Reaches(id):
-		return wire.PathSSH
+		return wire.WayRelay
 	}
 	return ""
 }

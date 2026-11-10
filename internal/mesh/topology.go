@@ -13,15 +13,15 @@ import (
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// member is a member of the network, as the table has it.
-type member struct {
+// nodeEntry is a nodeEntry of the network, as the table has it.
+type nodeEntry struct {
 	seq   int64 // the version of its entry, which follows the clock
 	value wire.NodeValue
 }
 
-// members returns the members that entries hold.
-func members(entries []wire.Entry) map[string]member {
-	list := map[string]member{}
+// nodeEntries returns the nodeEntries that entries hold.
+func nodeEntries(entries []wire.Entry) map[string]nodeEntry {
+	list := map[string]nodeEntry{}
 	for _, e := range entries {
 		kind, id, _ := state.ParseKey(e.Key)
 		if kind != state.KindNode {
@@ -31,7 +31,7 @@ func members(entries []wire.Entry) map[string]member {
 		if json.Unmarshal(e.Value, &v) != nil {
 			continue
 		}
-		list[id] = member{seq: e.Version[1], value: v}
+		list[id] = nodeEntry{seq: e.Version[1], value: v}
 	}
 	return list
 }
@@ -40,7 +40,7 @@ func members(entries []wire.Entry) map[string]member {
 // that run, and between others, those that the nodes at both ends list,
 // as the node at an end that lost one may be unable to tell the others.
 // n.mu is held.
-func (n *Node) graph(nodes map[string]member) map[string][]string {
+func (n *Node) graph(nodes map[string]nodeEntry) map[string][]string {
 	self := n.info.ID
 	pairs := map[[2]string]bool{}
 	add := func(a, b string) {
@@ -74,10 +74,10 @@ func (n *Node) graph(nodes map[string]member) map[string][]string {
 	return g
 }
 
-// shortest finds the shortest paths from self in g, in hops. Of paths of
+// shortest finds the shortest routes from self in g, in hops. Of routes of
 // the same length, it takes the one whose first hop has the lowest id, so
 // that all of a neighbour's traffic tends to take one way. It returns the
-// path to each node it reaches, self's included.
+// route to each node it reaches, self's included.
 func shortest(g map[string][]string, self string) map[string][]string {
 	prev := map[string]string{self: ""}
 	first := map[string]string{}
@@ -100,65 +100,65 @@ func shortest(g map[string][]string, self string) map[string][]string {
 		}
 		level = next
 	}
-	paths := map[string][]string{}
+	routes := map[string][]string{}
 	for id := range prev {
-		var path []string
+		var route []string
 		for at := id; at != ""; at = prev[at] {
-			path = append(path, at)
+			route = append(route, at)
 		}
-		slices.Reverse(path)
-		paths[id] = path
+		slices.Reverse(route)
+		routes[id] = route
 	}
-	return paths
+	return routes
 }
 
 // setRoutes works out the routes from entries, the table, or none while
 // entries is nil. n.mu is held.
 func (n *Node) setRoutes(entries []wire.Entry) {
-	paths := map[string][]string{}
+	routes := map[string][]string{}
 	if entries != nil {
-		paths = shortest(n.graph(members(entries)), n.info.ID)
+		routes = shortest(n.graph(nodeEntries(entries)), n.info.ID)
 	}
 	now := time.Now()
-	for id := range n.paths {
-		if paths[id] == nil {
+	for id := range n.routes {
+		if routes[id] == nil {
 			n.lost[id] = now
 		}
 	}
-	for id := range paths {
+	for id := range routes {
 		delete(n.lost, id)
 	}
 	next := map[string]string{}
-	for id, path := range paths {
-		if len(path) > 1 {
-			next[id] = path[1]
+	for id, route := range routes {
+		if len(route) > 1 {
+			next[id] = route[1]
 		}
 	}
-	n.paths = paths
+	n.routes = routes
 	n.router.SetRoutes(next)
-	if v, ok := n.Network(); ok {
+	if v, ok := n.Subnet(); ok {
 		if subnet, err := netip.ParsePrefix(v.Subnet); err == nil {
-			n.subnet.Store(&subnet)
+			n.subnetPrefix.Store(&subnet)
 		}
 	}
 }
 
-// Topology reports the network as this node knows it: its members, online
+// Topology reports the network as this node knows it: its nodes, online
 // or not, and the links that run between them.
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	self := n.info
-	topo := wire.Topology{Self: self.ID, Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
+	topo := wire.Topology{Self: self.ID, Nodes: []wire.TopoNode{}, Links: []wire.TopoLink{}}
 	if self.ID == "" {
 		return topo
 	}
-	if v, ok := n.Network(); ok {
+	if v, ok := n.Subnet(); ok {
 		topo.Subnet = v.Subnet
 	}
 	nodes := map[string]*wire.TopoNode{self.ID: {ID: self.ID, Name: self.Name, Software: self.Software, Net: n.net}}
 	if n.removed == nil {
-		all := members(n.table.Entries())
+		all := nodeEntries(n.table.Entries())
 		for id, m := range all {
 			if id != self.ID {
 				// Its entry says when it last published, at least every
@@ -179,9 +179,9 @@ func (n *Node) Topology() wire.Topology {
 				nodes[l.Peer.ID] = &wire.TopoNode{ID: l.Peer.ID, Name: l.Peer.Name, Software: l.Peer.Software}
 			}
 			if l.Opened {
-				topo.Edges = append(topo.Edges, wire.TopoEdge{From: self.ID, To: l.Peer.ID})
+				topo.Links = append(topo.Links, wire.TopoLink{From: self.ID, To: l.Peer.ID})
 			} else {
-				topo.Edges = append(topo.Edges, wire.TopoEdge{From: l.Peer.ID, To: self.ID})
+				topo.Links = append(topo.Links, wire.TopoLink{From: l.Peer.ID, To: self.ID})
 			}
 		}
 		for id, m := range all {
@@ -191,17 +191,17 @@ func (n *Node) Topology() wire.Topology {
 					continue
 				}
 				if slices.ContainsFunc(other.value.Links, func(o wire.NodeLink) bool { return o.Peer == id && !o.Opened }) {
-					topo.Edges = append(topo.Edges, wire.TopoEdge{From: id, To: l.Peer})
+					topo.Links = append(topo.Links, wire.TopoLink{From: id, To: l.Peer})
 				}
 			}
 		}
 	}
-	for id, path := range n.paths {
+	for id, route := range n.routes {
 		if node := nodes[id]; node != nil {
-			node.Reachable, node.Path = true, path
+			node.Reachable, node.Route = true, route
 		}
 	}
-	nodes[self.ID].Reachable, nodes[self.ID].Path = true, []string{self.ID}
+	nodes[self.ID].Reachable, nodes[self.ID].Route = true, []string{self.ID}
 	for _, node := range nodes {
 		if node.ID != self.ID {
 			node.Direct = n.packetPeer(node.ID).direct.Load() != nil
@@ -211,10 +211,10 @@ func (n *Node) Topology() wire.Topology {
 	slices.SortFunc(topo.Nodes, func(a, b wire.TopoNode) int {
 		return cmp.Or(boolOrder(a.ID == self.ID, b.ID == self.ID), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 	})
-	slices.SortFunc(topo.Edges, func(a, b wire.TopoEdge) int {
+	slices.SortFunc(topo.Links, func(a, b wire.TopoLink) int {
 		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.To, b.To))
 	})
-	topo.Edges = slices.Compact(topo.Edges)
+	topo.Links = slices.Compact(topo.Links)
 	return topo
 }
 
@@ -253,13 +253,13 @@ func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
 	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the network; see `gst status`", ref)
 }
 
-// Via returns the machines between this node and dest along the links.
+// Via returns the nodes between this node and dest along the links.
 func Via(topo wire.Topology, dest wire.TopoNode) []wire.NodeInfo {
 	via := []wire.NodeInfo{}
-	if len(dest.Path) < 3 {
+	if len(dest.Route) < 3 {
 		return via
 	}
-	for _, id := range dest.Path[1 : len(dest.Path)-1] {
+	for _, id := range dest.Route[1 : len(dest.Route)-1] {
 		if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
 			t := topo.Nodes[i]
 			via = append(via, t.Info())
@@ -268,7 +268,7 @@ func Via(topo wire.Topology, dest wire.TopoNode) []wire.NodeInfo {
 	return via
 }
 
-// Call calls method on the machine that ref names, along the links; ctx
+// Call calls method on the node that ref names, along the links; ctx
 // bounds the call, route.DefaultTimeout when it has no deadline.
 func (n *Node) Call(ctx context.Context, ref, method string, params, result any) error {
 	dest, err := FindNode(n.Topology(), ref)
@@ -281,9 +281,9 @@ func (n *Node) Call(ctx context.Context, ref, method string, params, result any)
 	return n.router.Call(ctx, dest.ID, method, params, result)
 }
 
-// Ping calls ping on the machine that ref names, along the links, and
-// reports the machines on the way and the time the answer took. It checks
-// the links, not the virtual network, and also tries a UDP path.
+// Ping calls ping on the node that ref names, along the links, and
+// reports the nodes on the way and the time the answer took. It checks
+// the links, not the virtual network, and also tries a UDP route.
 func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 	topo := n.Topology()
 	dest, err := FindNode(topo, ref)
@@ -304,8 +304,8 @@ func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 	return p, nil
 }
 
-// Remove removes the machine that ref names from the network, for good:
-// only a person's gst add brings it back. Removing this machine leaves the
+// Remove removes the node that ref names from the network, for good:
+// only a person's gst add brings it back. Removing this node leaves the
 // network.
 func (n *Node) Remove(ref string) (wire.Removal, error) {
 	topo := n.Topology()
@@ -327,16 +327,16 @@ func (n *Node) Remove(ref string) (wire.Removal, error) {
 		}
 		for l := range n.links {
 			if l.Peer.ID == dest.ID {
-				gen = max(gen, l.Member.Generation)
+				gen = max(gen, l.Membership.Generation)
 			}
 		}
 	}
-	// The machines that reach this one only through the removed one.
-	g := n.graph(members(n.table.Entries()))
+	// The nodes that reach this one only through the removed one.
+	g := n.graph(nodeEntries(n.table.Entries()))
 	delete(g, dest.ID)
 	after := shortest(g, self.ID)
 	stranded := []wire.NodeInfo{}
-	for id := range n.paths {
+	for id := range n.routes {
 		if _, ok := after[id]; !ok && id != dest.ID && dest.ID != self.ID {
 			if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
 				t := topo.Nodes[i]

@@ -8,7 +8,7 @@ import (
 )
 
 // loopback is the interface as WireGuard sees it: it sends packets for this
-// machine's own address straight back in. Linux delivers those itself, but
+// node's own address straight back in. Linux delivers those itself, but
 // macOS routes the address of a utun interface into the interface, and
 // WireGuard has no peer for it, so nothing on the machine could reach its
 // own address, by name or with gst ping.
@@ -17,7 +17,7 @@ type loopback struct {
 	address atomic.Pointer[netip.Addr]
 }
 
-// setAddress says what this machine's address is.
+// setAddress says what this node's address is.
 func (l *loopback) setAddress(text string) {
 	address, err := netip.ParseAddr(text)
 	if err != nil {

@@ -81,7 +81,7 @@ func (s *systemd) noteLinger() {
 func (s *systemd) Uninstall() error { return s.remove(unitName) }
 
 func (s *systemd) LogHint() string {
-	return "see the daemon log with `journalctl --user -u " + strings.TrimSuffix(unitName, ".service") + "`"
+	return "see gst's log with `journalctl --user -u " + strings.TrimSuffix(unitName, ".service") + "`"
 }
 
 func (s *systemd) remove(unit string) error {

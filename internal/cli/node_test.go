@@ -21,13 +21,13 @@ func meshTopology() wire.Topology {
 	return wire.Topology{
 		Self: self,
 		Nodes: []wire.TopoNode{
-			{ID: self, Name: "laptop", Software: "gst 0.4.0", Reachable: true, Path: []string{self}},
-			{ID: devbox, Name: "devbox", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox}},
-			{ID: far, Name: "far", Reachable: true, Path: []string{self, devbox, far}},
-			{ID: dup1, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup1}},
-			{ID: dup2, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup2}},
+			{ID: self, Name: "laptop", Software: "gst 0.4.0", Reachable: true, Route: []string{self}},
+			{ID: devbox, Name: "devbox", Software: "gst 0.4.0", Reachable: true, Route: []string{self, devbox}},
+			{ID: far, Name: "far", Reachable: true, Route: []string{self, devbox, far}},
+			{ID: dup1, Name: "dup", Software: "gst 0.4.0", Reachable: true, Route: []string{self, devbox, dup1}},
+			{ID: dup2, Name: "dup", Software: "gst 0.4.0", Reachable: true, Route: []string{self, devbox, dup2}},
 		},
-		Edges: []wire.TopoEdge{
+		Links: []wire.TopoLink{
 			{From: devbox, To: dup1},
 			{From: self, To: devbox},
 			{From: devbox, To: far},

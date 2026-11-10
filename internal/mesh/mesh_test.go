@@ -141,10 +141,10 @@ func reaches(n *Node, name string, path ...string) bool {
 	if path == nil {
 		return true
 	}
-	if len(node.Path) != len(path) {
+	if len(node.Route) != len(path) {
 		return false
 	}
-	for i, id := range node.Path {
+	for i, id := range node.Route {
 		if id != nid(path[i]) {
 			return false
 		}
@@ -152,8 +152,8 @@ func reaches(n *Node, name string, path ...string) bool {
 	return true
 }
 
-// isMember reports whether n lists the node called name.
-func isMember(n *Node, name string) bool {
+// inNetwork reports whether n lists the node called name.
+func inNetwork(n *Node, name string) bool {
 	_, ok := findTopo(n.Topology(), nid(name))
 	return ok
 }
@@ -199,8 +199,8 @@ func TestLinkIntroducesNodes(t *testing.T) {
 	if topo.Nodes[0].ID != nid("a") || len(topo.Nodes) != 3 {
 		t.Fatalf("nodes %+v", topo.Nodes)
 	}
-	if want := []wire.TopoEdge{{From: nid("a"), To: nid("b")}, {From: nid("c"), To: nid("b")}}; !equalEdges(topo.Edges, want) {
-		t.Fatalf("edges %+v", topo.Edges)
+	if want := []wire.TopoLink{{From: nid("a"), To: nid("b")}, {From: nid("c"), To: nid("b")}}; !equalLinks(topo.Links, want) {
+		t.Fatalf("links %+v", topo.Links)
 	}
 	if n, _ := findTopo(topo, nid("c")); n.Seen.IsZero() {
 		t.Fatal("no time c was seen")
@@ -211,7 +211,7 @@ func TestLinkIntroducesNodes(t *testing.T) {
 	}
 }
 
-func equalEdges(a, b []wire.TopoEdge) bool {
+func equalLinks(a, b []wire.TopoLink) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -237,8 +237,8 @@ func TestRoutesTakeTheShortestWay(t *testing.T) {
 	waitFor(t, "a reaches d directly", func() bool { return reaches(a, "d", "a", "d") })
 }
 
-// A member stays one while it is offline.
-func TestOfflineMembersStay(t *testing.T) {
+// A node stays in the network while it is offline.
+func TestOfflineNodesStay(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	l := linkUp(t, a, b)
 	waitFor(t, "a has b's entry", func() bool { _, ok := a.table.Get(state.NodeKey(nid("b"))); return ok })
@@ -255,7 +255,7 @@ func TestOfflineMembersStay(t *testing.T) {
 	}
 }
 
-// Without a UDP path, packets go along the links, also through a machine
+// Without a UDP path, packets go along the links, also through a node
 // in between.
 func TestPacketsAlongTheMesh(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
@@ -268,17 +268,17 @@ func TestPacketsAlongTheMesh(t *testing.T) {
 	c.HandlePackets(atC.handle)
 	a.SendPacket(nid("c"), []byte("hello"))
 	waitFor(t, "c gets the packet", func() bool { return atC.has(nid("a"), "hello") })
-	if got := a.PacketPath(nid("c")); got != wire.PathSSH {
+	if got := a.PacketWay(nid("c")); got != wire.WayRelay {
 		t.Fatalf("path = %q", got)
 	}
 	c.SendPacket(nid("a"), []byte("back"))
 	waitFor(t, "a gets the packet", func() bool { return atA.has(nid("c"), "back") })
-	if got := a.PacketPath(nid("zz")); got != "" {
+	if got := a.PacketWay(nid("zz")); got != "" {
 		t.Fatalf("path to nowhere = %q", got)
 	}
 }
 
-// Removing a machine takes it out of every node's view, ends its links,
+// Removing a node takes it out of every node's view, ends its links,
 // and tells it, so that it leaves.
 func TestRemove(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
@@ -294,8 +294,8 @@ func TestRemove(t *testing.T) {
 	if got := b.Removed(); got.By.ID != nid("a") || got.By.Name != "a" || got.At.IsZero() {
 		t.Fatalf("removed %+v", got)
 	}
-	waitFor(t, "a forgets b", func() bool { return !isMember(a, "b") })
-	waitFor(t, "c forgets b", func() bool { return !isMember(c, "b") })
+	waitFor(t, "a forgets b", func() bool { return !inNetwork(a, "b") })
+	waitFor(t, "c forgets b", func() bool { return !inNetwork(c, "b") })
 	cb.wait(t)
 	if topo := b.Topology(); len(topo.Nodes) != 1 {
 		t.Fatalf("b still sees %+v", topo.Nodes)
@@ -319,7 +319,7 @@ func TestRemove(t *testing.T) {
 func TestRemoveOverAnAddedLink(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	l := waitUp(t, openLink(t, a, b, true))
-	waitFor(t, "b knows a", func() bool { return isMember(b, "a") })
+	waitFor(t, "b knows a", func() bool { return inNetwork(b, "a") })
 	if _, err := b.Remove("a"); err != nil {
 		t.Fatal(err)
 	}
@@ -328,12 +328,12 @@ func TestRemoveOverAnAddedLink(t *testing.T) {
 		t.Fatalf("the link ended with %v", err)
 	}
 	waitFor(t, "a knows", func() bool { return a.Removed() != nil })
-	if a.Removed() == nil || isMember(b, "a") {
+	if a.Removed() == nil || inNetwork(b, "a") {
 		t.Fatal("a came back")
 	}
 }
 
-// Two machines have at most one link each way: a new one replaces the
+// Two nodes have at most one link each way: a new one replaces the
 // one before, and the other way has its own.
 func TestOneLinkEachWay(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
@@ -346,7 +346,7 @@ func TestOneLinkEachWay(t *testing.T) {
 	back := linkUp(t, b, a)
 	waitFor(t, "a and b list a link each way", func() bool {
 		for _, n := range []*Node{a, b} {
-			if len(n.Topology().Edges) != 2 {
+			if len(n.Topology().Links) != 2 {
 				return false
 			}
 		}
@@ -361,7 +361,7 @@ func TestOneLinkEachWay(t *testing.T) {
 	}
 }
 
-// A machine that removes itself leaves the network.
+// A node that removes itself leaves the network.
 func TestRemoveSelf(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	l := linkUp(t, a, b)
@@ -372,13 +372,13 @@ func TestRemoveSelf(t *testing.T) {
 	}
 	waitFor(t, "a left", func() bool { return a.Removed() != nil })
 	l.wait(t)
-	waitFor(t, "b forgets a", func() bool { return !isMember(b, "a") })
+	waitFor(t, "b forgets a", func() bool { return !inNetwork(b, "a") })
 	if _, err := a.Remove("a"); err == nil {
 		t.Fatal("left twice")
 	}
 }
 
-// gst add brings a removed machine back, from either end of the link.
+// gst add brings a removed node back, from either end of the link.
 func TestAddBringsBack(t *testing.T) {
 	saved := make(chan int64, 4)
 	a, b := newNode(t, "a"), newNodeConfig(t, "b", Config{SaveGeneration: func(g int64) error { saved <- g; return nil }})
@@ -398,7 +398,7 @@ func TestAddBringsBack(t *testing.T) {
 	waitFor(t, "b is back", func() bool { return b.Removed() == nil && reaches(a, "b") && reaches(b, "a") })
 }
 
-// A member that adds a link to a machine removed while it was offline
+// A node that adds a link to a node removed while it was offline
 // tells it, and the link's next try brings it back.
 func TestAddBringsBackFromTheOtherEnd(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
@@ -410,7 +410,7 @@ func TestAddBringsBackFromTheOtherEnd(t *testing.T) {
 	if _, err := c.Remove("a"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "b forgets a", func() bool { return !isMember(b, "a") })
+	waitFor(t, "b forgets a", func() bool { return !inNetwork(b, "a") })
 	if a.Removed() != nil {
 		t.Fatal("a heard of it")
 	}
@@ -461,22 +461,22 @@ func TestTableIsKept(t *testing.T) {
 	}
 	// Another identity starts afresh.
 	other := newNodeConfig(t, "x", Config{StatePath: path})
-	if isMember(other, "b") {
+	if inNetwork(other, "b") {
 		t.Fatal("x took a's table")
 	}
 }
 
-// A new identity is a new machine.
+// A new identity is a new node.
 func TestConfigure(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	l := linkUp(t, a, b)
-	waitFor(t, "a knows b", func() bool { return isMember(a, "b") })
+	waitFor(t, "a knows b", func() bool { return inNetwork(a, "b") })
 	a.Configure(&config.Node{ID: nid("a"), Name: "a2"})
 	waitFor(t, "b hears the new name", func() bool { n, _ := findTopo(b.Topology(), nid("a")); return n.Name == "a2" })
 
 	a.Configure(&config.Node{ID: nid("n"), Name: "a"})
 	l.wait(t)
-	if isMember(a, "b") {
+	if inNetwork(a, "b") {
 		t.Fatal("the new identity kept the table")
 	}
 	a.Configure(nil)
@@ -531,43 +531,43 @@ func TestSetNetQuiet(t *testing.T) {
 	}
 }
 
-// gst's choice on a machine alone, however early, loses to a network's.
+// gst's choice on a node alone, however early, loses to a network's.
 func TestLoneChoiceLoses(t *testing.T) {
 	lone, a, b := newNode(t, "lone"), newNode(t, "a"), newNode(t, "b")
-	if err := lone.SetNetwork("10.1.0.0/16", false); err != nil {
+	if err := lone.SetSubnet("10.1.0.0/16", false); err != nil {
 		t.Fatal(err)
 	}
 	linkUp(t, a, b)
-	if err := a.SetNetwork("10.2.0.0/16", false); err != nil {
+	if err := a.SetSubnet("10.2.0.0/16", false); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "b takes it", func() bool { v, _ := b.Network(); return v.Subnet == "10.2.0.0/16" })
+	waitFor(t, "b takes it", func() bool { v, _ := b.Subnet(); return v.Subnet == "10.2.0.0/16" })
 	linkUp(t, lone, b)
-	waitFor(t, "lone joins the network", func() bool { v, _ := lone.Network(); return v.Subnet == "10.2.0.0/16" })
-	if v, _ := a.Network(); v.Subnet != "10.2.0.0/16" {
+	waitFor(t, "lone joins the network", func() bool { v, _ := lone.Subnet(); return v.Subnet == "10.2.0.0/16" })
+	if v, _ := a.Subnet(); v.Subnet != "10.2.0.0/16" {
 		t.Fatalf("the network moved to %s", v.Subnet)
 	}
 }
 
-func TestSetNetwork(t *testing.T) {
+func TestSetSubnet(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	linkUp(t, a, b)
-	if err := a.SetNetwork("10.1.0.0/16", false); err != nil {
+	if err := a.SetSubnet("10.1.0.0/16", false); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "b takes it", func() bool { v, ok := b.Network(); return ok && v.Subnet == "10.1.0.0/16" })
-	if err := b.SetNetwork("10.2.0.0/16", true); err != nil {
+	waitFor(t, "b takes it", func() bool { v, ok := b.Subnet(); return ok && v.Subnet == "10.1.0.0/16" })
+	if err := b.SetSubnet("10.2.0.0/16", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SetNetwork("10.3.0.0/16", false); err != nil {
+	if err := a.SetSubnet("10.3.0.0/16", false); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "a takes b's", func() bool { v, _ := a.Network(); return v.Subnet == "10.2.0.0/16" })
-	if err := a.SetNetwork("10.4.0.0/16", true); err != nil {
+	waitFor(t, "a takes b's", func() bool { v, _ := a.Subnet(); return v.Subnet == "10.2.0.0/16" })
+	if err := a.SetSubnet("10.4.0.0/16", true); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "b takes a's", func() bool { v, _ := b.Network(); return v.Subnet == "10.4.0.0/16" })
-	if err := a.SetNetwork("nonsense", true); err == nil {
+	waitFor(t, "b takes a's", func() bool { v, _ := b.Subnet(); return v.Subnet == "10.4.0.0/16" })
+	if err := a.SetSubnet("nonsense", true); err == nil {
 		t.Fatal("took nonsense")
 	}
 }

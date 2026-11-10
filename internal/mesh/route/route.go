@@ -170,7 +170,7 @@ func (r *Router) send(to string, msg []byte, urgent bool) bool {
 	}
 	list := r.links[hop]
 	r.mu.RUnlock()
-	// The newest link first: an older one to the same machine may be one
+	// The newest link first: an older one to the same node may be one
 	// that is gone, and that its end has not noticed yet.
 	for i := len(list) - 1; i >= 0; i-- {
 		if list[i].send(msg, urgent) {
