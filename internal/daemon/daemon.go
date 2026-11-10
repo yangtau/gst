@@ -68,9 +68,10 @@ type Daemon struct {
 	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
-	ops   sync.Mutex             // serializes reloads and restarts
-	mu    sync.Mutex             // guards links
-	links map[string]*supervisor // by destination
+	ops     sync.Mutex             // serializes reloads and restarts
+	stopped bool                   // Serve ended, and no link starts again; guarded by ops
+	mu      sync.Mutex             // guards links
+	links   map[string]*supervisor // by destination
 }
 
 // New returns a daemon for cfg.
@@ -311,6 +312,9 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
+	if d.stopped {
+		return nil
+	}
 	f, err := config.Load(d.cfg.ConfigPath)
 	if err != nil {
 		return err
@@ -445,8 +449,12 @@ func (d *Daemon) reloadLater() {
 	}()
 }
 
-// stopAll stops every link.
+// stopAll stops every link for good: a reload in the background, such
+// as after a link ran, starts none again.
 func (d *Daemon) stopAll() {
+	d.ops.Lock()
+	d.stopped = true
+	d.ops.Unlock()
 	d.mu.Lock()
 	all := make([]*supervisor, 0, len(d.links))
 	for destination, s := range d.links {
