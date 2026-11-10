@@ -3,440 +3,351 @@ package mesh
 import (
 	"cmp"
 	"context"
-	"encoding/hex"
 	"encoding/json"
-	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/state"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// Limits on what a node accepts from its peers.
-const (
-	maxRecords = 1024
-	maxEdges   = 1024
-)
-
-// Update asks Run to publish this node's record if it changed.
-func (n *Node) Update() {
-	select {
-	case n.update <- struct{}{}:
-	default:
-	}
+// member is a member of the network, as the table has it.
+type member struct {
+	seq   int64 // the version of its entry, which follows the clock
+	value wire.NodeValue
 }
 
-// Run publishes this node's record whenever it changes and before it
-// expires, and drops expired records soon after they expire, until ctx is
-// done.
-func (n *Node) Run(ctx context.Context) {
-	defer n.stop()
-	refresh := time.NewTicker(n.ttl / 3)
-	defer refresh.Stop()
-	sweep := time.NewTicker(n.ttl / 30)
-	defer sweep.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-n.update:
-			n.publish(false)
-		case <-refresh.C:
-			n.publish(true)
-		case <-sweep.C:
-			n.prune()
+// members returns the members that entries hold.
+func members(entries []wire.Entry) map[string]member {
+	list := map[string]member{}
+	for _, e := range entries {
+		kind, id, _ := state.ParseKey(e.Key)
+		if kind != state.KindNode {
+			continue
 		}
+		var v wire.NodeValue
+		if json.Unmarshal(e.Value, &v) != nil {
+			continue
+		}
+		list[id] = member{seq: e.Version[1], value: v}
 	}
+	return list
 }
 
-// publish replaces this node's record when it changed, or always with
-// force, raising its Seq. Seq follows the clock, so that it keeps growing
-// across restarts of the daemon.
-func (n *Node) publish(force bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.info.ID == "" {
-		return
+// graph returns the links that carry messages: for this node, the links
+// that run, and between others, those that the nodes at both ends list,
+// as the node at an end that lost one may be unable to tell the others.
+// n.mu is held.
+func (n *Node) graph(nodes map[string]member) map[string][]string {
+	self := n.info.ID
+	pairs := map[[2]string]bool{}
+	add := func(a, b string) {
+		if a > b {
+			a, b = b, a
+		}
+		pairs[[2]string{a, b}] = true
 	}
-	edges := n.edges()
-	old, ok := n.records[n.info.ID]
-	if ok && !force && old.Node == n.info && slices.Equal(old.Links, edges) && sameNet(old.Net, n.net) {
-		return
-	}
-	now := time.Now()
-	seq := max(old.Seq+1, n.seqFloor+1, uint64(now.UnixNano()))
-	n.records[n.info.ID] = wire.Record{Node: n.info, Seq: seq, Expires: now.Add(n.ttl), Links: edges, Net: n.net}
-	n.notify()
-}
-
-func sameNet(a, b *wire.NetInfo) bool {
-	return a == b || a != nil && b != nil && *a == *b
-}
-
-// SetNet sets what this node's record says of its part in the virtual
-// network; nil takes it out.
-func (n *Node) SetNet(info *wire.NetInfo) {
-	n.mu.Lock()
-	n.net = info
-	n.mu.Unlock()
-	if info == nil {
-		n.subnet.Store(nil)
-	} else if subnet, err := netip.ParsePrefix(info.Subnet); err == nil {
-		n.subnet.Store(&subnet)
-	}
-	n.Update()
-}
-
-// Changed returns a channel that is closed at the next change of what
-// this node knows of the mesh.
-func (n *Node) Changed() <-chan struct{} {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.changed
-}
-
-// edges describes the running links; n.mu is held.
-func (n *Node) edges() []wire.Edge {
-	edges := []wire.Edge{}
 	for l := range n.links {
-		edges = append(edges, wire.Edge{Link: l.id, Peer: l.peer.ID})
+		add(self, l.Peer.ID)
 	}
-	slices.SortFunc(edges, func(a, b wire.Edge) int {
-		return cmp.Or(cmp.Compare(a.Link, b.Link), cmp.Compare(a.Peer, b.Peer))
-	})
-	return edges
-}
-
-// notify wakes the streams that push records; n.mu is held.
-func (n *Node) notify() {
-	close(n.changed)
-	n.changed = make(chan struct{})
-}
-
-// prune drops expired records and ends the UDP paths to their nodes. Only
-// SSH links renew a record, so a UDP path outlives the links that led to
-// its node for as long as the record lasts, and no longer: the node may
-// never come back, and nothing tells that from a network that is down.
-func (n *Node) prune() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	now := time.Now()
-	for id, r := range n.records {
-		if id == n.info.ID || r.Expires.After(now) {
+	for id, m := range nodes {
+		if id == self {
 			continue
 		}
-		delete(n.records, id)
-		if c := n.packetPeer(id).direct.Load(); c != nil {
-			c.Close()
-		}
-	}
-}
-
-// known returns the Seq of every record, by node id.
-func (n *Node) known() map[string]uint64 {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	known := make(map[string]uint64, len(n.records))
-	for id, r := range n.records {
-		known[id] = r.Seq
-	}
-	return known
-}
-
-// newer returns the live records newer than sent, which it updates, and
-// the channel that is closed at the next change.
-func (n *Node) newer(sent map[string]uint64) ([]wire.Record, <-chan struct{}) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	now := time.Now()
-	recs := []wire.Record{}
-	for id, r := range n.records {
-		if r.Seq > sent[id] && r.Expires.After(now) {
-			recs = append(recs, r)
-			sent[id] = r.Seq
-		}
-	}
-	return recs, n.changed
-}
-
-// merge keeps the records that are newer than the ones this node has.
-// valid reports whether a record that a peer sent is well formed.
-func valid(r wire.Record) bool {
-	if !config.ValidNodeID(r.Node.ID) || len(r.Links) > maxEdges || !fits(r) || !validNet(r.Net) {
-		return false
-	}
-	for _, e := range r.Links {
-		if !config.ValidNodeID(e.Peer) || e.Link != "" && !config.ValidLinkID(e.Link) {
-			return false
-		}
-	}
-	return true
-}
-
-// validNet reports whether a record's part in the virtual network is well
-// formed.
-func validNet(info *wire.NetInfo) bool {
-	if info == nil {
-		return true
-	}
-	subnet, err := config.ParseSubnet(info.Subnet)
-	if err != nil {
-		return false
-	}
-	address, err := netip.ParseAddr(info.Address)
-	key, keyErr := hex.DecodeString(info.PublicKey)
-	return err == nil && subnet.Contains(address) && keyErr == nil && len(key) == 32
-}
-
-func (n *Node) merge(recs []wire.Record) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.info.ID == "" {
-		return
-	}
-	now := time.Now()
-	changed := false
-	for _, r := range recs {
-		if !valid(r) || !r.Expires.After(now) {
-			continue
-		}
-		if r.Node.ID == n.info.ID {
-			// An older run of this daemon published it; outdo it. Peers
-			// also pass this node's current record back, which is no news.
-			if r.Seq > n.records[n.info.ID].Seq {
-				n.seqFloor = max(n.seqFloor, r.Seq)
-				delete(n.records, n.info.ID) // so that publish replaces it
-				n.Update()
-			}
-			continue
-		}
-		old, ok := n.records[r.Node.ID]
-		if ok && old.Seq >= r.Seq || !ok && len(n.records) >= maxRecords {
-			continue
-		}
-		n.records[r.Node.ID] = r
-		changed = true
-	}
-	if changed {
-		n.notify()
-	}
-}
-
-// sync asks the peer for its records and keeps merging the ones it
-// pushes until the session ends. When the exchange fails, sync closes the
-// session, so that the link starts over rather than staying up without
-// updates.
-func (n *Node) sync(ctx context.Context, s session) {
-	var recs wire.Records
-	conn, err := call(ctx, s, wire.MethodTopologySync, wire.SyncParams{Known: n.known()}, &recs)
-	if err == nil {
-		defer conn.Close()
-		defer context.AfterFunc(ctx, func() { conn.Close() })()
-	}
-	for err == nil {
-		n.merge(recs.Records)
-		recs = wire.Records{}
-		err = wire.ReadFrame(conn, &recs)
-	}
-	if ctx.Err() == nil {
-		s.Close()
-	}
-}
-
-// serveSync answers topology.sync: it sends the records newer than the
-// caller's and then every change, until the session ends.
-func (n *Node) serveSync(ctx context.Context, conn net.Conn, p wire.SyncParams, accept func(any) error) error {
-	sent := map[string]uint64{}
-	for id, seq := range p.Known {
-		sent[id] = seq
-	}
-	// The answer carries the first batch; further batches follow as pushes.
-	recs, changed := n.newer(sent)
-	batches := batch(recs)
-	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if err := accept(wire.Records{Records: batches[0]}); err != nil {
-		return err
-	}
-	for pending := batches[1:]; ; {
-		for _, b := range pending {
-			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := wire.WriteFrame(conn, wire.Records{Records: b}); err != nil {
-				return err
+		for _, l := range m.value.Links {
+			other, ok := nodes[l.Peer]
+			if ok && l.Peer != self && slices.ContainsFunc(other.value.Links, func(o wire.NodeLink) bool { return o.Peer == id }) {
+				add(id, l.Peer)
 			}
 		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return nil
+	}
+	g := map[string][]string{}
+	for p := range pairs {
+		g[p[0]] = append(g[p[0]], p[1])
+		g[p[1]] = append(g[p[1]], p[0])
+	}
+	for id := range g {
+		slices.Sort(g[id])
+	}
+	return g
+}
+
+// shortest finds the shortest paths from self in g, in hops. Of paths of
+// the same length, it takes the one whose first hop has the lowest id, so
+// that all of a neighbour's traffic tends to take one way. It returns the
+// path to each node it reaches, self's included.
+func shortest(g map[string][]string, self string) map[string][]string {
+	prev := map[string]string{self: ""}
+	first := map[string]string{}
+	level := []string{self}
+	for len(level) > 0 {
+		var next []string
+		for _, at := range level {
+			for _, to := range g[at] {
+				hop := first[at]
+				if at == self {
+					hop = to
+				}
+				if _, seen := prev[to]; !seen {
+					prev[to], first[to] = at, hop
+					next = append(next, to)
+				} else if slices.Contains(next, to) && hop < first[to] {
+					prev[to], first[to] = at, hop
+				}
+			}
 		}
-		recs, changed = n.newer(sent)
-		pending = nil
-		if len(recs) > 0 {
-			pending = batch(recs)
+		level = next
+	}
+	paths := map[string][]string{}
+	for id := range prev {
+		var path []string
+		for at := id; at != ""; at = prev[at] {
+			path = append(path, at)
+		}
+		slices.Reverse(path)
+		paths[id] = path
+	}
+	return paths
+}
+
+// setRoutes works out the routes from entries, the table, or none while
+// entries is nil. n.mu is held.
+func (n *Node) setRoutes(entries []wire.Entry) {
+	paths := map[string][]string{}
+	if entries != nil {
+		paths = shortest(n.graph(members(entries)), n.info.ID)
+	}
+	now := time.Now()
+	for id := range n.paths {
+		if paths[id] == nil {
+			n.lost[id] = now
+		}
+	}
+	for id := range paths {
+		delete(n.lost, id)
+	}
+	next := map[string]string{}
+	for id, path := range paths {
+		if len(path) > 1 {
+			next[id] = path[1]
+		}
+	}
+	n.paths = paths
+	n.router.SetRoutes(next)
+	if v, ok := n.Network(); ok {
+		if subnet, err := netip.ParsePrefix(v.Subnet); err == nil {
+			n.subnet.Store(&subnet)
 		}
 	}
 }
 
-// maxBatch bounds the encoded records of one frame. Nodes keep only
-// records that fit, so that they can pass every record on.
-const maxBatch = wire.MaxFrame / 2
-
-func fits(r wire.Record) bool {
-	raw, err := json.Marshal(r)
-	return err == nil && len(raw) <= maxBatch
-}
-
-// batch splits records into lists that each fit in a frame; it returns at
-// least one list.
-func batch(recs []wire.Record) [][]wire.Record {
-	batches := [][]wire.Record{{}}
-	size := 0
-	for _, r := range recs {
-		raw, _ := json.Marshal(r)
-		last := len(batches) - 1
-		if size+len(raw) > maxBatch && len(batches[last]) > 0 {
-			batches = append(batches, []wire.Record{})
-			last, size = last+1, 0
-		}
-		batches[last] = append(batches[last], r)
-		size += len(raw)
-	}
-	return batches
-}
-
-// Topology reports the mesh as this node knows it, with this node's
-// links as they are now rather than as last published.
+// Topology reports the network as this node knows it: its members, online
+// or not, and the links that run between them.
 func (n *Node) Topology() wire.Topology {
 	n.mu.Lock()
+	defer n.mu.Unlock()
 	self := n.info
-	recs := make([]wire.Record, 0, len(n.records))
-	for id, r := range n.records {
-		if id != self.ID {
-			recs = append(recs, r)
-		}
-	}
-	recs = append(recs, wire.Record{Node: self, Links: n.edges(), Net: n.net})
-	n.mu.Unlock()
+	topo := wire.Topology{Self: self.ID, Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
 	if self.ID == "" {
-		return wire.Topology{Nodes: []wire.TopoNode{}, Edges: []wire.TopoEdge{}}
+		return topo
 	}
-	topo := buildTopology(self.ID, recs, time.Now())
-	for i := range topo.Nodes {
-		topo.Nodes[i].Direct = n.packetPeer(topo.Nodes[i].ID).direct.Load() != nil
+	if v, ok := n.Network(); ok {
+		topo.Subnet = v.Subnet
 	}
-	return topo
-}
-
-// Machines is Topology as people see it: the machines that can be reached
-// now, over SSH links or a UDP path, and the links between them. What
-// Topology holds beyond that is only a record that has not expired yet,
-// which may be of a machine that is gone.
-func (n *Node) Machines() wire.Topology {
-	topo := n.Topology()
-	topo.Nodes = slices.DeleteFunc(topo.Nodes, func(v wire.TopoNode) bool { return !v.Reachable && !v.Direct })
-	listed := func(id string) bool {
-		return slices.ContainsFunc(topo.Nodes, func(v wire.TopoNode) bool { return v.ID == id })
-	}
-	topo.Edges = slices.DeleteFunc(topo.Edges, func(e wire.TopoEdge) bool { return !listed(e.From) || !listed(e.To) })
-	return topo
-}
-
-// buildTopology joins the live records into nodes and the links between
-// them, and finds the shortest path from self to each node it reaches.
-// Links carry calls and packets both ways.
-func buildTopology(self string, recs []wire.Record, now time.Time) wire.Topology {
-	nodes := map[string]*wire.TopoNode{}
-	for _, r := range recs {
-		if r.Node.ID == self || r.Expires.After(now) {
-			nodes[r.Node.ID] = &wire.TopoNode{ID: r.Node.ID, Name: r.Node.Name, Software: r.Node.Software, Expires: r.Expires, Net: r.Net}
-		}
-	}
-	// A link counts only while the nodes at both ends list it: the node
-	// at an end that lost it may be unable to tell the others, until its
-	// record expires, but the node at the other end can.
-	live := slices.DeleteFunc(slices.Clone(recs), func(r wire.Record) bool { return r.Node.ID != self && !r.Expires.After(now) })
-	peers := map[string]map[string]bool{}
-	for _, r := range live {
-		peers[r.Node.ID] = map[string]bool{}
-		for _, e := range r.Links {
-			peers[r.Node.ID][e.Peer] = true
-		}
-	}
-	edges := []wire.TopoEdge{}
-	for _, r := range live {
-		for _, e := range r.Links {
-			if e.Link == "" || peers[e.Peer] != nil && !peers[e.Peer][r.Node.ID] {
-				// Accepted links show as the opening node's; a link
-				// that the other end no longer lists is gone.
-				continue
+	nodes := map[string]*wire.TopoNode{self.ID: {ID: self.ID, Name: self.Name, Software: self.Software, Net: n.net}}
+	if n.removed == nil {
+		all := members(n.table.Entries())
+		for id, m := range all {
+			if id != self.ID {
+				// Its entry says when it last published, at least every
+				// refresh; this node may have seen it later.
+				seen := time.Unix(0, m.seq)
+				if lost := n.lost[id]; lost.After(seen) {
+					seen = lost
+				}
+				nodes[id] = &wire.TopoNode{ID: id, Name: m.value.Name, Software: m.value.Software, Seen: seen, Net: m.value.Net}
 			}
-			if nodes[e.Peer] == nil {
-				// Its record has not arrived yet: until then its id
-				// names it.
-				nodes[e.Peer] = &wire.TopoNode{ID: e.Peer, Name: e.Peer[:8]}
+		}
+		for l := range n.links {
+			if n.isRemoved(l.Peer.ID) {
+				continue // Its link is about to close.
 			}
-			edges = append(edges, wire.TopoEdge{From: r.Node.ID, To: e.Peer, Link: e.Link})
+			if nodes[l.Peer.ID] == nil {
+				// Its entry has not arrived yet.
+				nodes[l.Peer.ID] = &wire.TopoNode{ID: l.Peer.ID, Name: l.Peer.Name, Software: l.Peer.Software}
+			}
+			if l.Opened {
+				topo.Edges = append(topo.Edges, wire.TopoEdge{From: self.ID, To: l.Peer.ID})
+			} else {
+				topo.Edges = append(topo.Edges, wire.TopoEdge{From: l.Peer.ID, To: self.ID})
+			}
+		}
+		for id, m := range all {
+			for _, l := range m.value.Links {
+				other, ok := all[l.Peer]
+				if id == self.ID || l.Peer == self.ID || !ok || !l.Opened {
+					continue
+				}
+				if slices.ContainsFunc(other.value.Links, func(o wire.NodeLink) bool { return o.Peer == id && !o.Opened }) {
+					topo.Edges = append(topo.Edges, wire.TopoEdge{From: id, To: l.Peer})
+				}
+			}
 		}
 	}
-	slices.SortFunc(edges, func(a, b wire.TopoEdge) int {
-		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.To, b.To), cmp.Compare(a.Link, b.Link))
-	})
-
-	prev := reach(edges, self)
-	for id := range prev {
-		node := nodes[id]
-		node.Reachable = true
-		for at := id; at != ""; at = prev[at] {
-			node.Path = append(node.Path, at)
+	for id, path := range n.paths {
+		if node := nodes[id]; node != nil {
+			node.Reachable, node.Path = true, path
 		}
-		slices.Reverse(node.Path)
 	}
-
-	t := wire.Topology{Self: self, Nodes: make([]wire.TopoNode, 0, len(nodes)), Edges: edges}
+	nodes[self.ID].Reachable, nodes[self.ID].Path = true, []string{self.ID}
 	for _, node := range nodes {
-		t.Nodes = append(t.Nodes, *node)
+		if node.ID != self.ID {
+			node.Direct = n.packetPeer(node.ID).direct.Load() != nil
+		}
+		topo.Nodes = append(topo.Nodes, *node)
 	}
-	slices.SortFunc(t.Nodes, func(a, b wire.TopoNode) int {
-		return cmp.Or(boolOrder(a.ID == self, b.ID == self), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	slices.SortFunc(topo.Nodes, func(a, b wire.TopoNode) int {
+		return cmp.Or(boolOrder(a.ID == self.ID, b.ID == self.ID), cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 	})
-	return t
+	slices.SortFunc(topo.Edges, func(a, b wire.TopoEdge) int {
+		return cmp.Or(cmp.Compare(a.From, b.From), cmp.Compare(a.To, b.To))
+	})
+	topo.Edges = slices.Compact(topo.Edges)
+	return topo
 }
 
-// reach finds the nodes that self reaches over links, in either
-// direction. It returns, for each, the node before it on a shortest path;
-// self has none.
-func reach(edges []wire.TopoEdge, self string) map[string]string {
-	prev := map[string]string{self: ""}
-	queue := []string{self}
-	for len(queue) > 0 {
-		at := queue[0]
-		queue = queue[1:]
-		for _, e := range edges {
-			next := ""
-			switch at {
-			case e.From:
-				next = e.To
-			case e.To:
-				next = e.From
-			}
-			if _, seen := prev[next]; next != "" && !seen {
-				prev[next] = at
-				queue = append(queue, next)
+// FindNode finds a node of topo by ref: its id, its name, or a prefix of
+// at least four characters of its id, after dropping a ".gst" suffix.
+// Names and prefixes must be unique.
+func FindNode(topo wire.Topology, ref string) (wire.TopoNode, error) {
+	ref = strings.TrimSuffix(strings.ToLower(ref), ".gst")
+	for _, node := range topo.Nodes {
+		if node.ID == ref {
+			return node, nil
+		}
+	}
+	var byName, byPrefix []wire.TopoNode
+	for _, node := range topo.Nodes {
+		switch {
+		case node.Name == ref:
+			byName = append(byName, node)
+		case len(ref) >= 4 && strings.HasPrefix(node.ID, ref):
+			byPrefix = append(byPrefix, node)
+		}
+	}
+	for _, found := range [][]wire.TopoNode{byName, byPrefix} {
+		switch len(found) {
+		case 0:
+			continue
+		case 1:
+			return found[0], nil
+		}
+		ids := make([]string, len(found))
+		for i, node := range found {
+			ids[i] = node.ID[:min(8, len(node.ID))]
+		}
+		return wire.TopoNode{}, wire.Errorf(wire.CodeInvalidParams, "%q names several machines (%s); use an id from `gst status`", ref, strings.Join(ids, ", "))
+	}
+	return wire.TopoNode{}, wire.Errorf(wire.CodeNotFound, "no machine %q in the network; see `gst status`", ref)
+}
+
+// Via returns the machines between this node and dest along the links.
+func Via(topo wire.Topology, dest wire.TopoNode) []wire.NodeInfo {
+	via := []wire.NodeInfo{}
+	if len(dest.Path) < 3 {
+		return via
+	}
+	for _, id := range dest.Path[1 : len(dest.Path)-1] {
+		if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
+			t := topo.Nodes[i]
+			via = append(via, t.Info())
+		}
+	}
+	return via
+}
+
+// Call calls method on the machine that ref names, along the links; ctx
+// bounds the call, route.DefaultTimeout when it has no deadline.
+func (n *Node) Call(ctx context.Context, ref, method string, params, result any) error {
+	dest, err := FindNode(n.Topology(), ref)
+	if err != nil {
+		return err
+	}
+	if !dest.Reachable {
+		return wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
+	}
+	return n.router.Call(ctx, dest.ID, method, params, result)
+}
+
+// Ping calls ping on the machine that ref names, along the links, and
+// reports the machines on the way and the time the answer took. It checks
+// the links, not the virtual network, and also tries a UDP path.
+func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
+	topo := n.Topology()
+	dest, err := FindNode(topo, ref)
+	if err != nil {
+		return wire.Ping{}, err
+	}
+	if !dest.Reachable {
+		return wire.Ping{}, wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
+	}
+	n.tryDirect(dest.ID)
+	start := time.Now()
+	var p wire.Ping
+	if err := n.router.Call(ctx, dest.ID, wire.MethodPeerPing, nil, &p.Node); err != nil {
+		return wire.Ping{}, err
+	}
+	p.TimeMS = float64(time.Since(start).Microseconds()) / 1000
+	p.Via = Via(topo, dest)
+	return p, nil
+}
+
+// Remove removes the machine that ref names from the network, for good:
+// only a person's gst add brings it back. Removing this machine leaves the
+// network.
+func (n *Node) Remove(ref string) (wire.Removal, error) {
+	topo := n.Topology()
+	dest, err := FindNode(topo, ref)
+	if err != nil {
+		return wire.Removal{}, err
+	}
+	n.mu.Lock()
+	self := n.info
+	if n.removed != nil {
+		n.mu.Unlock()
+		return wire.Removal{}, wire.Errorf(wire.CodeRemoved, "this machine is not in a network")
+	}
+	gen := n.generation
+	if dest.ID != self.ID {
+		gen = 0
+		if e, ok := n.table.Get(state.NodeKey(dest.ID)); ok {
+			gen = e.Version[0]
+		}
+		for l := range n.links {
+			if l.Peer.ID == dest.ID {
+				gen = max(gen, l.Member.Generation)
 			}
 		}
 	}
-	return prev
-}
-
-// boolOrder sorts true before false.
-func boolOrder(a, b bool) int {
-	switch {
-	case a == b:
-		return 0
-	case a:
-		return -1
+	// The machines that reach this one only through the removed one.
+	g := n.graph(members(n.table.Entries()))
+	delete(g, dest.ID)
+	after := shortest(g, self.ID)
+	stranded := []wire.NodeInfo{}
+	for id := range n.paths {
+		if _, ok := after[id]; !ok && id != dest.ID && dest.ID != self.ID {
+			if i := slices.IndexFunc(topo.Nodes, func(t wire.TopoNode) bool { return t.ID == id }); i >= 0 {
+				t := topo.Nodes[i]
+				stranded = append(stranded, t.Info())
+			}
+		}
 	}
-	return 1
+	n.mu.Unlock()
+	slices.SortFunc(stranded, func(a, b wire.NodeInfo) int { return cmp.Compare(a.Name, b.Name) })
+	value, _ := json.Marshal(wire.RemovedValue{By: self.ID, ByName: self.Name, At: time.Now().UTC()})
+	n.flood.Put(wire.Entry{Key: state.RemovedKey(dest.ID), Version: []int64{gen}, Value: value})
+	n.Update()
+	return wire.Removal{Node: dest.Info(), Self: dest.ID == self.ID, Stranded: stranded}, nil
 }

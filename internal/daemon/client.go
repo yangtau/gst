@@ -41,59 +41,16 @@ func Dial(ctx context.Context, socket, software, build string) (*Client, error) 
 // Close closes the connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
-// call calls method and decodes its result into result, which may be nil.
-// When ctx is done first, it closes the connection and returns ctx's
-// error.
-func (c *Client) call(ctx context.Context, method string, params, result any) error {
+// Call calls method, one of wire's control methods, and decodes its
+// result into result, which may be nil. When ctx is done first, it closes
+// the connection and returns ctx's error.
+func (c *Client) Call(ctx context.Context, method string, params, result any) error {
 	stop := context.AfterFunc(ctx, func() { c.conn.Close() })
 	err := wire.Call(c.conn, method, params, result)
 	if !stop() {
 		return ctx.Err()
 	}
 	return err
-}
-
-// Status returns the daemon's status.
-func (c *Client) Status(ctx context.Context) (s wire.Status, err error) {
-	err = c.call(ctx, wire.MethodStatus, nil, &s)
-	return
-}
-
-// Reload makes the daemon apply the configuration file.
-func (c *Client) Reload(ctx context.Context) (s wire.Status, err error) {
-	err = c.call(ctx, wire.MethodReload, nil, &s)
-	return
-}
-
-// Nodes returns the mesh as the daemon knows it.
-func (c *Client) Nodes(ctx context.Context) (t wire.Topology, err error) {
-	err = c.call(ctx, wire.MethodNodes, nil, &t)
-	return
-}
-
-// NodeStatus returns the status of the daemon on a machine of the mesh.
-func (c *Client) NodeStatus(ctx context.Context, node string) (s wire.Status, err error) {
-	err = c.call(ctx, wire.MethodNodeStatus, wire.NodeParams{Node: node}, &s)
-	return
-}
-
-// NetPing sends a packet to a machine and back over the virtual network.
-func (c *Client) NetPing(ctx context.Context, node string, size int) (p wire.NetPing, err error) {
-	err = c.call(ctx, wire.MethodNetPing, wire.NetPingParams{Node: node, Size: size}, &p)
-	return p, err
-}
-
-// Ping asks a machine of the mesh to answer through the mesh.
-func (c *Client) Ping(ctx context.Context, node string) (p wire.Ping, err error) {
-	err = c.call(ctx, wire.MethodPing, wire.NodeParams{Node: node}, &p)
-	return
-}
-
-// Direct reports the UDP path to a machine of the mesh and how the
-// latest try at one went.
-func (c *Client) Direct(ctx context.Context, node string) (r wire.DirectReport, err error) {
-	err = c.call(ctx, wire.MethodDirect, wire.NodeParams{Node: node}, &r)
-	return
 }
 
 // Build identifies the executable at path by the SHA-256 of its content,

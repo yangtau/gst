@@ -18,20 +18,22 @@ func (a *app) rootCommand() *cobra.Command {
 		Long: `gst links your machines into a private network over SSH.
 
 Every machine gets a gst IP and the name <machine>.gst, which any program
-can use with any protocol. You link machines with SSH, and linked machines
+can use with any protocol. You add machines over SSH, and linked machines
 tell each other what they reach, so every machine reaches every other.
-WireGuard encrypts the traffic end to end. It goes directly over UDP where
-the network allows, and is relayed along the SSH links where not.
+A machine stays in the network while it is offline, until gst remove
+takes it out. WireGuard encrypts the traffic end to end. It goes directly
+over UDP where the network allows, and is relayed along the SSH links
+where not.
 
 Getting started:
   1. Run gst up on each machine. It asks before it uses sudo.
-  2. Run gst link <destination> on one machine to link it to another.
+  2. Run gst add <destination> on one machine to add another.
   3. Reach the other machine as <machine>.gst; see them all with gst status.
 
 Errors go to stderr, usually with a hint. Exit status is 0 on success,
 1 when the work failed, and 2 for invalid arguments.`,
 		Example: `  gst up
-  gst link devbox
+  gst add devbox
   gst status
   ping devbox.gst`,
 		SilenceErrors: true,
@@ -47,8 +49,8 @@ Errors go to stderr, usually with a hint. Exit status is 0 on success,
 	).Replace(root.UsageTemplate()))
 
 	root.AddCommand(
-		a.upCommand(), a.linkCommand(), a.statusCommand(), a.pingCommand(),
-		a.exposeCommand(), a.unexposeCommand(), a.unlinkCommand(),
+		a.upCommand(), a.addCommand(), a.statusCommand(), a.pingCommand(),
+		a.exposeCommand(), a.unexposeCommand(), a.unlinkCommand(), a.removeCommand(),
 		a.nameCommand(), a.subnetCommand(), a.uiCommand(), a.downCommand(), a.versionCommand(),
 	)
 	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.installCommand(), a.uninstallCommand(), a.netHelperCommand(), a.helperVersionCommand())

@@ -59,7 +59,7 @@ func TestUI(t *testing.T) {
 	p := startPair(t)
 	client := p.client
 	client.mustGst("name", "cli")
-	client.mustGst("link", p.destination())
+	client.mustGst("add", p.destination())
 	client.waitLink(p.destination(), "running")
 	client.installHelper()
 	p.server.installHelper()

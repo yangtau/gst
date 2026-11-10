@@ -74,12 +74,14 @@ func (s *supervisor) state() wire.LinkState {
 func (s *supervisor) run() {
 	defer close(s.stopped)
 	wait := s.d.cfg.RetryDelay
+	retried := false
 	for {
 		s.set(wire.StateConnecting, "", nil)
 		err := s.connect(func(peer wire.NodeInfo) {
 			s.set(wire.StateRunning, "", &peer)
 			s.logf("up")
 			wait = s.d.cfg.RetryDelay
+			go s.d.linkUp(s.spec.Destination, peer)
 		})
 		if s.ctx.Err() != nil {
 			return
@@ -87,12 +89,19 @@ func (s *supervisor) run() {
 		if err == nil {
 			err = errors.New("the link ended")
 		}
-		var remote *mesh.RemoteError
-		if errors.As(err, &remote) {
-			s.logf("the remote gst failed; see gst status")
-		} else {
-			s.logf("%v", err)
+		logged := err.Error()
+		if remote := (*mesh.RemoteError)(nil); errors.As(err, &remote) {
+			logged = remote.Logged()
 		}
+		var retry *mesh.RetryError
+		if errors.As(err, &retry) && !retried {
+			// Once in a row: a removal that the link undoes.
+			s.logf("%s; trying again", logged)
+			retried = true
+			continue
+		}
+		retried = false
+		s.logf("%s", logged)
 		s.set(wire.StateDown, err.Error(), nil)
 		select {
 		case <-s.ctx.Done():
@@ -111,7 +120,7 @@ func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
 	if err != nil {
 		return err
 	}
-	return s.d.mesh.Link(s.ctx, s.id, conn, onUp)
+	return s.d.mesh.Link(s.ctx, s.d.admitted(s.spec.Destination), conn, onUp)
 }
 
 // stop ends the link and waits until it has shut down.

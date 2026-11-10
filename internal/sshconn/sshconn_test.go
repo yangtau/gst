@@ -161,34 +161,6 @@ func TestDoneAfterServerCloses(t *testing.T) {
 	}
 }
 
-func TestKeepaliveKeepsHealthyConnection(t *testing.T) {
-	s := startServer(t)
-	s.opts.KeepaliveInterval = 10 * time.Millisecond
-	s.opts.KeepaliveTimeout = time.Second
-	c := dialServer(t, s)
-	for range 3 {
-		await(t, s.probes)
-	}
-	select {
-	case <-c.Done():
-		t.Fatalf("a connection that answers keepalives ended: %v", c.Err())
-	default:
-	}
-}
-
-func TestKeepaliveFailureEndsConnection(t *testing.T) {
-	s := startServer(t)
-	s.hangKeepalive = true
-	s.opts.KeepaliveInterval = 10 * time.Millisecond
-	s.opts.KeepaliveTimeout = 50 * time.Millisecond
-	c := dialServer(t, s)
-	await(t, s.probes)
-	await(t, c.Done())
-	if err := c.Err(); err == nil || err.Error() != "SSH keepalive timed out" {
-		t.Fatalf("Err = %v, want the keepalive timeout", err)
-	}
-}
-
 func TestStart(t *testing.T) {
 	s := startServer(t)
 	c := dialServer(t, s)

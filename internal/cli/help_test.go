@@ -79,7 +79,7 @@ func TestColorHelp(t *testing.T) {
 func TestHelpColorPreservesLayout(t *testing.T) {
 	e := newEnv(t)
 	strip := strings.NewReplacer("\x1b[1m", "", "\x1b[36m", "", "\x1b[0m", "")
-	for _, args := range [][]string{{"--help"}, {"help", "link"}, {"subnet", "--help"}, {"link", "--help"}, {"version", "--help"}} {
+	for _, args := range [][]string{{"--help"}, {"help", "add"}, {"subnet", "--help"}, {"add", "--help"}, {"version", "--help"}} {
 		plain := e.mustGst(args...)
 		if strings.Contains(plain, "\x1b[") {
 			t.Fatalf("gst %v: redirected help contains escape codes", args)

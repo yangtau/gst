@@ -7,13 +7,14 @@ import (
 	"io"
 	"log"
 	"net"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/state"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -23,21 +24,28 @@ func nid(name string) string {
 	return h + strings.Repeat("0", 32-len(h))
 }
 
-// newNode returns a node named name, which publishes its record until the
-// test ends. An empty name gives a node without identity.
+// newNode returns a node named name, which runs until the test ends. An
+// empty name gives a node without identity.
 func newNode(t *testing.T, name string) *Node {
 	t.Helper()
-	return newNodeStatus(t, name, nil)
+	return newNodeConfig(t, name, Config{})
 }
 
-// newNodeStatus is newNode for a node that reports status to the others.
-func newNodeStatus(t *testing.T, name string, status func() wire.Status) *Node {
+func newNodeConfig(t *testing.T, name string, cfg Config) *Node {
 	t.Helper()
-	n := New("gst test", log.New(io.Discard, "", 0), status)
+	cfg.Software = "gst test"
+	cfg.Log = log.New(io.Discard, "", 0)
+	n := New(cfg)
 	if name != "" {
 		n.Configure(&config.Node{ID: nid(name), Name: name})
 	}
-	go n.Run(t.Context())
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		n.Run(t.Context())
+	}()
+	// Its last save before the test's directories go.
+	t.Cleanup(func() { <-ran })
 	return n
 }
 
@@ -61,9 +69,9 @@ type pipeLink struct {
 	done   chan error         // receives what Link returned
 }
 
-// openLink opens the link called name from client to server and returns
-// without waiting for it.
-func openLink(t *testing.T, client, server *Node, name string) *pipeLink {
+// openLink opens a link from client to server and returns without
+// waiting for it.
+func openLink(t *testing.T, client, server *Node, admit bool) *pipeLink {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
@@ -77,20 +85,24 @@ func openLink(t *testing.T, client, server *Node, name string) *pipeLink {
 		server.Accept(ctx, b, theirs)
 	}()
 	l := &pipeLink{cancel: cancel, conn: a, remote: b, peer: make(chan wire.NodeInfo, 1), done: make(chan error, 1)}
-	go func() { l.done <- client.Link(ctx, config.LinkID(name), a, func(p wire.NodeInfo) { l.peer <- p }) }()
+	go func() { l.done <- client.Link(ctx, admit, a, func(p wire.NodeInfo) { l.peer <- p }) }()
 	return l
 }
 
 // linkUp opens a link and waits until it runs.
-func linkUp(t *testing.T, client, server *Node, name string) *pipeLink {
+func linkUp(t *testing.T, client, server *Node) *pipeLink {
 	t.Helper()
-	l := openLink(t, client, server, name)
+	return waitUp(t, openLink(t, client, server, false))
+}
+
+func waitUp(t *testing.T, l *pipeLink) *pipeLink {
+	t.Helper()
 	select {
 	case <-l.peer:
 	case err := <-l.done:
-		t.Fatalf("link %s ended: %v", name, err)
+		t.Fatalf("link ended: %v", err)
 	case <-time.After(10 * time.Second):
-		t.Fatalf("link %s did not come up", name)
+		t.Fatal("link did not come up")
 	}
 	return l
 }
@@ -119,12 +131,10 @@ func findTopo(topo wire.Topology, id string) (wire.TopoNode, bool) {
 	return wire.TopoNode{}, false
 }
 
-// reaches reports whether n's view has the node called name reachable
-// with the given path (by names); a nil path accepts any.
+// reaches reports whether n reaches the node called name, along the given
+// path (by names); a nil path accepts any.
 func reaches(n *Node, name string, path ...string) bool {
-	topo := n.Topology()
-	node, ok := findTopo(topo, nid(name))
-	// Until a node's record arrives, it is named after the link to it.
+	node, ok := findTopo(n.Topology(), nid(name))
 	if !ok || !node.Reachable || node.Name != name {
 		return false
 	}
@@ -142,6 +152,12 @@ func reaches(n *Node, name string, path ...string) bool {
 	return true
 }
 
+// isMember reports whether n lists the node called name.
+func isMember(n *Node, name string) bool {
+	_, ok := findTopo(n.Topology(), nid(name))
+	return ok
+}
+
 func wantCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var werr *wire.Error
@@ -150,112 +166,328 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 }
 
+// inbox collects the packets that a node receives.
+type inbox struct {
+	mu  sync.Mutex
+	got map[string]bool // "node packet"
+}
+
+func (i *inbox) handle(node string, packet []byte) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.got == nil {
+		i.got = map[string]bool{}
+	}
+	i.got[node+" "+string(packet)] = true
+}
+
+func (i *inbox) has(node, packet string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.got[node+" "+packet]
+}
+
+// Links introduce the nodes to each other, and messages find their way
+// along them.
 func TestLinkIntroducesNodes(t *testing.T) {
-	a, b := newNode(t, "a"), newNode(t, "b")
-	l := openLink(t, a, b, "ab")
-	var peer wire.NodeInfo
-	select {
-	case peer = <-l.peer:
-	case err := <-l.done:
-		t.Fatal(err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("link did not come up")
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	linkUp(t, a, b)
+	linkUp(t, c, b)
+	waitFor(t, "a reaches c through b", func() bool { return reaches(a, "c", "a", "b", "c") })
+	waitFor(t, "c reaches a through b", func() bool { return reaches(c, "a", "c", "b", "a") })
+	topo := a.Topology()
+	if topo.Nodes[0].ID != nid("a") || len(topo.Nodes) != 3 {
+		t.Fatalf("nodes %+v", topo.Nodes)
 	}
-	if peer.ID != nid("b") || peer.Name != "b" || peer.Software != "gst test" {
-		t.Fatalf("peer = %+v", peer)
+	if want := []wire.TopoEdge{{From: nid("a"), To: nid("b")}, {From: nid("c"), To: nid("b")}}; !equalEdges(topo.Edges, want) {
+		t.Fatalf("edges %+v", topo.Edges)
 	}
-
-	// Each side learns the other, and the link's name from the side that opened it.
-	waitFor(t, "a reaches b", func() bool { return reaches(a, "b", "a", "b") })
-	waitFor(t, "b reaches a", func() bool { return reaches(b, "a", "b", "a") })
-	want := []wire.TopoEdge{{From: nid("a"), To: nid("b"), Link: config.LinkID("ab")}}
-	for _, n := range []*Node{a, b} {
-		waitFor(t, "edge", func() bool {
-			edges := n.Topology().Edges
-			return len(edges) == 1 && edges[0] == want[0]
-		})
+	if n, _ := findTopo(topo, nid("c")); n.Seen.IsZero() {
+		t.Fatal("no time c was seen")
 	}
-	if topo := b.Topology(); topo.Self != nid("b") {
-		t.Fatalf("self = %s", topo.Self)
+	p, err := a.Ping(t.Context(), "c")
+	if err != nil || p.Node.ID != nid("c") || len(p.Via) != 1 || p.Via[0].Name != "b" {
+		t.Fatalf("ping %+v, %v", p, err)
 	}
 }
 
-func TestLinkEndsWhenContextIsDone(t *testing.T) {
-	a, b := newNode(t, "a"), newNode(t, "b")
-	l := linkUp(t, a, b, "ab")
-	l.cancel()
-	if err := l.wait(t); err != nil {
-		t.Fatalf("Link returned %v after its context was done", err)
+func equalEdges(a, b []wire.TopoEdge) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	waitFor(t, "a drops the link", func() bool { return len(a.Topology().Edges) == 0 })
-}
-
-func TestLinkEndsWhenConnectionIsLost(t *testing.T) {
-	a, b := newNode(t, "a"), newNode(t, "b")
-	l := linkUp(t, a, b, "ab")
-	l.cut()
-	if err := l.wait(t); err == nil {
-		t.Fatal("Link returned nil for a lost connection")
-	}
-	waitFor(t, "a drops the link", func() bool { return len(a.Topology().Edges) == 0 && !reaches(a, "b") })
-	waitFor(t, "b drops the link", func() bool { _, ok := b.sessionTo(nid("a")); return !ok })
-
-	// A new link works again.
-	linkUp(t, a, b, "ab2")
-	waitFor(t, "a reaches b again", func() bool { return reaches(a, "b") })
-}
-
-func TestLinkStaleEdgeAfterLoss(t *testing.T) {
-	a, b := newNode(t, "a"), newNode(t, "b")
-	l := linkUp(t, a, b, "ab")
-	waitFor(t, "b reaches a", func() bool { return reaches(b, "a") })
-	l.cut()
-	waitFor(t, "b drops the link", func() bool { _, ok := b.sessionTo(nid("a")); return !ok })
-	if reaches(b, "a") {
-		t.Fatal("b still reaches a without a link")
-	}
-}
-
-func TestLinkRefusals(t *testing.T) {
-	for _, tt := range []struct {
-		name           string
-		client, server string
-		want           string
-		remote         bool // a *RemoteError
-	}{
-		{"server without identity", "a", "", "no identity", true},
-		{"self", "a", "a", "this machine", false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			l := openLink(t, newNode(t, tt.client), newNode(t, tt.server), "x")
-			err := l.wait(t)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("err = %v, want mention of %q", err, tt.want)
-			}
-			var remote *RemoteError
-			if errors.As(err, &remote) != tt.remote {
-				t.Fatalf("RemoteError = %v, want %v (%v)", !tt.remote, tt.remote, err)
-			}
-		})
-	}
-}
-
-func TestAcceptRefusesPeerWithoutYamux(t *testing.T) {
-	n := newNode(t, "a")
-	c, s := net.Pipe()
-	defer c.Close()
-	go func() {
-		theirs, err := wire.ReadHello(s)
-		if err == nil {
-			n.Accept(t.Context(), s, theirs)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
-	}()
-	_, err := wire.Dial(c, wire.Hello{Software: "old", Role: wire.RolePeer})
-	wantCode(t, err, wire.CodeUnsupportedRole)
+	}
+	return true
 }
 
-// failConn is a connection whose remote gst failed with a message, as an
-// sshconn.Session reports it.
+// Of the shortest ways, messages take the one whose first hop has the
+// lower id.
+func TestRoutesTakeTheShortestWay(t *testing.T) {
+	a, b, c, d := newNode(t, "a"), newNode(t, "b"), newNode(t, "c"), newNode(t, "d")
+	linkUp(t, a, b)
+	linkUp(t, a, c)
+	linkUp(t, b, d)
+	linkUp(t, c, d)
+	waitFor(t, "a reaches d through b", func() bool { return reaches(a, "d", "a", "b", "d") })
+	waitFor(t, "d reaches a through b", func() bool { return reaches(d, "a", "d", "b", "a") })
+	linkUp(t, a, d)
+	waitFor(t, "a reaches d directly", func() bool { return reaches(a, "d", "a", "d") })
+}
+
+// A member stays one while it is offline.
+func TestOfflineMembersStay(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	l := linkUp(t, a, b)
+	waitFor(t, "a has b's entry", func() bool { _, ok := a.table.Get(state.NodeKey(nid("b"))); return ok })
+	l.cut()
+	l.wait(t)
+	waitFor(t, "b is offline", func() bool {
+		n, ok := findTopo(a.Topology(), nid("b"))
+		return ok && !n.Online() && n.Name == "b"
+	})
+	err := a.Call(t.Context(), "b", wire.MethodPeerPing, nil, nil)
+	wantCode(t, err, wire.CodeUnreachable)
+	if !strings.Contains(err.Error(), "b is offline") {
+		t.Fatalf("error %v", err)
+	}
+}
+
+// Without a UDP path, packets go along the links, also through a machine
+// in between.
+func TestPacketsAlongTheMesh(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	linkUp(t, a, b)
+	linkUp(t, c, b)
+	waitFor(t, "a reaches c", func() bool { return reaches(a, "c", "a", "b", "c") })
+	waitFor(t, "c reaches a", func() bool { return reaches(c, "a", "c", "b", "a") })
+	var atA, atC inbox
+	a.HandlePackets(atA.handle)
+	c.HandlePackets(atC.handle)
+	a.SendPacket(nid("c"), []byte("hello"))
+	waitFor(t, "c gets the packet", func() bool { return atC.has(nid("a"), "hello") })
+	if got := a.PacketPath(nid("c")); got != wire.PathSSH {
+		t.Fatalf("path = %q", got)
+	}
+	c.SendPacket(nid("a"), []byte("back"))
+	waitFor(t, "a gets the packet", func() bool { return atA.has(nid("c"), "back") })
+	if got := a.PacketPath(nid("zz")); got != "" {
+		t.Fatalf("path to nowhere = %q", got)
+	}
+}
+
+// Removing a machine takes it out of every node's view, ends its links,
+// and tells it, so that it leaves.
+func TestRemove(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	linkUp(t, a, b)
+	cb := linkUp(t, c, b)
+	waitFor(t, "a reaches c", func() bool { return reaches(a, "c") })
+
+	r, err := a.Remove("b")
+	if err != nil || r.Node.Name != "b" || r.Self || len(r.Stranded) != 1 || r.Stranded[0].Name != "c" {
+		t.Fatalf("removal %+v, %v", r, err)
+	}
+	waitFor(t, "b knows", func() bool { return b.Removed() != nil })
+	if got := b.Removed(); got.By.ID != nid("a") || got.By.Name != "a" || got.At.IsZero() {
+		t.Fatalf("removed %+v", got)
+	}
+	waitFor(t, "a forgets b", func() bool { return !isMember(a, "b") })
+	waitFor(t, "c forgets b", func() bool { return !isMember(c, "b") })
+	cb.wait(t)
+	if topo := b.Topology(); len(topo.Nodes) != 1 {
+		t.Fatalf("b still sees %+v", topo.Nodes)
+	}
+	// c keeps a, offline.
+	if n, ok := findTopo(c.Topology(), nid("a")); !ok || n.Online() {
+		t.Fatalf("c sees a as %+v", n)
+	}
+
+	// b links no more, until a person adds it again.
+	if err := openLink(t, b, c, false).wait(t); err == nil || !strings.Contains(err.Error(), "removed") {
+		t.Fatalf("b linked: %v", err)
+	}
+	if err := openLink(t, c, b, false).wait(t); err == nil || !strings.Contains(err.Error(), "removed") {
+		t.Fatalf("c linked to b: %v", err)
+	}
+}
+
+// The admit of a link that ran is spent: a removal that comes over it
+// later stands.
+func TestRemoveOverAnAddedLink(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	l := waitUp(t, openLink(t, a, b, true))
+	waitFor(t, "b knows a", func() bool { return isMember(b, "a") })
+	if _, err := b.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	var retry *RetryError
+	if err := l.wait(t); errors.As(err, &retry) {
+		t.Fatalf("the link ended with %v", err)
+	}
+	waitFor(t, "a knows", func() bool { return a.Removed() != nil })
+	if a.Removed() == nil || isMember(b, "a") {
+		t.Fatal("a came back")
+	}
+}
+
+// Two machines have at most one link each way: a new one replaces the
+// one before, and the other way has its own.
+func TestOneLinkEachWay(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	first := linkUp(t, a, b)
+	second := linkUp(t, a, b)
+	// Either end may close it first.
+	if err := first.wait(t); err == nil {
+		t.Fatal("the first link ended without an error")
+	}
+	back := linkUp(t, b, a)
+	waitFor(t, "a and b list a link each way", func() bool {
+		for _, n := range []*Node{a, b} {
+			if len(n.Topology().Edges) != 2 {
+				return false
+			}
+		}
+		return true
+	})
+	for _, l := range []*pipeLink{second, back} {
+		select {
+		case err := <-l.done:
+			t.Fatalf("a link ended: %v", err)
+		default:
+		}
+	}
+}
+
+// A machine that removes itself leaves the network.
+func TestRemoveSelf(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	l := linkUp(t, a, b)
+	waitFor(t, "a reaches b", func() bool { return reaches(a, "b") })
+	r, err := a.Remove("a")
+	if err != nil || !r.Self {
+		t.Fatalf("removal %+v, %v", r, err)
+	}
+	waitFor(t, "a left", func() bool { return a.Removed() != nil })
+	l.wait(t)
+	waitFor(t, "b forgets a", func() bool { return !isMember(b, "a") })
+	if _, err := a.Remove("a"); err == nil {
+		t.Fatal("left twice")
+	}
+}
+
+// gst add brings a removed machine back, from either end of the link.
+func TestAddBringsBack(t *testing.T) {
+	saved := make(chan int64, 4)
+	a, b := newNode(t, "a"), newNodeConfig(t, "b", Config{SaveGeneration: func(g int64) error { saved <- g; return nil }})
+	l := linkUp(t, a, b)
+	waitFor(t, "a reaches b", func() bool { return reaches(a, "b") })
+	if _, err := a.Remove("b"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "b knows", func() bool { return b.Removed() != nil })
+	l.wait(t)
+
+	// b adds a link to a: it comes back with the next generation.
+	waitUp(t, openLink(t, b, a, true))
+	if g := <-saved; g != 1 {
+		t.Fatalf("generation %d", g)
+	}
+	waitFor(t, "b is back", func() bool { return b.Removed() == nil && reaches(a, "b") && reaches(b, "a") })
+}
+
+// A member that adds a link to a machine removed while it was offline
+// tells it, and the link's next try brings it back.
+func TestAddBringsBackFromTheOtherEnd(t *testing.T) {
+	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
+	l := linkUp(t, a, b)
+	linkUp(t, c, b)
+	waitFor(t, "a reaches c", func() bool { return reaches(a, "c") })
+	l.cut()
+	l.wait(t)
+	if _, err := c.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "b forgets a", func() bool { return !isMember(b, "a") })
+	if a.Removed() != nil {
+		t.Fatal("a heard of it")
+	}
+
+	err := openLink(t, b, a, true).wait(t)
+	var retry *RetryError
+	if !errors.As(err, &retry) {
+		t.Fatalf("the first try: %v", err)
+	}
+	waitFor(t, "a learns", func() bool { return a.Removed() != nil })
+	waitUp(t, openLink(t, b, a, true))
+	waitFor(t, "a is back", func() bool { return a.Removed() == nil && reaches(c, "a") })
+}
+
+// A node that finds its own entry of an earlier run with a higher
+// generation takes it on.
+func TestOwnEntryOfAnEarlierRun(t *testing.T) {
+	saved := make(chan int64, 1)
+	a := newNodeConfig(t, "a", Config{SaveGeneration: func(g int64) error { saved <- g; return nil }})
+	waitFor(t, "a publishes", func() bool { _, ok := a.table.Get(state.NodeKey(nid("a"))); return ok })
+	a.flood.Put(wire.Entry{Key: state.NodeKey(nid("a")), Version: []int64{3, time.Now().Add(time.Hour).UnixNano()}, Value: []byte(`{"name":"a"}`)})
+	if g := <-saved; g != 3 {
+		t.Fatalf("generation %d", g)
+	}
+	waitFor(t, "a publishes again", func() bool {
+		e, _ := a.table.Get(state.NodeKey(nid("a")))
+		return strings.Contains(string(e.Value), "gst test")
+	})
+}
+
+// The table outlives the daemon.
+func TestTableIsKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	ctx, cancel := context.WithCancel(t.Context())
+	a := New(Config{Software: "gst test", Log: log.New(io.Discard, "", 0), StatePath: path})
+	a.Configure(&config.Node{ID: nid("a"), Name: "a"})
+	done := make(chan struct{})
+	go func() { defer close(done); a.Run(ctx) }()
+	b := newNode(t, "b")
+	linkUp(t, a, b)
+	waitFor(t, "a has b's entry", func() bool { _, ok := a.table.Get(state.NodeKey(nid("b"))); return ok })
+	cancel()
+	<-done
+
+	again := newNodeConfig(t, "a", Config{StatePath: path})
+	if n, ok := findTopo(again.Topology(), nid("b")); !ok || n.Name != "b" || n.Online() {
+		t.Fatalf("a after a restart sees b as %+v", n)
+	}
+	// Another identity starts afresh.
+	other := newNodeConfig(t, "x", Config{StatePath: path})
+	if isMember(other, "b") {
+		t.Fatal("x took a's table")
+	}
+}
+
+// A new identity is a new machine.
+func TestConfigure(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	l := linkUp(t, a, b)
+	waitFor(t, "a knows b", func() bool { return isMember(a, "b") })
+	a.Configure(&config.Node{ID: nid("a"), Name: "a2"})
+	waitFor(t, "b hears the new name", func() bool { n, _ := findTopo(b.Topology(), nid("a")); return n.Name == "a2" })
+
+	a.Configure(&config.Node{ID: nid("n"), Name: "a"})
+	l.wait(t)
+	if isMember(a, "b") {
+		t.Fatal("the new identity kept the table")
+	}
+	a.Configure(nil)
+	if a.Self().ID != "" {
+		t.Fatal("identity kept")
+	}
+	if err := openLink(t, a, b, false).wait(t); err == nil {
+		t.Fatal("linked without identity")
+	}
+}
+
 type failConn struct {
 	net.Conn
 	text string
@@ -263,195 +495,91 @@ type failConn struct {
 
 func (c failConn) Failure() string { return c.text }
 
+// A remote gst that fails before the handshake explains the link's
+// failure.
 func TestLinkReportsFailureOfRemoteGst(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		text   string
-		remote bool
-		want   string
-	}{
-		{"failure text", "gst: command not found", true, "the remote gst failed: gst: command not found"},
-		{"no text", "", false, "did not answer"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			x, y := net.Pipe()
-			y.Close()
-			err := newNode(t, "a").Link(t.Context(), "x", failConn{x, tt.text}, nil)
-			var remote *RemoteError
-			if err == nil || !strings.Contains(err.Error(), tt.want) || errors.As(err, &remote) != tt.remote {
-				t.Fatalf("err = %v (RemoteError %v), want %q", err, errors.As(err, &remote), tt.want)
-			}
-		})
+	a := newNode(t, "a")
+	x, y := net.Pipe()
+	y.Close()
+	err := a.Link(t.Context(), false, failConn{x, "gst: command not found"}, nil)
+	var remote *RemoteError
+	if !errors.As(err, &remote) || !strings.Contains(err.Error(), "command not found") {
+		t.Fatalf("error %v", err)
+	}
+	x, y = net.Pipe()
+	y.Close()
+	if err := a.Link(t.Context(), false, x, nil); err == nil || !strings.Contains(err.Error(), "did not answer") {
+		t.Fatalf("error %v", err)
 	}
 }
 
-func TestLinkStopsWhileWaitingForAnswer(t *testing.T) {
-	a, b := net.Pipe()
-	defer b.Close()
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- newNode(t, "a").Link(ctx, "x", a, nil) }()
-	// The remote end reads the Hello and never answers.
-	if _, err := wire.ReadHello(b); err != nil {
+// The subnet of the network: a person's choice beats gst's, and the
+// latest person's choice wins.
+// Setting this node's part in the virtual network again, unchanged, does
+// not count as a change: the virtual network sets it after every change.
+func TestSetNetQuiet(t *testing.T) {
+	a := newNode(t, "a")
+	a.SetNet(&wire.NodeNet{Address: "10.99.0.1", PublicKey: strings.Repeat("ab", 32)})
+	waitFor(t, "a publishes its net", func() bool { return a.Topology().Nodes[0].Net != nil })
+	time.Sleep(100 * time.Millisecond)
+	changed := a.Changed()
+	a.SetNet(&wire.NodeNet{Address: "10.99.0.1", PublicKey: strings.Repeat("ab", 32)})
+	select {
+	case <-changed:
+		t.Fatal("an unchanged net is a change")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// gst's choice on a machine alone, however early, loses to a network's.
+func TestLoneChoiceLoses(t *testing.T) {
+	lone, a, b := newNode(t, "lone"), newNode(t, "a"), newNode(t, "b")
+	if err := lone.SetNetwork("10.1.0.0/16", false); err != nil {
 		t.Fatal(err)
 	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Link returned %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Link did not stop")
+	linkUp(t, a, b)
+	if err := a.SetNetwork("10.2.0.0/16", false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "b takes it", func() bool { v, _ := b.Network(); return v.Subnet == "10.2.0.0/16" })
+	linkUp(t, lone, b)
+	waitFor(t, "lone joins the network", func() bool { v, _ := lone.Network(); return v.Subnet == "10.2.0.0/16" })
+	if v, _ := a.Network(); v.Subnet != "10.2.0.0/16" {
+		t.Fatalf("the network moved to %s", v.Subnet)
 	}
 }
 
-// fakePeer accepts one link on conn as a peer that answers node.info with info.
-func fakePeer(t *testing.T, conn net.Conn, info wire.NodeInfo) {
-	t.Helper()
-	theirs, err := wire.ReadHello(conn)
-	if err != nil {
-		t.Error(err)
-		return
+func TestSetNetwork(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	linkUp(t, a, b)
+	if err := a.SetNetwork("10.1.0.0/16", false); err != nil {
+		t.Fatal(err)
 	}
-	mine := wire.Hello{Software: "fake", Role: wire.RolePeer, Features: []string{wire.FeatureYamux}}
-	if err := wire.Answer(conn, theirs, mine, nil); err != nil {
-		t.Error(err)
-		return
+	waitFor(t, "b takes it", func() bool { v, ok := b.Network(); return ok && v.Subnet == "10.1.0.0/16" })
+	if err := b.SetNetwork("10.2.0.0/16", true); err != nil {
+		t.Fatal(err)
 	}
-	session, err := yamux.Server(conn, yamuxConfig())
-	if err != nil {
-		t.Error(err)
-		return
+	if err := a.SetNetwork("10.3.0.0/16", false); err != nil {
+		t.Fatal(err)
 	}
-	defer session.Close()
-	var server wire.Server
-	wire.Handle(&server, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return info, nil })
-	for {
-		stream, err := session.AcceptStream()
-		if err != nil {
-			return
-		}
-		go server.Serve(t.Context(), stream)
+	waitFor(t, "a takes b's", func() bool { v, _ := a.Network(); return v.Subnet == "10.2.0.0/16" })
+	if err := a.SetNetwork("10.4.0.0/16", true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "b takes a's", func() bool { v, _ := b.Network(); return v.Subnet == "10.4.0.0/16" })
+	if err := a.SetNetwork("nonsense", true); err == nil {
+		t.Fatal("took nonsense")
 	}
 }
 
-func TestLinkRejectsInvalidPeerID(t *testing.T) {
-	a, b := net.Pipe()
-	go fakePeer(t, b, wire.NodeInfo{ID: "not-an-id", Name: "x"})
-	err := newNode(t, "a").Link(t.Context(), "x", a, nil)
-	if err == nil || !strings.Contains(err.Error(), "valid node id") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestConfigure(t *testing.T) {
-	t.Run("without identity", func(t *testing.T) {
-		n := newNode(t, "")
-		if n.Self().ID != "" {
-			t.Fatalf("self = %+v", n.Self())
-		}
-		topo := n.Topology()
-		if len(topo.Nodes) != 0 || len(topo.Edges) != 0 || topo.Nodes == nil || topo.Edges == nil {
-			t.Fatalf("topology = %+v", topo)
-		}
-		n.Configure(&config.Node{ID: nid("a"), Name: "a"})
-		if got := n.Self(); got.ID != nid("a") || got.Name != "a" || got.Software != "gst test" {
-			t.Fatalf("self = %+v", got)
-		}
-		n.Configure(nil)
-		if n.Self().ID != "" {
-			t.Fatalf("self = %+v after Configure(nil)", n.Self())
-		}
-	})
-
-	t.Run("same identity keeps links and publishes changes", func(t *testing.T) {
-		a, b := newNode(t, "a"), newNode(t, "b")
-		l := linkUp(t, a, b, "ab")
-		b.Configure(&config.Node{ID: nid("b"), Name: "b2"})
-		waitFor(t, "a sees the new name and exit", func() bool {
-			// a's own view of b comes from b's record.
-			n, ok := findTopo(a.Topology(), nid("b"))
-			return ok && n.Name == "b2" && n.Reachable
-		})
-		select {
-		case err := <-l.done:
-			t.Fatalf("link ended: %v", err)
-		default:
-		}
-	})
-
-	t.Run("new identity forgets records and closes links", func(t *testing.T) {
-		a, b := newNode(t, "a"), newNode(t, "b")
-		l := linkUp(t, a, b, "ab")
-		waitFor(t, "b knows a", func() bool { return reaches(b, "a") })
-		b.Configure(&config.Node{ID: nid("c"), Name: "c"})
-		if err := l.wait(t); err == nil {
-			t.Fatal("link survived a new identity")
-		}
-		topo := b.Topology()
-		if len(topo.Nodes) != 1 || topo.Nodes[0].ID != nid("c") {
-			t.Fatalf("topology after new identity = %+v", topo)
-		}
-	})
-}
-
-func TestRecordsExpireAndRefresh(t *testing.T) {
-	a := New("gst test", log.New(io.Discard, "", 0), nil)
-	a.ttl = 150 * time.Millisecond
-	a.Configure(&config.Node{ID: nid("a"), Name: "a"})
-	runCtx, stopRun := context.WithCancel(t.Context())
-	defer stopRun()
-	go a.Run(runCtx)
-	b := newNode(t, "b")
-	linkUp(t, a, b, "ab")
-	waitFor(t, "b knows a", func() bool { return reaches(b, "a") })
-
-	seq := func() uint64 {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return b.records[nid("a")].Seq
-	}
-	// While a runs it refreshes its record, which reaches b.
-	first := seq()
-	waitFor(t, "a refreshes its record", func() bool { return seq() > first })
-	waitFor(t, "a still known", func() bool { return reaches(b, "a") })
-
-	// Once a stops publishing, its record expires from b's view.
-	stopRun()
-	waitFor(t, "a's record expires", func() bool {
-		_, ok := findTopo(b.Topology(), nid("a"))
-		return !ok
-	})
-}
-
-func TestOwnOldRecordIsOutdone(t *testing.T) {
-	a := newNode(t, "a")
-	waitFor(t, "a publishes", func() bool {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		_, ok := a.records[nid("a")]
-		return ok
-	})
-	// An earlier run of this daemon published a record with a larger Seq.
-	old := uint64(1) << 62
-	a.merge([]wire.Record{{Node: wire.NodeInfo{ID: nid("a"), Name: "a"}, Seq: old, Expires: time.Now().Add(time.Hour)}})
-	waitFor(t, "a outdoes the old record", func() bool {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return a.records[nid("a")].Seq > old
-	})
-}
-
-func TestUnknownPeerMethod(t *testing.T) {
-	n := newNode(t, "a")
-	a, b := net.Pipe()
-	defer a.Close()
-	go n.peer.Serve(t.Context(), b)
-	wantCode(t, wire.Call(a, "mesh.unknown", nil, nil), wire.CodeUnsupportedMethod)
-	// The stream keeps working.
+// Calls of methods that nobody registered fail, along the links too.
+func TestUnknownMethod(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	linkUp(t, a, b)
+	waitFor(t, "a reaches b", func() bool { return reaches(a, "b") })
+	wantCode(t, a.Call(t.Context(), "b", "nonsense", nil, nil), wire.CodeUnsupportedMethod)
 	var info wire.NodeInfo
-	if err := wire.Call(a, wire.MethodNodeInfo, nil, &info); err != nil || info.ID != nid("a") {
-		t.Fatalf("node.info = %+v, %v", info, err)
+	if err := a.Call(t.Context(), "b", wire.MethodPeerPing, nil, &info); err != nil || info.Name != "b" {
+		t.Fatalf("ping %+v, %v", info, err)
 	}
 }

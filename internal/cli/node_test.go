@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,9 +28,9 @@ func meshTopology() wire.Topology {
 			{ID: dup2, Name: "dup", Software: "gst 0.4.0", Reachable: true, Path: []string{self, devbox, dup2}},
 		},
 		Edges: []wire.TopoEdge{
-			{From: devbox, To: dup1, Link: "0123456789ab"},
-			{From: self, To: devbox, Link: "123456789abc"},
-			{From: devbox, To: far, Link: "23456789abcd"},
+			{From: devbox, To: dup1},
+			{From: self, To: devbox},
+			{From: devbox, To: far},
 		},
 	}
 }
@@ -113,14 +115,14 @@ func TestChangesWhileDown(t *testing.T) {
 	e.mustGst("down")
 	e.resetCalls()
 
-	code, stdout, stderr := e.gst("link", "myhost")
+	code, stdout, stderr := e.gst("add", "myhost")
 	if code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	if want := "note: gst is down on this machine; changes apply after `gst up`\n"; stderr != want {
 		t.Fatalf("stderr %q, want %q", stderr, want)
 	}
-	contains(t, stdout, "Linked to myhost")
+	contains(t, stdout, "Added the link to myhost")
 	if e.back.installed || !slices.Equal(e.back.calls, []string{"sync (uninstall)"}) {
 		t.Fatalf("a down machine must not run the daemon: installed %v, calls %v", e.back.installed, e.back.calls)
 	}
@@ -145,4 +147,28 @@ func TestUpFailureReportsDaemonError(t *testing.T) {
 	e := newEnv(t)
 	e.back.syncErr = errors.New("service manager unavailable")
 	e.expectError(exitFailure, []string{"up"}, "error: service manager unavailable\n")
+}
+
+// gst up puts this gst where the other machines' links run it.
+func TestUpPlacesGst(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	path := filepath.Join(e.home, remoteGstPath)
+	if target, err := os.Readlink(path); err != nil || target != e.exe {
+		t.Fatalf("link %s -> %q, %v", path, target, err)
+	}
+	e.exe = "/opt/gst/bin/gst"
+	e.mustGst("up")
+	if target, _ := os.Readlink(path); target != e.exe {
+		t.Fatalf("link -> %q after an upgrade", target)
+	}
+}
+
+// The other machines' links run that gst, or the one in the PATH, with
+// any login shell.
+func TestRemoteCommand(t *testing.T) {
+	want := `sh -c 'g="$HOME/.local/state/gst/bin/gst"; [ -x "$g" ] || g=gst; exec "$g" peer-bridge'`
+	if remoteCommand != want {
+		t.Fatalf("remote command %s", remoteCommand)
+	}
 }

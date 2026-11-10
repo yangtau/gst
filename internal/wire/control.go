@@ -10,9 +10,15 @@ const (
 	// MethodNodeStatus ("mesh.status") takes NodeParams and returns the
 	// Status of that machine's daemon, asked through the mesh.
 	MethodNodeStatus = "mesh.status"
-	// MethodPing ("mesh.ping") takes NodeParams, calls node.info on that
+	// MethodPing ("mesh.ping") takes NodeParams, calls ping on that
 	// machine through the mesh, and returns Ping.
 	MethodPing = "mesh.ping"
+	// MethodRemove ("mesh.remove") takes NodeParams, removes that machine
+	// from the network, and returns Removal.
+	MethodRemove = "mesh.remove"
+	// MethodSubnet ("mesh.subnet") takes SubnetParams and makes it the
+	// subnet of the whole network; it returns nothing.
+	MethodSubnet = "mesh.subnet"
 	// MethodNetPing ("net.ping") takes NetPingParams and returns NetPing: a
 	// packet to that machine and back over the virtual network.
 	MethodNetPing = "net.ping"
@@ -38,6 +44,29 @@ type Status struct {
 	Links    []LinkState   `json:"links"`
 	Exposes  []ExposeState `json:"exposes,omitempty"`
 	Net      *NetState     `json:"net,omitempty"` // nil while this daemon cannot run the network
+	// Removed says that this machine was removed from the network.
+	Removed *Removed `json:"removed,omitempty"`
+}
+
+// Removed is a removal from the network: who removed the machine, and
+// when.
+type Removed struct {
+	By NodeInfo  `json:"by"`
+	At time.Time `json:"at"`
+}
+
+// Removal is what gst remove did.
+type Removal struct {
+	Node NodeInfo `json:"node"` // the machine removed
+	Self bool     `json:"self"` // it is this machine, which left the network
+	// Stranded are the machines that reached this one only through the
+	// removed machine.
+	Stranded []NodeInfo `json:"stranded"`
+}
+
+// SubnetParams name the subnet of the network.
+type SubnetParams struct {
+	Subnet string `json:"subnet"`
 }
 
 // NetState is this machine's part in the virtual network. Error says why
@@ -62,7 +91,7 @@ type NetPeer struct {
 	Node      string    `json:"node"` // its id
 	Name      string    `json:"name"`
 	Address   string    `json:"address"`
-	Path      string    `json:"path"`               // PathDirect or PathSSH
+	Path      string    `json:"path"`               // PathDirect or PathSSH, or empty while it is offline
 	Endpoint  string    `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
 	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
 	Received  uint64    `json:"received"`           // bytes
@@ -74,6 +103,7 @@ type NetPeer struct {
 // end while the link runs.
 type LinkState struct {
 	Destination string    `json:"destination"`
+	SSHArgs     []string  `json:"ssh_args,omitempty"`
 	State       string    `json:"state"`
 	Since       time.Time `json:"since,omitzero"`
 	Error       string    `json:"error,omitempty"`
@@ -88,8 +118,7 @@ type NodeParams struct {
 
 // Ping is a machine's answer over the SSH links of the mesh: the machine,
 // the machines in between, in order, and how long the answer took, in
-// milliseconds, which includes setting up the relay at each machine on the
-// way.
+// milliseconds.
 type Ping struct {
 	Node   NodeInfo   `json:"node"`
 	Via    []NodeInfo `json:"via"`
@@ -155,30 +184,37 @@ type DirectPath struct {
 	Remote string `json:"remote"`
 }
 
-// Topology is the mesh as one node knows it.
+// Topology is the network as one node knows it: its members, online or
+// not, and the running links between them.
 type Topology struct {
-	Self  string     `json:"self"` // this node's id
-	Nodes []TopoNode `json:"nodes"`
-	Edges []TopoEdge `json:"edges"`
+	Self   string     `json:"self"`   // this node's id
+	Subnet string     `json:"subnet"` // of the virtual network; empty until one is chosen
+	Nodes  []TopoNode `json:"nodes"`
+	Edges  []TopoEdge `json:"edges"`
 }
 
-// TopoNode is a gst node of the mesh.
+// TopoNode is a member of the network.
 type TopoNode struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Software  string    `json:"software,omitempty"`
-	Reachable bool      `json:"reachable"`
+	Reachable bool      `json:"reachable"`        // the SSH links lead to it now
 	Path      []string  `json:"path,omitempty"`   // node ids from this node, for reachable nodes
 	Direct    bool      `json:"direct,omitempty"` // this node has a UDP path to it
-	Expires   time.Time `json:"expires,omitzero"` // when its record expires; zero for this node
-	Net       *NetInfo  `json:"net,omitempty"`    // its part in the virtual network
+	Seen      time.Time `json:"seen,omitzero"`    // when it was last known online; zero for this node
+	Net       *NodeNet  `json:"net,omitempty"`    // its part in the virtual network
 }
 
-// TopoEdge is a running link from one node to another.
+// Online reports whether packets reach the node now.
+func (n TopoNode) Online() bool { return n.Reachable || n.Direct }
+
+// Info is who the node is.
+func (n TopoNode) Info() NodeInfo { return NodeInfo{ID: n.ID, Name: n.Name, Software: n.Software} }
+
+// TopoEdge is a running link, from the node that opened it.
 type TopoEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-	Link string `json:"link"` // its id on From
 }
 
 // States of exposed ports; StateRunning means listening.

@@ -20,21 +20,24 @@ type backend interface {
 	// a daemon that runs another gst, and tells the daemon to reload the
 	// configuration; with none, it removes the service.
 	Sync(ctx context.Context, command []string) error
-	// Status returns what the daemon reports, and false when no daemon
-	// answers.
-	Status(ctx context.Context) (wire.Status, bool)
-	// Nodes returns the mesh as the daemon knows it.
-	Nodes(ctx context.Context) (wire.Topology, error)
-	// NodeStatus returns the status of the daemon on a machine of the
-	// mesh, asked through the mesh.
-	NodeStatus(ctx context.Context, node string) (wire.Status, error)
-	// NetPing sends a packet to a machine and back over the virtual network.
-	NetPing(ctx context.Context, node string, size int) (wire.NetPing, error)
-	// Ping asks a machine of the mesh to answer through the links.
-	Ping(ctx context.Context, node string) (wire.Ping, error)
-	// Direct reports the UDP path to a machine of the mesh and how the
-	// latest try at one went.
-	Direct(ctx context.Context, node string) (wire.DirectReport, error)
+	// Call calls method, one of wire's control methods, of the daemon,
+	// which must run already, and decodes its result into result. It
+	// bounds the call: longer for the methods that ask other machines.
+	Call(ctx context.Context, method string, params, result any) error
+}
+
+// call calls method of the daemon, and returns its result.
+func call[R any](ctx context.Context, b backend, method string, params any) (R, error) {
+	var r R
+	err := b.Call(ctx, method, params, &r)
+	return r, err
+}
+
+// status returns what the daemon reports, and false when no daemon
+// answers.
+func status(ctx context.Context, b backend) (wire.Status, bool) {
+	st, err := call[wire.Status](ctx, b, wire.MethodStatus, nil)
+	return st, err == nil
 }
 
 // daemonBackend is the real backend.
@@ -93,7 +96,7 @@ func (b *daemonBackend) Sync(ctx context.Context, command []string) error {
 		}
 	}
 	defer c.Close()
-	if _, err := c.Reload(ctx); err != nil {
+	if err := c.Call(ctx, wire.MethodReload, nil, nil); err != nil {
 		return withHint(fmt.Errorf("gst could not apply the change: %w", err), b.manager.LogHint())
 	}
 	return nil
@@ -130,80 +133,33 @@ func (b *daemonBackend) connect(ctx context.Context, build string) (*daemon.Clie
 	}
 }
 
-// queryTimeout bounds a question to a running daemon.
-const queryTimeout = 5 * time.Second
+// Bounds of a call to a running daemon: a question of this machine, and
+// one that goes along the links to another machine, which bounds the
+// relay itself.
+const (
+	queryTimeout = 5 * time.Second
+	meshTimeout  = 40 * time.Second
+)
 
-// query runs fn on a connection to a daemon that is already running,
-// within queryTimeout.
-func (b *daemonBackend) query(ctx context.Context, fn func(ctx context.Context, c *daemon.Client) error) error {
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+// meshMethods are the control methods that ask other machines.
+var meshMethods = map[string]bool{
+	wire.MethodNodeStatus: true,
+	wire.MethodNetPing:    true,
+	wire.MethodPing:       true,
+	wire.MethodDirect:     true,
+}
+
+func (b *daemonBackend) Call(ctx context.Context, method string, params, result any) error {
+	timeout := queryTimeout
+	if meshMethods[method] {
+		timeout = meshTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	c, err := daemon.Dial(ctx, b.socket, software, "")
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	return fn(ctx, c)
-}
-
-func (b *daemonBackend) Status(ctx context.Context) (st wire.Status, ok bool) {
-	err := b.query(ctx, func(ctx context.Context, c *daemon.Client) (err error) {
-		st, err = c.Status(ctx)
-		return err
-	})
-	return st, err == nil
-}
-
-func (b *daemonBackend) Nodes(ctx context.Context) (topo wire.Topology, err error) {
-	err = b.query(ctx, func(ctx context.Context, c *daemon.Client) error {
-		topo, err = c.Nodes(ctx)
-		return err
-	})
-	return topo, err
-}
-
-// meshQuery runs fn on a connection to a running daemon for a question
-// through the mesh, which bounds the relay itself; the query timeout
-// would cut it short.
-func (b *daemonBackend) meshQuery(ctx context.Context, fn func(ctx context.Context, c *daemon.Client) error) error {
-	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
-	defer cancel()
-	c, err := daemon.Dial(ctx, b.socket, software, "")
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	return fn(ctx, c)
-}
-
-func (b *daemonBackend) NodeStatus(ctx context.Context, node string) (st wire.Status, err error) {
-	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
-		st, err = c.NodeStatus(ctx, node)
-		return err
-	})
-	return st, err
-}
-
-func (b *daemonBackend) NetPing(ctx context.Context, node string, size int) (p wire.NetPing, err error) {
-	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
-		p, err = c.NetPing(ctx, node, size)
-		return err
-	})
-	return p, err
-}
-
-func (b *daemonBackend) Ping(ctx context.Context, node string) (p wire.Ping, err error) {
-	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
-		p, err = c.Ping(ctx, node)
-		return err
-	})
-	return p, err
-}
-
-func (b *daemonBackend) Direct(ctx context.Context, node string) (r wire.DirectReport, err error) {
-	err = b.meshQuery(ctx, func(ctx context.Context, c *daemon.Client) error {
-		r, err = c.Direct(ctx, node)
-		return err
-	})
-	return r, err
+	return c.Call(ctx, method, params, result)
 }

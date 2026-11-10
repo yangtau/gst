@@ -2,11 +2,12 @@
 // to the gst daemon and daemons use to talk to each other.
 // docs/design/mesh.md describes it.
 //
-// Messages are frames: a big-endian uint32 length followed by that many
-// bytes of JSON. Every connection starts with an exchange of Hello frames.
-// After that, a stream carries calls: a Request frame answered by a
-// Response frame. Receivers ignore unknown JSON fields, so new fields and
-// methods extend the protocol without a new version.
+// Every connection starts with an exchange of Hello frames: a big-endian
+// uint32 length followed by that many bytes of JSON. After that, a control
+// connection carries calls, a Request frame answered by a Response frame,
+// and a peer connection is a link of the mesh, with frames of its own
+// (internal/mesh/link). Receivers ignore unknown JSON fields, so new fields
+// and methods extend the protocol without a new version.
 package wire
 
 import (
@@ -24,9 +25,12 @@ import (
 // connections to addresses, and a UDP path carries WireGuard's packets
 // rather than QUIC. Version 4 shares one UDP port among all paths, and
 // changes the packets on them. Version 5 identifies links by an id
-// rather than a name that people choose and address machines by. It does
+// rather than a name that people choose and address machines by. Version
+// 6 splits the mesh into links, a replicated table, and routing: a link is
+// a stream of typed frames rather than a yamux session, machines stay
+// members while offline, and a removal is a record of the table. It does
 // not talk to earlier versions.
-const Protocol = 5
+const Protocol = 6
 
 // MaxFrame is the largest frame payload accepted, in bytes.
 const MaxFrame = 1 << 20
@@ -39,13 +43,16 @@ const (
 
 // Hello opens a connection. The connecting side sends one; the accepting
 // side answers with its own, setting Error when it refuses the connection.
+// Peers say who they are (Node) and whether they belong to the network
+// (Member).
 type Hello struct {
-	Protocol int      `json:"protocol"`
-	Software string   `json:"software"`
-	Role     string   `json:"role"`
-	Build    string   `json:"build,omitempty"`
-	Features []string `json:"features,omitempty"`
-	Error    *Error   `json:"error,omitempty"`
+	Protocol int       `json:"protocol"`
+	Software string    `json:"software"`
+	Role     string    `json:"role"`
+	Build    string    `json:"build,omitempty"`
+	Node     *NodeInfo `json:"node,omitempty"`
+	Member   *Member   `json:"member,omitempty"`
+	Error    *Error    `json:"error,omitempty"`
 }
 
 // Request calls a method.
@@ -69,6 +76,8 @@ const (
 	CodeNotFound          = "not_found"
 	CodeForbidden         = "forbidden"
 	CodeFailed            = "failed"
+	CodeUnreachable       = "unreachable" // no way to the machine a message is for
+	CodeRemoved           = "removed"     // the machine was removed from the network
 )
 
 // Error is a failure reported by the other side.

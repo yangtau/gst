@@ -1,52 +1,83 @@
-// Package mesh links gst daemons with each other. A link is a connection
-// to another machine's daemon, which the daemon opens over SSH by running
-// "gst peer-bridge" there. The two daemons shake hands with the gst
-// protocol in the peer role, and the connection continues as a yamux
-// session that carries one call per stream in both directions: who the
-// other node is (node.info), the link-state records that give every node
-// a view of the whole mesh (topology.sync), and calls relayed to other
-// nodes along routes through it (relay.open). All of that stays on SSH.
-// It sets up the virtual network, whose packets take a UDP path where the
-// network allows one (direct.go) and the links where not (packets.go).
+// Package mesh is this machine's node in the mesh of gst daemons, in three
+// layers. Links (link) join it to its neighbours over SSH. The table of the
+// network (state), which every node holds and floods to its neighbours over
+// the links, says which machines are members, the links between them, and
+// the subnet of the virtual network. Routing (route) takes a message to
+// any node along the links, by a routing table that each node works out
+// from the links in its table. On top, this package keeps the node's own
+// entry, decides who may link and who is a member, and carries the
+// packets of the virtual network: over a UDP path where the network allows
+// one (direct.go), and as routed messages where not (packets.go).
+//
+// A member stays one while it is offline. Only a removal record, which any
+// member can write (gst remove), takes a machine out, for good: it covers
+// the generations of the machine up to its own, and only a person who adds
+// the machine again (gst add) lets it come back with the next generation.
 package mesh
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/direct"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/link"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/route"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/state"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-// Node is this machine in the mesh: its identity, its links, and what it
-// knows of the other nodes.
-type Node struct {
-	software string
-	log      *log.Logger     // the daemon's log
-	ttl      time.Duration   // lifetime of this node's record
-	update   chan struct{}   // asks Run to publish
-	peer     wire.Server     // the methods that peers call
-	life     context.Context // ends when Run returns
-	stop     context.CancelFunc
+// refresh is how often a node publishes its entry when nothing changed, so
+// that the others know when it was last online.
+const refresh = 10 * time.Minute
 
-	mu       sync.Mutex
-	info     wire.NodeInfo // ID is empty until Configure gives the node an identity
-	links    map[*link]struct{}
-	records  map[string]wire.Record // by node id, this node's included
-	changed  chan struct{}          // closed and replaced when records change
-	seqFloor uint64                 // the highest Seq seen on this node's own record
-	net      *wire.NetInfo          // this node's part in the virtual network; see SetNet
+// Config configures a node.
+type Config struct {
+	Software string
+	Log      *log.Logger // the daemon's log
+	// StatePath is where the table is saved; it stays in memory when
+	// empty.
+	StatePath string
+	// Status reports the daemon to the other nodes; nil answers nothing.
+	Status func() wire.Status
+	// SaveGeneration keeps this node's generation, which a person's gst
+	// add raises after a removal, in the configuration file.
+	SaveGeneration func(int64) error
+	// Timing is the links'; link.DefaultTiming when zero.
+	Timing link.Timing
+}
+
+// Node is this machine in the mesh.
+type Node struct {
+	cfg    Config
+	log    *log.Logger
+	table  *state.Table
+	flood  *state.Flood
+	router *route.Router
+	update chan struct{} // asks Run to look again
+
+	mu         sync.Mutex
+	info       wire.NodeInfo // ID is empty until Configure gives the node an identity
+	generation int64
+	lastSeq    int64
+	links      map[*link.Link]struct{}
+	net        *wire.NodeNet        // this node's part in the virtual network; see SetNet
+	removed    *wire.Removed        // set while this node is removed from the network
+	paths      map[string][]string  // shortest paths along the links, from this node, by node id
+	lost       map[string]time.Time // when nodes stopped being reachable, by node id
+	changed    chan struct{}        // closed and replaced at every change
+	seenTable  <-chan struct{}      // the table's Changed at the last change
+	seenDirect string               // the nodes with UDP paths at the last change
 
 	// UDP paths; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
@@ -56,91 +87,77 @@ type Node struct {
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
 	directIdle  time.Duration                 // see runDirect
 
-	subnet atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
-
-	// Packets of the virtual network; see packets.go.
+	subnet   atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
 	onPacket atomic.Pointer[func(node string, packet []byte)]
 	packets  sync.Map // node id -> *packetPeer
 }
 
-// link is a running link: the peer session with another node.
-type link struct {
-	id      string // the link's id, for links that this node opened
-	peer    wire.NodeInfo
-	session session
-	opened  bool // this node opened it
-}
-
 // New returns a node without an identity, which refuses links until
-// Configure gives it one. status reports the daemon to the other nodes.
-func New(software string, daemonLog *log.Logger, status func() wire.Status) *Node {
-	life, stop := context.WithCancel(context.Background())
+// Configure gives it one.
+func New(cfg Config) *Node {
+	if cfg.Log == nil {
+		cfg.Log = log.Default()
+	}
+	table := state.Open(cfg.StatePath, cfg.Log)
 	n := &Node{
-		life:     life,
-		stop:     stop,
-		software: software,
-		log:      daemonLog,
-		ttl:      30 * time.Minute,
-		update:   make(chan struct{}, 1),
-		links:    map[*link]struct{}{},
-		records:  map[string]wire.Record{},
-		changed:  make(chan struct{}),
+		cfg: cfg, log: cfg.Log,
+		table: table, flood: state.NewFlood(table), router: route.New(),
+		update:  make(chan struct{}, 1),
+		links:   map[*link.Link]struct{}{},
+		paths:   map[string][]string{},
+		lost:    map[string]time.Time{},
+		changed: make(chan struct{}),
 
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},
 		directTrace: map[string][]wire.DirectEvent{},
 		directIdle:  directIdle,
 	}
-	wire.Handle(&n.peer, wire.MethodNodeInfo, func(context.Context, struct{}) (any, error) { return n.Self(), nil })
-	wire.HandleStream(&n.peer, wire.MethodTopologySync, n.serveSync)
-	wire.HandleStream(&n.peer, wire.MethodRelayOpen, n.serveRelay)
-	wire.Handle(&n.peer, wire.MethodDirectOffer, n.serveOffer)
-	wire.Handle(&n.peer, wire.MethodDirectUpdate, n.serveUpdate)
-	wire.Handle(&n.peer, wire.MethodLinkRemove, n.serveLinkRemove)
-	wire.Handle(&n.peer, wire.MethodDirectTrace, n.serveTrace)
-	wire.HandleStream(&n.peer, wire.MethodNetPackets, n.servePackets)
-	if status != nil {
-		wire.Handle(&n.peer, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return status(), nil })
+	route.Handle(n.router, wire.MethodPeerPing, func(context.Context, string, struct{}) (any, error) { return n.Self(), nil })
+	route.Handle(n.router, wire.MethodDirectOffer, n.serveOffer)
+	route.Handle(n.router, wire.MethodDirectUpdate, n.serveUpdate)
+	route.Handle(n.router, wire.MethodDirectTrace, n.serveTrace)
+	if cfg.Status != nil {
+		Handle(n, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return cfg.Status(), nil })
 	}
+	n.router.HandlePackets(n.deliver)
 	return n
 }
 
+// Handle makes fn answer the calls of method from other nodes.
+func Handle[P any](n *Node, method string, fn func(ctx context.Context, p P) (any, error)) {
+	route.Handle(n.router, method, func(ctx context.Context, _ string, p P) (any, error) { return fn(ctx, p) })
+}
+
 // Configure sets this node's identity. A new identity is a new machine: it
-// forgets what the node knew and closes its links and UDP paths, which the
-// other ends know by the old identity.
+// forgets the table and closes the links and UDP paths, which the other
+// ends know by the old identity.
 func (n *Node) Configure(c *config.Node) {
 	defer n.Update()
 	var info wire.NodeInfo
+	var gen int64
 	if c != nil {
-		info = wire.NodeInfo{ID: c.ID, Name: c.Name, Software: n.software}
+		info = wire.NodeInfo{ID: c.ID, Name: c.Name, Software: n.cfg.Software}
+		gen = c.Generation
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if info.ID != n.info.ID {
-		clear(n.records)
-		n.seqFloor = 0
-		n.net = nil
-		n.subnet.Store(nil)
-		n.notify()
 		for l := range n.links {
-			l.session.Close()
+			l.Close(nil)
 		}
-		for _, try := range n.directTries {
-			try.cancel()
+		n.closeDirect(func(string) bool { return true })
+		n.generation, n.lastSeq, n.net, n.removed = gen, 0, nil, nil
+		n.subnet.Store(nil)
+		if info.ID != "" && n.table.Owner() != info.ID {
+			n.table.Reset(info.ID)
 		}
-		n.packets.Range(func(_, value any) bool {
-			if c := value.(*packetPeer).direct.Load(); c != nil {
-				c.Close()
-			}
-			return true
-		})
+		n.router.SetSelf(info.ID)
 	}
+	n.generation = max(n.generation, gen)
 	n.info = info
+	n.notify()
 }
-
-// Peer returns the methods that peers call, for the daemon to add to
-// before the node runs.
-func (n *Node) Peer() *wire.Server { return &n.peer }
 
 // Self returns this node's identity; its ID is empty until Configure gives it one.
 func (n *Node) Self() wire.NodeInfo {
@@ -149,170 +166,476 @@ func (n *Node) Self() wire.NodeInfo {
 	return n.info
 }
 
-// hello is this node's Hello for peer connections.
-func (n *Node) hello() wire.Hello {
-	return wire.Hello{Software: n.software, Role: wire.RolePeer, Features: []string{wire.FeatureYamux}}
+// Removed says who removed this node from the network, and when; nil
+// while it is a member.
+func (n *Node) Removed() *wire.Removed {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.removed
 }
 
-// RemoteError is a failure that the other machine reported. Its text may
-// quote that machine, so logs leave it out.
-type RemoteError struct{ msg string }
+// Update asks Run to look again at what this node publishes.
+func (n *Node) Update() {
+	select {
+	case n.update <- struct{}{}:
+	default:
+	}
+}
 
-func (e *RemoteError) Error() string { return e.msg }
+// Changed returns a channel that is closed at the next change of what this
+// node knows of the network.
+func (n *Node) Changed() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.changed
+}
+
+// notifyChanges wakes the watchers if what they see changed: the table,
+// or the UDP paths; n.mu is held.
+func (n *Node) notifyChanges() {
+	var direct []string
+	n.packets.Range(func(id, peer any) bool {
+		if peer.(*packetPeer).direct.Load() != nil {
+			direct = append(direct, id.(string))
+		}
+		return true
+	})
+	slices.Sort(direct)
+	table, paths := n.table.Changed(), strings.Join(direct, " ")
+	if table != n.seenTable || paths != n.seenDirect {
+		n.seenTable, n.seenDirect = table, paths
+		n.notify()
+	}
+}
+
+// notify wakes the watchers; n.mu is held.
+func (n *Node) notify() {
+	close(n.changed)
+	n.changed = make(chan struct{})
+}
+
+// Run keeps the table on disk, publishes this node's entry when it
+// changes and every refresh, and acts on what the table says, until ctx is
+// done.
+func (n *Node) Run(ctx context.Context) {
+	saved := make(chan struct{})
+	go func() {
+		defer close(saved)
+		n.table.Run(ctx)
+	}()
+	defer func() { <-saved }()
+	tick := time.NewTicker(refresh)
+	defer tick.Stop()
+	force := false
+	for {
+		changed := n.table.Changed()
+		n.reconcile(force)
+		force = false
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		case <-n.update:
+		case <-tick.C:
+			force = true
+		}
+	}
+}
+
+// reconcile publishes this node's entry if it changed, or always with
+// force, and acts on the table: removals, and the routes.
+func (n *Node) reconcile(force bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	defer n.notifyChanges()
+	self := n.info
+	if self.ID == "" {
+		return
+	}
+	if r, ok := n.table.Get(state.RemovedKey(self.ID)); ok && n.standsRemoved(r, false) {
+		if n.removed == nil {
+			n.becomeRemoved(r)
+		}
+		n.setRoutes(nil)
+		return
+	}
+	n.removed = nil
+	cur, ok := n.table.Get(state.NodeKey(self.ID))
+	if ok && cur.Version[0] > n.generation {
+		// An earlier run of this node published it.
+		n.raiseGeneration(cur.Version[0])
+	}
+	value, _ := json.Marshal(wire.NodeValue{Name: self.Name, Software: self.Software, Links: n.nodeLinks(), Net: n.net})
+	if force || !ok || cur.Version[0] != n.generation || string(cur.Value) != string(value) {
+		seq := max(n.lastSeq+1, time.Now().UnixNano())
+		if ok {
+			seq = max(seq, cur.Version[1]+1)
+		}
+		n.lastSeq = seq
+		n.flood.Put(wire.Entry{Key: state.NodeKey(self.ID), Version: []int64{n.generation, seq}, Value: value})
+	}
+	for l := range n.links {
+		if r, ok := n.removal(l.Peer.ID, l.Member.Generation); ok {
+			l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", l.Peer.Name), Member: &wire.Member{Removed: &r}})
+		}
+	}
+	entries := n.table.Entries()
+	n.promoteNetwork(entries)
+	n.closeDirect(n.isRemoved)
+	n.setRoutes(entries)
+}
+
+// promoteNetwork makes gst's choice of a subnet, made while this node was
+// alone, the choice of a network once the table knows another member. A
+// machine alone since long ago thus does not move the network that adds
+// it: its choice loses to every network's. Sync sends the network entry
+// before the node entries, so a node that joins a network learns its
+// choice before it sees the other members. n.mu is held.
+func (n *Node) promoteNetwork(entries []wire.Entry) {
+	e, ok := n.table.Get(state.NetworkKey)
+	if !ok || e.Version[0] >= 0 {
+		return
+	}
+	for _, o := range entries {
+		if kind, id, _ := state.ParseKey(o.Key); kind == state.KindNode && id != n.info.ID && !n.isRemoved(id) {
+			n.flood.Put(wire.Entry{Key: e.Key, Version: []int64{0, e.Version[1]}, Value: e.Value})
+			return
+		}
+	}
+}
+
+// removal returns the removal record that covers node id, whose
+// generation is at least gen, if there is one.
+func (n *Node) removal(id string, gen int64) (wire.Entry, bool) {
+	if e, ok := n.table.Get(state.NodeKey(id)); ok {
+		gen = max(gen, e.Version[0])
+	}
+	r, ok := n.table.Get(state.RemovedKey(id))
+	return r, ok && r.Version[0] >= gen
+}
+
+// IsRemoved reports whether node id is removed from the network.
+func (n *Node) IsRemoved(id string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.isRemoved(id)
+}
+
+// isRemoved reports whether node id is removed from the network.
+func (n *Node) isRemoved(id string) bool {
+	_, ok := n.removal(id, 0)
+	return ok
+}
+
+// raiseGeneration makes this node's generation gen; n.mu is held.
+func (n *Node) raiseGeneration(gen int64) {
+	if gen <= n.generation {
+		return
+	}
+	n.generation = gen
+	if save := n.cfg.SaveGeneration; save != nil {
+		// Not under n.mu: saving may wait for the configuration file.
+		go func() {
+			if err := save(gen); err != nil {
+				n.log.Printf("save the generation: %v", err)
+			}
+		}()
+	}
+	n.Update()
+}
+
+// becomeRemoved takes this node out of the network after removal record
+// r: it ends its links and forgets the other machines. n.mu is held.
+func (n *Node) becomeRemoved(r wire.Entry) {
+	var v wire.RemovedValue
+	json.Unmarshal(r.Value, &v)
+	n.removed = &wire.Removed{By: wire.NodeInfo{ID: v.By, Name: v.ByName}, At: v.At}
+	if v.By == n.info.ID {
+		n.log.Print("this machine left the network")
+	} else {
+		n.log.Printf("this machine was removed from the network by %s", cmp.Or(v.ByName, v.By[:8]))
+	}
+	for l := range n.links {
+		l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeRemoved, "%s left the network", n.info.Name), Member: &wire.Member{Removed: &r}})
+	}
+	n.closeDirect(func(string) bool { return true })
+	n.table.Reset(n.info.ID, r)
+}
+
+// nodeLinks describes the running links; n.mu is held.
+func (n *Node) nodeLinks() []wire.NodeLink {
+	list := []wire.NodeLink{}
+	for l := range n.links {
+		list = append(list, wire.NodeLink{Peer: l.Peer.ID, Opened: l.Opened})
+	}
+	slices.SortFunc(list, func(a, b wire.NodeLink) int {
+		return cmp.Or(cmp.Compare(a.Peer, b.Peer), boolOrder(a.Opened, b.Opened))
+	})
+	return list // run keeps one link each way
+}
+
+// SetNet sets this node's part in the virtual network; nil takes it out.
+func (n *Node) SetNet(info *wire.NodeNet) {
+	n.mu.Lock()
+	same := info == nil && n.net == nil || info != nil && n.net != nil && *info == *n.net
+	n.net = info
+	n.mu.Unlock()
+	// The virtual network sets it after every change it hears of: a
+	// change of nothing must not make another.
+	if !same {
+		n.Update()
+	}
+}
+
+// Network returns the subnet of the virtual network, as the table has it.
+func (n *Node) Network() (wire.NetworkValue, bool) {
+	e, ok := n.table.Get(state.NetworkKey)
+	if !ok {
+		return wire.NetworkValue{}, false
+	}
+	var v wire.NetworkValue
+	return v, json.Unmarshal(e.Value, &v) == nil
+}
+
+// SetNetwork makes subnet the subnet of the whole network: as a person's
+// choice, which beats every earlier one and gst's, or as gst's, which
+// counts only until a network with an earlier one joins.
+func (n *Node) SetNetwork(subnet string, manual bool) error {
+	if n.Removed() != nil {
+		return wire.Errorf(wire.CodeRemoved, "this machine is not in a network")
+	}
+	value, _ := json.Marshal(wire.NetworkValue{Subnet: subnet})
+	now := time.Now().UnixNano()
+	version := []int64{-1, -now} // promoteNetwork raises it in a network
+	if manual {
+		order := now
+		if cur, ok := n.table.Get(state.NetworkKey); ok && cur.Version[0] == 1 {
+			order = max(order, cur.Version[1]+1)
+		}
+		version = []int64{1, order}
+	}
+	e := wire.Entry{Key: state.NetworkKey, Version: version, Value: value}
+	if err := state.Valid(e); err != nil {
+		return wire.Errorf(wire.CodeInvalidParams, "invalid subnet %s", subnet)
+	}
+	n.flood.Put(e)
+	return nil
+}
+
+// handshake is this node's side of a handshake; admit is for a link that a
+// person added and that has not run yet.
+func (n *Node) handshake(admit bool) link.Handshake {
+	return link.Handshake{
+		Self: n.Self(),
+		Member: func() *wire.Member {
+			n.mu.Lock()
+			defer n.mu.Unlock()
+			return &wire.Member{Generation: n.generation, Admit: admit}
+		},
+		Check:  n.check,
+		Timing: n.cfg.Timing,
+	}
+}
+
+// check judges a node that links with this one.
+func (n *Node) check(peer wire.NodeInfo, m wire.Member) *link.Refusal {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if r, ok := n.table.Get(state.RemovedKey(peer.ID)); ok && r.Version[0] >= m.Generation {
+		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", peer.Name), Member: &wire.Member{Removed: &r}}
+	}
+	if r, ok := n.table.Get(state.RemovedKey(n.info.ID)); ok && n.standsRemoved(r, m.Admit) {
+		return &link.Refusal{Err: wire.Errorf(wire.CodeRemoved, "%s was removed from the network", n.info.Name), Member: &wire.Member{Removed: &r}}
+	}
+	return nil
+}
+
+// standsRemoved judges this node by removal record r of itself: it stands
+// removed, unless admit, a link that a person added, brings it back with
+// a new generation. Every way back into the network goes through here.
+// n.mu is held.
+func (n *Node) standsRemoved(r wire.Entry, admit bool) bool {
+	if r.Version[0] < n.generation {
+		return false
+	}
+	if admit {
+		n.raiseGeneration(r.Version[0] + 1)
+		return false
+	}
+	return true
+}
+
+// RemoteError is a failure that the other machine reported. Its quote of
+// that machine stays out of logs, which take Logged instead.
+type RemoteError struct{ What, Quote string }
+
+func (e *RemoteError) Error() string { return e.What + ": " + e.Quote }
+
+// Logged is the error without what the other machine said.
+func (e *RemoteError) Logged() string { return e.What + "; see gst status" }
+
+// RetryError is a link that failed in a way that a new try right away
+// fixes, such as after a removal that the link's admit undoes.
+type RetryError struct{ Err error }
+
+func (e *RetryError) Error() string { return e.Err.Error() }
+func (e *RetryError) Unwrap() error { return e.Err }
 
 // Accept serves a link that another node opened on conn, whose Hello was
 // theirs, until the link ends or ctx is done.
 func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.Hello) {
-	defer conn.Close()
-	var refusal *wire.Error
-	switch {
-	case n.Self().ID == "":
-		refusal = wire.Errorf(wire.CodeFailed, "gst on this machine has no identity yet")
-	case !slices.Contains(theirs.Features, wire.FeatureYamux):
-		refusal = wire.Errorf(wire.CodeUnsupportedRole, "the peer does not support yamux")
-	}
-	if wire.Answer(conn, theirs, n.hello(), refusal) != nil {
+	if n.Self().ID == "" {
+		wire.Answer(conn, theirs, wire.Hello{Software: n.cfg.Software, Role: wire.RolePeer}, wire.Errorf(wire.CodeFailed, "gst on this machine has no identity yet"))
+		conn.Close()
 		return
 	}
-	yamuxed, err := yamux.Server(conn, yamuxConfig())
+	l, err := n.handshake(false).Accept(conn, theirs)
 	if err != nil {
 		return
 	}
-	if err := n.run(ctx, &link{session: session{yamuxed}}, nil); err != nil && ctx.Err() == nil {
+	if err := n.run(ctx, l, nil); err != nil && ctx.Err() == nil {
 		// The reason may quote the peer, so the log leaves it out.
 		n.log.Print("incoming link ended")
 	}
 }
 
-// handshakeTimeout bounds the start of the remote gst and its Hello.
-const handshakeTimeout = 30 * time.Second
-
-// Link runs the link with id over conn, which leads to the other
-// node's daemon, until the link ends or ctx is done, and closes conn.
-// onUp is called with the other node once the link runs. Link returns why
-// the link ended, or nil when ctx is done. When conn has a Failure method,
-// as an sshconn.Session does, what it returns explains a remote gst that
-// did not answer.
-func (n *Node) Link(ctx context.Context, id string, conn io.ReadWriteCloser, onUp func(peer wire.NodeInfo)) error {
+// Link runs a link over conn, which leads to the other node's daemon,
+// until it ends or ctx is done, and closes conn. admit says that a person
+// added the link and it has not run yet. onUp is called with the other
+// node once the link runs. Link returns why the link ended, or nil when
+// ctx is done. When conn has a Failure method, as an sshconn.Session does,
+// what it returns explains a remote gst that did not answer.
+func (n *Node) Link(ctx context.Context, admit bool, conn io.ReadWriteCloser, onUp func(peer wire.NodeInfo)) error {
 	defer conn.Close()
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
-
-	// A remote gst that starts but never answers would leave the link
-	// connecting forever.
-	timeout := time.AfterFunc(handshakeTimeout, func() { conn.Close() })
-	_, err := wire.Dial(conn, n.hello())
-	if !timeout.Stop() && err == nil {
-		err = errors.New("the peer handshake timed out")
+	if n.Self().ID == "" {
+		return errors.New("gst on this machine has no identity yet")
 	}
+	if r, ok := n.table.Get(state.RemovedKey(n.Self().ID)); ok {
+		n.mu.Lock()
+		removed := n.standsRemoved(r, admit)
+		n.mu.Unlock()
+		if removed {
+			return errors.New("this machine was removed from the network; `gst add` joins it again")
+		}
+	}
+	l, err := n.handshake(admit).Dial(conn)
 	if ctx.Err() != nil {
 		return nil
 	}
 	if err != nil {
-		var refused *wire.Error
-		if errors.As(err, &refused) {
-			return &RemoteError{"the remote gst refused the link: " + refused.Message}
-		}
+		return n.refused(err, admit, conn)
+	}
+	return n.run(ctx, l, onUp)
+}
+
+// refused explains a handshake that failed, and acts on a removal record
+// that came with it.
+func (n *Node) refused(err error, admit bool, conn io.ReadWriteCloser) error {
+	var r *link.RefusedError
+	if !errors.As(err, &r) {
 		if failed, ok := conn.(interface{ Failure() string }); ok && failed.Failure() != "" {
-			return &RemoteError{"the remote gst failed: " + failed.Failure()}
+			return &RemoteError{"the remote gst failed", failed.Failure()}
 		}
 		return errors.New("the remote gst did not answer; is gst installed there, and the same version as here?")
 	}
-	yamuxed, err := yamux.Client(conn, yamuxConfig())
-	if err != nil {
-		return err
+	if r.ByPeer {
+		err = &RemoteError{"the remote gst refused the link", r.Err.Message}
 	}
-	return n.run(ctx, &link{id: id, opened: true, session: session{yamuxed}}, onUp)
+	if r.Member != nil && r.Member.Removed != nil {
+		return n.learnRemoval(*r.Member.Removed, admit, err)
+	}
+	return err
 }
 
-// run serves the peer's calls, learns who the peer is, and keeps the link
-// l until its session ends, which it reports as an error unless ctx is
-// done.
-func (n *Node) run(ctx context.Context, l *link, onUp func(wire.NodeInfo)) error {
-	s := l.session
-	defer s.Close()
-	go n.serve(ctx, s)
+// learnRemoval takes in removal record e, which a link that failed with
+// err brought, and returns the error to report.
+func (n *Node) learnRemoval(e wire.Entry, admit bool, err error) error {
+	_, id, _ := state.ParseKey(e.Key)
+	if id == n.Self().ID && admit && state.Valid(e) == nil {
+		// A person added this link after the removal: come back.
+		n.mu.Lock()
+		n.standsRemoved(e, true)
+		n.mu.Unlock()
+		n.flood.Put(e)
+		n.Update()
+		return &RetryError{errors.New("this machine was removed from the network; joining it again")}
+	}
+	n.flood.Put(e)
+	n.Update()
+	if id == n.Self().ID {
+		return errors.New("this machine was removed from the network")
+	}
+	if admit {
+		// The other machine learns of its removal from this side, and
+		// with the admit of the next try comes back.
+		return &RetryError{err}
+	}
+	return err
+}
 
-	peer, err := n.nodeInfo(ctx, s)
-	if err != nil {
-		return err
-	}
-	if peer.ID == n.Self().ID {
-		// The opening side reports this and closes the link; the
-		// accepting side waits for that, so the report is not lost.
-		if l.opened {
-			return errors.New("the other machine is this machine")
-		}
-		<-s.done()
-		return nil
-	}
-	l.peer = peer
+// run carries the frames of l until it ends, or ctx is done.
+func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) error {
+	peer := l.Peer.ID
 	n.mu.Lock()
+	// One link each way between two machines: a new one replaces the
+	// one before, which is likely dead without either side knowing yet.
+	for old := range n.links {
+		if old.Peer.ID == peer && old.Opened == l.Opened {
+			old.Close(&wire.Bye{Error: wire.Errorf(wire.CodeFailed, "a newer link between %s and %s replaced it", n.info.Name, l.Peer.Name)})
+			delete(n.links, old)
+		}
+	}
 	n.links[l] = struct{}{}
 	n.mu.Unlock()
-	defer func() {
-		n.mu.Lock()
-		delete(n.links, l)
-		n.mu.Unlock()
-		n.Update()
-	}()
+	removeFlood := n.flood.Add(peer, func(body []byte) bool { return l.Send(link.Sync, body, true) })
+	removeRoute := n.router.AddLink(peer, func(body []byte, urgent bool) bool { return l.Send(link.Msg, body, urgent) })
 	n.Update()
 	if onUp != nil {
-		onUp(peer)
+		onUp(l.Peer)
 	}
-	go n.sync(ctx, s)
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-s.done():
-		return errors.New("the link closed")
-	}
-}
-
-func (n *Node) nodeInfo(ctx context.Context, s session) (wire.NodeInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer cancel()
-	var info wire.NodeInfo
-	conn, err := call(ctx, s, wire.MethodNodeInfo, nil, &info)
-	if err != nil {
-		var refused *wire.Error
-		if errors.As(err, &refused) {
-			return info, &RemoteError{"the peer did not say who it is: " + refused.Message}
+	stop := context.AfterFunc(ctx, func() {
+		l.Close(&wire.Bye{Error: wire.Errorf(wire.CodeFailed, "gst stopped on %s", n.Self().Name)})
+	})
+	err := l.Run(func(t link.Type, body []byte) {
+		switch t {
+		case link.Sync:
+			n.flood.Receive(peer, body)
+		case link.Msg:
+			n.router.Receive(body)
 		}
-		return info, fmt.Errorf("ask the peer who it is: %w", err)
-	}
-	conn.Close()
-	if !config.ValidNodeID(info.ID) {
-		return info, errors.New("the peer sent no valid node id")
-	}
-	return info, nil
-}
-
-// serve answers the calls that the peer opens streams for, until the
-// session ends. The context of each call ends with the session.
-func (n *Node) serve(ctx context.Context, s session) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	for {
-		conn, err := s.accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer conn.Close()
-			defer context.AfterFunc(ctx, func() { conn.Close() })()
-			n.peer.Serve(ctx, conn)
-		}()
-	}
-}
-
-// sessionTo returns the session of a running link with node id.
-func (n *Node) sessionTo(id string) (session, bool) {
+	})
+	stop()
+	removeRoute()
+	removeFlood()
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	for l := range n.links {
-		if l.peer.ID == id && !l.session.IsClosed() {
-			return l.session, true
-		}
+	delete(n.links, l)
+	n.mu.Unlock()
+	n.Update()
+	if ctx.Err() != nil {
+		return nil
 	}
-	return session{}, false
+	var bye *link.ByeError
+	if !errors.As(err, &bye) {
+		return err
+	}
+	if bye.Bye.Error != nil {
+		err = &RemoteError{"the other machine ended the link", bye.Bye.Error.Message}
+	}
+	if bye.Bye.Member != nil && bye.Bye.Member.Removed != nil {
+		// The handshake took any admit: a removal now is a new one.
+		return n.learnRemoval(*bye.Bye.Member.Removed, false, err)
+	}
+	return err
+}
+
+// boolOrder sorts true before false.
+func boolOrder(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return -1
+	}
+	return 1
 }

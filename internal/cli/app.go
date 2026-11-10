@@ -30,12 +30,17 @@ const (
 	exitUsage   = 2 // invalid command line or configuration
 )
 
-// Settings used when neither the link nor the ssh configuration sets them.
-const (
-	defaultConnectTimeout    = 15 * time.Second
-	defaultKeepaliveInterval = 15 * time.Second
-	defaultKeepaliveCount    = 3
-)
+// defaultConnectTimeout is used when the ssh configuration sets none.
+const defaultConnectTimeout = 15 * time.Second
+
+// remoteGstPath is where gst up puts this gst, under the home directory,
+// for the other machines' links to run.
+const remoteGstPath = ".local/state/gst/bin/gst"
+
+// remoteCommand runs gst peer-bridge on the other machine of a link: the
+// gst that gst up put in place there, or else the one in the PATH. sh -c
+// runs it whatever the login shell is.
+const remoteCommand = `sh -c 'g="$HOME/` + remoteGstPath + `"; [ -x "$g" ] || g=gst; exec "$g" peer-bridge'`
 
 // Execute runs gst with args and returns the process exit code.
 func Execute(args []string) int {
@@ -46,6 +51,7 @@ func Execute(args []string) int {
 		newBackend:   func() (backend, error) { return newDaemonBackend(os.Stderr, os.Executable) },
 		resolve:      sshconfig.Resolve,
 		executable:   os.Executable,
+		home:         os.UserHomeDir,
 		newHelper:    func() (helperService, error) { return service.NewHelper() },
 		removeHelper: func() error { return tun.Remove(tun.Socket) },
 		runRoot:      runTerminal,
@@ -61,8 +67,9 @@ type app struct {
 	stdin          io.Reader // nil reads nothing
 	stdout, stderr io.Writer
 	newBackend     func() (backend, error)
-	resolve        func(ctx context.Context, destination string) (sshconfig.Host, error)
+	resolve        func(ctx context.Context, destination string, sshArgs []string) (sshconfig.Host, error)
 	executable     func() (string, error)
+	home           func() (string, error)
 	newHelper      func() (helperService, error)
 	removeHelper   func() error              // asks the helper to remove itself
 	runRoot        func(argv []string) error // runs a command on this terminal
@@ -187,7 +194,7 @@ func (a *app) status(ctx context.Context) *wire.Status {
 	if err != nil {
 		return nil
 	}
-	if st, ok := b.Status(ctx); ok {
+	if st, ok := status(ctx, b); ok {
 		return &st
 	}
 	return nil
@@ -195,19 +202,16 @@ func (a *app) status(ctx context.Context) *wire.Status {
 
 // options resolves l's destination with ssh.
 func (a *app) options(ctx context.Context, l *config.Link) (sshconn.Options, error) {
-	host, err := a.resolve(ctx, l.Destination)
+	host, err := a.resolve(ctx, l.Destination, l.SSHArgs)
 	if err != nil {
 		return sshconn.Options{}, err
 	}
-	interval := cmp.Or(host.ServerAliveInterval, defaultKeepaliveInterval)
 	return sshconn.Options{
-		Server:            host.Address(),
-		User:              host.User,
-		IdentityFiles:     host.IdentityFiles,
-		KnownHostsFiles:   host.KnownHostsFiles,
-		ConnectTimeout:    cmp.Or(host.ConnectTimeout, defaultConnectTimeout),
-		KeepaliveInterval: interval,
-		KeepaliveTimeout:  interval * time.Duration(cmp.Or(host.ServerAliveCountMax, defaultKeepaliveCount)),
+		Server:          host.Address(),
+		User:            host.User,
+		IdentityFiles:   host.IdentityFiles,
+		KnownHostsFiles: host.KnownHostsFiles,
+		ConnectTimeout:  cmp.Or(host.ConnectTimeout, defaultConnectTimeout),
 	}, nil
 }
 
@@ -216,7 +220,7 @@ func (a *app) options(ctx context.Context, l *config.Link) (sshconn.Options, err
 func (a *app) preflight(ctx context.Context, l *config.Link) error {
 	opts, err := a.options(ctx, l)
 	if err != nil {
-		return withHint(err, "check the destination and your ssh configuration with `ssh -G "+l.Destination+"`")
+		return withHint(err, "check the destination and your ssh configuration with `"+sshCommand("-G", l)+"`")
 	}
 	if err := sshconn.Check(opts); err != nil {
 		var problem *sshconn.CheckError
@@ -236,9 +240,22 @@ func runTerminal(argv []string) error {
 	return cmd.Run()
 }
 
-// remoteGst returns the command that runs gst on l's server.
-func remoteGst(l *config.Link) string {
-	return sshconn.ShellQuote(cmp.Or(l.RemoteGst, "gst"))
+// sshCommand is the ssh command line with option, for link l, for people
+// to run.
+func sshCommand(option string, l *config.Link) string {
+	words := []string{"ssh", option}
+	for _, arg := range l.SSHArgs {
+		words = append(words, shellWord(arg))
+	}
+	return strings.Join(append(words, l.Destination), " ")
+}
+
+// shellWord quotes s for a POSIX shell, when it needs quotes.
+func shellWord(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-") == "" {
+		return s
+	}
+	return sshconn.ShellQuote(s)
 }
 
 // connectLink connects to the daemon on the machine of link l over SSH,
@@ -256,7 +273,7 @@ func (a *app) connectLink(ctx context.Context, l *config.Link) (io.ReadWriteClos
 	// A server can stall opening the session; the mesh handshake bounds
 	// only what follows.
 	stall := time.AfterFunc(defaultConnectTimeout, func() { conn.Close() })
-	session, err := conn.Start(remoteGst(l) + " peer-bridge")
+	session, err := conn.Start(remoteCommand)
 	if !stall.Stop() && err == nil {
 		session.Close()
 		err = errors.New("the remote command did not start in time")

@@ -24,10 +24,11 @@ func (a *app) statusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [machine]",
 		Short: "Show the machines of the network, or one machine's links",
-		Long: `Without a machine, show every machine that this one reaches, one per
-line: its id, name, gst version, gst IP, and how packets go to it:
-direct over UDP, or relayed along the SSH links, through the machines
-named. Problems on this machine, such as a link that is down, follow.
+		Long: `Without a machine, show every machine of the network, one per line: its
+id, name, gst version, gst IP, and how packets go to it: direct over UDP,
+or relayed along the SSH links, through the machines named, or offline,
+with when it was last online. Problems on this machine, such as a link
+that is down, follow.
 With -v, also show the links between all the machines, as "from -> to"
 with their destinations and states, and the traffic with each machine. A
 link belongs to the machine it starts from, and only that machine knows its
@@ -52,19 +53,19 @@ least 4 characters, optionally followed by .gst.`,
 				if err != nil {
 					return &usageError{err}
 				}
-				st, err := b.NodeStatus(cmd.Context(), machine)
+				st, err := call[wire.Status](cmd.Context(), b, wire.MethodNodeStatus, wire.NodeParams{Node: machine})
 				if err != nil {
 					return withHint(err, "see the machines with `gst status`")
 				}
 				// The links that other machines made to it are the network's.
-				topo, _ := b.Nodes(cmd.Context())
+				topo, _ := call[wire.Topology](cmd.Context(), b, wire.MethodNodes, nil)
 				return writeStatus(a.stdout, st, topo)
 			}
-			st, ok := b.Status(cmd.Context())
+			st, ok := status(cmd.Context(), b)
 			if !ok {
 				return withHint(errNoDaemon, "start it with `gst up`")
 			}
-			topo, err := b.Nodes(cmd.Context())
+			topo, err := call[wire.Topology](cmd.Context(), b, wire.MethodNodes, nil)
 			if err != nil {
 				return noDaemon(err)
 			}
@@ -104,8 +105,11 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 		switch {
 		case n.ID == topo.Self:
 			way = "-"
-		case !n.Reachable && !n.Direct:
+		case !n.Online():
 			way = "offline"
+			if !n.Seen.IsZero() {
+				way += ", seen " + agoText(time.Since(n.Seen))
+			}
 		default:
 			var via []string
 			if len(n.Path) > 2 {
@@ -128,8 +132,15 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	if len(topo.Nodes) == 1 && len(st.Links) == 0 {
-		fmt.Fprintln(out, "\nNo links yet. Link to another machine with `gst link <destination>`.")
+	if r := st.Removed; r != nil {
+		if r.By.ID == st.Node.ID {
+			fmt.Fprintf(out, "\nThis machine left the network %s.", agoText(time.Since(r.At)))
+		} else {
+			fmt.Fprintf(out, "\nThis machine was removed from the network by %s %s.", r.By.Name, agoText(time.Since(r.At)))
+		}
+		fmt.Fprintln(out, " Join again with `gst add <destination>`, here or on a machine of the network.")
+	} else if len(topo.Nodes) == 1 && len(st.Links) == 0 {
+		fmt.Fprintln(out, "\nNo links yet. Add another machine with `gst add <destination>`.")
 	}
 	if verbose {
 		self := wire.NodeInfo{ID: topo.Self, Name: names[topo.Self]}
@@ -172,6 +183,19 @@ func writeMachines(out io.Writer, st wire.Status, topo wire.Topology, verbose bo
 		}
 	}
 	return nil
+}
+
+// agoText says how long ago something was, as d.
+func agoText(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
 }
 
 // displayNames names the machines, telling apart the ones that share a
@@ -298,7 +322,7 @@ machine lost packets.`,
 					case <-time.After(time.Second):
 					}
 				}
-				p, err := b.NetPing(cmd.Context(), machine, size)
+				p, err := call[wire.NetPing](cmd.Context(), b, wire.MethodNetPing, wire.NetPingParams{Node: machine, Size: size})
 				if err != nil {
 					last = err
 					fmt.Fprintf(a.stdout, "no reply: %v\n", err)
@@ -311,7 +335,7 @@ machine lost packets.`,
 				writePingSummary(a.stdout, count, pings)
 			}
 			if verbose {
-				links, linksErr := b.Ping(cmd.Context(), machine)
+				links, linksErr := call[wire.Ping](cmd.Context(), b, wire.MethodPing, wire.NodeParams{Node: machine})
 				writeLinks(a.stdout, links, linksErr)
 				report, err := directReport(cmd.Context(), b, machine)
 				if err != nil {
@@ -336,7 +360,7 @@ machine lost packets.`,
 // it.
 func directReport(ctx context.Context, b backend, machine string) (wire.DirectReport, error) {
 	for {
-		r, err := b.Direct(ctx, machine)
+		r, err := call[wire.DirectReport](ctx, b, wire.MethodDirect, wire.NodeParams{Node: machine})
 		if err != nil || !r.Trying {
 			return r, err
 		}

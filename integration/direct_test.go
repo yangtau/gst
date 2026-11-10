@@ -53,8 +53,15 @@ func TestUDPPath(t *testing.T) {
 	a.waitLink(ab.destination(), "running")
 	c.waitLink(cb.destination(), "running")
 
+	// Unlinking on c changes nothing for the path: c stays in the network.
 	c.mustGst("unlink", cb.destination())
-	eventually(t, 30*time.Second, "the path outlived the removed link", func() bool {
+	a.waitUnreachable("c")
+	a.waitPing(address)
+	c.mustGst("add", cb.destination())
+	a.waitReachable("c")
+
+	c.mustGst("remove", "c")
+	eventually(t, 30*time.Second, "the path outlived the machine's leaving", func() bool {
 		return !strings.Contains(a.mustGst("status"), " direct")
 	})
 }

@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -81,7 +82,13 @@ func New(cfg Config) *Daemon {
 		cfg.Log = log.Default()
 	}
 	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}}
-	m := mesh.New(cfg.Software, cfg.Log, d.Status)
+	m := mesh.New(mesh.Config{
+		Software:       cfg.Software,
+		Log:            cfg.Log,
+		StatePath:      filepath.Join(filepath.Dir(cfg.Socket), "state.json"),
+		Status:         d.Status,
+		SaveGeneration: d.saveGeneration,
+	})
 	d.mesh = m
 	d.net = vnet.New(vnet.Config{
 		Mesh:      m,
@@ -97,7 +104,7 @@ func New(cfg Config) *Daemon {
 		return func(context.Context, struct{}) (any, error) { return f(), nil }
 	}
 	wire.Handle(&d.control, wire.MethodStatus, none(func() any { return d.Status() }))
-	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Machines() }))
+	wire.Handle(&d.control, wire.MethodNodes, none(func() any { return m.Topology() }))
 	wire.Handle(&d.control, wire.MethodReload, func(ctx context.Context, _ struct{}) (any, error) {
 		if err := d.Reload(ctx); err != nil {
 			return nil, err
@@ -119,7 +126,17 @@ func New(cfg Config) *Daemon {
 		r.Stats.InboundDrops = d.net.Dropped()
 		return r, err
 	})
-	wire.Handle(m.Peer(), wire.MethodNetNetworks, none(func() any { return d.net.Networks() }))
+	wire.Handle(&d.control, wire.MethodRemove, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		return m.Remove(p.Node)
+	})
+	wire.Handle(&d.control, wire.MethodSubnet, func(ctx context.Context, p wire.SubnetParams) (any, error) {
+		subnet, err := config.ParseSubnet(p.Subnet)
+		if err != nil {
+			return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
+		}
+		return struct{}{}, m.SetNetwork(subnet.String(), true)
+	})
+	mesh.Handle(m, wire.MethodNetNetworks, func(context.Context, struct{}) (any, error) { return d.net.Networks(), nil })
 	return d
 }
 
@@ -145,6 +162,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		// fixed, can still start the links.
 		d.cfg.Log.Print(err)
 	}
+	go d.dropRemovedLinks(meshCtx)
 	netDone := make(chan struct{})
 	go func() {
 		defer close(netDone)
@@ -231,6 +249,7 @@ func (d *Daemon) Status() wire.Status {
 	st := wire.Status{
 		Software: d.cfg.Software, Build: d.cfg.Build, PID: os.Getpid(), Config: d.cfg.ConfigPath,
 		Node: d.mesh.Self(), Links: []wire.LinkState{}, Net: d.net.Status(), Exposes: d.net.Exposes(),
+		Removed: d.mesh.Removed(),
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -239,6 +258,7 @@ func (d *Daemon) Status() wire.Status {
 		if s := d.links[l.Destination]; s != nil {
 			state = s.state()
 		}
+		state.SSHArgs = l.SSHArgs
 		st.Links = append(st.Links, state)
 	}
 	return st
@@ -250,10 +270,13 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 	if size < 0 || size > vnet.MaxPingSize {
 		return wire.NetPing{}, wire.Errorf(wire.CodeInvalidParams, "the size must be at most %d", vnet.MaxPingSize)
 	}
-	topo := d.mesh.Machines()
+	topo := d.mesh.Topology()
 	dest, err := mesh.FindNode(topo, ref)
 	if err != nil {
 		return wire.NetPing{}, err
+	}
+	if !dest.Online() {
+		return wire.NetPing{}, wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
 	}
 	if st := d.net.Status(); st == nil || st.Interface == "" {
 		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "this machine is not on the gst network; run `gst up`")
@@ -266,7 +289,7 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 		return wire.NetPing{}, wire.Errorf(wire.CodeFailed, "%v", err)
 	}
 	p := wire.NetPing{
-		Node:    wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software},
+		Node:    dest.Info(),
 		Address: dest.Net.Address,
 		Via:     []wire.NodeInfo{},
 		TimeMS:  float64(rtt.Microseconds()) / 1000,
@@ -281,9 +304,10 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 	return p, nil
 }
 
-// Reload reads the configuration and applies it: the node's identity and
-// the subnet; new links start, and links that are gone or changed stop,
-// the changed ones to start again.
+// Reload reads the configuration and applies it: the node's identity
+// and the exposed ports; new links start, and links that are gone or
+// changed stop, the changed ones to start again, and so do the links
+// added again.
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.ops.Lock()
 	defer d.ops.Unlock()
@@ -291,32 +315,20 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	d.mesh.Configure(f.Node)
 	d.config.Store(f)
-	d.net.Configure(ctx, f.Net, f.Exposes...)
+	d.mesh.Configure(f.Node)
+	d.net.Configure(ctx, f.Exposes...)
 	var stop []*supervisor
-	var removed []string
 	d.mu.Lock()
 	for destination, s := range d.links {
-		l := f.Link(destination)
-		if l == nil {
-			removed = append(removed, s.id)
-		}
-		if l == nil || *l != s.spec {
+		// A link added again restarts, so that it admits its machine.
+		if l := f.Link(destination); l == nil || !slices.Equal(l.SSHArgs, s.spec.SSHArgs) || l.Admit && !s.spec.Admit {
 			stop = append(stop, s)
 			delete(d.links, destination)
 		}
 	}
 	d.mu.Unlock()
-	var told sync.WaitGroup
-	for _, id := range removed {
-		told.Go(func() { d.mesh.Unlink(ctx, id) })
-	}
-	told.Wait()
 	stopAll(stop)
-	if len(removed) > 0 {
-		d.mesh.EndStrandedDirect()
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, l := range f.Links {
@@ -328,6 +340,109 @@ func (d *Daemon) Reload(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// admitted reports whether the link to destination is one that a person
+// added and that has not run yet.
+func (d *Daemon) admitted(destination string) bool {
+	l := d.config.Load().Link(destination)
+	return l != nil && l.Admit
+}
+
+// linkUp keeps in the configuration which machine the link to
+// destination reached, and that it ran. A link that a person added
+// replaces the others to the same machine.
+func (d *Daemon) linkUp(destination string, peer wire.NodeInfo) {
+	known := func(l *config.Link) bool { return l == nil || l.Target == peer.ID && !l.Admit }
+	if known(d.config.Load().Link(destination)) {
+		return
+	}
+	changed, dropped := false, false
+	err := config.Update(d.cfg.ConfigPath, func(f *config.File) error {
+		l := f.Link(destination)
+		if known(l) {
+			return nil
+		}
+		changed = true
+		other := func(o config.Link) bool { return o.Destination != destination && o.Target == peer.ID }
+		switch {
+		case l.Admit:
+			// A person added it: it replaces the link that reached the
+			// machine before.
+			f.Links = slices.DeleteFunc(f.Links, other)
+			l = f.Link(destination)
+		case slices.ContainsFunc(f.Links, other):
+			// One link each way: the one that reached the machine first
+			// stays.
+			f.Links = slices.DeleteFunc(f.Links, func(o config.Link) bool { return o.Destination == destination })
+			dropped = true
+			return nil
+		}
+		l.Target, l.Admit = peer.ID, false
+		return nil
+	})
+	if dropped {
+		d.cfg.Log.Printf("link %s: another link reaches the same machine; dropped this one", config.LinkID(destination))
+	}
+	if err != nil {
+		d.cfg.Log.Printf("link %s: keep its machine: %v", config.LinkID(destination), err)
+		return
+	}
+	if changed {
+		d.reloadLater()
+	}
+}
+
+// saveGeneration keeps the generation of this node in the configuration.
+func (d *Daemon) saveGeneration(gen int64) error {
+	self := d.mesh.Self().ID
+	return config.Update(d.cfg.ConfigPath, func(f *config.File) error {
+		if f.Node != nil && f.Node.ID == self {
+			f.Node.Generation = max(f.Node.Generation, gen)
+		}
+		return nil
+	})
+}
+
+// dropRemovedLinks deletes from the configuration the links to machines
+// removed from the network, and all links when it is this machine, until
+// ctx is done. Links that a person added since stay: they bring the
+// machines back.
+func (d *Daemon) dropRemovedLinks(ctx context.Context) {
+	for {
+		changed := d.mesh.Changed()
+		removed := d.mesh.Removed() != nil
+		gone := func(l config.Link) bool {
+			return !l.Admit && (removed || l.Target != "" && d.mesh.IsRemoved(l.Target))
+		}
+		if slices.ContainsFunc(d.config.Load().Links, gone) {
+			err := config.Update(d.cfg.ConfigPath, func(f *config.File) error {
+				f.Links = slices.DeleteFunc(f.Links, gone)
+				return nil
+			})
+			if err != nil {
+				d.cfg.Log.Printf("drop the links to removed machines: %v", err)
+			} else {
+				d.cfg.Log.Print("dropped the links to removed machines")
+				d.reloadLater()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+// reloadLater reloads the configuration in the background, after the
+// daemon changed it.
+func (d *Daemon) reloadLater() {
+	go func() {
+		if err := d.Reload(context.Background()); err != nil {
+			d.cfg.Log.Print(err)
+		}
+	}()
 }
 
 // stopAll stops every link.

@@ -5,12 +5,12 @@
 // encrypts the packets end to end, and the mesh carries them, over UDP
 // where the network allows and along its SSH links where not (bind.go).
 //
-// There is no coordinator. Each node publishes its subnet, address, and
-// WireGuard key in its link-state record, and every node works out the
-// same result from the records: the latest choice of subnet counts, and of
-// two nodes that picked the same address, the one with the lower id keeps
-// it. The mesh already says which machines belong, and it is what makes
-// the keys in the records trustworthy.
+// There is no coordinator. The network's table (mesh) holds the subnet of
+// the whole network, and each node publishes its address and WireGuard key
+// in its own entry; every node works out the same result from the table:
+// of two nodes that picked the same address, the one with the lower id
+// keeps it. The mesh already says which machines are members, and it is
+// what makes the keys in the table trustworthy.
 package vnet
 
 import (
@@ -26,7 +26,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,7 +54,9 @@ type Mesh interface {
 	Self() wire.NodeInfo
 	Topology() wire.Topology
 	Changed() <-chan struct{}
-	SetNet(*wire.NetInfo)
+	SetNet(*wire.NodeNet)
+	Network() (wire.NetworkValue, bool)
+	SetNetwork(subnet string, manual bool) error
 	SendPacket(node string, packet []byte)
 	HandlePackets(func(node string, packet []byte))
 	PacketPath(node string) string
@@ -74,7 +75,7 @@ type Interface interface {
 type Config struct {
 	Mesh      Mesh
 	Log       *log.Logger
-	StatePath string // holds this identity's private key and what the node settled on
+	StatePath string // holds this identity's private key and its address
 	// Open sets up the interface; the network cannot run when it is nil.
 	Open func(tun.Spec) (Interface, error)
 	// Networks returns the networks of this machine, without the
@@ -91,21 +92,14 @@ type Config struct {
 type state struct {
 	Node       string `json:"node"` // the identity that the key and the address belong to
 	PrivateKey string `json:"private_key"`
-	Subnet     string `json:"subnet,omitempty"`
-	Since      int64  `json:"since,omitempty"`
 	Address    string `json:"address,omitempty"`
-}
-
-type settings struct {
-	net     *config.Net
-	exposes []config.Expose
 }
 
 // Manager keeps the network as the configuration and the mesh say.
 type Manager struct {
 	cfg     Config
 	exposes expose.Manager
-	config  atomic.Pointer[settings]
+	config  atomic.Pointer[[]config.Expose]
 	wake    chan chan struct{} // for Run to look now, and to close the channel then
 	status  atomic.Pointer[wire.NetState]
 
@@ -114,6 +108,7 @@ type Manager struct {
 
 	// Owned by Run.
 	state    state
+	subnet   string // of the network, as the table has it
 	loaded   bool
 	bind     *bind
 	iface    Interface
@@ -121,8 +116,7 @@ type Manager struct {
 	name     string
 	dev      *device.Device
 	peers    map[string]peer // by public key; replaced, never changed
-	stopDNS  context.CancelFunc
-	echoing  string // the address that answers Ping
+	echoing  string          // the address that answers Ping
 	stopEcho context.CancelFunc
 
 	live    atomic.Pointer[wireguard] // for Status
@@ -153,11 +147,11 @@ func New(cfg Config) *Manager {
 	return &Manager{cfg: cfg, wake: make(chan chan struct{}), ended: make(chan struct{}), peers: map[string]peer{}}
 }
 
-// Configure sets the chosen subnet (which may be nil) and exposed ports.
-// Once Run runs, it waits until Run acted on c, so that Status tells how
-// that went.
-func (m *Manager) Configure(ctx context.Context, c *config.Net, rules ...config.Expose) {
-	m.config.Store(&settings{net: c, exposes: slices.Clone(rules)})
+// Configure sets the exposed ports. Once Run runs, it waits until Run
+// acted on them, so that Status tells how that went.
+func (m *Manager) Configure(ctx context.Context, rules ...config.Expose) {
+	rules = slices.Clone(rules)
+	m.config.Store(&rules)
 	if !m.running.Load() {
 		return
 	}
@@ -208,14 +202,27 @@ func (m *Manager) interfaceName() string {
 	return ""
 }
 
-// Run keeps the network going until ctx is done.
+// Run keeps the network going until ctx is done. It answers for .gst all
+// along, so that the system's resolver hears an answer while the network
+// is down too.
 func (m *Manager) Run(ctx context.Context) {
 	m.running.Store(true)
 	defer close(m.ended)
 	defer m.down()
+	dns, logged := m.cfg.DNS != "", false
 	tick := time.NewTicker(retryInterval)
 	defer tick.Stop()
 	for {
+		if dns {
+			// Until it binds, which another program may keep it from.
+			if conn, err := net.ListenPacket("udp", m.cfg.DNS); err == nil {
+				go serveDNS(ctx, conn, m.resolve)
+				dns = false
+			} else if !logged {
+				m.cfg.Log.Printf("virtual network: no answers for .gst yet: %v", err)
+				logged = true
+			}
+		}
 		changed := m.cfg.Mesh.Changed()
 		m.reconcile(ctx)
 		select {
@@ -232,9 +239,9 @@ func (m *Manager) Run(ctx context.Context) {
 
 func (m *Manager) reconcile(ctx context.Context) {
 	self := m.cfg.Mesh.Self()
-	cfg := m.config.Load()
-	if cfg == nil {
-		cfg = &settings{}
+	var exposes []config.Expose
+	if rules := m.config.Load(); rules != nil {
+		exposes = *rules
 	}
 	ready := false
 	defer func() {
@@ -242,7 +249,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 		if ready {
 			address = m.state.Address
 		}
-		m.exposes.Apply(ctx, address, cfg.exposes)
+		m.exposes.Apply(ctx, address, exposes)
 	}()
 	if m.cfg.Open == nil || self.ID == "" {
 		return
@@ -250,7 +257,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 	st := &wire.NetState{}
 	defer func() {
 		st.Interface = m.name
-		st.Subnet, st.Address = m.state.Subnet, m.state.Address
+		st.Subnet, st.Address = m.subnet, m.state.Address
 		m.status.Store(st)
 	}()
 	if err := m.load(self.ID); err != nil {
@@ -258,14 +265,14 @@ func (m *Manager) reconcile(ctx context.Context) {
 		return
 	}
 	topo := m.cfg.Mesh.Topology()
-	if err := m.settle(ctx, cfg.net, self, topo); err != nil {
+	if err := m.settle(ctx, self, topo); err != nil {
 		st.Error = err.Error()
 		return
 	}
 	err := m.up(ctx)
 	if err == nil {
 		// Machines learn of this one once it can answer them.
-		m.cfg.Mesh.SetNet(&wire.NetInfo{Subnet: m.state.Subnet, Since: m.state.Since, Address: m.state.Address, PublicKey: m.publicKey()})
+		m.cfg.Mesh.SetNet(&wire.NodeNet{Address: m.state.Address, PublicKey: m.publicKey()})
 		topo = m.cfg.Mesh.Topology()
 		err = m.apply(self, topo)
 	}
@@ -297,7 +304,7 @@ func (e *hintError) Error() string { return e.text }
 
 // conflict says what on this machine takes addresses of the subnet.
 func (m *Manager) conflict() error {
-	subnet, err := netip.ParsePrefix(m.state.Subnet)
+	subnet, err := netip.ParsePrefix(m.subnet)
 	if err != nil {
 		return nil
 	}
@@ -308,10 +315,9 @@ func (m *Manager) conflict() error {
 }
 
 // load reads the state of identity id. The private key and the address
-// belong to one identity: records of the old one stay around for a while,
-// and two records with one key or address would be taken for one machine.
-// So a new identity gets its own, and keeps only the subnet, which belongs
-// to the network.
+// belong to one identity: a new identity is a new machine, and two
+// entries with one key or address would be taken for one machine. So a
+// new identity gets its own.
 func (m *Manager) load(id string) error {
 	if !m.loaded {
 		data, err := os.ReadFile(m.cfg.StatePath)
@@ -355,14 +361,10 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(m.cfg.StatePath), 0o700); err != nil {
-		return err
-	}
-	tmp := m.cfg.StatePath + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	if err := config.WriteFile(m.cfg.StatePath, append(data, '\n')); err != nil {
 		return fmt.Errorf("write the state of the network: %w", err)
 	}
-	return os.Rename(tmp, m.cfg.StatePath)
+	return nil
 }
 
 func (m *Manager) publicKey() string {
@@ -371,45 +373,40 @@ func (m *Manager) publicKey() string {
 	return hex.EncodeToString(public)
 }
 
-// settle works out the subnet and this node's address.
-func (m *Manager) settle(ctx context.Context, c *config.Net, self wire.NodeInfo, topo wire.Topology) error {
-	subnet, since := m.state.Subnet, m.state.Since
-	consider := func(s string, t int64) {
-		if s != "" && (subnet == "" || newer(s, t, subnet, since)) {
-			subnet, since = s, t
-		}
-	}
-	if c != nil {
-		consider(c.Subnet, c.Since)
-	}
-	for _, n := range topo.Nodes {
-		if n.Net != nil && n.ID != self.ID {
-			consider(n.Net.Subnet, n.Net.Since)
-		}
-	}
-	if subnet == "" {
+// settle works out the subnet and this node's address. The subnet is the
+// network's, from the table; the first node of a network chooses one. Of
+// two members that hold the same address, offline or not, the one with
+// the lower id keeps it.
+func (m *Manager) settle(ctx context.Context, self wire.NodeInfo, topo wire.Topology) error {
+	network, ok := m.cfg.Mesh.Network()
+	if !ok {
 		chosen, err := m.chooseSubnet(ctx, self, topo)
 		if err != nil {
 			return err
 		}
-		// Negative, so that it yields to any choice of a person, and among
-		// automatic choices the network that came first stays.
-		subnet, since = chosen.String(), -time.Now().UnixNano()
+		if err := m.cfg.Mesh.SetNetwork(chosen.String(), false); err != nil {
+			return err
+		}
+		// Another choice may have arrived in the meantime, and won.
+		if network, ok = m.cfg.Mesh.Network(); !ok {
+			return errors.New("the subnet of the network is unknown")
+		}
 	}
-	prefix, err := config.ParseSubnet(subnet)
+	prefix, err := config.ParseSubnet(network.Subnet)
 	if err != nil {
 		return err
 	}
+	m.subnet = prefix.String()
 
 	taken := map[netip.Addr]bool{}
 	mine, err := netip.ParseAddr(m.state.Address)
 	keep := err == nil && prefix.Contains(mine)
 	for _, n := range topo.Nodes {
-		if n.Net == nil || n.ID == self.ID || n.Net.Subnet != subnet {
+		if n.Net == nil || n.ID == self.ID {
 			continue
 		}
 		a, err := netip.ParseAddr(n.Net.Address)
-		if err != nil {
+		if err != nil || !prefix.Contains(a) {
 			continue
 		}
 		taken[a] = true
@@ -425,10 +422,10 @@ func (m *Manager) settle(ctx context.Context, c *config.Net, self wire.NodeInfo,
 		}
 		address = a.String()
 	}
-	if subnet == m.state.Subnet && since == m.state.Since && address == m.state.Address {
+	if address == m.state.Address {
 		return nil
 	}
-	m.state.Subnet, m.state.Since, m.state.Address = subnet, since, address
+	m.state.Address = address
 	return m.save()
 }
 
@@ -470,7 +467,7 @@ func (m *Manager) wanted(topo wire.Topology) tun.Spec {
 			hosts[name+".gst"] = a.String()
 		}
 	}
-	return tun.Spec{Subnet: m.state.Subnet, Address: m.state.Address, Hosts: hosts}
+	return tun.Spec{Subnet: m.subnet, Address: m.state.Address, Hosts: hosts}
 }
 
 // names lists what the machines of topo are called.
@@ -484,19 +481,26 @@ func names(topo wire.Topology) []string {
 }
 
 // lookup finds the address of the machine that ref names, if it has one
-// in the subnet of this machine: while a new subnet spreads, the others
-// may be on the old one.
+// in the subnet of the network: while a new subnet spreads, or while a
+// machine is offline since before it, it may have one in the old.
 func lookup(topo wire.Topology, ref string) (netip.Addr, bool) {
 	n, err := mesh.FindNode(topo, ref)
 	if err != nil || n.Net == nil {
 		return netip.Addr{}, false
 	}
-	self := slices.IndexFunc(topo.Nodes, func(v wire.TopoNode) bool { return v.ID == topo.Self })
-	if self < 0 || topo.Nodes[self].Net == nil || topo.Nodes[self].Net.Subnet != n.Net.Subnet {
-		return netip.Addr{}, false
+	subnet, err := netip.ParsePrefix(topo.Subnet)
+	a, err2 := netip.ParseAddr(n.Net.Address)
+	return a, err == nil && err2 == nil && subnet.Contains(a)
+}
+
+// resolve answers the DNS: the address of the machine called name, and
+// whether the network runs, without which there is no answer.
+func (m *Manager) resolve(name string) (netip.Addr, bool, bool) {
+	if m.live.Load() == nil {
+		return netip.Addr{}, false, false
 	}
-	a, err := netip.ParseAddr(n.Net.Address)
-	return a, err == nil
+	a, ok := lookup(m.cfg.Mesh.Topology(), name)
+	return a, ok, true
 }
 
 // apply makes the interface and WireGuard match topo.
@@ -523,7 +527,7 @@ func (m *Manager) up(ctx context.Context) error {
 	if m.iface != nil {
 		return nil
 	}
-	iface, err := m.cfg.Open(tun.Spec{Subnet: m.state.Subnet, Address: m.state.Address})
+	iface, err := m.cfg.Open(tun.Spec{Subnet: m.subnet, Address: m.state.Address})
 	if err != nil {
 		if errors.Is(err, tun.ErrNoHelper) {
 			return &hintError{"the network helper is not running", "run `gst up` on this machine"}
@@ -550,16 +554,6 @@ func (m *Manager) up(ctx context.Context) error {
 		m.down()
 		return fmt.Errorf("start WireGuard: %w", err)
 	}
-	if m.cfg.DNS != "" {
-		conn, err := net.ListenPacket("udp", m.cfg.DNS)
-		if err != nil {
-			m.down()
-			return fmt.Errorf("answer for .gst: %w", err)
-		}
-		dnsCtx, stop := context.WithCancel(ctx)
-		m.stopDNS = stop
-		go serveDNS(dnsCtx, conn, func(name string) (netip.Addr, bool) { return lookup(m.cfg.Mesh.Topology(), name) })
-	}
 	m.cfg.Log.Printf("virtual network: up on %s", m.name)
 	return nil
 }
@@ -567,10 +561,6 @@ func (m *Manager) up(ctx context.Context) error {
 // down stops everything that up started.
 func (m *Manager) down() {
 	m.exposes.Close()
-	if m.stopDNS != nil {
-		m.stopDNS()
-		m.stopDNS = nil
-	}
 	m.stopAnswering()
 	m.cfg.Mesh.HandlePackets(nil)
 	if m.dev != nil {
@@ -592,11 +582,22 @@ func (m *Manager) syncPeers(self wire.NodeInfo, topo wire.Topology) error {
 	if m.dev == nil {
 		return nil
 	}
-	want := map[string]peer{}
+	// Of the members that hold one address, as offline ones may long
+	// after a merge, the lower id has it, as in settle; this machine's
+	// own is its own.
+	holder := map[netip.Addr]wire.TopoNode{}
 	for _, n := range topo.Nodes {
-		if n.Net != nil && n.ID != self.ID && n.Net.Subnet == m.state.Subnet {
-			want[n.Net.PublicKey] = peer{n.ID, n.Net.Address}
+		a, ok := lookup(topo, n.ID)
+		if !ok || n.ID == self.ID || a.String() == m.state.Address {
+			continue
 		}
+		if h, taken := holder[a]; !taken || n.ID < h.ID {
+			holder[a] = n
+		}
+	}
+	want := map[string]peer{}
+	for a, n := range holder {
+		want[n.Net.PublicKey] = peer{n.ID, a.String()}
 	}
 	var config strings.Builder
 	for key := range m.peers {
@@ -654,8 +655,8 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 	list := []wire.NetPeer{}
 	for key, p := range live.peers {
 		i := slices.IndexFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == p.node })
-		if i < 0 || !topo.Nodes[i].Reachable && !topo.Nodes[i].Direct {
-			continue // Only a record that has not expired yet.
+		if i < 0 {
+			continue
 		}
 		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Path: m.cfg.Mesh.PacketPath(p.node), Endpoint: m.cfg.Mesh.PacketEndpoint(p.node)}
 		if c := seen[key]; c != nil {

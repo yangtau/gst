@@ -109,7 +109,7 @@ func (a *app) uiState(ctx context.Context) (uiState, error) {
 	if s.Status == nil {
 		return s, nil
 	}
-	if topo, err := b.Nodes(ctx); err != nil {
+	if topo, err := call[wire.Topology](ctx, b, wire.MethodNodes, nil); err != nil {
 		s.Errors = append(s.Errors, "machines: "+err.Error())
 	} else {
 		s.Topology = &topo
@@ -158,7 +158,7 @@ func (a *app) uiHandler(token, gstIP string) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		st, err := b.NodeStatus(r.Context(), r.PathValue("node"))
+		st, err := call[wire.Status](r.Context(), b, wire.MethodNodeStatus, wire.NodeParams{Node: r.PathValue("node")})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return

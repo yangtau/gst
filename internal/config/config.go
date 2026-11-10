@@ -1,6 +1,7 @@
 // Package config reads and writes the gst configuration file: this
-// machine's node identity, its links to other machines, and the subnet
-// that the user chose. The gst CLI is its only intended writer.
+// machine's node identity, its links to other machines, and its exposed
+// ports. The gst CLI is its only intended writer, and the daemon, for what
+// it learns about the links and the identity.
 package config
 
 import (
@@ -13,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,10 +23,11 @@ import (
 	"unicode"
 )
 
-// Version is the current configuration format. Version 4 left out the
-// proxy, maps, and routes of version 3, as the virtual network replaced them.
-// Version 5 lists links without names; Load reads version 4 too.
-const Version = 5
+// Version is the current configuration format. Version 5 listed links
+// without names. Version 6 adds ssh arguments, the machine a link reaches,
+// and membership, and leaves the subnet to the network; Load reads
+// version 5 too.
+const Version = 6
 
 // File is the configuration file.
 type File struct {
@@ -35,37 +36,32 @@ type File struct {
 	// Down keeps the daemon from running until gst up.
 	Down bool `json:"down,omitempty"`
 	// Links are this machine's links, one per destination.
-	Links []Link `json:"links"`
-	// Net is what the user chose for the virtual network; nil leaves it
-	// to the machines.
-	Net     *Net     `json:"net,omitempty"`
+	Links   []Link   `json:"links"`
 	Exposes []Expose `json:"exposes,omitempty"`
-}
-
-// Net is what the user chose for the virtual network.
-type Net struct {
-	// Subnet is the subnet of the whole network, and Since when the user
-	// chose it, in Unix nanoseconds. The network's machines agree on the
-	// latest choice.
-	Subnet string `json:"subnet"`
-	Since  int64  `json:"since"`
 }
 
 // Node is this machine's identity in the mesh.
 type Node struct {
 	ID   string `json:"id"`   // random and stable
 	Name string `json:"name"` // shown to others; not unique
+	// Generation counts the times that a person added this machine back
+	// after a removal from the network.
+	Generation int64 `json:"generation,omitempty"`
 }
 
-// Link is an SSH connection to another machine's gst. Destination is
-// resolved with "ssh -G" each time the link connects, so the user's ssh
-// configuration supplies host, port, user, identities, known_hosts files,
-// and timeouts. It also identifies the link.
+// Link is an SSH connection to another machine's gst. Destination, with
+// SSHArgs, is resolved with "ssh -G" each time the link connects, so the
+// user's ssh configuration supplies host, port, user, identities,
+// known_hosts files, and timeouts. Destination also identifies the link.
 type Link struct {
 	Destination string `json:"destination"`
-	// RemoteGst is the server's gst command; "gst" in the login shell's
-	// PATH when empty.
-	RemoteGst string `json:"remote_gst,omitempty"`
+	// SSHArgs are ssh options for this link, such as -p 2222 or -i key.
+	SSHArgs []string `json:"ssh_args,omitempty"`
+	// Target is the id of the machine that the link reached, once it ran.
+	Target string `json:"target,omitempty"`
+	// Admit says that a person added the link with gst add, and it has
+	// not run yet: it brings a removed machine at either end back.
+	Admit bool `json:"admit,omitempty"`
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/gst/config.json, or ~/.config/gst/config.json
@@ -112,8 +108,8 @@ func parse(data []byte) (*File, error) {
 	if err := json.Unmarshal(data, &head); err != nil {
 		return nil, errors.New("invalid JSON")
 	}
-	if head.Version == 4 {
-		return parseV4(data)
+	if head.Version == 5 {
+		return parseV5(data)
 	}
 	if head.Version < Version {
 		return nil, fmt.Errorf("config version %d is too old: remove the file and add the links again", head.Version)
@@ -128,23 +124,25 @@ func parse(data []byte) (*File, error) {
 	return f, nil
 }
 
-// parseV4 reads version 4, whose links have names, which version 5
-// drops.
-func parseV4(data []byte) (*File, error) {
-	var v4 struct {
+// parseV5 reads version 5, whose links may name the remote gst command
+// and whose subnet the network now keeps: version 6 drops both.
+func parseV5(data []byte) (*File, error) {
+	var v5 struct {
 		File
-		Links map[string]*Link `json:"links"`
+		Links []struct {
+			Link
+			RemoteGst string `json:"remote_gst"`
+		} `json:"links"`
+		Net json.RawMessage `json:"net"`
 	}
-	if err := decodeStrict(data, &v4); err != nil {
+	if err := decodeStrict(data, &v5); err != nil {
 		return nil, err
 	}
-	f := &v4.File
+	f := &v5.File
 	f.Version = Version
 	f.Links = []Link{}
-	for _, name := range slices.Sorted(maps.Keys(v4.Links)) {
-		if l := v4.Links[name]; l != nil && f.Link(l.Destination) == nil {
-			f.Links = append(f.Links, *l)
-		}
+	for _, l := range v5.Links {
+		f.Links = append(f.Links, l.Link)
 	}
 	if err := f.normalize(); err != nil {
 		return nil, err
@@ -176,10 +174,10 @@ func (f *File) validate() error {
 	if f.Version != Version {
 		return fmt.Errorf("unsupported config version %d; upgrade gst", f.Version)
 	}
-	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil) {
-		return errors.New("invalid node id or name")
+	if n := f.Node; n != nil && (!ValidNodeID(n.ID) || ValidateName(n.Name) != nil || n.Generation < 0) {
+		return errors.New("invalid node id, name, or generation")
 	}
-	links := map[string]bool{}
+	links, targets := map[string]bool{}, map[string]bool{}
 	for i, l := range f.Links {
 		if err := l.Validate(); err != nil {
 			return fmt.Errorf("link %d: %w", i+1, err)
@@ -187,7 +185,13 @@ func (f *File) validate() error {
 		if links[l.Destination] {
 			return fmt.Errorf("link %d: another link has the same destination", i+1)
 		}
+		if targets[l.Target] {
+			return fmt.Errorf("link %d: another link reaches the same machine", i+1)
+		}
 		links[l.Destination] = true
+		if l.Target != "" {
+			targets[l.Target] = true
+		}
 	}
 	seen := map[string]bool{}
 	for _, e := range f.Exposes {
@@ -198,11 +202,6 @@ func (f *File) validate() error {
 			return errors.New("duplicate expose port and protocol")
 		}
 		seen[e.Key()] = true
-	}
-	if f.Net != nil {
-		if _, err := ParseSubnet(f.Net.Subnet); err != nil {
-			return errors.New("invalid subnet")
-		}
 	}
 	return nil
 }
@@ -234,7 +233,10 @@ func Update(path string, fn func(*File) error) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, append(data, '\n'))
+	if err := WriteFile(path, append(data, '\n')); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
 }
 
 // Apply runs fn on the configuration file under a lock of its own, so
@@ -272,10 +274,15 @@ func lock(path string) (unlock func(), err error) {
 	return func() { f.Close() }, nil
 }
 
-func writeFileAtomic(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
+// WriteFile replaces the file at path with data, readable by its owner
+// only, at once: a reader sees the old file or the new one, never part.
+func WriteFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
-		return fmt.Errorf("write config: %w", err)
+		return err
 	}
 	defer os.Remove(tmp.Name())
 	_, err = tmp.Write(data)
@@ -285,13 +292,10 @@ func writeFileAtomic(path string, data []byte) error {
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
 	if err != nil {
-		return fmt.Errorf("write config: %w", err)
+		return err
 	}
-	return nil
+	return os.Rename(tmp.Name(), path)
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -378,8 +382,13 @@ func (l *Link) Validate() error {
 	if err := ValidateDestination(l.Destination); err != nil {
 		return err
 	}
-	if strings.ContainsFunc(l.RemoteGst, unicode.IsControl) {
-		return errors.New("invalid remote gst command")
+	for _, arg := range l.SSHArgs {
+		if arg == "" || strings.ContainsFunc(arg, unicode.IsControl) {
+			return errors.New("invalid ssh argument")
+		}
+	}
+	if l.Target != "" && !ValidNodeID(l.Target) {
+		return errors.New("invalid target")
 	}
 	return nil
 }

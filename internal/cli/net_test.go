@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -36,16 +35,14 @@ func TestSubnetShows(t *testing.T) {
 
 func TestSubnetChanges(t *testing.T) {
 	e := newEnv(t)
+	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "gst is not running", "gst up")
+	e.mustGst("up")
 	e.back.net = runningNet()
 	if out, want := e.mustGst("subnet", "10.99.7.0/16"), "The subnet is 10.99.0.0/16. This machine's gst IP is 10.99.1.2.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
-	n := e.load().Net
-	if n == nil || n.Subnet != "10.99.0.0/16" || n.Since == 0 {
-		t.Fatalf("config: %+v", n)
-	}
-	if !e.back.installed {
-		t.Fatal("gst subnet did not start the daemon")
+	if e.back.subnet != "10.99.0.0/16" {
+		t.Fatalf("subnet %q", e.back.subnet)
 	}
 }
 
@@ -54,17 +51,31 @@ func TestSubnetRejects(t *testing.T) {
 	for _, subnet := range []string{"8.8.8.0/24", "10.0.0.0/7", "nonsense"} {
 		e.expectError(exitUsage, []string{"subnet", subnet}, "error:", "usage:")
 	}
-	if e.load().Net != nil {
-		t.Fatal("a rejected subnet was saved")
+	if e.back.subnet != "" {
+		t.Fatal("a rejected subnet was set")
 	}
 }
 
 func TestSubnetReportsWhatToDo(t *testing.T) {
 	e := newEnv(t)
+	e.mustGst("up")
 	e.back.net = &wire.NetState{Error: "the network helper is not running", Hint: "install it with `gst up`"}
 	e.expectError(exitFailure, []string{"subnet", "10.99.0.0/16"}, "error: the network helper", "hint: install it with `gst up`")
-	if e.load().Net == nil {
+	if e.back.subnet != "10.99.0.0/16" {
 		t.Fatal("the choice should apply once the helper is there")
+	}
+}
+
+// gst subnet waits for the network to take the new subnet, and does not
+// report what was wrong with the one before.
+func TestSubnetWaitsForTheChange(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	e.back.net = runningNet()
+	e.back.staleNet = &wire.NetState{Subnet: "192.168.64.0/24", Interface: "gst0", Error: "the subnet 192.168.64.0/24 overlaps 192.168.64.0/24 on this machine", Hint: "choose another"}
+	e.back.staleFor = 3
+	if out, want := e.mustGst("subnet", "10.99.0.0/16"), "The subnet is 10.99.0.0/16. This machine's gst IP is 10.99.1.2.\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
 	}
 }
 
@@ -74,7 +85,7 @@ func TestStatusShowsTheNetwork(t *testing.T) {
 	e.back.net = runningNet()
 	self, peer := peerOf("laptop"), peerOf("devbox")
 	e.back.topology = wire.Topology{Self: self.ID, Nodes: []wire.TopoNode{
-		{ID: self.ID, Name: "laptop", Reachable: true, Net: &wire.NetInfo{Address: "10.99.1.2"}},
+		{ID: self.ID, Name: "laptop", Reachable: true, Net: &wire.NodeNet{Address: "10.99.1.2"}},
 		{ID: peer.ID, Name: "devbox", Reachable: true, Path: []string{self.ID, peer.ID}},
 	}}
 	out := e.mustGst("status")
@@ -268,22 +279,8 @@ func TestDownAsksWhenTheHelperDoesNotAnswer(t *testing.T) {
 	}
 }
 
-func TestLinkTellsWhenTheOtherMachineIsNotUp(t *testing.T) {
-	e := newEnv(t)
-	e.back.linkStates["myhost"] = wire.LinkState{Destination: "myhost", State: wire.StateDown, Error: "error: " + notUp + "; run `gst up` there"}
-	e.expectError(exitFailure, []string{"link", "myhost", "--remote-gst", "/opt/gst"},
-		"error: linked to myhost, but gst is not up there", "hint: run `ssh -t myhost /opt/gst up`; the link then connects by itself")
-	if len(e.rootRuns) != 0 {
-		t.Fatalf("ran %v", e.rootRuns)
-	}
-	f, err := config.Load(e.config)
-	if err != nil || f.Link("myhost") == nil {
-		t.Fatalf("the link is gone: %+v, %v", f, err)
-	}
-}
-
-func TestLinkReturnsOnOtherFailures(t *testing.T) {
+func TestAddReturnsOnOtherFailures(t *testing.T) {
 	e := newEnv(t)
 	e.back.linkStates["myhost"] = wire.LinkState{Destination: "myhost", State: wire.StateDown, Error: "connection refused"}
-	contains(t, e.mustGst("link", "myhost"), "Linked to myhost. It connects in the background")
+	contains(t, e.mustGst("add", "myhost"), "Added the link to myhost. It connects in the background")
 }

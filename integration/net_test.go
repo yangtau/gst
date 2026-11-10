@@ -281,7 +281,7 @@ func TestNetDirect(t *testing.T) {
 	p := trust(t, client, server)
 	client.mustGst("name", "laptop")
 	server.mustGst("name", "devbox")
-	client.mustGst("link", p.destination())
+	client.mustGst("add", p.destination())
 	client.waitReachable("devbox")
 	for _, n := range []*node{client, server} {
 		n.installHelper()
@@ -429,7 +429,7 @@ func directPair(t *testing.T, prepare ...func(client, server *node)) (client, se
 	p := trust(t, client, server)
 	client.mustGst("name", "laptop")
 	server.mustGst("name", "devbox")
-	client.mustGst("link", p.destination())
+	client.mustGst("add", p.destination())
 	client.waitReachable("devbox")
 	for _, n := range []*node{client, server} {
 		n.installHelper()

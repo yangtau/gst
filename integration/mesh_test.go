@@ -83,7 +83,7 @@ func TestMesh(t *testing.T) {
 	// c's on a, two hops away.
 	t.Run("Status", func(t *testing.T) {
 		dead := cb.deadEnd()
-		c.mustGst("link", dead)
+		c.mustGst("add", dead)
 
 		var st wire.Status
 		eventually(t, 30*time.Second, "a does not see c's links", func() bool {

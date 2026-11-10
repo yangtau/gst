@@ -47,7 +47,7 @@ func wg(text string) []byte { return append([]byte{4}, text...) }
 func TestDirectPath(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	boxes := enableDirect(t, a, b)
-	linkUp(t, a, b, "b")
+	linkUp(t, a, b)
 	waitFor(t, "a sees b", func() bool { n, _ := findTopo(a.Topology(), nid("b")); return n.Reachable })
 
 	a.SendPacket(nid("b"), wg("first"))
@@ -62,16 +62,12 @@ func TestDirectPath(t *testing.T) {
 		t.Fatal("the topology does not show the path")
 	}
 	// A path is no link: only the SSH link counts.
-	if edges := a.Topology().Edges; len(edges) != 1 || edges[0].Link != config.LinkID("b") {
+	if edges := a.Topology().Edges; len(edges) != 1 {
 		t.Fatalf("edges = %+v", edges)
 	}
 
-	streams := a.packetPeer(nid("b")).streams.Load()
 	a.SendPacket(nid("b"), wg("over udp"))
 	waitFor(t, "the packet arrives over UDP", func() bool { return boxes[b].has(nid("a"), string(wg("over udp"))) })
-	if got := a.packetPeer(nid("b")).streams.Load(); got > streams {
-		t.Fatalf("%d streams, before %d", got, streams)
-	}
 
 	a.packetPeer(nid("b")).direct.Load().Close()
 	waitFor(t, "the path ends on b", func() bool { return !hasDirect(b, nid("a")) })
@@ -96,7 +92,7 @@ func TestIdleDirectPathEnds(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	a.directIdle, c.directIdle = 300*time.Millisecond, 300*time.Millisecond
 	boxes := enableDirect(t, a, c)
-	linkUp(t, a, c, "c")
+	linkUp(t, a, c)
 	goDirect(t, a, c)
 	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
 
@@ -110,7 +106,7 @@ func TestIdleDirectPathWithoutLinksStays(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	a.directIdle, c.directIdle = 300*time.Millisecond, 300*time.Millisecond
 	enableDirect(t, a, c)
-	ab, cb := linkUp(t, a, b, "b"), linkUp(t, c, b, "b")
+	ab, cb := linkUp(t, a, b), linkUp(t, c, b)
 	goDirect(t, a, c)
 	// Traffic keeps the path until the links are gone.
 	busy := make(chan struct{})
@@ -143,8 +139,8 @@ func TestIdleDirectPathWithoutLinksStays(t *testing.T) {
 func TestDirectPathAcrossTheMesh(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
-	linkUp(t, a, b, "b")
-	linkUp(t, c, b, "b")
+	linkUp(t, a, b)
+	linkUp(t, c, b)
 	goDirect(t, a, c)
 	a.SendPacket(nid("c"), wg("hello"))
 	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("hello"))) })
@@ -157,12 +153,11 @@ func TestDirectPathAcrossTheMesh(t *testing.T) {
 }
 
 // When the machine between two nodes goes away, as when it sleeps, their
-// UDP path carries on, and they see each other still, but only until
-// their records expire: SSH links alone renew them.
+// UDP path carries on: they are members still.
 func TestDirectPathOutlivesSSH(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
-	ab, cb := linkUp(t, a, b, "b"), linkUp(t, c, b, "b")
+	ab, cb := linkUp(t, a, b), linkUp(t, c, b)
 	goDirect(t, a, c)
 
 	ab.cut()
@@ -175,24 +170,8 @@ func TestDirectPathOutlivesSSH(t *testing.T) {
 	}
 	a.SendPacket(nid("c"), wg("hello"))
 	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("hello"))) })
-
-	if n, ok := findTopo(a.Machines(), nid("c")); !ok || !n.Direct {
-		t.Fatalf("a does not list c: %+v", n)
-	}
-	a.prune()
-	if !hasDirect(a, nid("c")) {
-		t.Fatal("the path ended before the record expired")
-	}
-
-	a.mu.Lock()
-	r := a.records[nid("c")]
-	r.Expires = time.Now().Add(-time.Second)
-	a.records[nid("c")] = r
-	a.mu.Unlock()
-	a.prune()
-	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
-	if _, ok := findTopo(a.Machines(), nid("c")); ok {
-		t.Fatal("a still lists c")
+	if n, _ := findTopo(a.Topology(), nid("c")); !n.Online() || n.Reachable {
+		t.Fatalf("a sees c as %+v", n)
 	}
 }
 
@@ -201,9 +180,9 @@ func TestDirectPathOutlivesSSH(t *testing.T) {
 func TestANewIdentityEndsDirect(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, c, "c")
+	linkUp(t, a, c)
 	goDirect(t, a, c)
-	a.SetNet(&wire.NetInfo{Address: "10.0.0.1"})
+	a.SetNet(&wire.NodeNet{Address: "10.0.0.1"})
 
 	a.Configure(&config.Node{ID: nid("n"), Name: "a"})
 	waitFor(t, "the path ends at both ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
@@ -214,55 +193,27 @@ func TestANewIdentityEndsDirect(t *testing.T) {
 	}
 }
 
-// A node that removes its last link to the mesh leaves it, paths included.
-func TestRemovingALinkEndsDirect(t *testing.T) {
+// Removing a machine ends the UDP paths to it.
+func TestRemovingANodeEndsDirect(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, b, "b")
-	cb := linkUp(t, c, b, "b")
+	linkUp(t, a, b)
+	linkUp(t, c, b)
 	goDirect(t, a, c)
 
-	cb.cut()
-	cb.wait(t)
-	c.EndStrandedDirect()
+	if _, err := b.Remove("c"); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the path ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
-	waitFor(t, "a loses c", func() bool { n, _ := findTopo(a.Topology(), nid("c")); return !n.Reachable })
-}
-
-// The node at the other end of a removed link leaves as well, even if it
-// had a path to another node.
-func TestRemovingALinkEndsDirectAtTheOtherEnd(t *testing.T) {
-	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
-	enableDirect(t, a, c)
-	linkUp(t, a, b, "b")
-	linkUp(t, b, c, "c")
-	goDirect(t, a, c)
-
-	b.Unlink(t.Context(), config.LinkID("c"))
-	waitFor(t, "the path ends", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
-}
-
-// A node that SSH links still lead to stays in the mesh, so its paths do
-// too.
-func TestRemovingALinkKeepsDirectInTheMesh(t *testing.T) {
-	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
-	enableDirect(t, a, c)
-	linkUp(t, a, b, "b")
-	linkUp(t, b, c, "c")
-	linkUp(t, a, c, "c")
-	waitFor(t, "c sees the link from a", func() bool {
-		for _, e := range c.Topology().Edges {
-			if e.From == nid("a") && e.To == nid("c") {
-				return true
-			}
-		}
-		return false
-	})
-	goDirect(t, a, c)
-
-	b.Unlink(t.Context(), config.LinkID("c"))
-	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
-		t.Fatal("the path ended with SSH links left")
+	a.SendPacket(nid("c"), wg("hello"))
+	a.mu.Lock()
+	tries := len(a.directTries)
+	a.mu.Unlock()
+	if tries != 0 {
+		t.Fatal("a tries a path to a removed machine")
+	}
+	if _, err := a.serveOffer(t.Context(), nid("c"), wire.DirectOffer{}); err == nil {
+		t.Fatal("a answered a removed machine")
 	}
 }
 
@@ -270,7 +221,7 @@ func TestRemovingALinkKeepsDirectInTheMesh(t *testing.T) {
 func TestDirectOffersCross(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	boxes := enableDirect(t, a, b)
-	linkUp(t, a, b, "b")
+	linkUp(t, a, b)
 	waitFor(t, "they see each other", func() bool {
 		x, _ := findTopo(a.Topology(), nid("b"))
 		y, _ := findTopo(b.Topology(), nid("a"))
@@ -291,7 +242,7 @@ func TestDirectOffOnTheOtherSide(t *testing.T) {
 	enableDirect(t, a)
 	var atB inbox
 	b.HandlePackets(atB.handle)
-	linkUp(t, a, b, "b")
+	linkUp(t, a, b)
 	waitFor(t, "a sees b", func() bool { n, _ := findTopo(a.Topology(), nid("b")); return n.Reachable })
 	a.SendPacket(nid("b"), wg("hello"))
 	waitFor(t, "a holds off", func() bool { return waiting(a, nid("b")) })
@@ -305,7 +256,7 @@ func TestDirectOffOnTheOtherSide(t *testing.T) {
 func TestDirectNeedsTheNetwork(t *testing.T) {
 	a := newNode(t, "a")
 	a.EnableDirect(t.Context(), loopback)
-	if _, err := a.serveOffer(t.Context(), wire.DirectOffer{Node: nid("b")}); err == nil {
+	if _, err := a.serveOffer(t.Context(), nid("b"), wire.DirectOffer{}); err == nil {
 		t.Error("answered off the network")
 	}
 	a.tryDirect(nid("b"))
@@ -319,33 +270,26 @@ func TestDirectNeedsTheNetwork(t *testing.T) {
 func TestDirectOfferInvalid(t *testing.T) {
 	a := newNode(t, "a")
 	a.HandlePackets(func(string, []byte) {})
-	if _, err := a.serveOffer(t.Context(), wire.DirectOffer{Node: nid("b")}); err == nil {
+	if _, err := a.serveOffer(t.Context(), nid("b"), wire.DirectOffer{}); err == nil {
 		t.Error("answered with UDP paths off")
 	}
 	enableDirect(t, a)
-	for _, node := range []string{"", "nonsense", nid("a")} {
-		if _, err := a.serveOffer(t.Context(), wire.DirectOffer{Node: node}); err == nil {
-			t.Errorf("answered an offer from %q", node)
-		}
+	if _, err := a.serveOffer(t.Context(), nid("a"), wire.DirectOffer{}); err == nil {
+		t.Error("answered an offer from itself")
 	}
 }
 
-// Addresses of the virtual network are no way to a machine, once this
-// node is on it.
+// Addresses of the virtual network are no way to a machine.
 func TestAddressesOfTheNetworkAreSkipped(t *testing.T) {
 	a := newNode(t, "a")
 	addr := netip.MustParseAddr("10.99.0.7")
 	if a.onNetwork(addr) {
-		t.Fatal("off the network, no address is in it")
+		t.Fatal("without a subnet, no address is in it")
 	}
-	a.SetNet(&wire.NetInfo{Subnet: "10.99.0.0/16", Address: "10.99.0.1"})
-	if !a.onNetwork(addr) || a.onNetwork(netip.MustParseAddr("192.0.2.1")) {
-		t.Fatal("the subnet decides")
-	}
-	a.SetNet(nil)
-	if a.onNetwork(addr) {
-		t.Fatal("off the network again")
-	}
+	a.SetNetwork("10.99.0.0/16", true)
+	waitFor(t, "the subnet decides", func() bool {
+		return a.onNetwork(addr) && !a.onNetwork(netip.MustParseAddr("192.0.2.1"))
+	})
 }
 
 // A node reports the addresses of a path, and what both ends did to set
@@ -353,8 +297,8 @@ func TestAddressesOfTheNetworkAreSkipped(t *testing.T) {
 func TestDirectReport(t *testing.T) {
 	a, b, c := newNode(t, "a"), newNode(t, "b"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, b, "b")
-	linkUp(t, c, b, "b")
+	linkUp(t, a, b)
+	linkUp(t, c, b)
 	goDirect(t, a, c)
 
 	var r wire.DirectReport
@@ -394,7 +338,7 @@ func hasText(text string) func(wire.DirectEvent) bool {
 func TestPacketsThatUDPCannotSend(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	boxes := enableDirect(t, a, c)
-	linkUp(t, a, c, "c")
+	linkUp(t, a, c)
 	goDirect(t, a, c)
 	big := wg(strings.Repeat("x", 65520)) // more than a UDP packet holds, not than a stream does
 	a.SendPacket(nid("c"), big)
@@ -413,7 +357,7 @@ func TestPacketsThatUDPCannotSend(t *testing.T) {
 func TestNetworkChange(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, c, "c")
+	linkUp(t, a, c)
 	goDirect(t, a, c)
 	a.backOff(nid("gone"))
 
@@ -438,15 +382,12 @@ func TestNetworkChange(t *testing.T) {
 func TestDirectUpdateInvalid(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, c, "c")
-	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: "nonsense"}); err == nil {
-		t.Error("took an update from no node")
-	}
-	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: nid("c")}); err != nil {
+	linkUp(t, a, c)
+	if _, err := a.serveUpdate(t.Context(), nid("c"), wire.DirectOffer{}); err != nil {
 		t.Errorf("an update without a path: %v", err)
 	}
 	goDirect(t, a, c)
-	if _, err := a.serveUpdate(t.Context(), wire.DirectOffer{Node: nid("c"), Token: "00"}); err == nil {
+	if _, err := a.serveUpdate(t.Context(), nid("c"), wire.DirectOffer{Token: "00"}); err == nil {
 		t.Error("took the update of another path")
 	}
 }

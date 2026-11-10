@@ -1,22 +1,18 @@
 package wire
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
-// Methods of peer connections, which carry each call on its own stream.
+// Methods that nodes call on each other through the mesh: a request
+// message answered by a response message (internal/mesh/route).
 const (
-	MethodNodeInfo = "node.info" // no params; returns NodeInfo
-	// MethodTopologySync ("topology.sync") takes SyncParams and returns
-	// Records: the callee's records that are newer than the caller's.
-	// The stream then carries further Records frames, one per change,
-	// until either side closes it.
-	MethodTopologySync = "topology.sync"
-	// MethodRelayOpen ("relay.open") takes RelayParams. On success the
-	// stream leads to the node at the end of the path, and carries calls
-	// to its peer methods, one after another.
-	MethodRelayOpen = "relay.open"
-	// MethodPeerStatus ("node.status") takes no params and returns the
-	// Status of the callee's daemon.
-	MethodPeerStatus = "node.status"
+	// MethodPeerPing ("ping") takes no params and returns NodeInfo.
+	MethodPeerPing = "ping"
+	// MethodPeerStatus ("status") takes no params and returns the Status
+	// of the callee's daemon.
+	MethodPeerStatus = "status"
 	// MethodDirectOffer ("direct.offer") takes a DirectOffer and returns
 	// the callee's, after which the two nodes look for a UDP path.
 	MethodDirectOffer = "direct.offer"
@@ -24,78 +20,95 @@ const (
 	// running UDP path, with the caller's addresses now, and returns nothing:
 	// the callee measures the path again.
 	MethodDirectUpdate = "direct.update"
-	// MethodLinkRemove ("link.remove") takes LinkRemove and returns
-	// nothing: the caller is about to remove the link for good.
-	MethodLinkRemove = "link.remove"
-	// MethodDirectTrace ("direct.trace") takes DirectTraceParams and
-	// returns DirectTrace: what the callee did in its latest try at a
-	// UDP path with that node.
+	// MethodDirectTrace ("direct.trace") takes no params and returns
+	// DirectTrace: what the callee did in its latest try at a UDP path
+	// with the caller.
 	MethodDirectTrace = "direct.trace"
-	// MethodNetPackets ("net.packets") takes PacketsParams. On success the
-	// stream carries the packets of the virtual network in both
-	// directions, each after its length as a big-endian uint16.
-	MethodNetPackets = "net.packets"
 	// MethodNetNetworks ("net.networks") takes no params and returns
 	// Networks: what the subnet of the virtual network must not overlap
 	// on the callee's machine.
 	MethodNetNetworks = "net.networks"
 )
 
-// FeatureYamux in a peer Hello says that the connection continues as a
-// yamux session, with one call per stream. Peers require it.
-const FeatureYamux = "yamux"
-
-// RelayParams are the params of relay.open. Path lists the nodes that
-// the stream passes, starting with the callee and ending with the node
-// that answers the calls.
-type RelayParams struct {
-	Path []string `json:"path"`
-}
-
 // NodeInfo identifies a gst node.
 type NodeInfo struct {
 	ID       string `json:"id"`   // random and stable
 	Name     string `json:"name"` // chosen by the node's user; not unique
-	Software string `json:"software"`
+	Software string `json:"software,omitempty"`
 }
 
-// SyncParams are the params of topology.sync: the sequence number of
-// every record the caller has, by node id.
-type SyncParams struct {
-	Known map[string]uint64 `json:"known"`
+// Member is what a peer's Hello says of its place in the network.
+type Member struct {
+	// Generation counts the times the node was added back after a
+	// removal; a removal record covers the generations up to its own.
+	Generation int64 `json:"generation"`
+	// Admit says that a person added the link (gst add) and it has not
+	// run yet: the other node may join again after a removal.
+	Admit bool `json:"admit,omitempty"`
+	// Removed is the removal record of the other node, in a refusal.
+	Removed *Entry `json:"removed,omitempty"`
 }
 
-// Records carries link-state records.
-type Records struct {
-	Records []Record `json:"records"`
+// Bye is the last frame of a link that a side ends on purpose.
+type Bye struct {
+	Error  *Error  `json:"error"`
+	Member *Member `json:"member,omitempty"`
 }
 
-// Record is a node's link-state record. Each node publishes only its own
-// and raises Seq with every change; the others keep the record with the
-// highest Seq until it expires and pass it on to their peers.
-type Record struct {
-	Node    NodeInfo  `json:"node"`
-	Seq     uint64    `json:"seq"`
-	Expires time.Time `json:"expires"`
-	Links   []Edge    `json:"links"`
+// Entry is an entry of the table that every node keeps of the network
+// (internal/mesh/state). Of two entries with one key, the higher Version
+// counts; Value depends on the key: NodeValue for "node/<id>",
+// RemovedValue for "removed/<id>", and NetworkValue for "network".
+type Entry struct {
+	Key     string          `json:"key"`
+	Version []int64         `json:"version"`
+	Value   json.RawMessage `json:"value"`
+}
+
+// Entries is the body of a sync frame.
+type Entries struct {
+	Entries []Entry `json:"entries"`
+}
+
+// NodeValue is a node as it describes itself: its version is its
+// generation and a sequence number that follows the clock, so it also says
+// when the node last published it.
+type NodeValue struct {
+	Name     string     `json:"name"`
+	Software string     `json:"software"`
+	Links    []NodeLink `json:"links"`
 	// Net is the node's part in the virtual network; nil while it takes
 	// no part.
-	Net *NetInfo `json:"net,omitempty"`
+	Net *NodeNet `json:"net,omitempty"`
 }
 
-// NetInfo is what the other nodes need to reach a node over the virtual
-// network. Subnet is the whole network's, which the nodes agree on: the
-// one with the highest Since counts.
-type NetInfo struct {
-	Subnet    string `json:"subnet"`     // CIDR prefix
-	Since     int64  `json:"since"`      // when a person chose the subnet, in Unix nanoseconds; negated when gst chose it
-	Address   string `json:"address"`    // the node's IP address in Subnet
+// NodeLink is one of a node's running links.
+type NodeLink struct {
+	Peer   string `json:"peer"`   // the node id at its other end
+	Opened bool   `json:"opened"` // this node opened it
+}
+
+// NodeNet is what the other nodes need to reach a node over the virtual
+// network.
+type NodeNet struct {
+	Address   string `json:"address"`    // the node's IP address in the network's subnet
 	PublicKey string `json:"public_key"` // its WireGuard key, in hexadecimal
 }
 
-// PacketsParams are the params of net.packets.
-type PacketsParams struct {
-	Node string `json:"node"` // the caller's id
+// RemovedValue says who removed a node, and when; its version is the
+// generation of the node that it removes.
+type RemovedValue struct {
+	By     string    `json:"by"`      // the id of the node that removed it
+	ByName string    `json:"by_name"` // and its name then
+	At     time.Time `json:"at"`
+}
+
+// NetworkValue is the subnet of the virtual network. Its version is
+// [1, order] for a person's choice, which beats gst's; [0, -time] for
+// gst's, where the earlier one counts; and [-1, -time] for gst's on a
+// machine alone, which loses to every network's.
+type NetworkValue struct {
+	Subnet string `json:"subnet"`
 }
 
 // Networks lists the IPv4 prefixes in use on a machine: the networks of
@@ -103,23 +116,6 @@ type PacketsParams struct {
 type Networks struct {
 	Interfaces []string `json:"interfaces"`
 	Routes     []string `json:"routes"`
-}
-
-// Edge is one of a node's running links.
-type Edge struct {
-	Link string `json:"link"` // the link's id, for links that the node opened; empty for accepted ones
-	Peer string `json:"peer"` // the node id at its other end
-}
-
-// LinkRemove names a link that its opener is removing.
-type LinkRemove struct {
-	Node string `json:"node"` // the caller's id
-	Link string `json:"link"` // the link's id, as in the caller's record
-}
-
-// DirectTraceParams name the node at the other end of a UDP path.
-type DirectTraceParams struct {
-	Node string `json:"node"` // its id
 }
 
 // DirectTrace is what a node did in its latest try at a UDP path, in
@@ -137,7 +133,6 @@ type DirectEvent struct {
 // DirectOffer is one node's side of a try at a UDP path: in the params of
 // direct.offer, the caller's, and in its result, the callee's.
 type DirectOffer struct {
-	Node      string   `json:"node,omitempty"`  // the caller's id; only in the params
 	Token     string   `json:"token,omitempty"` // proves that a probe belongs to this try; the caller's counts
 	Addresses []string `json:"addresses"`       // IP:port to probe
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -70,7 +71,8 @@ func (a *app) upCommand() *cobra.Command {
 		Long: `Start gst in the background, now and at every login, and put this
 machine on the network. Other machines can link to this one only after
 this. Run it on each machine, and again after upgrading gst or gst down;
-on a machine that is up it changes nothing.
+on a machine that is up it changes nothing. It also links this gst to
+~/.local/state/gst/bin/gst, which the other machines' links run.
 
 The network interface needs a small system service, the network helper,
 which takes root to install. When it is missing or out of date, gst says
@@ -86,6 +88,9 @@ terminal gst does not ask, and only says so.`,
 			if err := a.sync(cmd.Context()); err != nil {
 				return err
 			}
+			if err := a.placeGst(); err != nil {
+				return err
+			}
 			f, err := a.load()
 			if err != nil {
 				return err
@@ -96,6 +101,36 @@ terminal gst does not ask, and only says so.`,
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask before running sudo; gst still says what it runs")
 	return cmd
+}
+
+// placeGst puts a link to this gst where the other machines' links run
+// it, whatever the PATH of the login shell holds.
+func (a *app) placeGst() error {
+	exe, err := a.executable()
+	if err != nil {
+		return err
+	}
+	home, err := a.home()
+	if err != nil {
+		return errors.New("home directory lookup failed")
+	}
+	path := filepath.Join(home, remoteGstPath)
+	if target, err := os.Readlink(path); err == nil && target == exe {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("put gst in place for links to this machine: %w", err)
+	}
+	tmp := path + ".new"
+	os.Remove(tmp)
+	if err := os.Symlink(exe, tmp); err != nil {
+		return fmt.Errorf("put gst in place for links to this machine: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("put gst in place for links to this machine: %w", err)
+	}
+	return nil
 }
 
 func (a *app) downCommand() *cobra.Command {
@@ -156,7 +191,7 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 			var d net.Dialer
 			conn, err := d.DialContext(cmd.Context(), "unix", socket)
 			if err != nil {
-				return errors.New("gst is not running on this machine")
+				return errNoDaemon
 			}
 			defer conn.Close()
 			done := make(chan struct{}, 2)

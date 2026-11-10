@@ -25,7 +25,7 @@
             version = builtins.head (builtins.match ".*const version = \"([^\"]+)\".*"
               (builtins.readFile ./internal/cli/version.go));
             src = pkgs.lib.cleanSource ./.;
-            vendorHash = "sha256-VY6UngF15Y2pARje0/3xJ322rLjCvKYocNDQInDnplw=";
+            vendorHash = "sha256-zwAyWDXDhSUMT+4/aL/hVOTk2X42qbBqF2wfQWL9HZE=";
             subPackages = [ "cmd/gst" ];
             # cleanSource drops .git, so Go cannot stamp the commit.
             ldflags =

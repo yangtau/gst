@@ -25,14 +25,13 @@ import (
 // connect to it with a key it accepts and a known_hosts file that
 // records its host key.
 type testServer struct {
-	opts          Options
-	hostKey       ssh.Signer
-	authKey       ssh.PublicKey
-	hangKeepalive bool // never answer keepalive requests
-	probes        chan struct{}
-	ctx           context.Context
-	cancel        context.CancelFunc // drops every client connection
-	wg            sync.WaitGroup
+	opts    Options
+	hostKey ssh.Signer
+	authKey ssh.PublicKey
+	probes  chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc // drops every client connection
+	wg      sync.WaitGroup
 }
 
 // commands are what the server runs for exec requests: it echoes the
@@ -81,13 +80,11 @@ func startServer(t *testing.T) *testServer {
 		ctx:     ctx,
 		cancel:  cancel,
 		opts: Options{
-			Server:            listener.Addr().String(),
-			User:              "remote-user",
-			IdentityFiles:     []string{filepath.Join(dir, "key")},
-			KnownHostsFiles:   []string{filepath.Join(dir, "known_hosts")},
-			ConnectTimeout:    2 * time.Second,
-			KeepaliveInterval: time.Second,
-			KeepaliveTimeout:  time.Second,
+			Server:          listener.Addr().String(),
+			User:            "remote-user",
+			IdentityFiles:   []string{filepath.Join(dir, "key")},
+			KnownHostsFiles: []string{filepath.Join(dir, "known_hosts")},
+			ConnectTimeout:  2 * time.Second,
 		},
 	}
 	writeFile(t, s.opts.IdentityFiles[0], string(privateKey))
@@ -107,6 +104,7 @@ func startServer(t *testing.T) *testServer {
 			if err != nil {
 				return
 			}
+			s.probes <- struct{}{}
 			s.wg.Go(func() { s.serveConn(raw, config) })
 		}
 	})
@@ -140,13 +138,7 @@ func (s *testServer) serveConn(raw net.Conn, config *ssh.ServerConfig) {
 		}
 	})
 	for req := range requests {
-		if req.Type == "keepalive@openssh.com" {
-			s.probes <- struct{}{}
-			if s.hangKeepalive {
-				continue
-			}
-		}
-		req.Reply(false, nil) // a refusal still proves the server is alive
+		req.Reply(false, nil)
 	}
 }
 

@@ -105,7 +105,7 @@ func lines(out string) []string {
 
 func TestStatusListsTheMachines(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "devbox")
+	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
 	e.resetCalls()
 
@@ -131,11 +131,11 @@ func TestStatusListsTheMachines(t *testing.T) {
 
 func TestStatusVerboseListsTheLinks(t *testing.T) {
 	e := newEnv(t)
-	e.mustGst("link", "devbox")
+	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
 
 	e.back.linkStates["devbox"] = wire.LinkState{Destination: "devbox", State: wire.StateDown, Error: "connection refused"}
-	e.mustGst("link", "db")
+	e.mustGst("add", "db")
 
 	// This machine's links come first, with their destinations and states,
 	// down ones too; the others' running links follow.
@@ -193,13 +193,13 @@ func TestStatusWithoutLinks(t *testing.T) {
 	self := nodeID("aaaa1111")
 	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop", Reachable: true, Path: []string{self}}}}
 	out := e.mustGst("status")
-	want := []string{"aaaa1111 laptop - -", "", "No links yet. Link to another machine with `gst link <destination>`."}
+	want := []string{"aaaa1111 laptop - -", "", "No links yet. Add another machine with `gst add <destination>`."}
 	if got := lines(out); !slices.Equal(got, want) {
 		t.Fatalf("status\n got %q\nwant %q", got, want)
 	}
 
 	// A link that has not found anything yet is not "no links yet".
-	e.mustGst("link", "devbox")
+	e.mustGst("add", "devbox")
 	if out := e.mustGst("status"); strings.Contains(out, "No links yet") {
 		t.Fatalf("a configured link was ignored:\n%s", out)
 	}
@@ -208,9 +208,9 @@ func TestStatusWithoutLinks(t *testing.T) {
 func TestStatusListsProblems(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("name", "laptop")
-	e.mustGst("link", "myhost")
-	e.mustGst("link", "db")
-	e.mustGst("link", "devbox")
+	e.mustGst("add", "myhost")
+	e.mustGst("add", "db")
+	e.mustGst("add", "devbox")
 	e.back.topology = meshTopology()
 	e.back.linkStates["myhost"] = wire.LinkState{Destination: "myhost", State: wire.StateDown, Error: "SSH keepalive timed out"}
 	e.back.linkStates["db"] = wire.LinkState{Destination: "db", State: wire.StateConnecting}
@@ -434,4 +434,25 @@ func TestPingVerbose(t *testing.T) {
 		}
 	}
 
+}
+
+// Members that are offline show when they were last online.
+func TestStatusShowsOfflineMembers(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	a, b := nodeID("aaaa1111"), nodeID("bbbb2222")
+	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
+		{ID: a, Name: "laptop", Reachable: true, Path: []string{a}},
+		{ID: b, Name: "tablet", Seen: time.Now().Add(-3 * time.Hour)},
+	}}
+	contains(t, e.mustGst("status"), "offline, seen 3h ago")
+}
+
+// A machine that was removed says so, and how to join again.
+func TestStatusShowsARemoval(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	e.back.topology = wire.Topology{Self: nodeID("aaaa1111"), Nodes: []wire.TopoNode{{ID: nodeID("aaaa1111"), Name: "laptop", Reachable: true}}}
+	e.back.removed = &wire.Removed{By: peerOf("devbox"), At: time.Now().Add(-2 * time.Hour)}
+	contains(t, e.mustGst("status"), "This machine was removed from the network by devbox 2h ago. Join again with `gst add <destination>`")
 }

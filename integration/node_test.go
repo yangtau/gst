@@ -222,7 +222,6 @@ func trust(t *testing.T, client, server *node) *pair {
 	p.client.writeFile(p.identity, private)
 	p.client.mustSh(`printf '%s\n' "$1" >>"$2"`, knownhosts.Line([]string{p.server.addr(22)}, p.server.hostKey), p.knownHosts)
 	p.server.mustSh(`umask 077 && mkdir -p ~/.ssh && printf '%s' "$1" >>~/.ssh/authorized_keys`, string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
-	// Fast keepalives let a dropped connection show quickly.
 	p.client.mustSh(`cat >>"$1"`+" <<EOF\n"+`Host $2
   HostName $3
   Port 22
@@ -231,8 +230,6 @@ func trust(t *testing.T, client, server *node) *pair {
   IdentitiesOnly yes
   UserKnownHostsFile $5
   ConnectTimeout 10
-  ServerAliveInterval 1
-  ServerAliveCountMax 2
 EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
 	p.server.mustGst("up")
 	return p
@@ -243,7 +240,7 @@ EOF`, nodeSSHConfig, p.destination(), p.server.ip, p.identity, p.knownHosts)
 func (p *pair) destination() string { return p.server.container }
 
 // deadEnd adds a destination to the client's ssh configuration that
-// passes gst link's checks, because known_hosts records the server's
+// passes gst add's checks, because known_hosts records the server's
 // key on that port, but where nothing listens: a link to it stays down.
 // It returns the destination.
 func (p *pair) deadEnd() string {
@@ -459,8 +456,8 @@ func link3(t *testing.T, a, b, c *node) (_, _, _ *node, ab, cb *pair) {
 	for name, n := range map[string]*node{"a": a, "b": b, "c": c} {
 		n.mustGst("name", name)
 	}
-	a.mustGst("link", ab.destination())
-	c.mustGst("link", cb.destination())
+	a.mustGst("add", ab.destination())
+	c.mustGst("add", cb.destination())
 	a.waitReachable("c")
 	c.waitReachable("a")
 	return a, b, c, ab, cb

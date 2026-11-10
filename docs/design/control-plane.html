@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>gst 控制面现状</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: one long-read column in the voice of a network manual, as udp-hole-punching.html; the scenario player breaks out wider. */
+:root {
+  --bg: #f2f5f8; --panel: #ffffff; --fg: #16212e; --muted: #566778; --rule: #d3dce5;
+  --code: #e7ecf2; --accent: #2f5fd0; --ok: #16784e; --drop: #c5352b; --warn: #a36a12; --new: #dfe9ff; --udp: #7a3fb8;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --warn: #e2b04a; --new: #24375c; --udp: #c39af0; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #10161d; --panel: #18212b; --fg: #e4eaf0; --muted: #98a8b8; --rule: #2c3845;
+  --code: #1f2a35; --accent: #84a9ff; --ok: #4cc38a; --drop: #f0766e; --warn: #e2b04a; --new: #24375c; --udp: #c39af0; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 16px/1.8 var(--sans); }
+.page { max-width: 1000px; margin: 0 auto; padding-block: 40px 96px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 720px; }
+h1 { font-size: clamp(32px, 7vw, 50px); font-weight: 900; line-height: 1.15; margin: 0 0 12px; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font-size: 26px; font-weight: 900; line-height: 1.3; margin: 0 0 14px; text-wrap: balance; }
+h3 { font-size: 18px; font-weight: 700; margin: 28px 0 6px; }
+p { margin: 0 0 14px; }
+section { padding-top: 52px; }
+.no { font: 600 13px var(--mono); color: var(--accent); letter-spacing: .06em; display: block; margin-bottom: 4px; }
+.lede { font-size: 18px; color: var(--muted); max-width: 680px; }
+code, .m { font-family: var(--mono); font-size: .88em; }
+p code, li code, td code, .step-text code { background: var(--code); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+pre { font: 400 13.5px/1.7 var(--mono); background: var(--code); padding: 14px 16px; margin: 0 0 16px; overflow-x: auto; border-radius: 4px; }
+pre .c { color: var(--muted); }
+ul, ol { margin: 0 0 14px; padding-left: 1.4em; }
+li { margin-bottom: 6px; }
+strong { font-weight: 700; }
+a { color: var(--accent); }
+.tw { overflow-x: auto; margin-bottom: 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; line-height: 1.6; }
+th { text-align: left; font-weight: 700; border-bottom: 2px solid var(--fg); padding: 6px 12px 6px 0; white-space: nowrap; }
+td { border-bottom: 1px solid var(--rule); padding: 8px 12px 8px 0; vertical-align: top; }
+td:first-child { white-space: nowrap; }
+.tag { display: inline-block; font: 600 12px/1.6 var(--mono); padding: 0 6px; border-radius: 3px; white-space: nowrap; }
+.t-flood { background: var(--new); color: var(--accent); }
+.t-route { background: var(--code); color: var(--fg); }
+.t-hop { background: var(--code); color: var(--muted); }
+.t-udp { color: var(--udp); border: 1px solid var(--udp); }
+.yes { color: var(--ok); font-weight: 700; }
+.no-g { color: var(--drop); font-weight: 700; }
+.part { color: var(--warn); font-weight: 700; }
+
+/* Answers */
+.answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 2px solid var(--fg); margin-top: 28px; }
+.answers > div { padding: 14px 18px 14px 0; min-width: 0; }
+.answers > div + div { border-left: 1px solid var(--rule); padding-left: 18px; }
+.answers h3 { margin: 0 0 6px; font-size: 15px; color: var(--muted); font-weight: 500; }
+.answers b { display: block; font-size: 19px; line-height: 1.4; font-weight: 900; margin-bottom: 6px; }
+.answers p { font-size: 14.5px; line-height: 1.7; margin: 0; }
+@media (max-width: 720px) { .answers { grid-template-columns: 1fr; } .answers > div + div { border-left: 0; border-top: 1px solid var(--rule); padding-left: 0; } }
+
+/* Stack */
+.stack { display: grid; gap: 0; border: 1px solid var(--fg); font-size: 14.5px; line-height: 1.6; margin-bottom: 8px; }
+.stack > div { display: grid; grid-template-columns: 180px minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
+.stack > div:last-child { border-bottom: 0; }
+.stack .l { font: 600 13px/1.5 var(--mono); background: var(--code); padding: 10px 12px; }
+.stack .r { padding: 10px 12px; min-width: 0; }
+@media (max-width: 560px) { .stack > div { grid-template-columns: 1fr; } }
+
+/* Player */
+.player { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; margin: 20px 0 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.tabs button, .nav button { font: 500 14px/1 var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; padding: 8px 12px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tabs button:focus-visible, .nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nav button:disabled { opacity: .4; cursor: default; }
+.stage { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 820px) { .stage { grid-template-columns: 1fr; } }
+.svgwrap { overflow-x: auto; }
+.svgwrap svg { display: block; width: 100%; min-width: 520px; height: auto; }
+svg text { font-family: var(--sans); }
+.nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.nav .count { font: 600 13px var(--mono); color: var(--muted); margin-left: auto; }
+.step-title { font-weight: 700; font-size: 17px; line-height: 1.4; margin: 0 0 6px; }
+.step-text { font-size: 15px; line-height: 1.75; min-width: 0; }
+.step-text p { margin: 0 0 10px; }
+.step-text ul { margin: 0 0 10px; }
+.steps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.steps button { width: 26px; height: 26px; font: 600 12px var(--mono); border: 1px solid var(--rule); background: var(--bg); color: var(--muted); border-radius: 3px; cursor: pointer; padding: 0; }
+.steps button[aria-current="step"] { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.legend span::before { content: ""; display: inline-block; width: 18px; height: 0; border-top: 2px solid currentColor; vertical-align: middle; margin-right: 6px; }
+.lg-ssh { color: var(--accent); } .lg-echo { color: var(--muted); } .lg-udp { color: var(--udp); } .lg-err { color: var(--drop); }
+.lg-udp::before { border-top-style: dashed !important; } .lg-echo::before { border-top-style: dotted !important; }
+.lg-link { color: var(--fg); }
+
+.gap { border-left: 3px solid var(--drop); padding: 2px 0 2px 14px; margin: 0 0 16px; }
+.gap b { display: block; }
+.gap.mild { border-left-color: var(--warn); }
+.note { font-size: 14px; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .msg { animation: draw .45s ease-out both; } @keyframes draw { from { opacity: 0; } to { opacity: 1; } } }
+</style>
+</head>
+<body>
+<div class="page">
+<header class="col">
+  <span class="no">GST · DESIGN NOTES</span>
+  <h1>gst 控制面现状</h1>
+  <p class="lede">机器之间的控制信息怎么走，每一类状态由谁写、怎么传、冲突时听谁的，以及哪些地方现在<strong>没有</strong>一致性保证。本文描述的是协议 5 的做法，已被协议 6 的分层设计取代（见 <code>mesh-redesign.html</code> 和 <code>mesh.md</code>），保留用来对照。</p>
+</header>
+
+<div class="answers">
+  <div><h3>控制信息走哪</h3><b>只走 SSH link</b><p>记录、信令、查询都在 link 的 yamux 流上。UDP 路径只运 WireGuard 包和自己的 probe / answer / bye，不运任何控制状态。</p></div>
+  <div><h3>怎么到达远处的机器</h3><b>两种走法</b><p>全网状态用<strong>洪泛</strong>：逐跳转发给相邻机器。对某台机器的调用用<strong>源路由</strong>：发起方按自己的视图算好路径，<code>relay.open</code> 沿 link 逐跳打通一个流。</p></div>
+  <div><h3>一致性</h3><b>只有记录最终一致</b><p>每台机器只写自己的记录，按 <code>seq</code> 新者胜；同一连通分量内最终一致。其余都是尽力而为：调用不重试，记录 30 分钟过期，重启后从零同步。</p></div>
+</div>
+
+<section id="layers">
+<div class="col">
+  <span class="no">01</span>
+  <h2>一条 link 上跑什么</h2>
+  <p>link 是一台机器的 daemon 主动建立的 SSH 连接。连接里执行 <code>gst peer-bridge</code>，它把标准输入输出接到对端 daemon 的 control socket。之后两个 daemon 直接对话：</p>
+</div>
+<div class="stack col">
+  <div><div class="l">SSH 连接</div><div class="r">由发起方的 daemon 建立：<code>ssh -G</code> 解析目标，只信 known_hosts，每 15 秒 keepalive（默认，3 次不回即断）。</div></div>
+  <div><div class="l">exec peer-bridge</div><div class="r">对端执行 <code>gst peer-bridge</code>，接到对端 daemon；对端没 <code>gst up</code> 时拒绝。</div></div>
+  <div><div class="l">Hello（peer）</div><div class="r">双方交换协议版本、software、<code>yamux</code> feature；30 秒内完成，版本不同即拒绝。</div></div>
+  <div><div class="l">yamux 会话</div><div class="r">之后<strong>两个方向对等</strong>：谁发起 link 不再重要，双方都能开流，<strong>一个流承载一次调用</strong>；yamux 自己每 15 秒 keepalive。</div></div>
+  <div><div class="l">流</div><div class="r"><code>node.info</code>、<code>topology.sync</code>（长期开着）、<code>relay.open</code>（中转）、<code>direct.offer</code> 等，见下表。</div></div>
+</div>
+<div class="col">
+  <p>任何一层断了，整条 link 就结束：所有流一起断，两端各自删掉这条边、重新发布记录；发起方按退避重连（5 秒起，每次翻倍，最长 5 分钟，连上后重置）。</p>
+</div>
+
+<h3 class="col">所有 peer 方法和它们的走法</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>走法</th><th>什么时候</th><th>内容</th><th>失败时</th></tr></thead>
+<tbody>
+<tr><td><code>node.info</code></td><td><span class="tag t-hop">相邻</span> / <span class="tag t-route">源路由</span></td><td>link 建好时双方各一次；<code>gst ping</code></td><td>id、名字、software</td><td>建 link 时失败则断开 link</td></tr>
+<tr><td><code>topology.sync</code></td><td><span class="tag t-flood">洪泛</span></td><td>link 建好时双方各开一个，一直开着</td><td>先回比对方 <code>known</code> 新的记录，之后每次变化推一帧</td><td>流出错就关闭整条 link，重连后从 <code>known</code> 重新对齐</td></tr>
+<tr><td><code>relay.open</code></td><td><span class="tag t-route">源路由</span></td><td>调用不相邻的机器时</td><td><code>path</code>：剩下要经过的节点 id</td><td>某一跳没有到下一跳的 link 就原路返回错误，不换路</td></tr>
+<tr><td><code>node.status</code></td><td><span class="tag t-route">源路由</span></td><td><code>gst status &lt;machine&gt;</code></td><td>对方 daemon 的完整 <code>Status</code></td><td>报错给用户</td></tr>
+<tr><td><code>net.networks</code></td><td><span class="tag t-route">源路由</span></td><td>网络里还没有 subnet，第一次自动选时</td><td>对方网卡和路由的网段</td><td>3 秒没回就当它不存在</td></tr>
+<tr><td><code>net.packets</code></td><td><span class="tag t-route">源路由</span></td><td>有包要发、又没有 UDP 路径时</td><td>之后这个流双向运 WireGuard 包</td><td>路径断了流就断，1 秒后按新视图重开；排队的包丢弃</td></tr>
+<tr><td><code>direct.offer</code></td><td><span class="tag t-route">源路由</span></td><td>包走 link 时，每 5 秒最多一次</td><td>token、候选 <code>IP:port</code></td><td>退避 5 秒起翻倍，最长 5 分钟</td></tr>
+<tr><td><code>direct.update</code></td><td><span class="tag t-route">源路由</span></td><td>本机地址或网卡变了</td><td>运行中路径的 token 和新地址</td><td>不重试；路径自己会重新探测</td></tr>
+<tr><td><code>direct.trace</code></td><td><span class="tag t-route">源路由</span></td><td><code>gst ping -v</code></td><td>对方最近一次打洞的过程</td><td>显示取不到的原因</td></tr>
+<tr><td><code>link.remove</code></td><td><span class="tag t-hop">相邻</span></td><td><code>gst unlink</code> 停掉 link 之前</td><td>调用方 id、link id</td><td>3 秒没送到就算了</td></tr>
+<tr><td>probe / answer / bye</td><td><span class="tag t-udp">UDP</span></td><td>UDP 路径的探测和维持</td><td>token、时间、看到的来源地址</td><td>不是控制状态：只用来找路和保活</td></tr>
+</tbody>
+</table>
+</div>
+<div class="col">
+  <p class="note"><span class="tag t-hop">相邻</span> 只在一条 link 的两端之间；<span class="tag t-flood">洪泛</span> 逐跳转发直到全网都有；<span class="tag t-route">源路由</span> 发起方用自己的视图选好整条路径，沿途每台机器只看 <code>path[0]</code> 是不是自己、有没有到 <code>path[1]</code> 的 link。</p>
+</div>
+</section>
+
+<section id="scenarios">
+<div class="col">
+  <span class="no">02</span>
+  <h2>七个场景，一步一步看</h2>
+  <p>同一张网：五台机器，五条 SSH link。线中间的小箭头指向被连的一方（发起方存着这条 link 的配置）。用按钮或键盘左右键切换步骤。</p>
+</div>
+
+<div class="player" id="player">
+  <div class="tabs" role="tablist" id="tabs"></div>
+  <div class="stage">
+    <div>
+      <div class="svgwrap"><svg id="net" viewBox="0 0 680 340" role="img" aria-label="五台机器和它们之间的 SSH link"></svg></div>
+      <div class="legend">
+        <span class="lg-link">SSH link</span><span class="lg-ssh">经 link 的消息</span><span class="lg-echo">回声（对方忽略）</span><span class="lg-udp">UDP 直连</span><span class="lg-err">失败 / 断开</span>
+      </div>
+    </div>
+    <div>
+      <div class="nav">
+        <button type="button" id="prev" aria-label="上一步">← 上一步</button>
+        <button type="button" id="next" aria-label="下一步">下一步 →</button>
+        <span class="count" id="count"></span>
+      </div>
+      <p class="step-title" id="stitle"></p>
+      <div class="step-text" id="stext"></div>
+      <div class="steps" id="steps"></div>
+    </div>
+  </div>
+</div>
+</section>
+
+<section id="records">
+<div class="col">
+  <span class="no">03</span>
+  <h2>唯一复制到全网的状态：记录</h2>
+  <pre>{
+  "node":    {"id": "…", "name": "laptop", "software": "gst 0.6.0"},
+  "seq":     1793700000000000000,     <span class="c">// max(上次+1, 见过的自己最大 seq+1, 当前 Unix 纳秒)</span>
+  "expires": "…30 分钟后…",           <span class="c">// 每 10 分钟刷新；每分钟清一次过期的</span>
+  "links":   [{"link": "2e340426d1c2", "peer": "…devbox 的 id…"}],
+  "net":     {"subnet": "10.99.0.0/16", "since": …, "address": "10.99.3.7", "public_key": "…"}
+}</pre>
+  <ul>
+    <li><strong>单一写者</strong>：每台机器只发布自己的记录。别人的记录只会原样转发，不会被修改。</li>
+    <li><strong>新者胜</strong>：收到 <code>seq</code> 更大的才替换。替换了就唤醒本机所有 <code>topology.sync</code> 流，把它推给对端还没收到的。</li>
+    <li><strong>每个流记着自己推过什么</strong>（<code>sent</code>），但不记得对端从别处已经收到什么，所以新记录会在每条 link 上<strong>反向回推一次</strong>，对端因为不比手里的新而丢弃，传播就此停止。每次变化，每条 link 每个方向最多一帧。</li>
+    <li><strong>补齐</strong>：每次 link 建立，双方先报 <code>known</code>（每台机器的 <code>seq</code>），再补发对方缺的。断开期间漏掉的都在这一步补上。</li>
+    <li><strong>自己的旧记录</strong>：daemon 重启后表是空的，新 <code>seq</code> 取当前时间。如果时钟倒退过，邻居手里的旧记录 <code>seq</code> 更大，会在补齐时传回来；本机发现后，用更大的 <code>seq</code> 重新发布盖过它。</li>
+    <li><strong>每台机器各算各的视图</strong>：机器列表、谁可达、最短路径，都由本机根据手里的记录计算。一条 link 只有在两端的记录都列出对方时才算数（对端没有记录时以发起方为准），所以一端已经断了、另一端的旧记录还列着，这条边也不算。</li>
+  </ul>
+  <p>记录里还捎带了两样全网共识：<strong>subnet</strong>（每台机器在 <code>net.since</code> 里写着它认为的 subnet 是什么时候选的，大家都取最大的）和 <strong>gst IP</strong>（每台机器自己选，冲突时 id 小的保留）。见场景 7。</p>
+</div>
+</section>
+
+<section id="matrix">
+<div class="col">
+  <span class="no">04</span>
+  <h2>每类状态的一致性</h2>
+</div>
+<div class="tw">
+<table>
+<thead><tr><th>状态</th><th>谁写</th><th>怎么传</th><th>冲突时</th><th>保证</th><th>没有保证的</th></tr></thead>
+<tbody>
+<tr><td>机器的记录<br><span class="note">名字、links、net</span></td><td>那台机器自己</td><td>洪泛 + 建 link 时补齐</td><td><code>seq</code> 大的胜</td><td class="yes">连通分量内最终一致</td><td>30 分钟没刷新就过期删除；不写盘；最多 1024 条，超出静默丢弃</td></tr>
+<tr><td>成员身份</td><td>没有单独的状态</td><td>等于"有一条没过期的记录"</td><td>—</td><td class="no-g">无</td><td>离线 30 分钟即被所有机器忘掉；重启即忘掉所有别人</td></tr>
+<tr><td>网络的 subnet</td><td>任意机器（<code>gst subnet</code>，或第一次自动选）</td><td>记录的 <code>net</code></td><td><code>since</code> 大的胜，相同时按字符串</td><td class="part">最终一致</td><td><code>since</code> 是墙钟，时钟快的机器手动选的会赢；传播期间不同 subnet 的机器互相解析不到、包不通</td></tr>
+<tr><td>gst IP</td><td>每台机器自己</td><td>记录的 <code>net.address</code></td><td>重复时 id 小的保留，大的重新选</td><td class="part">最终无冲突</td><td>只看自己当时的视图；分区两边可能选到同一个地址，合并后才发现并改掉</td></tr>
+<tr><td>机器名</td><td>那台机器自己</td><td>记录</td><td>不处理，名字可以重复</td><td>—</td><td>重名时按名字解析失败（DNS 返回 NXDOMAIN），只能用 id</td></tr>
+<tr><td>link 的配置</td><td>发起方</td><td>不传；只在发起方的配置文件里</td><td>—</td><td>—</td><td>别的机器只能在 <code>node.status</code> 里看到；只能在发起方删</td></tr>
+<tr><td>expose 的端口</td><td>本机</td><td>不传</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>UDP 路径</td><td>两端协商</td><td><code>direct.offer</code>（源路由）</td><td>两边同时发起时，id 小的一方的 offer 继续</td><td class="part">最终只剩一条</td><td>一端关了另一端要靠 bye 或 3 秒静默才知道</td></tr>
+<tr><td>一次调用</td><td>发起方</td><td>源路由</td><td>—</td><td class="part">至多一次</td><td>沿途 link 断了就失败，不换路、不重试（上层各自决定）</td></tr>
+<tr><td>虚拟网络的包</td><td>WireGuard</td><td>UDP 路径或源路由的流</td><td>—</td><td class="no-g">无（和网络一样会丢）</td><td>队列满了丢；换路时丢；由 TCP 等上层重传</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section id="gaps">
+<div class="col">
+  <span class="no">05</span>
+  <h2>已知的缺口</h2>
+  <p>都是当前代码的实际行为，按影响排列。</p>
+
+  <div class="gap"><b>离线 30 分钟 = 被移出网络</b>记录只靠 SSH link 续期。一台机器休眠或断网超过 30 分钟，所有机器删掉它的记录：DNS 不再解析它，WireGuard 去掉它，它的地址也不再算作已占用。它自己那边同样删掉所有别人。重连后要等同步完成才恢复，这段时间里 <code>.gst</code> 查询得到 NXDOMAIN（不带 SOA），可能被系统缓存。</div>
+
+  <div class="gap"><b>重启即失忆</b>记录只在内存里。daemon 重启后，在第一条 link 连上并补齐之前，本机不知道任何别的机器。</div>
+
+  <div class="gap"><b>恢复慢：link 退避不因换网络重置</b>link 失败后的等待最长 5 分钟。UDP 路径在换网络时会清掉退避立刻重试，link 不会：唤醒后可能要等上一轮退避结束才重连。</div>
+
+  <div class="gap mild"><b>视图不一致时调用会失败，不会换路</b>发起方按自己的视图算路径。沿途某条 link 刚断、而发起方还没收到更新时，<code>relay.open</code> 在那一跳返回错误。<code>net.packets</code> 1 秒后重开，<code>direct.offer</code> 退避后重试，其余调用直接报错。</div>
+
+  <div class="gap mild"><b><code>link.remove</code> 是尽力而为</b>3 秒没送到就放弃。对端没听到时，它到那些已经无路可达的机器的 UDP 路径，要等对方记录过期才关闭。</div>
+
+  <div class="gap mild"><b>两处依赖墙钟</b><code>seq</code> 取当前纳秒（有"见过的最大值"兜底，时钟倒退能恢复）；subnet 的 <code>since</code> 也取墙钟，没有兜底，时钟快的机器选的 subnet 会胜过之后别人选的。</div>
+
+  <div class="gap mild"><b>分区期间各自演化</b>两半各自改名、改 subnet、选地址。重新连上后按 <code>seq</code>、<code>since</code>、id 收敛；如果分开超过 30 分钟，两边已互相忘记，重连等同于两个网络第一次合并。</div>
+
+  <div class="gap mild"><b>没有签名，成员之间完全信任</b>记录和调用都不签名，任何一台成员机器都可以伪造别人的记录、冒用别人的 id。身份只靠 SSH 授权。</div>
+
+  <div class="gap mild"><b>上限静默生效</b>每台机器最多 1024 条记录，每条最多 1024 条 link，单条记录不能超过半帧（512 KiB）；超出的直接丢弃，不报错。</div>
+</div>
+</section>
+
+<section id="code">
+<div class="col">
+  <span class="no">06</span>
+  <h2>对应的代码</h2>
+  <div class="tw"><table>
+  <thead><tr><th>内容</th><th>位置</th></tr></thead>
+  <tbody>
+  <tr><td>建立 link、握手、yamux、<code>node.info</code></td><td><code>internal/mesh/mesh.go</code>：<code>Link</code>、<code>Accept</code>、<code>run</code></td></tr>
+  <tr><td>link 的重连和退避</td><td><code>internal/daemon/supervisor.go</code></td></tr>
+  <tr><td>记录的发布、过期、合并、推送、视图</td><td><code>internal/mesh/topology.go</code>：<code>publish</code>、<code>prune</code>、<code>merge</code>、<code>serveSync</code>、<code>buildTopology</code></td></tr>
+  <tr><td>源路由和调用</td><td><code>internal/mesh/relay.go</code>：<code>Dial</code>、<code>open</code>、<code>serveRelay</code>、<code>Call</code></td></tr>
+  <tr><td>UDP 路径的信令、<code>link.remove</code></td><td><code>internal/mesh/direct.go</code></td></tr>
+  <tr><td>包走 link 的流</td><td><code>internal/mesh/packets.go</code></td></tr>
+  <tr><td>subnet、地址、DNS 查找</td><td><code>internal/vnet/vnet.go</code>：<code>settle</code>、<code>lookup</code>；<code>internal/vnet/subnet.go</code></td></tr>
+  </tbody></table></div>
+  <p class="note">协议本身见 <a href="mesh.md">mesh.md</a>；UDP 路径从包头讲起见 <a href="udp-hole-punching.html">udp-hole-punching.html</a>。</p>
+</div>
+</section>
+</div>
+
+<script>
+(function () {
+  const POS = { laptop: [80, 180], devbox: [260, 80], gateway: [260, 280], homelab: [450, 180], tablet: [606, 180] };
+  // Each link: [opener, accepter].
+  const LINKS = [["laptop", "devbox"], ["laptop", "gateway"], ["devbox", "homelab"], ["gateway", "homelab"], ["tablet", "homelab"]];
+  const HW = 44, HH = 17;
+  const key = (a, b) => [a, b].sort().join("|");
+
+  const S = [
+    { name: "1 建立 link", steps: [
+      { t: "laptop 解析目标，建立 SSH 连接", x: "<p>laptop 的 daemon 按配置里的目标运行 <code>ssh -G devbox</code>，用 Go 的 SSH 库连接：只认 known_hosts 里的主机密钥，只用没有密码的私钥。</p><p>这条 link 的配置只存在 laptop 上，devbox 不知道它的目标是怎么写的。</p>",
+        m: [["laptop", "devbox", "SSH 连接"]], hide: ["laptop|devbox"] },
+      { t: "对端执行 gst peer-bridge", x: "<p>在 SSH 会话里执行 <code>gst peer-bridge</code>。它连上 devbox 本机 daemon 的 control socket，此后只是搬运字节。</p><p>devbox 没执行过 <code>gst up</code> 时 peer-bridge 报错退出，laptop 按退避稍后重试。</p>",
+        m: [["laptop", "devbox", "exec peer-bridge"]], hide: ["laptop|devbox"] },
+      { t: "Hello 握手，切换到 yamux", x: "<p>双方以 <code>peer</code> 角色交换 <code>Hello</code>：协议版本不同就拒绝，并写出双方的 software。30 秒内要完成。</p><p>之后连接变成 yamux 会话，<strong>两个方向对等</strong>：从这里开始，谁发起的 link 已经不重要。</p>",
+        m: [["laptop", "devbox", "Hello"], ["devbox", "laptop", "Hello"]] },
+      { t: "互相问对方是谁", x: "<p>双方各开一个流调用 <code>node.info</code>，拿到对方的 id、名字和 software。连到的是自己时断开。</p>",
+        m: [["laptop", "devbox", "node.info"], ["devbox", "laptop", "node.info"]] },
+      { t: "互相同步记录", x: "<p>双方各调用一次 <code>topology.sync</code>，参数是自己手里每条记录的 <code>seq</code>（<code>known</code>）。对方先回所有更新的记录，然后<strong>这个流一直开着</strong>，之后有变化就推一帧。</p><p>所以每条 link 上有两个长期的推送流，一个方向一个。</p>",
+        m: [["laptop", "devbox", "topology.sync"], ["devbox", "laptop", "topology.sync"]], b: { laptop: "补齐", devbox: "补齐" } },
+      { t: "新的边传遍全网", x: "<p>双方的 link 列表变了，各自用更大的 <code>seq</code> 重新发布自己的记录，经各自所有的推送流传出去（场景 2 的过程）。</p><p>其他机器收到两端的记录都列着对方之后，才把这条边算进自己的视图。</p>",
+        m: [["laptop", "gateway", "laptop#"], ["devbox", "homelab", "devbox#"], ["gateway", "homelab", "laptop#"], ["homelab", "tablet", "两条"]] }
+    ]},
+    { name: "2 记录洪泛", steps: [
+      { t: "laptop 改名，发布新记录", x: "<p><code>gst name</code> 改了名字。laptop 用更大的 <code>seq</code> 重新发布自己的记录：#4 → #5。</p><p>每台机器的表里都有 laptop 的记录，现在只有 laptop 自己是 #5。</p>",
+        b: { laptop: "#5", devbox: "#4", gateway: "#4", homelab: "#4", tablet: "#4" }, hl: ["laptop"] },
+      { t: "推给所有相邻的机器", x: "<p>laptop 的两个推送流醒来，各自发现对端还没收到 #5，各推一帧 <code>{\"records\": [laptop#5]}</code>。</p><p>只推给 link 直接相连的机器，不经中转发给远处。</p>",
+        m: [["laptop", "devbox", "#5"], ["laptop", "gateway", "#5"]], b: { laptop: "#5", devbox: "#4", gateway: "#4", homelab: "#4", tablet: "#4" } },
+      { t: "邻居合并，再往外推", x: "<p>devbox 和 gateway 收到 #5，比手里的 #4 新，替换，然后唤醒自己所有的推送流：</p><ul><li>推给 homelab；</li><li>也<strong>推回给 laptop</strong>：推送流只记得自己推过什么，不知道 laptop 本来就有。laptop 发现不比手里的新，丢弃。</li></ul>",
+        m: [["devbox", "homelab", "#5"], ["gateway", "homelab", "#5"], ["devbox", "laptop", "#5", "echo"], ["gateway", "laptop", "#5", "echo"]], b: { laptop: "#5", devbox: "#5", gateway: "#5", homelab: "#4", tablet: "#4" } },
+      { t: "homelab 收到两份", x: "<p>两份几乎同时到。先到的那份让 homelab 从 #4 换成 #5 并继续推送；后到的那份不比 #5 新，直接丢弃。</p><p>homelab 推给 tablet，也各推回 devbox 和 gateway 一次（都被丢弃）。</p>",
+        m: [["homelab", "tablet", "#5"], ["homelab", "devbox", "#5", "echo"], ["homelab", "gateway", "#5", "echo"]], b: { laptop: "#5", devbox: "#5", gateway: "#5", homelab: "#5", tablet: "#4" } },
+      { t: "全网一致，传播停止", x: "<p>tablet 替换后推回 homelab（被丢弃）。此时没有任何一台机器收到更新的记录，也就没有谁再推送。</p><p>代价：每次变化，每条 link 每个方向最多一帧。传播延迟约等于跳数 × 一次 SSH 往返。</p>",
+        m: [["tablet", "homelab", "#5", "echo"]], b: { laptop: "#5", devbox: "#5", gateway: "#5", homelab: "#5", tablet: "#5" } }
+    ]},
+    { name: "3 调用远处机器", steps: [
+      { t: "laptop 用自己的视图算路径", x: "<p>例如 <code>gst ping tablet</code>：要调用 tablet 的 <code>node.info</code>。laptop 和 tablet 之间没有 link。</p><p>laptop 在自己的视图里做广度优先搜索，得到一条最短路径，这里是 <code>[laptop, devbox, homelab, tablet]</code>（经 gateway 一样短，取哪条看搜索顺序）。路径完全由发起方决定，沿途机器不重新选路。</p>",
+        hl: ["laptop", "tablet"], b: { laptop: "算路径" } },
+      { t: "第一跳：relay.open", x: "<p>laptop 在到 devbox 的 link 上开一个流，调用 <code>relay.open</code>，参数 <code>{\"path\": [devbox, homelab, tablet]}</code>。</p>",
+        m: [["laptop", "devbox", "relay.open"]] },
+      { t: "每一跳只看下一跳", x: "<p>devbox 检查 <code>path[0]</code> 是自己，然后在到 homelab 的 link 上开新流，转交 <code>[homelab, tablet]</code>。homelab 同样转交 <code>[tablet]</code>。</p><p>每一跳只检查自己有没有到下一跳的 link，不看全局。</p>",
+        m: [["laptop", "devbox", "relay.open"], ["devbox", "homelab", "relay.open"], ["homelab", "tablet", "relay.open"]] },
+      { t: "末端接管，沿途对拷字节", x: "<p>tablet 发现 path 只剩自己，就在这个流上处理 peer 方法。成功的应答逐跳传回，沿途每台机器把两个流接起来对拷字节。</p><p>现在 laptop 手里的流直通 tablet。</p>",
+        m: [["tablet", "homelab", "ok"], ["homelab", "devbox", "ok"], ["devbox", "laptop", "ok"]], b: { tablet: "接管" } },
+      { t: "端到端的一次调用", x: "<p>laptop 在这个流上发 <code>node.info</code> 请求，tablet 回应答，沿途机器只转发字节。之后流关闭。</p><p><code>direct.offer</code>、<code>node.status</code>、<code>net.networks</code>、<code>net.packets</code> 都走同样的路。</p>",
+        m: [["laptop", "devbox", "node.info"], ["devbox", "homelab", "→"], ["homelab", "tablet", "→"], ["tablet", "homelab", "应答"], ["homelab", "devbox", "←"], ["devbox", "laptop", "←"]] },
+      { t: "失败：沿途 link 刚断", x: "<p>如果 devbox–homelab 刚断，而 laptop 还没收到新记录，它算出的仍是旧路径。devbox 在那一跳发现没有到 homelab 的 link，返回 <code>not_found</code>，沿原路传回。</p><p>laptop <strong>不会换一条路重试</strong>（明明经 gateway 也能到）。<code>net.packets</code> 1 秒后按新视图重开，<code>direct.offer</code> 退避后重试，其余调用直接报错给用户。</p>",
+        m: [["laptop", "devbox", "relay.open"], ["devbox", "laptop", "not_found", "err"]], down: ["devbox|homelab"] }
+    ]},
+    { name: "4 打 UDP 直连", steps: [
+      { t: "包先走 link", x: "<p>laptop 上的程序给 tablet 发包。WireGuard 加密后交给 mesh，发现没有 UDP 路径，就放进队列，并沿场景 3 的路径开一个 <code>net.packets</code> 流。这个流双向运包，两端都可以开。</p><p>队列 1024 个包，满了就丢，和真实网络一样。</p>",
+        m: [["laptop", "devbox", "包"], ["devbox", "homelab", "包"], ["homelab", "tablet", "包"]] },
+      { t: "同时发起 direct.offer", x: "<p>只要包还在走 link，每 5 秒最多触发一次尝试。laptop 沿同样的源路由调用 tablet 的 <code>direct.offer</code>，带一个 token 和自己的候选 <code>IP:port</code>。</p><p>候选地址只出现在这次调用里，<strong>不进记录、不洪泛</strong>。</p>",
+        m: [["laptop", "devbox", "offer"], ["devbox", "homelab", "offer"], ["homelab", "tablet", "offer"]] },
+      { t: "tablet 回自己的地址", x: "<p>tablet 加入这次尝试，把自己的候选地址作为应答原路传回。</p><p>两边同时发起时，id 小的一方拒绝对方的 offer，只留自己那次。tablet 原来如果还有一条到 laptop 的路径，说明已经失效，先关掉。</p>",
+        m: [["tablet", "homelab", "answer"], ["homelab", "devbox", "answer"], ["devbox", "laptop", "answer"]] },
+      { t: "双方直接探测", x: "<p>双方每 200 ms 向对方所有地址发 probe，收到就回 answer。第一个回来的 answer 证明这条路通，包立刻改走 UDP。</p><p>这是唯一不经 SSH 的东西，但它只运 probe / answer / bye 和 WireGuard 包，不运控制状态。</p>",
+        m: [["laptop", "tablet", "probe", "udp"], ["tablet", "laptop", "answer", "udp"]], udp: true },
+      { t: "换网络：direct.update", x: "<p>laptop 每 5 秒检查一次地址和网卡。变了就清掉退避，对每条运行中的路径重新探测，并经源路由调用对方的 <code>direct.update</code>，告诉它新地址。</p><p>这次调用失败也不重试：路径自己的探测通常也能找到新地址。</p>",
+        m: [["laptop", "devbox", "update"], ["devbox", "homelab", "update"], ["homelab", "tablet", "update"]], udp: true },
+      { t: "空闲或静默：回到 link", x: "<p>本端 45 秒没发过包就关闭路径，发 bye；3 秒什么都没收到也算结束。之后的包又先走 link，同时触发新的尝试。</p><p>例外：link 已经走不到对方时，路径是唯一的路，不因空闲关闭，一直维持到对方记录过期。</p>",
+        m: [["laptop", "tablet", "bye", "udp"]] }
+    ]},
+    { name: "5 休眠与换 Wi-Fi", steps: [
+      { t: "laptop 休眠", x: "<p>laptop 合上盖子。它的两条 link 不再有任何回应。</p>",
+        off: ["laptop"], b: { laptop: "休眠" } },
+      { t: "邻居发现 link 断了", x: "<p>devbox 和 gateway 端的 SSH keepalive（默认 15 秒 × 3）或 yamux keepalive 超时，link 结束。它们各自发布不含这条边的新记录，洪泛出去。</p><p>laptop 自己的记录还留在所有人的表里（它休眠前列着这两条边，但另一端已经不列，所以不算）。</p>",
+        off: ["laptop"], down: ["laptop|devbox", "laptop|gateway"], m: [["devbox", "homelab", "devbox#"], ["gateway", "homelab", "gateway#"]], b: { laptop: "休眠" } },
+      { t: "30 分钟内：不可达但还在", x: "<p>其他机器的 <code>gst status</code> 不显示 laptop 了（只显示现在连得上的），但它的记录还没过期：<code>laptop.gst</code> 仍能解析，WireGuard 仍认识它，它的地址仍算作已占用。</p>",
+        off: ["laptop"], down: ["laptop|devbox", "laptop|gateway"], b: { laptop: "记录还在", devbox: "不可达", gateway: "不可达", homelab: "不可达", tablet: "不可达" } },
+      { t: "过期：所有人忘掉 laptop", x: "<p>距 laptop 上次刷新满 30 分钟，每台机器在下一次清理（每分钟一次）时删掉它的记录：</p><ul><li><code>laptop.gst</code> 返回 NXDOMAIN；</li><li>WireGuard 去掉这个对端；</li><li>到它的 UDP 路径关闭；</li><li>它的地址不再算作已占用。</li></ul><p>效果上等同于被移出网络。</p>",
+        off: ["laptop"], down: ["laptop|devbox", "laptop|gateway"], b: { laptop: "已删除", devbox: "忘掉", gateway: "忘掉", homelab: "忘掉", tablet: "忘掉" } },
+      { t: "laptop 在新 Wi-Fi 上醒来", x: "<p>laptop 这边是对称的：它表里所有别人的记录也都过期了。它一个人都不认识，<strong>每个 <code>.gst</code> 名字都是 NXDOMAIN</strong>。</p><p>它的 link 按当前退避重试：最长 5 分钟，<strong>换网络不会重置</strong>（UDP 路径的退避会）。</p>",
+        down: ["laptop|devbox", "laptop|gateway"], b: { laptop: "谁都不认识" }, hl: ["laptop"] },
+      { t: "link 恢复，补齐，DNS 恢复", x: "<p>link 重新建立，双方交换 <code>known</code>，一次补齐全部记录，再各自洪泛。几跳之内，所有机器重新认识 laptop，laptop 也重新认识所有人。</p><p>但恢复之前返回的 NXDOMAIN 不带 SOA，系统缓存多久不受 gst 控制。这就是「gst 已恢复，系统却解析不了」的来源。</p>",
+        m: [["laptop", "devbox", "sync"], ["devbox", "laptop", "补齐"], ["laptop", "gateway", "sync"], ["gateway", "laptop", "补齐"]], b: { laptop: "恢复" } }
+    ]},
+    { name: "6 unlink", steps: [
+      { t: "laptop 执行 gst unlink devbox", x: "<p>link 属于发起方，只能在 laptop 上删。删之前，laptop 在这条 link 上直接（不经中转）调用 devbox 的 <code>link.remove</code>，3 秒为限。</p>",
+        m: [["laptop", "devbox", "link.remove"]] },
+      { t: "devbox 关掉无路可达的 UDP 路径", x: "<p>devbox 在去掉这条边的视图里检查：哪些有 UDP 路径的机器已经没有 SSH 路径可达，就把那些路径关掉。这里 laptop 仍可经 gateway 到达，所以不受影响。</p><p>如果 <code>link.remove</code> 没送到，devbox 就不会主动关，要等对方记录过期。</p>",
+        b: { devbox: "检查直连" } },
+      { t: "停掉 link，双方重新发布", x: "<p>laptop 从配置里删掉它，停掉连接，也做同样的检查。两端各自发布不含这条边的记录，洪泛到全网。</p><p>devbox 无法删除 laptop 发起的 link；反过来也一样。</p>",
+        hide: ["laptop|devbox"], m: [["laptop", "gateway", "laptop#"], ["devbox", "homelab", "devbox#"], ["gateway", "homelab", "laptop#"], ["homelab", "tablet", "两条"]] }
+    ]},
+    { name: "7 分区与合并", steps: [
+      { t: "网络断成两半", x: "<p>devbox–homelab 和 gateway–homelab 同时断开。左边 {laptop, devbox, gateway}，右边 {homelab, tablet}。</p><p>每一边都还留着另一边的记录，只是不可达；30 分钟内名字照样能解析。</p>",
+        down: ["devbox|homelab", "gateway|homelab"], b: { laptop: "A", devbox: "A", gateway: "A", homelab: "B", tablet: "B" } },
+      { t: "两边各自改动", x: "<p>左边有人执行 <code>gst subnet 10.88.0.0/16</code>（<code>since</code> = 当时的墙钟纳秒），左边三台迁过去。右边 tablet 改了名字。</p><p>两边看到的不一样：左边 subnet 已经变了，右边不知道。</p>",
+        down: ["devbox|homelab", "gateway|homelab"], b: { laptop: "10.88", devbox: "10.88", gateway: "10.88", homelab: "10.99", tablet: "改名" } },
+      { t: "超过 30 分钟：互相忘记", x: "<p>如果分开超过 30 分钟，两边的记录都过期，互相删掉，各自成为一个独立的网络。</p>",
+        down: ["devbox|homelab", "gateway|homelab"], b: { laptop: "A", devbox: "A", gateway: "A", homelab: "B", tablet: "B" } },
+      { t: "重新连上：按规则收敛", x: "<p>link 恢复，补齐记录，两边合并：</p><ul><li>名字：tablet 的 <code>seq</code> 更大，全网采用新名字；</li><li>subnet：<code>since</code> 大的胜，右边两台迁到 10.88；</li><li>地址：如果两台机器选到同一个，id 小的保留，大的重新选。</li></ul><p>没有冲突检测，也没有「谁的改动被覆盖了」的提示。</p>",
+        m: [["devbox", "homelab", "sync"], ["homelab", "devbox", "sync"], ["gateway", "homelab", "sync"], ["homelab", "gateway", "sync"]], b: { laptop: "10.88", devbox: "10.88", gateway: "10.88", homelab: "10.88", tablet: "10.88" } }
+    ]}
+  ];
+
+  const svg = document.getElementById("net");
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
+
+  function edgePoint(from, to) {
+    const [x1, y1] = POS[from], [x2, y2] = POS[to];
+    const dx = x2 - x1, dy = y2 - y1;
+    const t = Math.min(dx ? HW / Math.abs(dx) : Infinity, dy ? HH / Math.abs(dy) : Infinity);
+    return [x1 + dx * t, y1 + dy * t];
+  }
+
+  function defs() {
+    const d = el("defs", {});
+    for (const [id, color] of [["a-ssh", "var(--accent)"], ["a-echo", "var(--muted)"], ["a-udp", "var(--udp)"], ["a-err", "var(--drop)"], ["a-link", "var(--muted)"]]) {
+      const mk = el("marker", { id, viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, d);
+      el("path", { d: "M0,0 L10,5 L0,10 z", style: "fill:" + color }, mk);
+    }
+  }
+
+  function render(step) {
+    svg.textContent = "";
+    defs();
+    const down = new Set(step.down || []), hide = new Set(step.hide || []), off = new Set(step.off || []), hl = new Set(step.hl || []);
+    for (const [a, b] of LINKS) {
+      const k = key(a, b);
+      if (hide.has(k)) continue;
+      const [x1, y1] = POS[a], [x2, y2] = POS[b];
+      const isDown = down.has(k);
+      el("line", { x1, y1, x2, y2, style: "stroke:" + (isDown ? "var(--drop)" : "var(--rule)") + ";stroke-width:" + (isDown ? 2 : 5) + (isDown ? ";stroke-dasharray:3 5" : "") });
+      if (!isDown) {
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, len = Math.hypot(x2 - x1, y2 - y1);
+        const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+        el("line", { x1: mx - ux * 6, y1: my - uy * 6, x2: mx + ux * 6, y2: my + uy * 6, "marker-end": "url(#a-link)", style: "stroke:var(--muted);stroke-width:1.5" });
+      } else {
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+        el("text", { x: mx, y: my + 5, "text-anchor": "middle", style: "fill:var(--drop);font-size:16px;font-weight:700" }).textContent = "×";
+      }
+    }
+    if (step.udp) {
+      const [x1, y1] = POS.laptop, [x2, y2] = POS.tablet;
+      el("path", { d: `M${x1},${y1 - HH} Q${(x1 + x2) / 2},${-150} ${x2},${y2 - HH}`, style: "fill:none;stroke:var(--udp);stroke-width:2;stroke-dasharray:6 5;opacity:.55" });
+      el("text", { x: (x1 + x2) / 2, y: 24, "text-anchor": "middle", style: "fill:var(--udp);font-size:12px;font-weight:600" }).textContent = "UDP 路径";
+    }
+    for (const msg of step.m || []) {
+      const [f, t, label, kind = "ssh"] = msg;
+      const color = { ssh: "var(--accent)", echo: "var(--muted)", udp: "var(--udp)", err: "var(--drop)" }[kind];
+      const g = el("g", { class: "msg" });
+      if (kind === "udp") {
+        const [x1, y1] = POS[f], [x2, y2] = POS[t];
+        const dir = x2 > x1 ? 1 : -1, lift = dir > 0 ? -150 : -110;
+        el("path", { d: `M${x1},${y1 - HH - 2} Q${(x1 + x2) / 2},${lift} ${x2},${y2 - HH - 2}`, "marker-end": "url(#a-udp)", style: "fill:none;stroke:" + color + ";stroke-width:2.2;stroke-dasharray:6 4" }, g);
+        el("text", { x: (x1 + x2) / 2 + (dir > 0 ? -60 : 60), y: dir > 0 ? 46 : 70, "text-anchor": "middle", style: "fill:" + color + ";font-size:12px;font-weight:600;font-family:var(--mono);paint-order:stroke;stroke:var(--panel);stroke-width:4px" }, g).textContent = label;
+        continue;
+      }
+      let [x1, y1] = edgePoint(f, t), [x2, y2] = edgePoint(t, f);
+      const len = Math.hypot(x2 - x1, y2 - y1), nx = -(y2 - y1) / len, ny = (x2 - x1) / len, off = 9;
+      x1 += nx * off; y1 += ny * off; x2 += nx * off; y2 += ny * off;
+      el("line", { x1, y1, x2, y2, "marker-end": "url(#a-" + kind + ")", style: "stroke:" + color + ";stroke-width:2.2" + (kind === "echo" ? ";stroke-dasharray:2 4" : "") }, g);
+      const lx = (x1 + x2) / 2 + nx * 14, ly = (y1 + y2) / 2 + ny * 14 + 4;
+      el("text", { x: lx, y: ly, "text-anchor": "middle", style: "fill:" + color + ";font-size:12px;font-weight:600;font-family:var(--mono);paint-order:stroke;stroke:var(--panel);stroke-width:4px" }, g).textContent = label;
+    }
+    for (const name in POS) {
+      const [x, y] = POS[name];
+      const isOff = off.has(name), isHl = hl.has(name);
+      el("rect", { x: x - HW, y: y - HH, width: HW * 2, height: HH * 2, rx: 4, style: "fill:" + (isHl ? "var(--new)" : "var(--panel)") + ";stroke:" + (isHl ? "var(--accent)" : "var(--fg)") + ";stroke-width:" + (isHl ? 2 : 1.3) + (isOff ? ";opacity:.35;stroke-dasharray:3 3" : "") });
+      el("text", { x, y: y + 5, "text-anchor": "middle", style: "fill:var(--fg);font-size:13.5px;font-weight:700;font-family:var(--mono)" + (isOff ? ";opacity:.45" : "") }).textContent = name;
+      const badge = step.b && step.b[name];
+      if (badge) {
+        el("text", { x, y: y + HH + 18, "text-anchor": "middle", style: "fill:var(--warn);font-size:12.5px;font-weight:700;paint-order:stroke;stroke:var(--panel);stroke-width:4px" }).textContent = badge;
+      }
+    }
+  }
+
+  const tabs = document.getElementById("tabs"), stepsBox = document.getElementById("steps");
+  const prev = document.getElementById("prev"), next = document.getElementById("next");
+  let sc = 0, st = 0;
+
+  S.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.id = "tab-" + i; b.setAttribute("role", "tab"); b.textContent = s.name;
+    b.addEventListener("click", () => { sc = i; st = 0; show(); });
+    tabs.appendChild(b);
+  });
+
+  function show() {
+    const s = S[sc], step = s.steps[st];
+    [...tabs.children].forEach((b, i) => b.setAttribute("aria-selected", i === sc ? "true" : "false"));
+    render(step);
+    document.getElementById("stitle").textContent = step.t;
+    document.getElementById("stext").innerHTML = step.x;
+    document.getElementById("count").textContent = (st + 1) + " / " + s.steps.length;
+    prev.disabled = st === 0; next.disabled = st === s.steps.length - 1;
+    stepsBox.textContent = "";
+    s.steps.forEach((_, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = i + 1; b.setAttribute("aria-label", "第 " + (i + 1) + " 步");
+      if (i === st) b.setAttribute("aria-current", "step");
+      b.addEventListener("click", () => { st = i; show(); });
+      stepsBox.appendChild(b);
+    });
+  }
+  prev.addEventListener("click", () => { if (st > 0) { st--; show(); } });
+  next.addEventListener("click", () => { if (st < S[sc].steps.length - 1) { st++; show(); } });
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest && e.target.closest("input, textarea")) return;
+    if (e.key === "ArrowRight") next.click();
+    if (e.key === "ArrowLeft") prev.click();
+  });
+  show();
+})();
+</script>
+</body>
+</html>

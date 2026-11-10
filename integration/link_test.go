@@ -5,21 +5,22 @@ package integration
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 )
 
-// A link goes through its whole life between two containers: link, change
-// by unlinking and linking again, reconnect after the server's daemon dies,
-// and unlink.
+// A link goes through its whole life between two containers: add, change
+// its ssh options, reconnect after the server's daemon dies or the SSH
+// connection drops, and unlink.
 func TestLinkLifecycle(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
 	client.mustGst("name", "cli")
 
-	out := client.mustGst("link", p.destination())
-	if !strings.Contains(out, "Linked to "+p.destination()) {
+	out := client.mustGst("add", p.destination())
+	if !strings.Contains(out, "to the network") {
 		t.Fatalf("unexpected output %q", out)
 	}
 	link := client.waitLink(p.destination(), "running")
@@ -29,7 +30,7 @@ func TestLinkLifecycle(t *testing.T) {
 	if link.Peer == nil || link.Peer.ID != srv.ID || link.Peer.Name != srv.Name || link.Peer.Software == "" || link.Destination != p.destination() {
 		t.Fatalf("the client sees its peer as %+v; the server is %+v", link, srv)
 	}
-	if len(topo.Nodes) != 2 || len(topo.Edges) != 1 || topo.Edges[0].From != cli.ID || topo.Edges[0].Link != config.LinkID(p.destination()) || path(topo, cli) != srv.Name+",cli" {
+	if len(topo.Nodes) != 2 || len(topo.Edges) != 1 || topo.Edges[0].From != cli.ID || topo.Edges[0].To != srv.ID || path(topo, cli) != srv.Name+",cli" {
 		t.Fatalf("the server's mesh: %+v", topo)
 	}
 
@@ -47,18 +48,13 @@ func TestLinkLifecycle(t *testing.T) {
 		t.Fatalf("unexpected daemon log:\n%s", log)
 	}
 
-	// A link is not changed in place: linking again fails with a hint,
-	// and unlinking first makes room.
-	code, _, stderr := client.gst("link", p.destination())
-	if code != 1 || !strings.Contains(stderr, "already links to") || !strings.Contains(stderr, "gst unlink "+p.destination()) {
-		t.Fatalf("linking again: exit %d, stderr %q", code, stderr)
+	// Adding the destination again changes its ssh options in place.
+	if out := client.mustGst("add", p.destination(), "--", "-p", "22"); !strings.Contains(out, "Changed this machine's link to "+p.destination()) {
+		t.Fatalf("adding again: %q", out)
 	}
-	client.mustGst("unlink", p.destination())
-	if _, ok := client.links()[p.destination()]; ok {
-		t.Fatal("link remains after unlink")
+	if l := client.waitLink(p.destination(), "running"); len(client.status().Links) != 1 || l.Peer == nil || l.Peer.ID != srv.ID {
+		t.Fatalf("the changed link: %+v", client.status().Links)
 	}
-	client.mustGst("link", p.destination(), "--remote-gst", "gst")
-	client.waitLink(p.destination(), "running")
 
 	// The link reconnects after the server's daemon dies.
 	server.killDaemon()
@@ -73,10 +69,18 @@ func TestLinkLifecycle(t *testing.T) {
 	client.waitLink(p.destination(), "down")
 	client.waitLink(p.destination(), "running")
 
-	// The machine's name unlinks it too.
-	client.mustGst("unlink", srv.Name)
+	// Unlinking changes this machine only: both stay in the network,
+	// offline to each other.
+	client.mustGst("unlink", p.destination())
 	if _, ok := client.links()[p.destination()]; ok {
 		t.Fatal("link remains after unlink")
+	}
+	server.waitUnreachable("cli")
+	if _, ok := find(server.nodes(), "cli"); !ok {
+		t.Fatal("the server forgot the client")
+	}
+	if out := server.mustGst("status"); !strings.Contains(out, "offline, seen ") {
+		t.Fatalf("gst status on the server:\n%s", out)
 	}
 }
 
@@ -86,7 +90,7 @@ func TestLinkDownIsAProblem(t *testing.T) {
 	p := startPair(t)
 	client := p.client
 	dead := p.deadEnd()
-	client.mustGst("link", dead)
+	client.mustGst("add", dead)
 	link := client.waitLink(dead, "down")
 	if link.Error == "" {
 		t.Fatalf("a down link has no error: %+v", link)
@@ -97,24 +101,57 @@ func TestLinkDownIsAProblem(t *testing.T) {
 	}
 }
 
-// When a link is unlinked, the machine it led to stops reaching the other
-// end.
-func TestLinkRemoveIsSeenByServer(t *testing.T) {
+// gst remove takes a machine out of the network for every machine of it,
+// itself included, and gst add brings it back.
+func TestRemove(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
 	client.mustGst("name", "cli")
-	client.mustGst("link", p.destination())
+	server.mustGst("name", "srv")
+	client.mustGst("add", p.destination())
 	client.waitLink(p.destination(), "running")
 	server.waitReachable("cli")
-	client.mustGst("unlink", p.destination())
-	server.waitUnreachable("cli")
+
+	if out := server.mustGst("remove", "cli"); !strings.Contains(out, "Removed cli from the network.") {
+		t.Fatalf("gst remove cli: %q", out)
+	}
+	// The removed machine hears of it, drops its link, and says so.
+	eventually(t, 30*time.Second, "the removed machine kept its link", func() bool {
+		return len(client.status().Links) == 0
+	})
+	if _, ok := find(server.nodes(), "cli"); ok {
+		t.Fatal("the server still lists the removed machine")
+	}
+	if out := client.mustGst("status"); !strings.Contains(out, "removed from the network by srv") || !strings.Contains(out, "gst add <destination>") {
+		t.Fatalf("gst status on the removed machine:\n%s", out)
+	}
+	if _, ok := find(client.nodes(), "srv"); ok {
+		t.Fatal("the removed machine still lists the server")
+	}
+
+	// gst add brings it back.
+	client.mustGst("add", p.destination())
+	client.waitLink(p.destination(), "running")
+	server.waitReachable("cli")
+	if out := client.mustGst("status"); strings.Contains(out, "removed from the network") {
+		t.Fatalf("gst status after coming back:\n%s", out)
+	}
+
+	// A machine can leave the network itself.
+	if out := client.mustGst("remove", "cli"); !strings.Contains(out, "This machine left the network.") {
+		t.Fatalf("gst remove of itself: %q", out)
+	}
+	eventually(t, 30*time.Second, "the server kept the machine that left", func() bool {
+		_, ok := find(server.nodes(), "cli")
+		return !ok
+	})
 }
 
-// A server without gst in PATH reports why the link fails: the link is
-// down with an error that names gst, gst status lists it as a problem, and
-// linking again with --remote-gst names the real command.
-func TestLinkRemoteGstMissing(t *testing.T) {
+// Links run the gst that gst up put in place on the other machine, so
+// they work wherever it is installed; a link to a machine without it says
+// that the remote gst failed.
+func TestLinkRunsTheGstOfUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
@@ -122,7 +159,7 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client.mustGst("link", p.destination(), "--remote-gst", "/opt/nonexistent/gst")
+	client.mustGst("add", p.destination())
 	link := client.waitLink(p.destination(), "down")
 	if !strings.Contains(link.Error, "gst") {
 		t.Fatalf("the error does not mention gst: %q", link.Error)
@@ -132,8 +169,7 @@ func TestLinkRemoteGstMissing(t *testing.T) {
 		t.Fatalf("gst status does not list the failed remote gst:\n%s", out)
 	}
 
-	client.mustGst("unlink", p.destination())
-	client.mustGst("link", p.destination(), "--remote-gst", "/opt/gst")
+	server.mustSh(`/opt/gst up`)
 	client.waitLink(p.destination(), "running")
 	if out := client.mustGst("status"); strings.Contains(out, "link to") {
 		t.Fatalf("gst status lists the link after the fix:\n%s", out)
@@ -149,9 +185,9 @@ func TestLinkToAMachineThatIsNotUp(t *testing.T) {
 	server.mustGst("down")
 	server.mustSh(`rm -rf ~/.config/gst`)
 
-	code, _, stderr := client.gst("link", p.destination())
+	code, _, stderr := client.gst("add", p.destination())
 	if code != 1 || !strings.Contains(stderr, "gst is not up there") || !strings.Contains(stderr, "`ssh -t "+p.destination()+" gst up`") {
-		t.Fatalf("gst link: exit %d: %q", code, stderr)
+		t.Fatalf("gst add: exit %d: %q", code, stderr)
 	}
 	if server.daemonPID() != "" {
 		t.Fatal("the link started a daemon on the server")

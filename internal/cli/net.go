@@ -39,7 +39,8 @@ change it. gst chooses a free /16 by itself, so this is needed only when
 that one collides with another network.
 
 A change applies to every machine of the network, and all of them change
-their gst IPs. The subnet must be private: inside 10.0.0.0/8, 172.16.0.0/12,
+their gst IPs: the machines online at once, the others when they come
+back. The subnet must be private: inside 10.0.0.0/8, 172.16.0.0/12,
 192.168.0.0/16, or 100.64.0.0/10, with a prefix length of 8 to 28.`,
 		Example: "  gst subnet\n  gst subnet 10.99.0.0/16",
 		Args:    a.args(0, 1),
@@ -52,22 +53,15 @@ their gst IPs. The subnet must be private: inside 10.0.0.0/8, 172.16.0.0/12,
 				return &usageError{err}
 			}
 			subnet := prefix.String()
-			err = a.update(func(f *config.File) error {
-				f.Net = &config.Net{Subnet: subnet, Since: time.Now().UnixNano()}
-				return nil
-			})
+			b, err := a.backend()
 			if err != nil {
 				return err
 			}
-			if err := a.sync(cmd.Context()); err != nil {
-				return err
+			if a.status(cmd.Context()) == nil {
+				return withHint(errNoDaemon, "start it with `gst up`")
 			}
-			f, err := a.load()
-			if err != nil {
+			if err := b.Call(cmd.Context(), wire.MethodSubnet, wire.SubnetParams{Subnet: subnet}, nil); err != nil {
 				return err
-			}
-			if f.Down {
-				return nil
 			}
 			st, err := a.waitNet(cmd.Context(), subnet)
 			if err != nil {
@@ -100,11 +94,14 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 	for {
 		if st := a.status(ctx); st != nil && st.Net != nil {
 			last = st.Net
-			if last.Hint != "" {
+			// Until the network reports subnet, its state is of the one
+			// before.
+			current := subnet == "" || last.Subnet == subnet
+			if current && last.Hint != "" {
 				// A command can fix it; waiting cannot.
 				return nil, withHint(errors.New(last.Error), last.Hint)
 			}
-			if last.Error == "" && last.Interface != "" && (subnet == "" || last.Subnet == subnet) {
+			if current && last.Error == "" && last.Interface != "" {
 				return last, nil
 			}
 		}
@@ -113,7 +110,7 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 			switch {
 			case last == nil:
 				return nil, noDaemon(ctx.Err())
-			case last.Error == "":
+			case last.Error == "" || subnet != "" && last.Subnet != subnet:
 				return nil, withHint(errors.New("the network did not come up in time"), "see how it goes with `gst status`")
 			}
 			return nil, errors.New(last.Error)

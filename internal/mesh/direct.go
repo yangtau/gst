@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -9,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/direct"
+	"github.com/yangtau/ssh-tunnel/internal/mesh/state"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -19,22 +20,19 @@ const (
 	directRetry   = 5 * time.Second  // first wait after a try fails or a path falls silent
 	directMaxWait = 5 * time.Minute
 	directIdle    = 45 * time.Second // a path that this node sends nothing on for this long ends; see runDirect
-	removeTimeout = 3 * time.Second  // to tell a peer that its link is being removed
 	maxTrace      = 200              // latest events kept of a try
 )
 
 // A UDP path (internal/direct) carries the WireGuard packets between two
-// nodes, which may have no SSH link between them. Traffic to a node starts
-// a try at one, signaling over the mesh, and takes the links until the
-// path is up, and again after it ends.
+// members of the network, which may have no SSH link between them.
+// Traffic to a node starts a try at one, signaling with routed calls, and
+// takes the links until the path is up, and again after it ends.
 //
-// A path is no link: no calls run on it, and the records say nothing of
-// it. It is a shortcut for packets, and only the mesh can start one, as
-// SSH links decide which machines belong to it. Losing SSH links does not
-// change that at once, so a path outlives them, as when the machine
-// between its two nodes sleeps, until the record of the other node
-// expires. Removing an SSH link does: both of its ends then end the paths
-// to nodes that SSH links no longer lead to.
+// A path is no link: it carries only the packets of its two nodes, no
+// calls, no table, and nobody else's packets, and the table says nothing
+// of it. It is a shortcut for packets between members, so it outlives
+// the links, as when the machine between its two nodes sleeps, and ends
+// when the other node is removed from the network.
 
 // EnableDirect lets this node find and accept UDP paths until ctx is
 // done. addrs returns the local addresses to offer.
@@ -67,7 +65,6 @@ func (n *Node) networkChanged(ctx context.Context) {
 	n.mu.Lock()
 	clear(n.directWaits)
 	n.mu.Unlock()
-	self := n.Self().ID
 	n.packets.Range(func(key, value any) bool {
 		id := key.(string)
 		path := value.(*packetPeer).direct.Load()
@@ -77,7 +74,6 @@ func (n *Node) networkChanged(ctx context.Context) {
 		n.trace(id, "this machine's addresses changed")
 		path.Remeasure()
 		offer := path.Offer()
-		offer.Node = self
 		go func() {
 			ctx, cancel := context.WithTimeout(ctx, directTimeout)
 			defer cancel()
@@ -90,15 +86,12 @@ func (n *Node) networkChanged(ctx context.Context) {
 }
 
 // serveUpdate answers direct.update: the other machine moved.
-func (n *Node) serveUpdate(_ context.Context, offer wire.DirectOffer) (any, error) {
-	if !config.ValidNodeID(offer.Node) {
-		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the update")
-	}
-	if path := n.packetPeer(offer.Node).direct.Load(); path != nil {
+func (n *Node) serveUpdate(_ context.Context, from string, offer wire.DirectOffer) (any, error) {
+	if path := n.packetPeer(from).direct.Load(); path != nil {
 		if err := path.Refresh(offer); err != nil {
 			return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
 		}
-		n.trace(offer.Node, "update over SSH: %s", strings.Join(offer.Addresses, ", "))
+		n.trace(from, "update over SSH: %s", strings.Join(offer.Addresses, ", "))
 	}
 	return struct{}{}, nil
 }
@@ -111,52 +104,17 @@ func (n *Node) onNetwork(addr netip.Addr) bool {
 	return subnet != nil && subnet.Contains(addr)
 }
 
-// Unlink tells the node at the other end of the link with id, if the
-// link runs, that the link is being removed, before it stops. A node that
-// does not hear it keeps its UDP paths until they end by themselves.
-func (n *Node) Unlink(ctx context.Context, id string) {
-	n.mu.Lock()
-	var s session
-	found := false
-	for l := range n.links {
-		if l.opened && l.id == id {
-			s, found = l.session, true
+// closeDirect ends the UDP paths, and the tries at one, to the nodes
+// that gone reports. n.mu is held.
+func (n *Node) closeDirect(gone func(id string) bool) {
+	for id, try := range n.directTries {
+		if gone(id) {
+			try.cancel()
 		}
 	}
-	self := n.info.ID
-	n.mu.Unlock()
-	if !found {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, removeTimeout)
-	defer cancel()
-	if conn, err := call(ctx, s, wire.MethodLinkRemove, wire.LinkRemove{Node: self, Link: id}, nil); err == nil {
-		conn.Close()
-	}
-}
-
-func (n *Node) serveLinkRemove(_ context.Context, p wire.LinkRemove) (any, error) {
-	self := n.Self().ID
-	n.endStrandedDirect(func(e wire.TopoEdge) bool { return e.From == p.Node && e.To == self && e.Link == p.Link })
-	return nil, nil
-}
-
-// EndStrandedDirect ends the UDP paths to nodes that SSH links do not lead
-// to, after this node removed a link.
-func (n *Node) EndStrandedDirect() {
-	n.endStrandedDirect(func(wire.TopoEdge) bool { return false })
-}
-
-// endStrandedDirect is EndStrandedDirect without the links that gone
-// reports, which are about to stop.
-func (n *Node) endStrandedDirect(gone func(wire.TopoEdge) bool) {
-	topo := n.Topology()
-	reached := reach(slices.DeleteFunc(slices.Clone(topo.Edges), gone), topo.Self)
 	n.packets.Range(func(id, value any) bool {
-		if _, ok := reached[id.(string)]; !ok {
-			if c := value.(*packetPeer).direct.Load(); c != nil {
-				c.Close()
-			}
+		if c := value.(*packetPeer).direct.Load(); c != nil && gone(id.(string)) {
+			c.Close()
 		}
 		return true
 	})
@@ -174,10 +132,10 @@ func (n *Node) trace(id, format string, args ...any) {
 	n.directTrace[id] = append(events, wire.DirectEvent{Time: time.Now(), Text: fmt.Sprintf(format, args...)})
 }
 
-func (n *Node) serveTrace(_ context.Context, p wire.DirectTraceParams) (any, error) {
+func (n *Node) serveTrace(_ context.Context, from string, _ struct{}) (any, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return wire.DirectTrace{Events: slices.Clone(n.directTrace[p.Node])}, nil
+	return wire.DirectTrace{Events: slices.Clone(n.directTrace[from])}, nil
 }
 
 // DirectReport reports the UDP path to the machine that ref names, and
@@ -190,8 +148,8 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	if dest.ID == n.Self().ID {
 		return wire.DirectReport{}, wire.Errorf(wire.CodeInvalidParams, "%s is this machine", dest.Name)
 	}
-	r := wire.DirectReport{Node: wire.NodeInfo{ID: dest.ID, Name: dest.Name, Software: dest.Software}}
-	if err := n.Call(ctx, dest.ID, wire.MethodDirectTrace, wire.DirectTraceParams{Node: n.Self().ID}, &r.Peer); err != nil {
+	r := wire.DirectReport{Node: dest.Info()}
+	if err := n.Call(ctx, dest.ID, wire.MethodDirectTrace, nil, &r.Peer); err != nil {
 		r.PeerError = err.Error()
 	}
 	peer := n.packetPeer(dest.ID)
@@ -267,7 +225,7 @@ func (n *Node) tryDirect(id string) {
 	switch {
 	case n.directCtx == nil, id == n.info.ID, n.directTries[id] != nil, path != nil, n.onPacket.Load() == nil:
 		return
-	case time.Now().Before(n.directWaits[id].next):
+	case time.Now().Before(n.directWaits[id].next), n.removed != nil, n.isRemoved(id):
 		return
 	}
 	ctx, try := n.startDirect(id, true)
@@ -294,7 +252,6 @@ func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Path, erro
 		return nil, err
 	}
 	offer := path.Offer()
-	offer.Node = n.Self().ID
 	n.trace(id, "offering over SSH: %s", strings.Join(offer.Addresses, ", "))
 	var answer wire.DirectOffer
 	if err := n.Call(ctx, id, wire.MethodDirectOffer, offer, &answer); err != nil {
@@ -324,26 +281,25 @@ func (n *Node) directFailed(ctx context.Context, id, reason string) {
 // serveOffer answers direct.offer: it helps the other node find a path.
 // When both nodes offer at once, the offer of the node with the lower id
 // goes on.
-func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error) {
+func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer) (any, error) {
 	if n.onPacket.Load() == nil {
 		return nil, wire.Errorf(wire.CodeFailed, "%s is not on the gst network", n.Self().Name)
 	}
-	if !config.ValidNodeID(offer.Node) {
-		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the offer")
-	}
-	old := n.packetPeer(offer.Node).direct.Load()
+	old := n.packetPeer(from).direct.Load()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	switch {
 	case n.directCtx == nil:
 		return nil, wire.Errorf(wire.CodeFailed, "UDP paths are off on %s", n.info.Name)
-	case offer.Node == n.info.ID:
-		return nil, wire.Errorf(wire.CodeInvalidParams, "invalid node in the offer")
+	case from == n.info.ID:
+		return nil, wire.Errorf(wire.CodeInvalidParams, "a UDP path needs another machine")
+	case n.removed != nil || n.isRemoved(from):
+		return nil, wire.Errorf(wire.CodeRemoved, "%s is not a member of this network", n.nodeName(from))
 	}
-	if try := n.directTries[offer.Node]; try != nil && try.offering && n.info.ID < offer.Node {
+	if try := n.directTries[from]; try != nil && try.offering && n.info.ID < from {
 		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a path itself", n.info.Name)
 	}
-	path, err := n.udp.Join(offer, func(text string) { n.trace(offer.Node, "%s", text) })
+	path, err := n.udp.Join(offer, func(text string) { n.trace(from, "%s", text) })
 	if err != nil {
 		return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
 	}
@@ -354,17 +310,17 @@ func (n *Node) serveOffer(_ context.Context, offer wire.DirectOffer) (any, error
 	}
 	answer := path.Offer()
 	answer.Token = ""
-	ctx, try := n.startDirect(offer.Node, false)
+	ctx, try := n.startDirect(from, false)
 	go func() {
-		defer n.endDirect(offer.Node, try)
-		n.trace(offer.Node, "offer over SSH: %s", strings.Join(offer.Addresses, ", "))
-		n.trace(offer.Node, "answering with: %s", strings.Join(answer.Addresses, ", "))
+		defer n.endDirect(from, try)
+		n.trace(from, "offer over SSH: %s", strings.Join(offer.Addresses, ", "))
+		n.trace(from, "answering with: %s", strings.Join(answer.Addresses, ", "))
 		if err := path.Connect(ctx, offer); err != nil {
 			path.Close()
-			n.directFailed(ctx, offer.Node, "no path")
+			n.directFailed(ctx, from, "no path")
 			return
 		}
-		n.runDirect(offer.Node, path, try)
+		n.runDirect(from, path, try)
 	}()
 	return answer, nil
 }
@@ -384,6 +340,7 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	ctx := n.directCtx
 	n.mu.Unlock()
 	n.attachPackets(id, path)
+	defer n.Update() // after the path is gone: the watchers see it go
 	defer n.detachPackets(id, path)
 	defer path.Close()
 	n.endDirect(id, try)
@@ -404,7 +361,7 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 			}
 			return
 		case <-idle.C:
-			if path.Idle() >= n.directIdle && n.linksReach(id) {
+			if path.Idle() >= n.directIdle && n.router.Reaches(id) {
 				n.log.Printf("UDP path to %s: idle, closed", n.nodeName(id))
 				n.trace(id, "nothing sent for %s: closed until traffic comes", n.directIdle)
 				return
@@ -413,19 +370,14 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	}
 }
 
-// linksReach reports whether SSH links lead to node id.
-func (n *Node) linksReach(id string) bool {
-	topo := n.Topology()
-	_, ok := reach(topo.Edges, topo.Self)[id]
-	return ok
-}
-
-// nodeName returns the name of node id, for the log.
+// nodeName returns the name of node id, for the log. It reads only the
+// table, so n.mu may be held or not.
 func (n *Node) nodeName(id string) string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if r, ok := n.records[id]; ok && r.Node.Name != "" {
-		return r.Node.Name
+	if e, ok := n.table.Get(state.NodeKey(id)); ok {
+		var v wire.NodeValue
+		if json.Unmarshal(e.Value, &v) == nil && v.Name != "" {
+			return v.Name
+		}
 	}
 	return id[:min(8, len(id))]
 }

@@ -24,14 +24,12 @@ const ConfigFileEnv = "GST_SSH_CONFIG"
 
 // Host is what ssh would use to connect to a destination.
 type Host struct {
-	Hostname            string
-	Port                string
-	User                string
-	IdentityFiles       []string      // candidate private keys in ssh's order
-	KnownHostsFiles     []string      // user files, then global files
-	ConnectTimeout      time.Duration // zero when unset
-	ServerAliveInterval time.Duration // zero when unset
-	ServerAliveCountMax int           // zero when unset
+	Hostname        string
+	Port            string
+	User            string
+	IdentityFiles   []string      // candidate private keys in ssh's order
+	KnownHostsFiles []string      // user files, then global files
+	ConnectTimeout  time.Duration // zero when unset
 }
 
 // Address returns the host:port to connect to.
@@ -39,14 +37,15 @@ func (h Host) Address() string {
 	return net.JoinHostPort(h.Hostname, h.Port)
 }
 
-// Resolve runs "ssh -G" for destination. It only evaluates the
-// configuration and does not connect.
-func Resolve(ctx context.Context, destination string) (Host, error) {
+// Resolve runs "ssh -G" for destination, with the ssh options sshArgs,
+// such as -p 2222. It only evaluates the configuration and does not
+// connect.
+func Resolve(ctx context.Context, destination string, sshArgs []string) (Host, error) {
 	args := []string{"-G"}
 	if file := os.Getenv(ConfigFileEnv); file != "" {
 		args = append(args, "-F", file)
 	}
-	args = append(args, "--", destination)
+	args = append(append(args, sshArgs...), "--", destination)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -100,10 +99,6 @@ func parse(out []byte, home string) (Host, error) {
 			globalKnownHosts = expandAll(value, home)
 		case "connecttimeout":
 			h.ConnectTimeout, err = seconds(value)
-		case "serveraliveinterval":
-			h.ServerAliveInterval, err = seconds(value)
-		case "serveralivecountmax":
-			h.ServerAliveCountMax, err = strconv.Atoi(value)
 		case "proxycommand", "proxyjump":
 			if value != "none" {
 				return Host{}, fmt.Errorf("ssh config sets %s, which gst does not support", key)

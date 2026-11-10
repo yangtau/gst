@@ -110,9 +110,15 @@ function via(n, names) {
 // way says how packets go to another machine, as gst status does.
 function way(n, names) {
   if (n.direct) return "direct";
-  if (!n.reachable) return "offline";
+  if (!n.reachable) return n.seen ? "offline, seen " + seenText(n.seen) : "offline";
   const route = via(n, names);
   return route ? "relay via " + route : "relay";
+}
+
+// seenText says when a machine was last online, as gst status does.
+function seenText(seen) {
+  const a = age(seen);
+  return a === "now" ? "just now" : a + " ago";
 }
 
 function age(since) {
@@ -205,7 +211,7 @@ function linksGroup(n, st, names) {
   }
   const down = mine.filter((l) => l.state !== "running").length;
   return group("Links", count(down ? `${rows.length - down} of ${rows.length} running` : rows.length || "", down), rows,
-    isSelf && ["None yet. Add one with ", el("code", null, "gst link <destination>"), "."]);
+    isSelf && ["None yet. Add one with ", el("code", null, "gst add <destination>"), "."]);
 }
 
 function exposesGroup(st) {

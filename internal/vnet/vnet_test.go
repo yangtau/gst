@@ -23,7 +23,6 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
-	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -36,8 +35,8 @@ func TestPacketsToThisMachine(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
-	a.manager.Configure(t.Context(), &config.Net{})
-	b.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
+	b.manager.Configure(t.Context())
 	waitFor(t, "a is up", up(a, 1))
 	waitFor(t, "b is up", up(b, 1))
 	wantPacket(t, a, b, "before")
@@ -128,15 +127,6 @@ func TestChooseAddress(t *testing.T) {
 	}
 }
 
-func TestNewer(t *testing.T) {
-	if !newer("10.2.0.0/16", 2, "10.1.0.0/16", 1) || newer("10.2.0.0/16", 1, "10.1.0.0/16", 2) {
-		t.Fatal("the later choice does not win")
-	}
-	if newer("10.2.0.0/16", 1, "10.1.0.0/16", 1) == newer("10.1.0.0/16", 1, "10.2.0.0/16", 1) {
-		t.Fatal("two nodes disagree on a tie")
-	}
-}
-
 func TestLocalNetworksLeaveOutWhatCannotConflict(t *testing.T) {
 	n := LocalNetworks("")
 	for _, p := range slices.Concat(n.Interfaces, n.Routes) {
@@ -160,7 +150,8 @@ func query(t *testing.T, name string, kind dnsmessage.Type) []byte {
 
 func TestDNSAnswer(t *testing.T) {
 	address := netip.MustParseAddr("10.99.1.2")
-	lookup := func(name string) (netip.Addr, bool) { return address, name == "devbox" }
+	up := true
+	lookup := func(name string) (netip.Addr, bool, bool) { return address, name == "devbox", up }
 	reply := func(name string, kind dnsmessage.Type) dnsmessage.Message {
 		t.Helper()
 		var m dnsmessage.Message
@@ -176,12 +167,22 @@ func TestDNSAnswer(t *testing.T) {
 	if len(m.Answers) != 1 || m.Answers[0].Body.(*dnsmessage.AResource).A != address.As4() {
 		t.Fatalf("A: %+v", m)
 	}
-	if m := reply("devbox.gst.", dnsmessage.TypeAAAA); m.RCode != dnsmessage.RCodeSuccess || len(m.Answers) != 0 {
+	// Answers without an address say how long to keep that news.
+	soa := func(m dnsmessage.Message) bool {
+		return len(m.Authorities) == 1 && m.Authorities[0].Body.(*dnsmessage.SOAResource).MinTTL == dnsNegative
+	}
+	if m := reply("devbox.gst.", dnsmessage.TypeAAAA); m.RCode != dnsmessage.RCodeSuccess || len(m.Answers) != 0 || !soa(m) {
 		t.Fatalf("AAAA: %+v", m)
 	}
-	if m := reply("nobody.gst.", dnsmessage.TypeA); m.RCode != dnsmessage.RCodeNameError {
+	if m := reply("nobody.gst.", dnsmessage.TypeA); m.RCode != dnsmessage.RCodeNameError || !soa(m) {
 		t.Fatalf("unknown machine: %+v", m)
 	}
+	// While the network is down, no answer holds.
+	up = false
+	if m := reply("devbox.gst.", dnsmessage.TypeA); m.RCode != dnsmessage.RCodeServerFailure {
+		t.Fatalf("down: %+v", m)
+	}
+	up = true
 	if m := reply("devbox.example.", dnsmessage.TypeA); m.RCode != dnsmessage.RCodeNameError {
 		t.Fatalf("another domain: %+v", m)
 	}
@@ -192,8 +193,30 @@ func TestDNSAnswer(t *testing.T) {
 
 // world is a mesh of fake nodes that pass packets to each other.
 type world struct {
-	mu    sync.Mutex
-	nodes map[string]*fakeMesh
+	mu      sync.Mutex
+	nodes   map[string]*fakeMesh
+	network *netEntry // the table's, as all nodes but the alone ones see it
+}
+
+// netEntry is the network entry of the table.
+type netEntry struct {
+	subnet string
+	manual bool
+	order  int64
+}
+
+// beats follows the rules of the table: a person's choice beats gst's,
+// the latest person's wins, and the earliest of gst's.
+func (a *netEntry) beats(b *netEntry) bool {
+	switch {
+	case b == nil:
+		return true
+	case a.manual != b.manual:
+		return a.manual
+	case a.order != b.order:
+		return a.order > b.order
+	}
+	return a.subnet < b.subnet
 }
 
 func (w *world) topology(self string) wire.Topology {
@@ -202,7 +225,12 @@ func (w *world) topology(self string) wire.Topology {
 	topo := wire.Topology{Self: self}
 	alone := false
 	for _, n := range w.nodes {
-		alone = alone || n.info.ID == self && n.alone
+		if n.info.ID == self {
+			alone = n.alone
+			if e := n.networkLocked(); e != nil {
+				topo.Subnet = e.subnet
+			}
+		}
 	}
 	for _, id := range []string{"a0", "b0", "c0"} {
 		if n := w.nodes[id]; n != nil && (n.info.ID == self || !alone && !n.alone) {
@@ -236,7 +264,8 @@ func (w *world) changed() {
 type fakeMesh struct {
 	world    *world
 	info     wire.NodeInfo
-	net      *wire.NetInfo
+	net      *wire.NodeNet
+	network  *netEntry // its own, while it is alone
 	changed  chan struct{}
 	handle   func(string, []byte)
 	networks wire.Networks
@@ -244,12 +273,54 @@ type fakeMesh struct {
 	sendAs   string // the id that packets seem to come from, when not empty
 }
 
-// setAlone cuts the node off the others, or joins it to them.
+// setAlone cuts the node off the others, or joins it to them, and their
+// tables.
 func (m *fakeMesh) setAlone(alone bool) {
 	m.world.mu.Lock()
+	if !alone && m.network != nil && m.network.beats(m.world.network) {
+		m.world.network = m.network
+	}
+	m.network = nil
 	m.alone = alone
 	m.world.mu.Unlock()
 	m.world.changed()
+}
+
+func (m *fakeMesh) networkLocked() *netEntry {
+	if m.alone {
+		return m.network
+	}
+	return m.world.network
+}
+
+func (m *fakeMesh) Network() (wire.NetworkValue, bool) {
+	m.world.mu.Lock()
+	defer m.world.mu.Unlock()
+	e := m.networkLocked()
+	if e == nil {
+		return wire.NetworkValue{}, false
+	}
+	return wire.NetworkValue{Subnet: e.subnet}, true
+}
+
+var orders atomic.Int64
+
+func (m *fakeMesh) SetNetwork(subnet string, manual bool) error {
+	e := &netEntry{subnet: subnet, manual: manual, order: orders.Add(1)}
+	if !manual {
+		e.order = -e.order
+	}
+	m.world.mu.Lock()
+	at := &m.world.network
+	if m.alone {
+		at = &m.network
+	}
+	if e.beats(*at) {
+		*at = e
+	}
+	m.world.mu.Unlock()
+	m.world.changed()
+	return nil
 }
 
 func (m *fakeMesh) Self() wire.NodeInfo {
@@ -265,7 +336,7 @@ func (m *fakeMesh) Changed() <-chan struct{} {
 	defer m.world.mu.Unlock()
 	return m.changed
 }
-func (m *fakeMesh) SetNet(info *wire.NetInfo) {
+func (m *fakeMesh) SetNet(info *wire.NodeNet) {
 	m.world.mu.Lock()
 	same := (m.net == nil) == (info == nil) && (info == nil || *m.net == *info)
 	m.net = info
@@ -474,8 +545,8 @@ func TestTwoMachines(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop", prefix("192.168.1.0/24"))
 	b := start(t, &w, "b0", "devbox")
-	a.manager.Configure(t.Context(), &config.Net{})
-	b.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
+	b.manager.Configure(t.Context())
 	waitFor(t, "a is up", up(a, 1))
 	waitFor(t, "b is up", up(b, 1))
 	waitFor(t, "they agree", func() bool { return a.manager.Status().Subnet == b.manager.Status().Subnet })
@@ -522,13 +593,12 @@ func TestLatestSubnetWins(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
-	a.manager.Configure(t.Context(), &config.Net{Subnet: "10.50.0.0/16", Since: 1})
-	b.manager.Configure(t.Context(), &config.Net{})
+	a.mesh.SetNetwork("10.50.0.0/16", true)
 	waitFor(t, "b follows", func() bool {
 		st := b.manager.Status()
 		return st != nil && st.Subnet == "10.50.0.0/16" && st.Interface != ""
 	})
-	b.manager.Configure(t.Context(), &config.Net{Subnet: "10.60.0.0/16", Since: 2})
+	b.mesh.SetNetwork("10.60.0.0/16", true)
 	waitFor(t, "a follows", func() bool {
 		st := a.manager.Status()
 		return st.Subnet == "10.60.0.0/16" && strings.HasPrefix(st.Address, "10.60.") && len(st.Peers) == 1
@@ -537,12 +607,6 @@ func TestLatestSubnetWins(t *testing.T) {
 	wantPacket(t, a, b, "ping")
 	if spec := a.device().current(); spec.Subnet != "10.60.0.0/16" {
 		t.Fatalf("spec: %+v", spec)
-	}
-
-	// An older choice in the configuration changes nothing.
-	a.manager.Configure(t.Context(), &config.Net{Subnet: "10.50.0.0/16", Since: 1})
-	if got := a.manager.Status().Subnet; got != "10.60.0.0/16" {
-		t.Fatalf("subnet = %s", got)
 	}
 }
 
@@ -568,7 +632,7 @@ func TestAutomaticChoiceYields(t *testing.T) {
 	}
 
 	// Any choice of a person beats them.
-	lone.manager.Configure(t.Context(), &config.Net{Subnet: "10.55.0.0/16", Since: 1})
+	lone.mesh.SetNetwork("10.55.0.0/16", true)
 	waitFor(t, "a follows", func() bool { return a.manager.Status().Subnet == "10.55.0.0/16" })
 }
 
@@ -577,18 +641,16 @@ func TestAddressConflict(t *testing.T) {
 	// networks: the higher id moves.
 	var w world
 	a := start(t, &w, "a0", "laptop")
-	subnet := &config.Net{Subnet: "10.70.0.0/16", Since: 1}
-	a.manager.Configure(t.Context(), subnet)
-	waitFor(t, "a is up", up(a, 0))
+	a.mesh.SetNetwork("10.70.0.0/16", true)
+	waitFor(t, "a is up", func() bool { return up(a, 0)() && a.manager.Status().Subnet == "10.70.0.0/16" })
 	address := a.manager.Status().Address
 
 	b := &testNode{mesh: w.add("b0", "devbox"), dir: t.TempDir()}
-	state := `{"private_key":"` + strings.Repeat("11", 32) + `","subnet":"10.70.0.0/16","since":1,"address":"` + address + `"}`
+	state := `{"private_key":"` + strings.Repeat("11", 32) + `","address":"` + address + `"}`
 	if err := os.WriteFile(filepath.Join(b.dir, "net.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	b.run(t)
-	b.manager.Configure(t.Context(), subnet)
 	waitFor(t, "they differ", func() bool {
 		st := b.manager.Status()
 		return st != nil && st.Address != "" && st.Address != address && len(st.Peers) == 1
@@ -601,14 +663,14 @@ func TestAddressConflict(t *testing.T) {
 func TestStateSurvivesARestart(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
-	a.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
 	waitFor(t, "a is up", up(a, 0))
 	before := a.manager.Status()
 	key := published(&w, a.mesh).PublicKey
 
 	again := &testNode{mesh: a.mesh, dir: a.dir}
 	again.run(t)
-	again.manager.Configure(t.Context(), &config.Net{})
+	again.manager.Configure(t.Context())
 	waitFor(t, "a is up again", up(again, 0))
 	after := again.manager.Status()
 	if after.Subnet != before.Subnet || after.Address != before.Address || published(&w, a.mesh).PublicKey != key {
@@ -616,15 +678,14 @@ func TestStateSurvivesARestart(t *testing.T) {
 	}
 }
 
-// A new identity is a new machine: records of the old one stay around for
-// a while, so it must not share their key or address. The subnet stays, as
-// it belongs to the network.
+// A new identity is a new machine, so it must not share the old one's key
+// or address. The subnet stays, as it belongs to the network.
 func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
-	a.manager.Configure(t.Context(), &config.Net{})
-	b.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
+	b.manager.Configure(t.Context())
 	waitFor(t, "a is up", up(a, 1))
 	waitFor(t, "b is up", up(b, 1))
 	wantPacket(t, a, b, "before")
@@ -634,7 +695,7 @@ func TestANewIdentityGetsItsOwnKeyAndAddress(t *testing.T) {
 	w.mu.Lock()
 	a.mesh.info.ID = "f" + strings.Repeat("0", 31)
 	w.mu.Unlock()
-	a.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
 	waitFor(t, "a has a new key", func() bool { return published(&w, a.mesh).PublicKey != key })
 	if after := a.manager.Status(); after.Subnet != before.Subnet {
 		t.Fatalf("%+v became %+v", before, after)
@@ -659,8 +720,8 @@ func TestANewIdentityThatCannotBeSaved(t *testing.T) {
 	var w world
 	a := start(t, &w, "a0", "laptop")
 	b := start(t, &w, "b0", "devbox")
-	a.manager.Configure(t.Context(), &config.Net{})
-	b.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
+	b.manager.Configure(t.Context())
 	waitFor(t, "a is up", up(a, 1))
 	waitFor(t, "b is up", up(b, 1))
 	key := published(&w, a.mesh).PublicKey
@@ -672,7 +733,7 @@ func TestANewIdentityThatCannotBeSaved(t *testing.T) {
 	w.mu.Lock()
 	a.mesh.info.ID = "f" + strings.Repeat("0", 31)
 	w.mu.Unlock()
-	a.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
 	if st := a.manager.Status(); st.Error == "" {
 		t.Fatalf("no error: %+v", st)
 	}
@@ -683,7 +744,7 @@ func TestANewIdentityThatCannotBeSaved(t *testing.T) {
 	if err := os.Chmod(a.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	a.manager.Configure(t.Context(), &config.Net{})
+	a.manager.Configure(t.Context())
 	waitFor(t, "a has a new key", func() bool { return published(&w, a.mesh).PublicKey != key })
 	w.changed()
 	waitFor(t, "a is up", up(a, 1))
@@ -701,7 +762,7 @@ func TestPacketsFromTheWrongNode(t *testing.T) {
 	b := start(t, &w, "b0", "devbox")
 	c := start(t, &w, "c0", "homelab")
 	for _, n := range []*testNode{a, b, c} {
-		n.manager.Configure(t.Context(), &config.Net{})
+		n.manager.Configure(t.Context())
 	}
 	for _, n := range []*testNode{a, b, c} {
 		waitFor(t, "the machine is up", up(n, 2))
@@ -713,7 +774,7 @@ func TestPacketsFromTheWrongNode(t *testing.T) {
 	wantPacket(t, b, a, "pong")
 }
 
-func published(w *world, m *fakeMesh) *wire.NetInfo {
+func published(w *world, m *fakeMesh) *wire.NodeNet {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return m.net
@@ -747,7 +808,7 @@ func TestProblemsAreReported(t *testing.T) {
 		<-done
 	})
 	waitFor(t, "the manager runs", m.running.Load)
-	m.Configure(t.Context(), &config.Net{})
+	m.Configure(t.Context())
 	st := m.Status()
 	if !strings.Contains(st.Hint, "gst up") || st.Interface != "" {
 		t.Fatalf("without the helper: %+v", st)
@@ -758,7 +819,8 @@ func TestProblemsAreReported(t *testing.T) {
 	}
 
 	helper.Store(true)
-	m.Configure(t.Context(), &config.Net{Subnet: "10.80.0.0/16", Since: time.Now().UnixNano()})
+	mesh.SetNetwork("10.80.0.0/16", true)
+	m.Configure(t.Context())
 	st = m.Status()
 	if published(&w, mesh) == nil {
 		t.Fatal("published nothing with an interface")
@@ -803,5 +865,22 @@ func TestBind(t *testing.T) {
 	}
 	if _, _, err := b.Open(0); !errors.Is(err, conn.ErrBindAlreadyOpen) {
 		t.Fatalf("second open: %v", err)
+	}
+}
+
+// Members that are offline keep their addresses, and the name of one
+// that has an address in the subnet resolves.
+func TestOfflineMembers(t *testing.T) {
+	subnet := "10.90.0.0/16"
+	topo := wire.Topology{Self: "a", Subnet: subnet, Nodes: []wire.TopoNode{
+		{ID: "a", Name: "laptop", Net: &wire.NodeNet{Address: "10.90.0.1"}},
+		{ID: "b", Name: "devbox", Net: &wire.NodeNet{Address: "10.90.0.2"}},
+		{ID: "c", Name: "homelab", Net: &wire.NodeNet{Address: "10.91.0.3"}}, // since before a new subnet
+	}}
+	if a, ok := lookup(topo, "devbox"); !ok || a.String() != "10.90.0.2" {
+		t.Fatalf("devbox: %v, %v", a, ok)
+	}
+	if a, ok := lookup(topo, "homelab"); ok {
+		t.Fatalf("homelab resolved to %v outside the subnet", a)
 	}
 }

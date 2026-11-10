@@ -488,9 +488,8 @@ func TestIncomingLinkLogLeavesOutPeerText(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if _, err := wire.Dial(c, wire.Hello{Software: secret, Role: wire.RolePeer, Features: []string{wire.FeatureYamux}}); err != nil {
-		t.Fatal(err)
-	}
+	// Its Hello names no node, which the daemon refuses.
+	wire.Dial(c, wire.Hello{Software: secret, Role: wire.RolePeer})
 	c.Write([]byte(secret + secret + secret))
 	c.Close()
 	b.shutdown()
@@ -502,28 +501,29 @@ func TestIncomingLinkLogLeavesOutPeerText(t *testing.T) {
 func TestReloadStartsAndStopsLinks(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
+	startMachine(t, w, "c")
 	a := startMachine(t, w, "a")
 
-	st := a.apply(func(f *config.File) { addLinks(f, "x@b", "y@b") })
-	if len(st.Links) != 2 || st.Links[0].Destination != "x@b" || st.Links[1].Destination != "y@b" {
+	st := a.apply(func(f *config.File) { addLinks(f, "x@b", "y@c") })
+	if len(st.Links) != 2 || st.Links[0].Destination != "x@b" || st.Links[1].Destination != "y@c" {
 		t.Fatalf("links = %+v", st.Links)
 	}
 	waitFor(t, "both run", func() bool {
 		x, _ := a.link("x@b")
-		y, _ := a.link("y@b")
+		y, _ := a.link("y@c")
 		return x.State == wire.StateRunning && y.State == wire.StateRunning
 	})
 	since, _ := a.link("x@b")
 
 	// Removing a link ends it and leaves the other running, untouched.
-	st = a.apply(func(f *config.File) { removeLink(f, "y@b") })
+	st = a.apply(func(f *config.File) { removeLink(f, "y@c") })
 	if len(st.Links) != 1 || st.Links[0].Destination != "x@b" {
 		t.Fatalf("links = %+v, want only x@b", st.Links)
 	}
 	if again, _ := a.link("x@b"); !again.Since.Equal(since.Since) || again.Reconnects != 0 || again.State != wire.StateRunning {
-		t.Fatalf("removing y@b restarted x@b: %+v -> %+v", since, again)
+		t.Fatalf("removing y@c restarted x@b: %+v -> %+v", since, again)
 	}
-	if want := linkLog("y@b") + ": stopped"; !strings.Contains(a.log.String(), want) {
+	if want := linkLog("y@c") + ": stopped"; !strings.Contains(a.log.String(), want) {
 		t.Errorf("daemon log = %q, want %s", a.log.String(), want)
 	}
 
@@ -544,6 +544,7 @@ func TestReloadStartsAndStopsLinks(t *testing.T) {
 func TestReloadRestartsChangedLink(t *testing.T) {
 	w := newWorld(t)
 	startMachine(t, w, "b")
+	startMachine(t, w, "c")
 	a := startMachine(t, w, "a")
 	a.apply(func(f *config.File) { addLinks(f, "hang", "b") })
 	waitFor(t, "hang connects", func() bool { return len(a.attemptsTo("hang")) == 1 })
@@ -551,29 +552,39 @@ func TestReloadRestartsChangedLink(t *testing.T) {
 	same, _ := a.link("b")
 
 	// Replacing a link cancels the old attempt, and the new link connects.
-	st := a.apply(func(f *config.File) { removeLink(f, "hang"); addLinks(f, "x@b") })
+	st := a.apply(func(f *config.File) { removeLink(f, "hang"); addLinks(f, "x@c") })
 	if len(st.Links) != 2 {
 		t.Fatalf("links = %+v", st.Links)
 	}
-	waitFor(t, "x@b runs", func() bool { l, _ := a.link("x@b"); return l.State == wire.StateRunning })
+	waitFor(t, "x@c runs", func() bool { l, _ := a.link("x@c"); return l.State == wire.StateRunning })
 	if len(a.attemptsTo("hang")) != 1 {
 		t.Errorf("attempts to the old destination = %d, want 1", len(a.attemptsTo("hang")))
 	}
 
-	// A changed remote gst restarts a link, which connects again.
-	before := len(a.attemptsTo("x@b"))
-	a.apply(func(f *config.File) { f.Link("x@b").RemoteGst = "/opt/gst" })
-	waitFor(t, "x@b connects again", func() bool { return len(a.attemptsTo("x@b")) > before })
-	waitFor(t, "x@b runs again", func() bool { l, _ := a.link("x@b"); return l.State == wire.StateRunning })
+	// Changed ssh arguments restart a link, which connects again.
+	before := len(a.attemptsTo("x@c"))
+	a.apply(func(f *config.File) { f.Link("x@c").SSHArgs = []string{"-p", "2222"} })
+	waitFor(t, "x@c connects again", func() bool { return len(a.attemptsTo("x@c")) > before })
+	waitFor(t, "x@c runs again", func() bool { l, _ := a.link("x@c"); return l.State == wire.StateRunning })
+
+	// A link added again restarts, and the run spends its admit.
+	before = len(a.attemptsTo("x@c"))
+	a.apply(func(f *config.File) { f.Link("x@c").Admit = true })
+	waitFor(t, "x@c connects once more", func() bool { return len(a.attemptsTo("x@c")) > before })
+	waitFor(t, "the admit is spent", func() bool {
+		f, err := config.Load(a.cfgPath)
+		l, _ := a.link("x@c")
+		return err == nil && !f.Link("x@c").Admit && l.State == wire.StateRunning
+	})
 
 	// The links that did not change keep running as they are.
 	if again, _ := a.link("b"); !again.Since.Equal(same.Since) || again.Reconnects != 0 {
 		t.Fatalf("an unrelated link restarted: %+v -> %+v", same, again)
 	}
 	log := a.log.String()
-	if strings.Count(log, linkLog("x@b")+": started") != 2 || strings.Count(log, linkLog("x@b")+": stopped") != 1 ||
+	if strings.Count(log, linkLog("x@c")+": started") != 3 || strings.Count(log, linkLog("x@c")+": stopped") != 2 ||
 		strings.Count(log, linkLog("hang")+": stopped") != 1 {
-		t.Errorf("daemon log = %q, want x@b started twice and stopped once, and hang stopped", log)
+		t.Errorf("daemon log = %q, want x@c started three times and stopped twice, and hang stopped", log)
 	}
 }
 
@@ -589,9 +600,9 @@ func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	_, err = c.Reload(t.Context())
+	err = c.Call(t.Context(), wire.MethodReload, nil, nil)
 	wantCode(t, err, wire.CodeFailed)
-	if _, err := c.Status(t.Context()); err != nil {
+	if err := c.Call(t.Context(), wire.MethodStatus, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -603,7 +614,7 @@ func TestReloadWithBadConfigKeepsServing(t *testing.T) {
 		f.Node = &config.Node{ID: nid("a"), Name: "a"}
 		addLinks(f, "hang")
 	})
-	st, err := c.Reload(t.Context())
+	st, err := call[wire.Status](t.Context(), c, wire.MethodReload, nil)
 	if err != nil || len(st.Links) != 1 || st.Node.ID != nid("a") {
 		t.Fatalf("Reload = %+v, %v", st, err)
 	}
@@ -637,11 +648,11 @@ func TestControlClient(t *testing.T) {
 	}
 
 	// Several calls share the connection.
-	st, err := c.Status(t.Context())
+	st, err := call[wire.Status](t.Context(), c, wire.MethodStatus, nil)
 	if err != nil || st.Node.Name != "a" || len(st.Links) != 1 {
 		t.Fatalf("Status = %+v, %v", st, err)
 	}
-	topo, err := c.Nodes(t.Context())
+	topo, err := call[wire.Topology](t.Context(), c, wire.MethodNodes, nil)
 	if err != nil || topo.Self != nid("a") || len(topo.Nodes) != 2 || len(topo.Edges) != 1 {
 		t.Fatalf("Nodes = %+v, %v", topo, err)
 	}
@@ -651,26 +662,26 @@ func TestControlClient(t *testing.T) {
 		}
 	}
 	a.update(func(f *config.File) { addLinks(f, "hang") })
-	if st, err = c.Reload(t.Context()); err != nil || len(st.Links) != 2 {
+	if st, err = call[wire.Status](t.Context(), c, wire.MethodReload, nil); err != nil || len(st.Links) != 2 {
 		t.Fatalf("Reload = %+v, %v", st, err)
 	}
-	p, err := c.Ping(t.Context(), "b")
+	p, err := call[wire.Ping](t.Context(), c, wire.MethodPing, wire.NodeParams{Node: "b"})
 	if err != nil || p.Node.ID != nid("b") || p.Node.Name != "b" || p.Via == nil || len(p.Via) != 0 || p.TimeMS <= 0 {
 		t.Fatalf("Ping = %+v, %v", p, err)
 	}
-	_, err = c.Ping(t.Context(), "nowhere")
+	_, err = call[wire.Ping](t.Context(), c, wire.MethodPing, wire.NodeParams{Node: "nowhere"})
 	wantCode(t, err, wire.CodeNotFound)
 
 	// Unknown methods fail without ending the connection.
-	wantCode(t, c.call(t.Context(), "no.such", nil, nil), wire.CodeUnsupportedMethod)
-	if _, err := c.Status(t.Context()); err != nil {
+	wantCode(t, c.Call(t.Context(), "no.such", nil, nil), wire.CodeUnsupportedMethod)
+	if err := c.Call(t.Context(), wire.MethodStatus, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// A canceled context closes the connection.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := c.Status(ctx); err == nil {
+	if err := c.Call(ctx, wire.MethodStatus, nil, nil); err == nil {
 		t.Fatal("Status succeeded with a done context")
 	}
 }
@@ -689,7 +700,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	defer c.Close()
 
 	// Another machine answers with its own configuration, not ours.
-	st, err := c.NodeStatus(t.Context(), "b")
+	st, err := call[wire.Status](t.Context(), c, wire.MethodNodeStatus, wire.NodeParams{Node: "b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +713,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 	}
 
 	// This machine answers for itself.
-	st, err = c.NodeStatus(t.Context(), "a.gst")
+	st, err = call[wire.Status](t.Context(), c, wire.MethodNodeStatus, wire.NodeParams{Node: "a.gst"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +721,7 @@ func TestNodeStatusShowsAnyMachinesConfiguration(t *testing.T) {
 		t.Fatalf("status of a = %+v", st)
 	}
 
-	_, err = c.NodeStatus(t.Context(), "nowhere")
+	_, err = call[wire.Status](t.Context(), c, wire.MethodNodeStatus, wire.NodeParams{Node: "nowhere"})
 	wantCode(t, err, wire.CodeNotFound)
 }
 
@@ -738,7 +749,7 @@ func TestSingleInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Status(t.Context()); err != nil {
+	if err := c.Call(t.Context(), wire.MethodStatus, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	c.Close()
@@ -806,4 +817,102 @@ func TestReloadExposesWithoutNetwork(t *testing.T) {
 	if len(st.Exposes) != 0 {
 		t.Fatalf("removed rule survived: %+v", st.Exposes)
 	}
+}
+
+// A link keeps the machine that it reached, and runs as any other once it
+// did.
+func TestLinkKeepsItsMachine(t *testing.T) {
+	w := newWorld(t)
+	startMachine(t, w, "b")
+	a := startMachine(t, w, "a")
+	a.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "b", Admit: true}) })
+	waitFor(t, "the link keeps b", func() bool {
+		f, err := config.Load(a.cfgPath)
+		return err == nil && len(f.Links) == 1 && f.Links[0].Target == nid("b") && !f.Links[0].Admit
+	})
+	// Another link that a person adds to b replaces it.
+	a.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "x@b", Admit: true}) })
+	waitFor(t, "the new link replaces it", func() bool {
+		f, err := config.Load(a.cfgPath)
+		return err == nil && len(f.Links) == 1 && f.Links[0].Destination == "x@b" && f.Links[0].Target == nid("b")
+	})
+	// A link that nobody added, from an older configuration, to a machine
+	// that a link reaches already goes.
+	a.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "y@b"}) })
+	waitFor(t, "the second link goes", func() bool {
+		f, err := config.Load(a.cfgPath)
+		return err == nil && len(f.Links) == 1 && f.Links[0].Destination == "x@b"
+	})
+	waitFor(t, "a links to b once", func() bool { return len(a.d.mesh.Topology().Edges) == 1 && a.reaches("b") })
+}
+
+// Removing a machine drops the links to it, and the machine drops its
+// own; a link that a person adds brings it back.
+func TestRemoveDropsLinks(t *testing.T) {
+	w := newWorld(t)
+	b := startMachine(t, w, "b")
+	c := startMachine(t, w, "c")
+	a := startMachine(t, w, "a")
+	a.linkTo("b")
+	c.linkTo("b")
+	waitFor(t, "a reaches c", func() bool { return a.reaches("c") })
+	waitFor(t, "the link keeps b", func() bool { f, _ := config.Load(c.cfgPath); return f.Links[0].Target == nid("b") })
+
+	cl, err := Dial(t.Context(), a.socket, "gst test", "sha256:cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	r, err := call[wire.Removal](t.Context(), cl, wire.MethodRemove, wire.NodeParams{Node: "b"})
+	if err != nil || r.Node.ID != nid("b") || len(r.Stranded) != 1 || r.Stranded[0].Name != "c" {
+		t.Fatalf("Remove = %+v, %v", r, err)
+	}
+	waitFor(t, "b knows", func() bool { return b.d.Status().Removed != nil })
+	waitFor(t, "c drops its link to b", func() bool { f, _ := config.Load(c.cfgPath); return len(f.Links) == 0 })
+	waitFor(t, "a drops its link to b", func() bool { f, _ := config.Load(a.cfgPath); return len(f.Links) == 0 })
+
+	// b adds a link to c: it is back.
+	b.apply(func(f *config.File) { f.Links = append(f.Links, config.Link{Destination: "c", Admit: true}) })
+	waitFor(t, "b is back", func() bool { return b.d.Status().Removed == nil && c.reaches("b") && b.reaches("c") })
+	waitFor(t, "b saved its generation", func() bool { f, _ := config.Load(b.cfgPath); return f.Node.Generation == 1 })
+}
+
+// A machine that removes itself leaves the network and drops its links.
+func TestRemoveSelf(t *testing.T) {
+	a, b := pair(t)
+	cl, err := Dial(t.Context(), a.socket, "gst test", "sha256:cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if r, err := call[wire.Removal](t.Context(), cl, wire.MethodRemove, wire.NodeParams{Node: "a"}); err != nil || !r.Self {
+		t.Fatalf("Remove = %+v, %v", r, err)
+	}
+	waitFor(t, "a drops its links", func() bool { f, _ := config.Load(a.cfgPath); return len(f.Links) == 0 })
+	waitFor(t, "b forgets a", func() bool {
+		topo := b.d.mesh.Topology()
+		return !slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == nid("a") })
+	})
+	wantCode(t, cl.Call(t.Context(), wire.MethodSubnet, wire.SubnetParams{Subnet: "10.9.0.0/16"}, nil), wire.CodeRemoved)
+}
+
+func TestSetSubnet(t *testing.T) {
+	a, b := pair(t)
+	cl, err := Dial(t.Context(), a.socket, "gst test", "sha256:cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if err := cl.Call(t.Context(), wire.MethodSubnet, wire.SubnetParams{Subnet: "10.9.0.0/16"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "b takes it", func() bool { return b.d.mesh.Topology().Subnet == "10.9.0.0/16" })
+	wantCode(t, cl.Call(t.Context(), wire.MethodSubnet, wire.SubnetParams{Subnet: "nonsense"}, nil), wire.CodeInvalidParams)
+}
+
+// call calls method of the daemon that c leads to, and returns its result.
+func call[R any](ctx context.Context, c *Client, method string, params any) (R, error) {
+	var r R
+	err := c.Call(ctx, method, params, &r)
+	return r, err
 }

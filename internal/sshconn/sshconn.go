@@ -1,7 +1,8 @@
 // Package sshconn opens the SSH connections that carry gst links: it
 // authenticates with keys that need no passphrase, accepts only host keys
-// that known_hosts records, probes the server with keepalives, and runs a
-// command on the server. Its errors omit addresses, users, and paths, so
+// that known_hosts records, and runs a command on the server. It sends no
+// keepalives of its own: the link above sends frames both ways, and tells
+// a dead connection by their absence. Its errors omit addresses, users, and paths, so
 // that they are safe to log; Check, which is for the user to read,
 // reports them.
 package sshconn
@@ -20,17 +21,15 @@ import (
 
 // Options are the resolved settings of a connection.
 type Options struct {
-	Server            string        // host:port of the SSH server
-	User              string        // remote login user
-	IdentityFiles     []string      // private keys to offer; missing and passphrase-protected ones are skipped
-	KnownHostsFiles   []string      // host key databases; missing files are skipped
-	ConnectTimeout    time.Duration // bounds the TCP connect and the SSH handshake
-	KeepaliveInterval time.Duration // time between keepalive probes
-	KeepaliveTimeout  time.Duration // how long one probe may stay unanswered
+	Server          string        // host:port of the SSH server
+	User            string        // remote login user
+	IdentityFiles   []string      // private keys to offer; missing and passphrase-protected ones are skipped
+	KnownHostsFiles []string      // host key databases; missing files are skipped
+	ConnectTimeout  time.Duration // bounds the TCP connect and the SSH handshake
 }
 
-// Conn is an SSH connection. It ends when the server closes it, a
-// keepalive probe fails, or Close is called.
+// Conn is an SSH connection. It ends when the server closes it, or Close
+// is called.
 type Conn struct {
 	client *ssh.Client
 	stop   context.CancelFunc
@@ -62,16 +61,10 @@ func Dial(ctx context.Context, opts Options) (*Conn, error) {
 		client.Wait()
 		c.end(errClosed)
 	}()
-	go func() {
-		if err := keepalive(ctx, client, opts.KeepaliveInterval, opts.KeepaliveTimeout); err != nil {
-			c.end(err)
-		}
-	}()
 	return c, nil
 }
 
 // end records why the connection ended, the first time, and closes it.
-// Closing also releases a keepalive probe that waits for its reply.
 func (c *Conn) end(err error) {
 	c.once.Do(func() {
 		c.err = err

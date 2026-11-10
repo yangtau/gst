@@ -13,28 +13,33 @@ import (
 const nodeID = "0123456789abcdef0123456789abcdef"
 
 func TestParseValidation(t *testing.T) {
-	const ok = `"version": 5`
+	const ok = `"version": 6`
+	other := strings.Replace(nodeID, "0", "1", 1)
 	tests := []struct {
 		name string
 		body string
 		want string // substring of the error; empty when valid
 	}{
 		{"empty", ok, ""},
-		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop"}`, ""},
+		{"node", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop", "generation": 2}`, ""},
 		{"node bad id", ok + `, "node": {"id": "xyz", "name": "laptop"}`, "invalid node"},
 		{"node bad name", ok + `, "node": {"id": "` + nodeID + `", "name": "Laptop"}`, "invalid node"},
-		{"link", ok + `, "links": [{"destination": "user@myhost", "remote_gst": "/opt/gst"}]`, ""},
-		{"link removed field", ok + `, "links": [{"destination": "myhost", "identity_file": "/k"}]`, "unknown field"},
-		{"link control in remote gst", ok + `, "links": [{"destination": "myhost", "remote_gst": "a\nb"}]`, "remote gst"},
+		{"node bad generation", ok + `, "node": {"id": "` + nodeID + `", "name": "laptop", "generation": -1}`, "invalid node"},
+		{"link", ok + `, "links": [{"destination": "user@myhost", "ssh_args": ["-p", "2222"], "target": "` + nodeID + `", "admit": true}]`, ""},
+		{"link removed field", ok + `, "links": [{"destination": "myhost", "remote_gst": "/opt/gst"}]`, "unknown field"},
+		{"link empty ssh argument", ok + `, "links": [{"destination": "myhost", "ssh_args": [""]}]`, "ssh argument"},
+		{"link control in ssh argument", ok + `, "links": [{"destination": "myhost", "ssh_args": ["a\nb"]}]`, "ssh argument"},
+		{"link bad target", ok + `, "links": [{"destination": "myhost", "target": "xyz"}]`, "target"},
+		{"links to one machine", ok + `, "links": [{"destination": "a", "target": "` + nodeID + `"}, {"destination": "b", "target": "` + nodeID + `"}]`, "same machine"},
+		{"links to two machines", ok + `, "links": [{"destination": "a", "target": "` + nodeID + `"}, {"destination": "b", "target": "` + other + `"}, {"destination": "c"}, {"destination": "d"}]`, ""},
 		{"link option destination", ok + `, "links": [{"destination": "-oProxyCommand=x"}]`, "link 1"},
-		{"version 4 link", `"version": 4, "links": {"myhost": {"destination": "-oProxyCommand=x"}}`, "link 1"},
-		{"subnet", ok + `, "net": {"subnet": "10.99.0.0/16", "since": 1}`, ""},
-		{"bad subnet", ok + `, "net": {"subnet": "8.8.8.0/24", "since": 1}`, "invalid subnet"},
-		{"no subnet", ok + `, "net": {}`, "invalid subnet"},
+		{"version 5", `"version": 5, "links": [{"destination": "myhost", "remote_gst": "/opt/gst"}], "net": {"subnet": "10.99.0.0/16", "since": 1}`, ""},
+		{"version 5 link", `"version": 5, "links": [{"destination": "-oProxyCommand=x"}]`, "link 1"},
+		{"subnet is the network's", ok + `, "net": {"subnet": "10.99.0.0/16", "since": 1}`, "unknown field"},
 		{"proxy is gone", ok + `, "proxy": "127.0.0.1:1"`, "unknown field"},
 		{"unknown field", ok + `, "bogus": 1`, "unknown field"},
-		{"future version", `"version": 6`, "unsupported config version"},
-		{"old version", `"version": 3`, "too old"},
+		{"future version", `"version": 7`, "unsupported config version"},
+		{"old version", `"version": 4`, "too old"},
 		{"no version", ``, "too old"},
 	}
 	for _, tt := range tests {
@@ -71,7 +76,7 @@ func TestLoadMissing(t *testing.T) {
 
 func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"version": 5, "links": [{"destination": "myhost"}, {"destination": "secret host"}]}`), 0o600)
+	os.WriteFile(path, []byte(`{"version": 6, "links": [{"destination": "myhost"}, {"destination": "secret host"}]}`), 0o600)
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "link 2") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("Load error = %v", err)
@@ -80,24 +85,23 @@ func TestLoadErrorNamesPathButNotValues(t *testing.T) {
 
 func TestLoadDuplicateDestination(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"version": 5, "links": [{"destination": "myhost"}, {"destination": "myhost"}]}`), 0o600)
+	os.WriteFile(path, []byte(`{"version": 6, "links": [{"destination": "myhost"}, {"destination": "myhost"}]}`), 0o600)
 	if _, err := Load(path); err == nil || strings.Contains(err.Error(), "myhost\"") {
 		t.Fatalf("Load error = %v", err)
 	}
 }
 
-func TestLoadVersion4(t *testing.T) {
+func TestLoadVersion5(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	os.WriteFile(path, []byte(`{"version": 4, "down": true, "links": {
-		"web": {"destination": "deploy@ssh.example.com", "remote_gst": "/opt/gst"},
-		"db": {"destination": "myhost"},
-		"also": {"destination": "myhost"}
-	}}`), 0o600)
+	os.WriteFile(path, []byte(`{"version": 5, "down": true, "links": [
+		{"destination": "deploy@ssh.example.com", "remote_gst": "/opt/gst"},
+		{"destination": "myhost"}
+	], "net": {"subnet": "10.99.0.0/16", "since": 1}}`), 0o600)
 	f, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Link{{Destination: "myhost"}, {Destination: "deploy@ssh.example.com", RemoteGst: "/opt/gst"}}
+	want := []Link{{Destination: "deploy@ssh.example.com"}, {Destination: "myhost"}}
 	if f.Version != Version || !f.Down || !reflect.DeepEqual(f.Links, want) {
 		t.Fatalf("Load = %+v, want version %d, down, and links %+v", f, Version, want)
 	}
@@ -113,8 +117,7 @@ func TestLinkID(t *testing.T) {
 func TestUpdateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gst", "config.json")
 	err := Update(path, func(f *File) error {
-		f.Links = append(f.Links, Link{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"})
-		f.Net = &Net{Subnet: "10.99.0.0/16", Since: 7}
+		f.Links = append(f.Links, Link{Destination: "ssh://user@ssh.example.com:2200", SSHArgs: []string{"-i", "/keys/gst"}, Target: nodeID, Admit: true})
 		return nil
 	})
 	if err != nil {
@@ -136,8 +139,7 @@ func TestUpdateRoundTrip(t *testing.T) {
 	}
 	want := &File{
 		Version: Version, Node: f.Node,
-		Links: []Link{{Destination: "ssh://user@ssh.example.com:2200", RemoteGst: "/opt/gst"}},
-		Net:   &Net{Subnet: "10.99.0.0/16", Since: 7},
+		Links: []Link{{Destination: "ssh://user@ssh.example.com:2200", SSHArgs: []string{"-i", "/keys/gst"}, Target: nodeID, Admit: true}},
 	}
 	if !reflect.DeepEqual(f, want) {
 		t.Fatalf("round trip = %+v, want %+v", f, want)

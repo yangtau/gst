@@ -15,7 +15,7 @@ func TestDaemonRestartsAfterUpgrade(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst("link", p.destination())
+	client.mustGst("add", p.destination())
 	client.waitLink(p.destination(), "running")
 	client.installHelper()
 	server.installHelper()
@@ -47,7 +47,7 @@ func TestDownAndUp(t *testing.T) {
 	t.Parallel()
 	p := startPair(t)
 	client, server := p.client, p.server
-	client.mustGst("link", p.destination())
+	client.mustGst("add", p.destination())
 	client.waitLink(p.destination(), "running")
 	if out := server.mustGst("down"); !strings.Contains(out, "gst is down") {
 		t.Fatalf("unexpected gst down output %q", out)
