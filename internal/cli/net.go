@@ -122,7 +122,7 @@ func (a *app) waitNet(ctx context.Context, subnet string) (*wire.NetState, error
 // writePeers prints the other machines of the virtual network.
 func writePeers(out io.Writer, st *wire.NetState) error {
 	w := table(out)
-	fmt.Fprintln(w, "MACHINE\tADDRESS\tPATH\tHANDSHAKE\tRECEIVED\tSENT")
+	fmt.Fprintln(w, "MACHINE\tADDRESS\tWAY\tHANDSHAKE\tRECEIVED\tSENT")
 	for _, p := range st.Peers {
 		handshake := "never"
 		if !p.Handshake.IsZero() {
@@ -319,7 +319,7 @@ func (a *app) installCommand() *cobra.Command {
 			if err := h.Install(exe, name); err != nil {
 				return err
 			}
-			fmt.Fprintf(a.stdout, "The network helper runs for %s. This machine joins the network in a few seconds; see it with `gst status`.\n", name)
+			fmt.Fprintf(a.stdout, "The network helper runs for %s; see this machine on the network with `gst status`.\n", name)
 			return nil
 		}),
 	}

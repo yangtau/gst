@@ -199,7 +199,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `gst down [--yes]` | 撤销 `gst up`：停止 gst，删除它的服务和 network helper；其他机器不能 link 到本机 |
 | `gst version` | 显示 gst 的发布版本、commit、协议版本和 network helper 版本 |
 
-`destination` 是 `host`、`user@host` 或 `ssh://user@host:port`。ssh 选项写在 `--` 之后，例如 `-p 2222` 或 `-i ~/.ssh/gst_ed25519`；SSH 连接的其他设置都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。一台机器到同一个 destination 只有一条 link；再次添加会替换它的 ssh 选项。`gst add` 先检查是否有可用的无口令私钥、known_hosts 是否记录了服务器，不通过时不保存。之后它说明结果：`Added devbox to the network: 10.87.61.7, devbox.gst.`、`devbox is already in the network; this machine now also links to it.` 或 `Changed this machine's link to devbox.`
+`destination` 是 `host`、`user@host` 或 `ssh://user@host:port`。ssh 选项写在 `--` 之后，例如 `-p 2222` 或 `-i ~/.ssh/gst_ed25519`；SSH 连接的其他设置都来自你的 ssh 配置（见 [ssh 配置](#ssh-配置)）。一台机器到同一个 destination 只有一条 link；再次添加会替换它的 ssh 选项。`gst add` 先检查是否有可用的无口令私钥、known_hosts 是否记录了服务器，不通过时不保存。之后它说明结果：`Added devbox to the network: 10.87.61.7, devbox.gst.`、`Joined the network through devbox: 10.87.61.7, devbox.gst.`（本机原来独自一台、devbox 已在一个网络里时）、`devbox is already in the network; this machine now also links to it.` 或 `Changed this machine's link to devbox.`
 
 `gst remove` 会说明哪些机器只经由被移除的那台连到网络，它们在 link 到别的机器之前一直离线。在被移除的机器上，`gst status` 说明是谁、在什么时候移除了它。
 

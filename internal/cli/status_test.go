@@ -454,5 +454,11 @@ func TestStatusShowsARemoval(t *testing.T) {
 	e.mustGst("up")
 	e.back.topology = wire.Topology{Self: nodeID("aaaa1111"), Nodes: []wire.TopoNode{{ID: nodeID("aaaa1111"), Name: "laptop", Reachable: true}}}
 	e.back.removed = &wire.Removed{By: peerOf("devbox"), At: time.Now().Add(-2 * time.Hour)}
-	contains(t, e.mustGst("status"), "This machine was removed from the network by devbox 2h ago. Join again with `gst add <destination>`")
+	e.back.net = &wire.NetState{Error: "this machine is not in a network"}
+	out := e.mustGst("status")
+	contains(t, out, "This machine was removed from the network by devbox 2h ago. Join again with `gst add <destination>`")
+	// The removal says it already.
+	if strings.Contains(out, "not in a network") {
+		t.Fatalf("output %q", out)
+	}
 }

@@ -174,7 +174,8 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 	if len(cut) > 0 {
 		problems = append(problems, "no link leads to "+strings.Join(cut, ", ")+", reached only directly: removals and new names do not travel between them and this machine; link to them with `gst add`")
 	}
-	if st.Net != nil && st.Net.Error != "" {
+	// A removed machine is in no network, which the removal says already.
+	if st.Net != nil && st.Net.Error != "" && st.Removed == nil {
 		text := "network: " + st.Net.Error
 		if st.Net.Hint != "" {
 			text += "; " + st.Net.Hint

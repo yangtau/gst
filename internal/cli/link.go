@@ -99,11 +99,16 @@ back a machine that was removed from the network, from either end.`,
 			case inNetwork[peer.ID]:
 				fmt.Fprintf(a.stdout, "%s is already in the network; this machine now also links to it.\n", peer.Name)
 			default:
-				if address := a.addressOf(cmd.Context(), peer.ID); address != "" {
-					fmt.Fprintf(a.stdout, "Added %s to the network: %s, %s.gst.\n", peer.Name, address, peer.Name)
-				} else {
-					fmt.Fprintf(a.stdout, "Added %s to the network.\n", peer.Name)
+				address, brought := a.arrival(cmd.Context(), peer.ID)
+				// This machine, alone so far, joins the network of the other.
+				text := "Added " + peer.Name + " to the network"
+				if brought && len(inNetwork) <= 1 {
+					text = "Joined the network through " + peer.Name
 				}
+				if address != "" {
+					text += fmt.Sprintf(": %s, %s.gst", address, peer.Name)
+				}
+				fmt.Fprintln(a.stdout, text+".")
 			}
 			return nil
 		}),
@@ -144,28 +149,32 @@ func (a *app) watchLink(ctx context.Context, l *config.Link) (*wire.NodeInfo, er
 	}
 }
 
-// addressOf waits a moment for the gst IP of machine id.
-func (a *app) addressOf(ctx context.Context, id string) string {
+// arrival waits a moment for the gst IP of machine id, which a link just
+// reached, and says whether it brought other machines along.
+func (a *app) arrival(ctx context.Context, id string) (address string, brought bool) {
 	b, err := a.backend()
 	if err != nil {
-		return ""
+		return "", false
 	}
-	if st := a.status(ctx); st == nil || st.Net == nil || st.Net.Interface == "" {
-		return "" // This machine is not on the gst network.
-	}
+	st := a.status(ctx)
+	onNet := st != nil && st.Net != nil && st.Net.Interface != ""
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	for {
 		if topo, err := call[wire.Topology](ctx, b, wire.MethodTopology, nil); err == nil {
+			brought = slices.ContainsFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID != topo.Self && n.ID != id })
+			if !onNet {
+				return "", brought // This machine is not on the gst network.
+			}
 			for _, n := range topo.Nodes {
 				if n.ID == id && n.Net != nil {
-					return n.Net.Address
+					return n.Net.Address, brought
 				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ""
+			return "", brought
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

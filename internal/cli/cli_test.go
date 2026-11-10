@@ -46,6 +46,7 @@ type fakeBackend struct {
 	links      func(node string) (wire.Ping, error)
 	direct     func(node string) (wire.DirectReport, error)
 	topology   wire.Topology
+	synced     *wire.Topology // the topology after the next sync, which links change
 	net        *wire.NetState // what the daemon reports of the network
 	removed    *wire.Removed  // what the daemon reports of a removal
 	remove     func(node string) (wire.Removal, error)
@@ -121,6 +122,9 @@ func (f *fakeBackend) Sync(_ context.Context, command []string) error {
 		f.calls = append(f.calls, "sync (uninstall)")
 	} else {
 		f.calls = append(f.calls, "sync")
+	}
+	if f.synced != nil {
+		f.topology, f.synced = *f.synced, nil
 	}
 	if f.syncErr != nil {
 		return f.syncErr
@@ -529,7 +533,8 @@ func TestAdd(t *testing.T) {
 	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) || !e.back.installed {
 		t.Fatalf("daemon command %v, installed %v", e.back.command, e.back.installed)
 	}
-	if !slices.Equal(e.back.calls, []string{"sync"}) {
+	// It starts gst, then sees whom the link reached.
+	if !slices.Equal(e.back.calls, []string{"sync", "nodes"}) {
 		t.Fatalf("calls %v", e.back.calls)
 	}
 	if e.load().Node == nil {
@@ -567,6 +572,25 @@ func TestAdd(t *testing.T) {
 	e.back.linkStates["db"] = wire.LinkState{Destination: "db", State: wire.StateDown, Error: "connection refused"}
 	out = e.mustGst("add", "db")
 	if want := "Added the link to db. It connects in the background; see it with `gst status`.\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+}
+
+// A machine alone so far joins the network of the machine it links to.
+func TestAddJoinsANetwork(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	self := e.load().Node.ID
+	devbox, far := peerOf("devbox").ID, nodeID("cccc3333")
+	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop"}}}
+	e.back.synced = &wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop"}, {ID: devbox, Name: "devbox"}, {ID: far, Name: "far"}}}
+	if out, want := e.mustGst("add", "devbox"), "Joined the network through devbox.\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+	// Two machines alone make a network of their own.
+	e.back.topology = wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop"}}}
+	e.back.synced = &wire.Topology{Self: self, Nodes: []wire.TopoNode{{ID: self, Name: "laptop"}, {ID: peerOf("db").ID, Name: "db"}}}
+	if out, want := e.mustGst("add", "db"), "Added db to the network.\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 }
