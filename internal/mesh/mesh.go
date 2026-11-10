@@ -76,6 +76,7 @@ type Node struct {
 	routes     map[string][]string  // shortest routes along the links, from this node, by node id
 	lost       map[string]time.Time // when nodes stopped being reachable, by node id
 	changed    chan struct{}        // closed and replaced at every change
+	moved      chan struct{}        // closed and replaced when the machine's addresses change; see Moved
 	seenTable  <-chan struct{}      // the table's Changed at the last change
 	seenDirect string               // the nodes with UDP paths at the last change
 
@@ -108,6 +109,7 @@ func New(cfg Config) *Node {
 		routes:  map[string][]string{},
 		lost:    map[string]time.Time{},
 		changed: make(chan struct{}),
+		moved:   make(chan struct{}),
 
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},

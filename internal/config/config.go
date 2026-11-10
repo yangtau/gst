@@ -325,13 +325,19 @@ func ValidateName(name string) error {
 // DefaultNodeName derives a valid node name from the host name.
 func DefaultNodeName() string {
 	host, _ := os.Hostname()
-	host, _, _ = strings.Cut(strings.ToLower(host), ".")
+	host, _, _ = strings.Cut(host, ".")
+	return NodeName(host)
+}
+
+// NodeName derives a valid node name from text, such as the name that a
+// machine goes by.
+func NodeName(text string) string {
 	var b strings.Builder
-	for _, r := range host {
+	for _, r := range strings.ToLower(text) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
-		case b.Len() > 0:
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "-"):
 			b.WriteByte('-')
 		}
 	}

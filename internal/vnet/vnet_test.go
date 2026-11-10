@@ -445,6 +445,7 @@ type testNode struct {
 	mu      sync.Mutex
 	iface   *fakeInterface
 	dir     string
+	tune    func(*Config) // changes the configuration of the next run
 }
 
 func (n *testNode) device() *fakeInterface {
@@ -464,7 +465,7 @@ func start(t *testing.T, w *world, id, name string, networks ...netip.Prefix) *t
 }
 
 func (n *testNode) run(t *testing.T, networks ...netip.Prefix) {
-	n.manager = New(Config{
+	cfg := Config{
 		Mesh:      n.mesh,
 		Log:       log.New(io.Discard, "", 0),
 		StatePath: filepath.Join(n.dir, "net.json"),
@@ -476,7 +477,11 @@ func (n *testNode) run(t *testing.T, networks ...netip.Prefix) {
 			return f, nil
 		},
 		UsedPrefixes: func(string) UsedPrefixes { return UsedPrefixes{Interfaces: networks} },
-	})
+	}
+	if n.tune != nil {
+		n.tune(&cfg)
+	}
+	n.manager = New(cfg)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
@@ -601,7 +606,7 @@ func TestLatestSubnetWins(t *testing.T) {
 	b.mesh.SetSubnet("10.60.0.0/16", true)
 	waitFor(t, "a follows", func() bool {
 		st := a.manager.Status()
-		return st.Subnet == "10.60.0.0/16" && strings.HasPrefix(st.Address, "10.60.") && len(st.Peers) == 1
+		return st != nil && st.Subnet == "10.60.0.0/16" && strings.HasPrefix(st.Address, "10.60.") && len(st.Peers) == 1
 	})
 	waitFor(t, "b sees a", up(b, 1))
 	wantPacket(t, a, b, "ping")

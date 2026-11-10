@@ -10,7 +10,14 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
-const inboundQueue = 2048 // packets on their way to WireGuard; more are dropped
+const (
+	inboundQueue = 2048 // packets on their way to WireGuard; more are dropped
+	// maxInbound is more than WireGuard makes of a packet of the
+	// interface's MTU, which is all that nodes send each other. The
+	// queue holds that much of each packet, and a phone gives a VPN
+	// little memory.
+	maxInbound = 2048
+)
 
 // endpoint is a peer as WireGuard sees it: a node of the mesh, not an
 // address. The mesh knows how to reach the node now, so WireGuard never
@@ -46,7 +53,7 @@ type bind struct {
 func newBind(send func(node string, packet []byte), dropped *atomic.Uint64) *bind {
 	b := &bind{send: send, dropped: dropped, in: make(chan inbound, inboundQueue)}
 	b.pool.New = func() any {
-		buf := make([]byte, 1<<16)
+		buf := make([]byte, maxInbound)
 		return &buf
 	}
 	return b
@@ -54,6 +61,10 @@ func newBind(send func(node string, packet []byte), dropped *atomic.Uint64) *bin
 
 // deliver hands WireGuard a packet from node, or drops it.
 func (b *bind) deliver(node string, packet []byte) {
+	if len(packet) > maxInbound {
+		b.dropped.Add(1)
+		return
+	}
 	buf := b.pool.Get().(*[]byte)
 	length := copy(*buf, packet)
 	select {

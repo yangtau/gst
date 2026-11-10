@@ -58,12 +58,24 @@ func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
 	}()
 }
 
+// Moved returns a channel that is closed the next time this machine's
+// addresses change, as when it moves to another network. Nothing closes
+// it while UDP paths are off.
+func (n *Node) Moved() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.moved
+}
+
 // addressesChanged starts over after this machine moved to another network:
 // what failed may work now, and what was measured no longer holds. Each
 // running path measures again, and the other side learns the addresses.
+// Moved tells the rest of the daemon.
 func (n *Node) addressesChanged(ctx context.Context) {
 	n.mu.Lock()
 	clear(n.directWaits)
+	close(n.moved)
+	n.moved = make(chan struct{})
 	n.mu.Unlock()
 	n.packets.Range(func(key, value any) bool {
 		id := key.(string)

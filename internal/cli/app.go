@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -30,18 +29,6 @@ const (
 	exitFailure = 1 // the command could not do its work
 	exitUsage   = 2 // invalid command line or configuration
 )
-
-// defaultConnectTimeout is used when the ssh configuration sets none.
-const defaultConnectTimeout = 15 * time.Second
-
-// remoteGstPath is where gst up puts this gst, under the home directory,
-// for the other machines' links to run.
-const remoteGstPath = ".local/state/gst/bin/gst"
-
-// remoteCommand runs gst peer-bridge on the other machine of a link: the
-// gst that gst up put in place there, or else the one in the PATH. sh -c
-// runs it whatever the login shell is.
-const remoteCommand = `sh -c 'g="$HOME/` + remoteGstPath + `"; [ -x "$g" ] || g=gst; exec "$g" peer-bridge'`
 
 // Execute runs gst with args and returns the process exit code.
 func Execute(args []string) int {
@@ -212,7 +199,7 @@ func (a *app) options(ctx context.Context, l *config.Link) (sshconn.Options, err
 		User:            host.User,
 		IdentityFiles:   host.IdentityFiles,
 		KnownHostsFiles: host.KnownHostsFiles,
-		ConnectTimeout:  cmp.Or(host.ConnectTimeout, defaultConnectTimeout),
+		ConnectTimeout:  cmp.Or(host.ConnectTimeout, sshconn.DefaultConnectTimeout),
 	}, nil
 }
 
@@ -267,35 +254,7 @@ func (a *app) connectLink(ctx context.Context, l *config.Link) (io.ReadWriteClos
 		// Resolution errors quote the ssh configuration.
 		return nil, errors.New("ssh config resolution failed")
 	}
-	conn, err := sshconn.Dial(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	// A server can stall opening the session; the mesh handshake bounds
-	// only what follows.
-	stall := time.AfterFunc(defaultConnectTimeout, func() { conn.Close() })
-	session, err := conn.Start(remoteCommand)
-	if !stall.Stop() && err == nil {
-		session.Close()
-		err = errors.New("the remote command did not start in time")
-	}
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return &linkConn{session, conn}, nil
-}
-
-// linkConn is gst peer-bridge on a link's server; closing it closes the
-// SSH connection too.
-type linkConn struct {
-	*sshconn.Session
-	conn *sshconn.Conn
-}
-
-func (c *linkConn) Close() error {
-	c.Session.Close()
-	return c.conn.Close()
+	return sshconn.Link(ctx, opts)
 }
 
 // daemonCommand is the command line the daemon's service runs: the gst
@@ -336,7 +295,7 @@ func (a *app) placeGst() (string, error) {
 	if err != nil {
 		return "", errors.New("home directory lookup failed")
 	}
-	path := filepath.Join(home, remoteGstPath)
+	path := filepath.Join(home, sshconn.RemoteGstPath)
 	if sameFile(path, exe) {
 		return path, nil
 	}

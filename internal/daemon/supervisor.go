@@ -23,6 +23,7 @@ type supervisor struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	stopped chan struct{}
+	now     chan struct{} // ends the wait before the next try; see retry
 
 	mu         sync.Mutex
 	current    string
@@ -41,6 +42,7 @@ func newSupervisor(d *Daemon, spec config.Link) *supervisor {
 		ctx:     ctx,
 		cancel:  cancel,
 		stopped: make(chan struct{}),
+		now:     make(chan struct{}, 1),
 		current: wire.StateConnecting,
 		since:   time.Now(),
 	}
@@ -107,8 +109,10 @@ func (s *supervisor) run() {
 		case <-s.ctx.Done():
 			return
 		case <-time.After(wait):
+			wait = min(2*wait, maxRetry)
+		case <-s.now:
+			wait = s.d.cfg.RetryDelay
 		}
-		wait = min(2*wait, maxRetry)
 		s.mu.Lock()
 		s.reconnects++
 		s.mu.Unlock()
@@ -121,6 +125,16 @@ func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
 		return err
 	}
 	return s.d.mesh.Link(s.ctx, s.d.admitted(s.spec.Destination), conn, onUp)
+}
+
+// retry makes a link that waits to try again try now, and start over
+// with the shortest wait: the machine moved to another network. A link
+// that is connecting takes it as its next wait.
+func (s *supervisor) retry() {
+	select {
+	case s.now <- struct{}{}:
+	default:
+	}
 }
 
 // stop ends the link and waits until it has shut down.

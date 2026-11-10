@@ -86,6 +86,11 @@ type Config struct {
 	// Echo is the UDP port on this node's address that answers Ping;
 	// nothing answers when it is 0.
 	Echo int
+	// Inside answers on DNS and on Echo at the packets of the interface
+	// rather than on sockets, for a system that keeps this process's
+	// sockets off the interface (see inside.go). DNS is then an address
+	// that the interface routes.
+	Inside bool
 }
 
 // state is what a node keeps between runs.
@@ -120,6 +125,7 @@ type Manager struct {
 	stopEcho context.CancelFunc
 
 	live    atomic.Pointer[wireguard] // for Status
+	inside  atomic.Pointer[inside]    // for Ping, while the network runs with Config.Inside
 	dropped atomic.Uint64             // packets lost on the way to WireGuard
 }
 
@@ -209,7 +215,7 @@ func (m *Manager) Run(ctx context.Context) {
 	m.running.Store(true)
 	defer close(m.ended)
 	defer m.down()
-	dns, logged := m.cfg.DNS != "", false
+	dns, logged := m.cfg.DNS != "" && !m.cfg.Inside, false
 	tick := time.NewTicker(retryInterval)
 	defer tick.Stop()
 	for {
@@ -539,7 +545,14 @@ func (m *Manager) up(ctx context.Context) error {
 	m.bind = newBind(m.cfg.Mesh.SendPacket, &m.dropped)
 	m.loop = &loopback{Device: iface.Device()}
 	m.loop.setAddress(m.state.Address)
-	m.dev = device.NewDevice(m.loop, m.bind, device.NewLogger(device.LogLevelSilent, ""))
+	var seen wgtun.Device = m.loop
+	if m.cfg.Inside {
+		dns, _ := netip.ParseAddrPort(m.cfg.DNS)
+		in := newInside(m.loop, m.loop.own, dns, uint16(m.cfg.Echo), m.resolve)
+		m.inside.Store(in)
+		seen = in
+	}
+	m.dev = device.NewDevice(seen, m.bind, device.NewLogger(device.LogLevelSilent, ""))
 	// An endpoint is a node id, set from the records, and stays right
 	// wherever a machine moves. The node that a packet seems to come from
 	// is less sure: two machines behind one NAT can have the same source
@@ -575,6 +588,7 @@ func (m *Manager) down() {
 	m.name = ""
 	m.peers = map[string]peer{}
 	m.live.Store(nil)
+	m.inside.Store(nil)
 }
 
 // syncPeers makes WireGuard know the other nodes of the network.

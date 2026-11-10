@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,4 +144,36 @@ func expandHome(path, home string) string {
 		return filepath.Join(home, strings.TrimPrefix(path, "~"))
 	}
 	return path
+}
+
+// Literal reads what a destination says by itself, "user@host" or
+// "ssh://user@host:port", for machines that have no ssh to ask and no ssh
+// configuration, such as phones. The destination must name the user, as
+// nothing else does there; the port is 22 unless it names one.
+func Literal(destination string) (Host, error) {
+	h := Host{Port: "22"}
+	if rest, ok := strings.CutPrefix(destination, "ssh://"); ok {
+		u, err := url.Parse("ssh://" + rest)
+		if err != nil || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+			return Host{}, errors.New("invalid destination: use user@host or ssh://user@host:port")
+		}
+		h.User, h.Hostname = u.User.Username(), u.Hostname()
+		if port := u.Port(); port != "" {
+			h.Port = port
+		}
+	} else if i := strings.LastIndex(destination, "@"); i >= 0 {
+		h.User, h.Hostname = destination[:i], strings.TrimSuffix(strings.TrimPrefix(destination[i+1:], "["), "]")
+	} else {
+		h.Hostname = destination
+	}
+	if h.Hostname == "" || strings.ContainsAny(h.Hostname, " /@") {
+		return Host{}, errors.New("invalid destination: use user@host or ssh://user@host:port")
+	}
+	if h.User == "" {
+		return Host{}, errors.New("the destination must name the user: user@host")
+	}
+	if n, err := strconv.Atoi(h.Port); err != nil || n < 1 || n > 65535 {
+		return Host{}, errors.New("invalid destination: the port must be between 1 and 65535")
+	}
+	return h, nil
 }

@@ -1,8 +1,10 @@
 package tun
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -46,3 +48,36 @@ func openDevice() (*os.File, string, error) {
 }
 
 func newSystem() system { return newDarwinSystem() }
+
+// Inherited returns the utun device that the system opened in this
+// process, as iOS does for the process that runs a VPN: the system makes
+// the interface and sets it up, and hands over no descriptor, so this
+// finds it among the open ones. The device is a copy of the descriptor,
+// so that closing it leaves the system's open, and a later call finds the
+// interface again.
+func Inherited() (*Device, error) {
+	for fd := range 1024 {
+		if sa, err := unix.Getpeername(fd); err != nil {
+			continue
+		} else if _, ok := sa.(*unix.SockaddrCtl); !ok {
+			continue
+		}
+		name, err := unix.GetsockoptString(fd, 2, 2) // SYSPROTO_CONTROL, UTUN_OPT_IFNAME
+		if err != nil || !strings.HasPrefix(name, "utun") {
+			continue
+		}
+		copied, err := unix.Dup(fd)
+		if err != nil {
+			return nil, fmt.Errorf("copy the device: %w", err)
+		}
+		unix.CloseOnExec(copied)
+		// In non-blocking mode the runtime polls it, so that closing it
+		// ends the read in progress.
+		if err := unix.SetNonblock(copied, true); err != nil {
+			unix.Close(copied)
+			return nil, err
+		}
+		return newDevice(os.NewFile(uintptr(copied), "tun"), name), nil
+	}
+	return nil, errors.New("the system gave this process no interface")
+}

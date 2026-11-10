@@ -346,3 +346,12 @@ func TestCheckHintFollowsServerPort(t *testing.T) {
 		t.Fatalf("Check = %v, want a hint with the port", err)
 	}
 }
+
+// The other machines' links run the gst that gst up put in place, or the
+// one in the PATH, with any login shell.
+func TestLinkCommand(t *testing.T) {
+	want := `sh -c 'g="$HOME/.local/state/gst/bin/gst"; [ -x "$g" ] || g=gst; exec "$g" peer-bridge'`
+	if LinkCommand != want {
+		t.Fatalf("link command %s", LinkCommand)
+	}
+}

@@ -234,6 +234,11 @@ func TestNodeIdentity(t *testing.T) {
 	if err := ValidateName(DefaultNodeName()); err != nil {
 		t.Errorf("DefaultNodeName: %v", err)
 	}
+	for text, want := range map[string]string{"Mac-Mini": "mac-mini", "My iPhone": "my-iphone", "Tablet (2)": "tablet-2", "": "node", "手机": "node"} {
+		if got := NodeName(text); got != want {
+			t.Errorf("NodeName(%q) = %q, want %q", text, got, want)
+		}
+	}
 }
 
 func TestValidateDestination(t *testing.T) {

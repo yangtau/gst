@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -26,6 +27,13 @@ const (
 // Ping sends a packet of size bytes to the daemon at address in the network
 // and waits for it to come back.
 func (m *Manager) Ping(ctx context.Context, address string, size int) (time.Duration, error) {
+	if m.cfg.Inside {
+		in := m.inside.Load()
+		if in == nil {
+			return 0, errors.New("the network is down")
+		}
+		return in.ping(ctx, address, size)
+	}
 	return ping(ctx, net.JoinHostPort(address, strconv.Itoa(m.cfg.Echo)), size)
 }
 
@@ -62,7 +70,7 @@ func ping(ctx context.Context, address string, size int) (time.Duration, error) 
 
 // answerPings answers on this machine's address, once the interface has it.
 func (m *Manager) answerPings(ctx context.Context) error {
-	if m.cfg.Echo == 0 || m.echoing == m.state.Address {
+	if m.cfg.Echo == 0 || m.cfg.Inside || m.echoing == m.state.Address {
 		return nil
 	}
 	m.stopAnswering()

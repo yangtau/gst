@@ -361,12 +361,24 @@ func TestNetworkChange(t *testing.T) {
 	goDirect(t, a, c)
 	a.backOff(nid("gone"))
 
+	moved := a.Moved()
 	a.addressesChanged(t.Context())
 	a.mu.Lock()
 	waits := len(a.directWaits)
 	a.mu.Unlock()
 	if waits != 0 {
 		t.Fatalf("%d waits left", waits)
+	}
+	// The daemon hears of it too, for its links.
+	select {
+	case <-moved:
+	default:
+		t.Fatal("Moved did not tell")
+	}
+	select {
+	case <-a.Moved():
+		t.Fatal("Moved tells of a move that did not happen")
+	default:
 	}
 	waitFor(t, "c hears of it", func() bool {
 		r, err := c.DirectReport(t.Context(), "a")

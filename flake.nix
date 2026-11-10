@@ -21,9 +21,9 @@
           default = self.packages.${system}.gst;
           gst = (pkgs.buildGo126Module {
             pname = "gst";
-            # The release is internal/cli/version.go's; see AGENTS.md.
-            version = builtins.head (builtins.match ".*const version = \"([^\"]+)\".*"
-              (builtins.readFile ./internal/cli/version.go));
+            # The release is internal/version/version.go's; see AGENTS.md.
+            version = builtins.head (builtins.match ".*const Release = \"([^\"]+)\".*"
+              (builtins.readFile ./internal/version/version.go));
             src = pkgs.lib.cleanSource ./.;
             vendorHash = "sha256-zwAyWDXDhSUMT+4/aL/hVOTk2X42qbBqF2wfQWL9HZE=";
             subPackages = [ "cmd/gst" ];
@@ -34,8 +34,8 @@
                 at = pkgs.lib.optionalString (d != "") (with builtins;
                   "${substring 0 4 d}-${substring 4 2 d}-${substring 6 2 d}T${substring 8 2 d}:${substring 10 2 d}:${substring 12 2 d}Z");
               in [
-                "-X github.com/yangtau/ssh-tunnel/internal/cli.commit=${self.rev or self.dirtyRev or ""}"
-                "-X github.com/yangtau/ssh-tunnel/internal/cli.committed=${at}"
+                "-X github.com/yangtau/ssh-tunnel/internal/version.commit=${self.rev or self.dirtyRev or ""}"
+                "-X github.com/yangtau/ssh-tunnel/internal/version.committed=${at}"
               ];
 
             nativeBuildInputs = [ pkgs.installShellFiles ]

@@ -2,7 +2,9 @@
 // that is this machine's node in the mesh. It runs the links of the
 // configuration file, accepts the links of other nodes, runs the
 // virtual network, and answers gst commands on a Unix control socket
-// using the gst protocol (internal/wire).
+// using the gst protocol (internal/wire). Where a process cannot serve a
+// socket, as on a phone, Run runs the same daemon without one, and Call
+// answers the same methods in the process.
 package daemon
 
 import (
@@ -32,9 +34,12 @@ import (
 // Config configures a daemon.
 type Config struct {
 	ConfigPath string // the gst configuration file
-	Socket     string // control socket path
-	Software   string // reported in Hello and Status, such as "gst 0.5.0+a2ffc87"
-	Build      string // identifies the executable; see Build
+	Socket     string // control socket path, for Serve
+	// StateDir holds the table of the network and the keys of the virtual
+	// network; the directory of Socket when empty.
+	StateDir string
+	Software string // reported in Hello and Status, such as "gst 0.5.0+a2ffc87"
+	Build    string // identifies the executable; see Build
 
 	// Connect opens a connection to the daemon on the node at the other
 	// end of l, as gst peer-bridge there does; closing it ends everything
@@ -48,9 +53,12 @@ type Config struct {
 	// run when it is nil; NetDNS is the UDP address to answer for .gst on,
 	// and UsedPrefixes what is in use on this machine, by default as
 	// vnet.LocalPrefixes finds it.
-	OpenNet      func(tun.Spec) (vnet.Interface, error)
-	NetDNS       string
-	NetEcho      int // the UDP port that answers gst ping
+	OpenNet func(tun.Spec) (vnet.Interface, error)
+	NetDNS  string
+	NetEcho int // the UDP port that answers gst ping
+	// NetInside answers on NetDNS and NetEcho at the packets of the
+	// interface rather than on sockets; see vnet.Config.Inside.
+	NetInside    bool
 	UsedPrefixes func(skip string) vnet.UsedPrefixes
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
@@ -82,11 +90,14 @@ func New(cfg Config) *Daemon {
 	if cfg.Log == nil {
 		cfg.Log = log.Default()
 	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = filepath.Dir(cfg.Socket)
+	}
 	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}}
 	m := mesh.New(mesh.Config{
 		Software:       cfg.Software,
 		Log:            cfg.Log,
-		StatePath:      filepath.Join(filepath.Dir(cfg.Socket), "state.json"),
+		StatePath:      filepath.Join(cfg.StateDir, "state.json"),
 		Status:         d.Status,
 		SaveGeneration: d.saveGeneration,
 	})
@@ -94,11 +105,12 @@ func New(cfg Config) *Daemon {
 	d.net = vnet.New(vnet.Config{
 		Mesh:         m,
 		Log:          cfg.Log,
-		StatePath:    filepath.Join(filepath.Dir(cfg.Socket), "net.json"),
+		StatePath:    filepath.Join(cfg.StateDir, "net.json"),
 		Open:         cfg.OpenNet,
 		UsedPrefixes: cfg.UsedPrefixes,
 		DNS:          cfg.NetDNS,
 		Echo:         cfg.NetEcho,
+		Inside:       cfg.NetInside,
 	})
 	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {
@@ -150,30 +162,7 @@ func (d *Daemon) Serve(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	defer d.stopAll()
-	meshCtx, stopMesh := context.WithCancel(ctx)
-	defer stopMesh()
-	go d.mesh.Run(meshCtx)
-	if d.cfg.Addresses != nil {
-		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
-	}
-
-	if err := d.Reload(ctx); err != nil {
-		// Keep serving: a later reload, after the configuration is
-		// fixed, can still start the links.
-		d.cfg.Log.Print(err)
-	}
-	go d.dropRemovedLinks(meshCtx)
-	netDone := make(chan struct{})
-	go func() {
-		defer close(netDone)
-		d.net.Run(meshCtx)
-	}()
-	defer func() {
-		stopMesh()
-		<-netDone
-	}()
-	d.cfg.Log.Printf("%s daemon ready", d.cfg.Software)
+	defer d.start(ctx)()
 
 	var conns sync.WaitGroup
 	defer conns.Wait()
@@ -192,6 +181,50 @@ func (d *Daemon) Serve(ctx context.Context) error {
 			defer context.AfterFunc(ctx, func() { conn.Close() })()
 			d.serveConn(ctx, conn)
 		})
+	}
+}
+
+// Run starts what the configuration asks for and keeps it until ctx is
+// done, when it stops everything. It serves no socket: Call answers the
+// control methods, and no other node can link to this one.
+func (d *Daemon) Run(ctx context.Context) {
+	stop := d.start(ctx)
+	<-ctx.Done()
+	stop()
+}
+
+// Call answers a call of a control method in this process, as a control
+// connection would.
+func (d *Daemon) Call(ctx context.Context, req wire.Request) wire.Response {
+	return d.control.Call(ctx, req)
+}
+
+// start starts the mesh, the links of the configuration, and the virtual
+// network. The function it returns stops them all and waits for that.
+func (d *Daemon) start(ctx context.Context) (stop func()) {
+	meshCtx, stopMesh := context.WithCancel(ctx)
+	go d.mesh.Run(meshCtx)
+	if d.cfg.Addresses != nil {
+		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
+	}
+
+	if err := d.Reload(ctx); err != nil {
+		// Keep going: a later reload, after the configuration is
+		// fixed, can still start the links.
+		d.cfg.Log.Print(err)
+	}
+	go d.dropRemovedLinks(meshCtx)
+	go d.retryWhenMoved(meshCtx)
+	netDone := make(chan struct{})
+	go func() {
+		defer close(netDone)
+		d.net.Run(meshCtx)
+	}()
+	d.cfg.Log.Printf("%s daemon ready", d.cfg.Software)
+	return func() {
+		stopMesh()
+		<-netDone
+		d.stopAll()
 	}
 }
 
@@ -436,6 +469,25 @@ func (d *Daemon) dropRemovedLinks(ctx context.Context) {
 			return
 		case <-changed:
 		}
+	}
+}
+
+// retryWhenMoved makes the links that wait to try again try at once
+// whenever this machine moves to another network, until ctx is done: what
+// kept them from connecting may be gone, and a machine that moves often,
+// as a phone does, would otherwise wait out the longest delay each time.
+func (d *Daemon) retryWhenMoved(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.mesh.Moved():
+		}
+		d.mu.Lock()
+		for _, s := range d.links {
+			s.retry()
+		}
+		d.mu.Unlock()
 	}
 }
 

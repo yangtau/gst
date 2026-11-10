@@ -320,9 +320,35 @@ func AsError(err error) *Error {
 	return Errorf(CodeFailed, "%v", err)
 }
 
+// Call answers one call in this process, as Serve answers the calls on a
+// stream, for a caller that shares the process with the methods. A method
+// that takes a stream over has none to take, and is not supported.
+func (s *Server) Call(ctx context.Context, req Request) Response {
+	m, ok := s.methods[req.Method]
+	if !ok || m.takesOver {
+		return Response{Error: Errorf(CodeUnsupportedMethod, "method %q is not supported", req.Method)}
+	}
+	var resp *Response
+	err := m.call(ctx, nil, req.Params, func(result any) error {
+		r := response(result, nil)
+		resp = &r
+		return nil
+	})
+	if resp == nil {
+		return response(nil, AsError(err))
+	}
+	return *resp
+}
+
 // reply writes the response to a request: result, or callErr when it is
 // not nil.
 func reply(w io.Writer, result any, callErr *Error) error {
+	return WriteFrame(w, response(result, callErr))
+}
+
+// response is the response to a request: result, or callErr when it is
+// not nil.
+func response(result any, callErr *Error) Response {
 	resp := Response{Error: callErr}
 	if callErr == nil && result != nil {
 		raw, err := json.Marshal(result)
@@ -332,5 +358,5 @@ func reply(w io.Writer, result any, callErr *Error) error {
 			resp.Result = raw
 		}
 	}
-	return WriteFrame(w, resp)
+	return resp
 }

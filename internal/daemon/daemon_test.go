@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -915,4 +916,99 @@ func call[R any](ctx context.Context, c *Client, method string, params any) (R, 
 	var r R
 	err := c.Call(ctx, method, params, &r)
 	return r, err
+}
+
+// A process that cannot serve a socket, as on a phone, runs the same
+// daemon with Run, and Call answers what the socket would.
+func TestRunAndCallWithoutASocket(t *testing.T) {
+	w := newWorld(t)
+	b := startTestNode(t, w, "b")
+	p := &testNode{t: t, w: w, name: "p", cfgPath: filepath.Join(w.dir, "p", "config.json"), log: &syncBuffer{}}
+	p.update(func(f *config.File) {
+		f.Node = &config.Node{ID: nid("p"), Name: "p"}
+		addLinks(f, "b")
+	})
+	p.d = New(Config{
+		ConfigPath: p.cfgPath, StateDir: filepath.Join(w.dir, "p", "state"), Software: "gst test",
+		Connect: p.connect, RetryDelay: time.Millisecond, Log: log.New(p.log, "", 0),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.d.Run(ctx)
+	}()
+	defer cancel()
+
+	call := func(method string, result any) *wire.Error {
+		resp := p.d.Call(ctx, wire.Request{Method: method})
+		if resp.Error == nil && result != nil {
+			if err := json.Unmarshal(resp.Result, result); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return resp.Error
+	}
+	waitFor(t, "p's link runs", func() bool {
+		var st wire.Status
+		return call(wire.MethodStatus, &st) == nil && len(st.Links) == 1 && st.Links[0].State == wire.StateRunning
+	})
+	waitFor(t, "b reaches p", func() bool { return b.reaches("p") })
+	var topo wire.Topology
+	if err := call(wire.MethodTopology, &topo); err != nil || len(topo.Nodes) != 2 || topo.Self != nid("p") {
+		t.Fatalf("topology = %+v, %v", topo, err)
+	}
+	if err := call("nonsense", nil); err == nil || err.Code != wire.CodeUnsupportedMethod {
+		t.Fatalf("an unknown method: %v", err)
+	}
+	resp := p.d.Call(ctx, wire.Request{Method: wire.MethodPing, Params: json.RawMessage(`{"node": "b"}`)})
+	var ping wire.Ping
+	if resp.Error != nil || json.Unmarshal(resp.Result, &ping) != nil || ping.Node.Name != "b" {
+		t.Fatalf("ping = %s, %v", resp.Result, resp.Error)
+	}
+	waitFor(t, "the table is kept in the state directory", func() bool {
+		_, err := os.Stat(filepath.Join(w.dir, "p", "state", "state.json"))
+		return err == nil
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+	waitFor(t, "b lost p", func() bool { return !b.reaches("p") })
+}
+
+// A machine that moves to another network tries its links at once, and
+// waits no longer than at first after that.
+func TestMovingRetriesLinksAtOnce(t *testing.T) {
+	w := newWorld(t)
+	const base = 300 * time.Millisecond
+	a := newTestNode(t, w, "a", false, base)
+	a.start()
+	a.apply(func(f *config.File) { addLinks(f, "refuse") })
+	// Past the first waits, which are short anyway.
+	waitFor(t, "the wait has grown", func() bool { return len(a.attemptsTo("refuse")) >= 3 })
+	before := len(a.attemptsTo("refuse"))
+	failed := a.attemptsTo("refuse")[before-1].at
+
+	moved := time.Now()
+	a.d.mu.Lock()
+	for _, s := range a.d.links {
+		s.retry()
+	}
+	a.d.mu.Unlock()
+	waitFor(t, "a new attempt", func() bool { return len(a.attemptsTo("refuse")) > before })
+	at := a.attemptsTo("refuse")
+	// The wait that it cut short was 4 x base.
+	if gap := at[before].at.Sub(failed); gap >= 4*base && at[before].at.Sub(moved) > base {
+		t.Errorf("the attempt after the move came %v after the failure", gap)
+	}
+	waitFor(t, "the attempt after that", func() bool { return len(a.attemptsTo("refuse")) > before+1 })
+	at = a.attemptsTo("refuse")
+	// Without the move, it would be 8 x base by now.
+	if gap := at[before+1].at.Sub(at[before].at); gap < base || gap >= 4*base {
+		t.Errorf("the wait after the move = %v, want about %v", gap, base)
+	}
 }

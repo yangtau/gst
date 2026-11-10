@@ -26,6 +26,14 @@ func (l *loopback) setAddress(text string) {
 	l.address.Store(&address)
 }
 
+// own returns this node's address; the zero address while it has none.
+func (l *loopback) own() netip.Addr {
+	if address := l.address.Load(); address != nil {
+		return *address
+	}
+	return netip.Addr{}
+}
+
 func (l *loopback) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	n, err := l.Device.Read(bufs, sizes, offset)
 	for i := range n {

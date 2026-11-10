@@ -97,3 +97,34 @@ func TestResolveWithSSH(t *testing.T) {
 		t.Fatalf("unexpected error %v", err)
 	}
 }
+
+func TestLiteral(t *testing.T) {
+	for destination, want := range map[string]string{
+		"admin@ssh.example.com":             "admin@ssh.example.com:22",
+		"admin@192.0.2.7":                   "admin@192.0.2.7:22",
+		"admin@2001:db8::7":                 "admin@[2001:db8::7]:22",
+		"admin@[2001:db8::7]":               "admin@[2001:db8::7]:22",
+		"ssh://admin@ssh.example.com":       "admin@ssh.example.com:22",
+		"ssh://admin@ssh.example.com:2222":  "admin@ssh.example.com:2222",
+		"ssh://admin@ssh.example.com:2222/": "admin@ssh.example.com:2222",
+		"ssh://admin@[2001:db8::7]:2222":    "admin@[2001:db8::7]:2222",
+		"first.last@corp@ssh.example.com":   "first.last@corp@ssh.example.com:22",
+	} {
+		h, err := Literal(destination)
+		if err != nil {
+			t.Errorf("Literal(%q): %v", destination, err)
+			continue
+		}
+		if got := h.User + "@" + h.Address(); got != want {
+			t.Errorf("Literal(%q) = %s, want %s", destination, got, want)
+		}
+	}
+	for _, destination := range []string{
+		"", "ssh.example.com", "@ssh.example.com", "admin@", "ssh://ssh.example.com", "ssh://admin@ssh.example.com:0",
+		"ssh://admin@ssh.example.com:port", "ssh://admin@ssh.example.com/path", "admin@ssh example.com",
+	} {
+		if h, err := Literal(destination); err == nil {
+			t.Errorf("Literal(%q) = %+v, want an error", destination, h)
+		}
+	}
+}

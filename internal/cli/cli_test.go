@@ -23,6 +23,7 @@ import (
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/sshconfig"
+	"github.com/yangtau/ssh-tunnel/internal/sshconn"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -502,7 +503,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 		t.Fatal("GST_CONFIG was not used")
 	}
 	// A non-default path is passed on to the daemon.
-	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) {
+	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, sshconn.RemoteGstPath), "--config", e.config, "daemon"}) {
 		t.Fatalf("daemon command %v", e.back.command)
 	}
 }
@@ -530,7 +531,7 @@ func TestAdd(t *testing.T) {
 	if got := e.link("myhost"); got == nil || !reflect.DeepEqual(*got, want) {
 		t.Fatalf("saved %+v, want %+v", got, want)
 	}
-	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) || !e.back.installed {
+	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, sshconn.RemoteGstPath), "--config", e.config, "daemon"}) || !e.back.installed {
 		t.Fatalf("daemon command %v, installed %v", e.back.command, e.back.installed)
 	}
 	// It starts gst, then sees whom the link reached.

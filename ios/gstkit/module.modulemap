@@ -1,0 +1,8 @@
+module GstKit {
+    header "gstkit.h"
+    // What Go's runtime and its crypto and net packages call on Apple's systems.
+    link "resolv"
+    link framework "CoreFoundation"
+    link framework "Security"
+    export *
+}

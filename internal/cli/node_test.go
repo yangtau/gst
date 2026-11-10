@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yangtau/ssh-tunnel/internal/sshconn"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -86,7 +87,7 @@ func TestUpDown(t *testing.T) {
 	if !regexp.MustCompile(`^gst is up\. This machine is [a-z0-9-]+ \([0-9a-f]{8}\)\.\n$`).MatchString(out) {
 		t.Fatalf("output %q", out)
 	}
-	if !e.back.installed || !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) {
+	if !e.back.installed || !slices.Equal(e.back.command, []string{filepath.Join(e.home, sshconn.RemoteGstPath), "--config", e.config, "daemon"}) {
 		t.Fatalf("installed %v, command %v", e.back.installed, e.back.command)
 	}
 	if !slices.Equal(e.back.calls, []string{"sync"}) || e.load().Down {
@@ -154,7 +155,7 @@ func TestUpFailureReportsDaemonError(t *testing.T) {
 func TestUpPlacesGst(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
-	path := filepath.Join(e.home, remoteGstPath)
+	path := filepath.Join(e.home, sshconn.RemoteGstPath)
 	if target, err := os.Readlink(path); err != nil || target != e.exe {
 		t.Fatalf("link %s -> %q, %v", path, target, err)
 	}
@@ -182,7 +183,7 @@ func TestServiceRunsThePlacedGst(t *testing.T) {
 	if err := os.Symlink(real, profile); err != nil {
 		t.Fatal(err)
 	}
-	placed := filepath.Join(e.home, remoteGstPath)
+	placed := filepath.Join(e.home, sshconn.RemoteGstPath)
 	e.exe = profile
 	e.mustGst("up")
 	for _, exe := range []string{real, placed} {
@@ -194,14 +195,5 @@ func TestServiceRunsThePlacedGst(t *testing.T) {
 		if e.back.command[0] != placed {
 			t.Fatalf("run as %s: service runs %v", exe, e.back.command)
 		}
-	}
-}
-
-// The other machines' links run that gst, or the one in the PATH, with
-// any login shell.
-func TestRemoteCommand(t *testing.T) {
-	want := `sh -c 'g="$HOME/.local/state/gst/bin/gst"; [ -x "$g" ] || g=gst; exec "$g" peer-bridge'`
-	if remoteCommand != want {
-		t.Fatalf("remote command %s", remoteCommand)
 	}
 }

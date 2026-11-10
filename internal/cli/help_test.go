@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yangtau/ssh-tunnel/internal/tun"
+	"github.com/yangtau/ssh-tunnel/internal/version"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
@@ -20,11 +21,11 @@ func TestVersion(t *testing.T) {
 	}
 	var want bytes.Buffer
 	built.write(&want)
-	if got := stdout.String(); got != want.String() || !strings.HasPrefix(got, "gst "+version+"\n") {
+	if got := stdout.String(); got != want.String() || !strings.HasPrefix(got, "gst "+version.Release+"\n") {
 		t.Fatalf("version output = %q, want %q", got, &want)
 	}
-	if !strings.HasPrefix(software, "gst "+version) {
-		t.Fatalf("software = %q, want the release %s", software, version)
+	if !strings.HasPrefix(software, "gst "+version.Release) {
+		t.Fatalf("software = %q, want the release %s", software, version.Release)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", &stderr)
@@ -40,21 +41,21 @@ func TestBuildInfo(t *testing.T) {
 		short    string
 		text     string
 	}{
-		{"", nil, version, ""},
+		{"", nil, version.Release, ""},
 		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "false", "vcs.time": at},
-			version + "+a2ffc87", "commit: " + rev + "\ncommitted: " + at + "\n"},
+			version.Release + "+a2ffc87", "commit: " + rev + "\ncommitted: " + at + "\n"},
 		{"", map[string]string{"vcs.revision": rev, "vcs.modified": "true", "vcs.time": at},
-			version + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
+			version.Release + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
 		{rev + "-dirty", map[string]string{"vcs.revision": "ffffffffff"},
-			version + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
+			version.Release + "+a2ffc87.dirty", "commit: " + rev + " (dirty)\ncommitted: " + at + "\n"},
 	} {
-		b := readBuildInfo(tt.commit, at, tt.settings)
-		if got := b.short(); got != tt.short {
+		b := buildInfo{version.Read(tt.commit, at, tt.settings), wire.Protocol, tun.HelperVersion}
+		if got := b.Short(); got != tt.short {
 			t.Errorf("short(%q, %v) = %q, want %q", tt.commit, tt.settings, got, tt.short)
 		}
 		var out bytes.Buffer
 		b.write(&out)
-		want := fmt.Sprintf("gst %s\n%sprotocol: %d\nhelper: %d\n", version, tt.text, wire.Protocol, tun.HelperVersion)
+		want := fmt.Sprintf("gst %s\n%sprotocol: %d\nhelper: %d\n", version.Release, tt.text, wire.Protocol, tun.HelperVersion)
 		if out.String() != want {
 			t.Errorf("write(%q, %v) = %q, want %q", tt.commit, tt.settings, &out, want)
 		}
