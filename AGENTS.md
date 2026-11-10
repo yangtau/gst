@@ -31,7 +31,7 @@ gst links a user's machines into a private network over SSH: one background daem
 - `internal/logfile`: rotating log files.
 - `internal/service`: installs the daemon as a systemd or launchd service, and the network helper as a system one.
 - `internal/mobile`: gst on a phone, in two processes that share a directory: the app's part (the `app.…` methods: the identity, a key of its own, trusted host keys, the links), which does what the CLI does elsewhere, and the packet tunnel's (`Start`, `Stop`), which runs the daemon with `inside` and has the system set the interface up (`Settings`).
-- `ios`: the iOS app. `gstkit` is `internal/mobile` as a C library (`gstkit.h`; it builds wherever cgo does, so `go vet ./...` covers it), `App` the SwiftUI app, `Tunnel` the packet tunnel extension, `Shared` the Swift face of `gstkit`, `Tests` and `UITests` its tests. See `ios/README.md`.
+- `ios`: the iOS app. `gstkit` is `internal/mobile` as a C library (`gstkit.h`; it builds wherever cgo does, so `go vet ./...` covers it), `App` the SwiftUI app, `Tunnel` the packet tunnel extension, `Shared` the Swift face of `gstkit`, `Tests` and `UITests` its tests, and `screenshots` the pictures of its screens that the README shows, which CI takes and commits when a commit's message has `[screenshots]`. See `ios/README.md`.
 - `integration`: tests against real OpenSSH servers in containers.
 
 ## Conventions
