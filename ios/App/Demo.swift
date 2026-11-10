@@ -3,7 +3,7 @@ import Foundation
 
 /// The app on a made-up network, without gst: what Xcode's previews
 /// show, and what `-GstDemo <screen>` on the app's command line opens,
-/// which is how the screenshots are taken (screenshots.sh).
+/// which is how the tests of the screens look at them (UITests).
 enum Demo: String, CaseIterable {
     /// The first screen of a phone in a network of five.
     case home

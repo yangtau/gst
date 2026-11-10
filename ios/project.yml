@@ -63,7 +63,7 @@ targets:
         com.apple.developer.networking.networkextension: [packet-tunnel-provider]
         com.apple.security.application-groups: [$(GST_APP_GROUP)]
     scheme:
-      testTargets: [GstTests]
+      testTargets: [GstTests, GstUITests]
 
   # The packet tunnel: what the gst daemon is on other machines.
   Tunnel:
@@ -112,3 +112,18 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(GST_BUNDLE_ID).tests
         GENERATE_INFOPLIST_FILE: YES
+
+  # Opens every screen of the app on a made-up network (App/Demo.swift),
+  # checks it, and keeps a picture of it.
+  GstUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: Gst
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(GST_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Gst

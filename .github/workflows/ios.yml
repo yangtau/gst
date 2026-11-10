@@ -1,6 +1,6 @@
-# Builds the iOS app with Xcode, for a device and for the simulator, runs
-# its tests in the simulator, and takes screenshots of it there, which
-# the run keeps as an artifact. See ios/README.md.
+# Builds the iOS app with Xcode, for a device and for the simulator, and
+# runs its tests in the simulator. The tests of the screens take a picture
+# of each, which the run keeps as an artifact. See ios/README.md.
 name: iOS
 
 on:
@@ -40,15 +40,19 @@ jobs:
             -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -quiet build
       - name: Test in the simulator
         if: always()
+        env:
+          # The tests of the screens keep their pictures there.
+          TEST_RUNNER_GST_SCREENSHOTS: ${{ github.workspace }}/ios/build/screenshots
         run: |
           set -o pipefail
           xcodebuild -project ios/Gst.xcodeproj -scheme Gst -derivedDataPath ios/build/derived \
+            -resultBundlePath ios/build/tests.xcresult \
             -destination "id=$(ios/simulator.sh),arch=arm64" test |
             grep -E "^Test (Case|Suite) .*(passed|failed)|Executed [0-9]+ tests|error:|warning:|\*\* TEST"
-      - name: Take screenshots
-        run: |
-          ios/screenshots.sh ios/build/derived/Build/Products/Debug-iphonesimulator/gst.app ios/build/screenshots
-      - uses: actions/upload-artifact@v4
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: screenshots
           path: ios/build/screenshots
+          if-no-files-found: warn
