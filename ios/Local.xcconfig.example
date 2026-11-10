@@ -1,0 +1,8 @@
+// Copy this file to Local.xcconfig and fill it in.
+
+// Your Apple Developer team id, from developer.apple.com/account.
+DEVELOPMENT_TEAM = ABCDE12345
+
+// A bundle identifier of your own. The packet tunnel is
+// $(GST_BUNDLE_ID).tunnel, and the app group group.$(GST_BUNDLE_ID).
+GST_BUNDLE_ID = com.example.gst

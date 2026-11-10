@@ -1,0 +1,93 @@
+# The Xcode project of the iOS app, for XcodeGen: `make ios` at the top of
+# the repository builds gst's Go code and generates Gst.xcodeproj from this.
+name: Gst
+options:
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  groupSortPosition: top
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: 1
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # What gst's Go code calls on Apple's systems: the resolver, and
+    # the frameworks behind its crypto packages.
+    OTHER_LDFLAGS: ["-lresolv", "-framework", "CoreFoundation", "-framework", "Security"]
+
+targets:
+  # The app: what the gst command is on other machines.
+  Gst:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Shared
+    dependencies:
+      - target: Tunnel
+      - framework: build/GstKit.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: gst
+        PRODUCT_BUNDLE_IDENTIFIER: $(GST_BUNDLE_ID)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    info:
+      path: build/App-Info.plist
+      properties:
+        CFBundleDisplayName: gst
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleLocalizations: [en, zh-Hans]
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: gst logs in to the machines that you add, which may be on your local network.
+        GstAppGroup: $(GST_APP_GROUP)
+    entitlements:
+      path: build/App.entitlements
+      properties:
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+        com.apple.security.application-groups: [$(GST_APP_GROUP)]
+
+  # The packet tunnel: what the gst daemon is on other machines.
+  Tunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Tunnel
+      - Shared
+    dependencies:
+      - framework: build/GstKit.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(GST_BUNDLE_ID).tunnel
+    info:
+      path: build/Tunnel-Info.plist
+      properties:
+        CFBundleDisplayName: gst
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+        GstAppGroup: $(GST_APP_GROUP)
+    entitlements:
+      path: build/Tunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension: [packet-tunnel-provider]
+        com.apple.security.application-groups: [$(GST_APP_GROUP)]

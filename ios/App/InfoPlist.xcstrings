@@ -1,0 +1,22 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSLocalNetworkUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst logs in to the machines that you add, which may be on your local network."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 需要登录你添加的机器，它们可能在你的本地网络中。"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

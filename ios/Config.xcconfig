@@ -1,0 +1,10 @@
+// What the app is called on Apple's side. The bundle identifier and the
+// team that signs it are yours: set GST_BUNDLE_ID and DEVELOPMENT_TEAM in
+// Local.xcconfig, which git ignores (see README.md here).
+GST_BUNDLE_ID = com.example.gst
+GST_APP_GROUP = group.$(GST_BUNDLE_ID)
+MARKETING_VERSION = 0.0.0
+
+// The release of gst, which build-core.sh reads from the Go code.
+#include? "build/Version.xcconfig"
+#include? "Local.xcconfig"

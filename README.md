@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`gst` (go ssh tunnel) links your machines into a private network over SSH. It feels like Tailscale, and uses the SSH logins you already have: every machine gets a gst IP and the name `<machine>.gst`, for any program and protocol. Traffic is WireGuard, end to end. It goes directly over UDP when the network allows it, and is relayed along the SSH links otherwise. It runs on Linux and macOS, and needs root once on each machine.
+`gst` (go ssh tunnel) links your machines into a private network over SSH. It feels like Tailscale, and uses the SSH logins you already have: every machine gets a gst IP and the name `<machine>.gst`, for any program and protocol. Traffic is WireGuard, end to end. It goes directly over UDP when the network allows it, and is relayed along the SSH links otherwise. It runs on Linux and macOS, where it needs root once on each machine, and on iPhone and iPad as an app (see [iPhone and iPad](#iphone-and-ipad)).
 
 Three words are all you need:
 
@@ -213,7 +213,7 @@ The commands, in the order of `gst --help`. How to name a machine is described i
 | `relay via devbox` | Relayed along the SSH links, through the machines named |
 | `offline, seen 3h ago` | No way leads to it now; it last said anything of itself that long ago |
 
-With `-v`, links show as the machines at their ends, such as `laptop -> gateway`. A `Problems:` section lists this machine's links that are not running, and what keeps it off the network. A link is `running`, `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs.
+With `-v`, links show as the machines at their ends, such as `laptop -> gateway`. A `Problems:` section lists this machine's links that are not running, and what keeps it off the network. A link is `running`, `connecting`, or `down` (failed and retrying; the last error is shown, including the first line of the other gst's error). A failed link retries after 5 seconds, then 10, doubling up to every 5 minutes, and starts over once it runs. When the machine moves to another network, its failed links retry at once.
 
 `gst ping` prints, for example, `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`, or `reply from gateway (10.87.2.9): relay via devbox, 41.3 ms`. The packet goes the way of every program's packets, through the interface and WireGuard, so `direct` and an `ip:port` mean that the direct path to that address works, and the time is about what `ping <machine>.gst` shows. Traffic is what starts a direct path, so the first replies may be relayed. `-v` also checks the SSH links, which carry the control of the network: `SSH links: gateway answered via devbox in 41.3 ms`. That time is higher, as it includes setting up the way through each machine. The command exits with status 1 if no reply came.
 
@@ -261,6 +261,29 @@ gst ui --port 8370   # on devbox; then open http://devbox.gst:8370/#... on any m
 ```
 
 The address ends with a random secret after `#`, which the page needs; anyone with the full address can use the page while `gst ui` runs. Each run makes a new secret.
+
+## iPhone and iPad
+
+The gst app puts an iPhone or iPad in the network. gst runs there as a VPN: the subnet of the network and the names under `.gst` go through it, to every app, and nothing else does. The phone has an SSH key of its own, made by the app, and links to your machines with it; it has no `~/.ssh/config`.
+
+The app is not in the App Store. Build it with Xcode from [`ios/`](ios/README.md), which takes an Apple Developer account that can sign a VPN.
+
+To join a network:
+
+1. Tap **+** and enter the SSH login of a machine where you ran `gst up`, as `user@host`, and its port if it is not 22.
+2. The app shows the server's host key fingerprint the first time. Compare it with the server's own, which `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints there, and trust it.
+3. The app then shows a command that adds the phone's public key to `~/.ssh/authorized_keys`. Run it on that machine, logged in as that user, and tap **Try Again**. **Settings** shows the key at any time.
+4. The app adds the link and turns gst on. iOS asks once whether gst may add a VPN configuration.
+
+The first screen lists the machines with `Direct`, `Relay`, or `Offline`, as `gst status` does, and problems above them. Tap a machine for its gst IP and name, a ping, and removing it from the network. The switch at the bottom turns gst on and off; while it is on, iOS keeps it running, and starts it again after a restart. **Settings** renames the phone, lists its links (swipe one to remove it, as `gst unlink` does), and shows the log.
+
+What differs from the other machines:
+
+- Nothing can link to a phone, as it accepts no SSH logins. Other machines reach it through its own links, so add at least one machine that stays on.
+- A link's destination is `user@host` or `ssh://user@host:port`, and the phone uses its own key and the host keys that you trusted in the app. There are no ssh options.
+- `gst expose`, `gst subnet`, and `gst ui` have no counterpart in the app; run them on another machine. A page that `gst ui` serves there opens in the phone's browser.
+- `gst ping` from another machine to the phone works for packets up to the interface's MTU.
+- iOS shows the VPN as connected while gst runs, whether or not a link is up. The app shows what the links do.
 
 ## Upgrading
 

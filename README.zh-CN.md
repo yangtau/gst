@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有网络。体验接近 Tailscale，直接使用你已有的 SSH 登录：每台机器都有一个 gst IP 和名字 `<machine>.gst`，所有程序和协议都能用。流量是端到端的 WireGuard。网络允许时经 UDP 直连，否则经 SSH link 中转。支持 Linux 和 macOS，每台机器需要用一次 root。
+`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有网络。体验接近 Tailscale，直接使用你已有的 SSH 登录：每台机器都有一个 gst IP 和名字 `<machine>.gst`，所有程序和协议都能用。流量是端到端的 WireGuard。网络允许时经 UDP 直连，否则经 SSH link 中转。支持 Linux 和 macOS，每台机器需要用一次 root；iPhone 和 iPad 上有 app（见 [iPhone 和 iPad](#iphone-和-ipad)）。
 
 只需要三个词：
 
@@ -213,7 +213,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `relay via devbox` | 经 SSH link 中转，途经列出的机器 |
 | `offline, seen 3h ago` | 现在没有路通向它；它最后一次报告自己是这么久之前 |
 
-加 `-v` 时，link 显示为两端的机器，例如 `laptop -> gateway`。`Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。
+加 `-v` 时，link 显示为两端的机器，例如 `laptop -> gateway`。`Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。机器换到另一个网络时，失败的 link 立刻重试。
 
 `gst ping` 的输出例如 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`，或者 `reply from gateway (10.87.2.9): relay via devbox, 41.3 ms`。这个包和所有程序的包走同一条路，经过网卡和 WireGuard，所以 `direct` 和 `ip:port` 说明到这个地址的直连是通的，时间和 `ping <machine>.gst` 差不多。直连由流量触发，所以最初几次回复可能是 relay。`-v` 还会检查承载网络控制的 SSH link：`SSH links: gateway answered via devbox in 41.3 ms`。这个时间更长，因为包括经过每台机器时建立通路的时间。没有收到回复时退出码为 1。
 
@@ -261,6 +261,29 @@ gst ui --port 8370   # 在 devbox 上运行；然后在网络里任意机器上�
 ```
 
 地址在 `#` 后带有一段随机密钥，页面需要它才能读取数据；`gst ui` 运行期间，拿到完整地址的人都能使用页面。每次运行生成新的密钥。
+
+## iPhone 和 iPad
+
+gst app 把 iPhone 或 iPad 加入网络。gst 在上面以 VPN 的方式运行：只有网络的网段和 `.gst` 下的名字经过它，对所有 app 生效，其他流量不受影响。手机有一把由 app 生成的、自己的 SSH 密钥，用它 link 到你的机器；手机上没有 `~/.ssh/config`。
+
+app 没有上架 App Store。用 Xcode 从 [`ios/`](ios/README.md) 构建，需要一个能为 VPN 签名的 Apple Developer 账号。
+
+加入网络的步骤：
+
+1. 点 **+**，输入一台执行过 `gst up` 的机器的 SSH 登录地址 `user@host`，端口不是 22 时再填端口。
+2. 第一次连接时 app 会显示服务器主机密钥的指纹。在服务器上用 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 查看它自己的指纹，核对后信任。
+3. 接着 app 显示一条命令，用来把手机的公钥加入 `~/.ssh/authorized_keys`。以该用户登录那台机器并执行它，然后点 **重试**。**设置**中随时可以查看这把公钥。
+4. app 添加 link 并开启 gst。iOS 会询问一次是否允许 gst 添加 VPN 配置。
+
+首页列出所有机器，以及 `直连`、`中转` 或 `离线`，与 `gst status` 一致，问题显示在列表上方。点一台机器可以看到它的 gst IP 和名字、ping 它、把它移出网络。底部的开关用来开启和关闭 gst；开启期间 iOS 让它保持运行，重启后也会自动开启。**设置**中可以修改手机的名字、查看它的 link（左滑删除，相当于 `gst unlink`）和日志。
+
+与其他机器的不同：
+
+- 没有机器能 link 到手机，因为它不接受 SSH 登录。其他机器经由手机自己的 link 到达它，所以至少添加一台一直在线的机器。
+- link 的 destination 是 `user@host` 或 `ssh://user@host:port`，手机使用自己的密钥和你在 app 中信任过的主机密钥，没有 ssh 选项。
+- app 中没有 `gst expose`、`gst subnet` 和 `gst ui` 的对应功能，请在其他机器上执行。在那里运行的 `gst ui` 页面可以用手机的浏览器打开。
+- 其他机器对手机执行 `gst ping` 时，包不能超过网卡的 MTU。
+- 只要 gst 在运行，iOS 就显示 VPN 已连接，不管 link 是否连上。link 的状态请看 app。
 
 ## 升级
 

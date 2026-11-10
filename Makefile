@@ -4,7 +4,7 @@
 -include integration/local.mk
 export CONTAINER_RUNTIME IT_BASE_IMAGE IT_APT_MIRROR IT_BUILD_FLAGS
 
-.PHONY: help build install test test-integration release
+.PHONY: help build install test test-integration release ios
 
 help:
 	@printf '%s\n' \
@@ -12,7 +12,8 @@ help:
 	  'make install           install gst with go install' \
 	  'make test              run the unit tests' \
 	  'make test-integration  run the integration tests against sshd in a container' \
-	  'make release V=X.Y.Z   set the version, test, commit, and tag'
+	  'make release V=X.Y.Z   set the version, test, commit, and tag' \
+	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)'
 
 build:
 	go build -o bin/gst ./cmd/gst
@@ -28,3 +29,7 @@ test-integration:
 
 release:
 	scripts/release.sh "$(V)"
+
+ios:
+	ios/build-core.sh
+	cd ios && xcodegen generate

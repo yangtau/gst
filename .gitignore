@@ -3,3 +3,6 @@
 /integration/local.mk
 /tunnel.json
 /.envrc
+/ios/build/
+/ios/Gst.xcodeproj/
+/ios/Local.xcconfig

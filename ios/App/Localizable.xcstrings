@@ -1,0 +1,1006 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "%@ removed this machine from the network %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 在%2$@把本机移出了网络。"
+          }
+        }
+      }
+    },
+    "%lld of %lld machines online": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld / %2$lld 台机器在线"
+          }
+        }
+      }
+    },
+    "22": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "22"
+          }
+        }
+      }
+    },
+    "A machine lets this machine link to it once this line is in its `~/.ssh/authorized_keys`. The private key never leaves this machine.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把这一行加入一台机器的 `~/.ssh/authorized_keys`，本机就能 link 到它。私钥不会离开本机。"
+          }
+        }
+      }
+    },
+    "Add a Machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加机器"
+          }
+        }
+      }
+    },
+    "Add a machine to join a network again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加一台机器即可重新加入网络。"
+          }
+        }
+      }
+    },
+    "Added, and still connecting": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已添加，仍在连接"
+          }
+        }
+      }
+    },
+    "Address": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地址"
+          }
+        }
+      }
+    },
+    "Another key is recorded for %@. Unless someone replaced the server's key, something else answers in its place.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机为 %@ 记录的是另一把密钥。除非有人更换了服务器的密钥，否则应答的并不是它。"
+          }
+        }
+      }
+    },
+    "Authorize it on a machine where you ran `gst up`.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在一台执行过 `gst up` 的机器上为它授权。"
+          }
+        }
+      }
+    },
+    "Authorize this machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为本机授权"
+          }
+        }
+      }
+    },
+    "Change the Login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修改登录地址"
+          }
+        }
+      }
+    },
+    "Close": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "Connecting to the server…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接服务器…"
+          }
+        }
+      }
+    },
+    "Connecting…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接中…"
+          }
+        }
+      }
+    },
+    "Connection": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接方式"
+          }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "Copy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝"
+          }
+        }
+      }
+    },
+    "Copy Command": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝命令"
+          }
+        }
+      }
+    },
+    "Copy Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝密钥"
+          }
+        }
+      }
+    },
+    "Direct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直连"
+          }
+        }
+      }
+    },
+    "Done": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "Down, trying again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已断开，正在重试"
+          }
+        }
+      }
+    },
+    "Enter the SSH login of a machine where you ran `gst up`. This machine links to it, and reaches every machine of its network.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入一台执行过 `gst up` 的机器的 SSH 登录地址。本机会 link 到它，并由此访问它所在网络的每台机器。"
+          }
+        }
+      }
+    },
+    "Every machine drops its links to it and forgets it. It comes back only when someone adds it again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有机器都会断开到它的 link 并忘掉它。只有再次添加，它才会回来。"
+          }
+        }
+      }
+    },
+    "Fingerprint (%@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指纹（%@）"
+          }
+        }
+      }
+    },
+    "ID": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID"
+          }
+        }
+      }
+    },
+    "Is this the right server?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是你要连的服务器吗？"
+          }
+        }
+      }
+    },
+    "It adds this machine's public key to `~/.ssh/authorized_keys`. The private key never leaves this machine.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它把本机的公钥加入 `~/.ssh/authorized_keys`。私钥不会离开本机。"
+          }
+        }
+      }
+    },
+    "Join your network": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入你的网络"
+          }
+        }
+      }
+    },
+    "Joined through %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已通过 %@ 加入"
+          }
+        }
+      }
+    },
+    "Joining the network…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加入网络…"
+          }
+        }
+      }
+    },
+    "Last handshake": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近握手"
+          }
+        }
+      }
+    },
+    "Last seen": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最后在线"
+          }
+        }
+      }
+    },
+    "Leave": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离开"
+          }
+        }
+      }
+    },
+    "Leave the Network": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离开网络"
+          }
+        }
+      }
+    },
+    "Leave the network?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离开网络？"
+          }
+        }
+      }
+    },
+    "Links": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Link"
+          }
+        }
+      }
+    },
+    "Log": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日志"
+          }
+        }
+      }
+    },
+    "Machines": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "机器"
+          }
+        }
+      }
+    },
+    "Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名字"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "Off": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已关闭"
+          }
+        }
+      }
+    },
+    "Offline": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线"
+          }
+        }
+      }
+    },
+    "Offline, seen %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线，最后在线：%@"
+          }
+        }
+      }
+    },
+    "On": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已开启"
+          }
+        }
+      }
+    },
+    "Other machines reach this machine as %@.gst.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他机器用 %@.gst 访问本机。"
+          }
+        }
+      }
+    },
+    "Ping": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ping"
+          }
+        }
+      }
+    },
+    "Port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口"
+          }
+        }
+      }
+    },
+    "Reach every machine by its name, such as devbox.gst.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用名字访问每台机器，例如 devbox.gst。"
+          }
+        }
+      }
+    },
+    "Received": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已接收"
+          }
+        }
+      }
+    },
+    "Relay": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中转"
+          }
+        }
+      }
+    },
+    "Relay via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经 %@ 中转"
+          }
+        }
+      }
+    },
+    "Remove": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除"
+          }
+        }
+      }
+    },
+    "Remove %@ from the network?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把 %@ 移出网络？"
+          }
+        }
+      }
+    },
+    "Remove from the Network": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移出网络"
+          }
+        }
+      }
+    },
+    "Replace the Recorded Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换已记录的密钥"
+          }
+        }
+      }
+    },
+    "Run `gst up` on that machine, with the same version of gst as here. The link then connects by itself.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在那台机器上执行 `gst up`，gst 的版本要与本机一致。之后 link 会自动连上。"
+          }
+        }
+      }
+    },
+    "Running": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行中"
+          }
+        }
+      }
+    },
+    "Running, to %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行中，已连到 %@"
+          }
+        }
+      }
+    },
+    "SSH Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 密钥"
+          }
+        }
+      }
+    },
+    "Sent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已发送"
+          }
+        }
+      }
+    },
+    "Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置"
+          }
+        }
+      }
+    },
+    "Share": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享"
+          }
+        }
+      }
+    },
+    "Subnet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网段"
+          }
+        }
+      }
+    },
+    "Swipe a link to remove it. Its machine stays in the network.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "左滑即可删除 link，对应的机器仍在网络中。"
+          }
+        }
+      }
+    },
+    "That did not work": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有成功"
+          }
+        }
+      }
+    },
+    "The link to %@ is down.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "到 %@ 的 link 已断开。"
+          }
+        }
+      }
+    },
+    "The log is empty.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日志为空。"
+          }
+        }
+      }
+    },
+    "The machines of the network show here once a link connects.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "link 连上后，网络中的机器会显示在这里。"
+          }
+        }
+      }
+    },
+    "The server does not accept this machine's key yet. Log in to it as %@ from a machine that can, and run this command.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器还不接受本机的密钥。请从能登录的机器上以 %@ 登录它，并执行这条命令。"
+          }
+        }
+      }
+    },
+    "The server's key changed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器的密钥变了"
+          }
+        }
+      }
+    },
+    "This Machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机"
+          }
+        }
+      }
+    },
+    "This machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机"
+          }
+        }
+      }
+    },
+    "This machine drops its links and forgets the other machines. It joins a network again when you add a machine.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机会断开所有 link 并忘掉其他机器。添加一台机器即可重新加入网络。"
+          }
+        }
+      }
+    },
+    "This machine has an SSH key of its own.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机有一把自己的 SSH 密钥。"
+          }
+        }
+      }
+    },
+    "This machine has no gst IP yet. Run `gst up` on it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台机器还没有 gst IP。请在它上面执行 `gst up`。"
+          }
+        }
+      }
+    },
+    "This machine has no links yet. Add a machine on the first screen.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机还没有 link。请在首页添加机器。"
+          }
+        }
+      }
+    },
+    "This machine has not seen %@ before. Compare the fingerprint with the server's own before you trust it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机第一次见到 %@。信任之前，请和服务器自己的指纹核对。"
+          }
+        }
+      }
+    },
+    "This machine is in the network now. Its machines show on the first screen as they answer.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机已在网络中。其他机器应答后会显示在首页。"
+          }
+        }
+      }
+    },
+    "This machine is no longer in the network": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台机器已不在网络中"
+          }
+        }
+      }
+    },
+    "To see it on the server, run": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在服务器上执行以下命令查看"
+          }
+        }
+      }
+    },
+    "Traffic": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "流量"
+          }
+        }
+      }
+    },
+    "Trust This Server": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信任这台服务器"
+          }
+        }
+      }
+    },
+    "Try Again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启"
+          }
+        }
+      }
+    },
+    "Turning off…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在关闭…"
+          }
+        }
+      }
+    },
+    "Turning on…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在开启…"
+          }
+        }
+      }
+    },
+    "Unlink": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除 link"
+          }
+        }
+      }
+    },
+    "Use 1 to 32 lowercase letters, digits, or hyphens, starting with a letter or digit.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请使用 1 到 32 个小写字母、数字或连字符，并以字母或数字开头。"
+          }
+        }
+      }
+    },
+    "Version": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版本"
+          }
+        }
+      }
+    },
+    "Where is it?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它在哪里？"
+          }
+        }
+      }
+    },
+    "gst IP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst IP"
+          }
+        }
+      }
+    },
+    "gst cannot start": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 无法启动"
+          }
+        }
+      }
+    },
+    "gst could not turn on": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 无法开启"
+          }
+        }
+      }
+    },
+    "gst did not answer.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 没有应答。"
+          }
+        }
+      }
+    },
+    "gst is off.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 已关闭。"
+          }
+        }
+      }
+    },
+    "gst keeps trying in the background, and the machines show on the first screen once the link connects.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 会在后台继续尝试，link 连上后机器会显示在首页。"
+          }
+        }
+      }
+    },
+    "gst links your machines into a private network over SSH. Add one machine that runs gst, and this machine reaches them all.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 通过 SSH 把你的机器连成一个私有网络。添加一台运行 gst 的机器，本机就能访问其中所有机器。"
+          }
+        }
+      }
+    },
+    "user@host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "user@host"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}
