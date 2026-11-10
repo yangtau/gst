@@ -1,6 +1,8 @@
 # Builds the iOS app with Xcode, for a device and for the simulator, and
 # runs its tests in the simulator. The tests of the screens take a picture
-# of each, which the run keeps as an artifact. See ios/README.md.
+# of each, which the run keeps as an artifact. A commit whose message has
+# "[screenshots]", or a run by hand, also puts the pictures, made smaller,
+# in ios/screenshots, where the README shows them. See ios/README.md.
 name: iOS
 
 on:
@@ -48,7 +50,7 @@ jobs:
           xcodebuild -project ios/Gst.xcodeproj -scheme Gst -derivedDataPath ios/build/derived \
             -resultBundlePath ios/build/tests.xcresult \
             -destination "id=$(ios/simulator.sh),arch=arm64" test |
-            grep -E "^Test (Case|Suite) .*(passed|failed)|Executed [0-9]+ tests|error:|warning:|\*\* TEST"
+            grep --line-buffered -E "^Test (Case|Suite) .*(passed|failed)|Executed [0-9]+ tests|error:|warning:|\*\* TEST"
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,3 +58,32 @@ jobs:
           name: screenshots
           path: ios/build/screenshots
           if-no-files-found: warn
+
+  screenshots:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screenshots]')
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: screenshots
+          path: ios/build/screenshots
+      - name: Put the screenshots in the repository
+        run: |
+          rm -rf ios/screenshots
+          mkdir -p ios/screenshots
+          for picture in ios/build/screenshots/*.png; do
+            name=$(basename "$picture" .png)
+            sips -Z 1000 -s format jpeg -s formatOptions 70 "$picture" --out "ios/screenshots/$name.jpg" >/dev/null
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ios/screenshots
+          git diff --cached --quiet || git commit -m "Update the screenshots of the iOS app"
+          git push origin "HEAD:${{ github.ref_name }}"
