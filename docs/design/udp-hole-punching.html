@@ -435,7 +435,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     <ul>
       <li><strong>元数据。</strong>路上的人知道这两个地址在通信、什么时候、流量多大，也能认出 WireGuard。gst 不做流量伪装。</li>
       <li><strong>拒绝服务。</strong>能阻断 UDP 的人总能让直连失败，包回到 SSH。</li>
-      <li><strong>已移除但没收到通知的节点。</strong>link 已断时执行 <code>gst remove</code>，对方收不到 <code>link.remove</code>，如果也没收到路径关闭时的 bye，现有 UDP 路径会继续运行，最多到记录过期（20 到 30 分钟）。这段时间对方仍然能走这条路径。</li>
+      <li><strong>还没收到移除记录的节点。</strong>移除记录只沿 SSH link 泛洪。如果 link 图被切成两半，另一半的节点在 link 把两半重新连起来之前收不到它，它和被移除节点之间现有的 UDP 路径会继续运行。<code>gst status</code> 把这种只能直连到达的节点报为问题。</li>
     </ul>
   </div>
 </section>
