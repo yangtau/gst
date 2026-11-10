@@ -353,12 +353,15 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 		case <-ctx.Done():
 			return
 		case <-path.Done():
-			n.log.Printf("UDP path to %s: ended", n.nodeName(id))
-			n.trace(id, "ended")
-			// Only a failure waits: a side closed the path on purpose.
+			// Only a failure waits: the other side closed the path on
+			// purpose, as it was idle there or the node left.
+			why := "closed by the other node"
 			if path.FellSilent() {
+				why = "fell silent"
 				n.backOff(id)
 			}
+			n.log.Printf("UDP path to %s: %s", n.nodeName(id), why)
+			n.trace(id, "%s", why)
 			return
 		case <-idle.C:
 			if path.Idle() >= n.directIdle && n.router.Reaches(id) {
