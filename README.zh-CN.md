@@ -102,7 +102,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-link 在后台连接，连上后机器出现在列表里。没有 link 再能到达的机器留在列表里，显示为 `offline, seen 3h ago`。列表下方的 `Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。`gst ping devbox` 检查到一台机器的路，打印 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`。
+link 在后台连接，连上后机器出现在列表里。没有 link 再能到达的机器留在列表里，显示为 `offline, seen 3h ago`。列表下方的 `Problems:` 部分列出本机未运行的 link，没有 link 通向、只能直接到达的机器（移除和改名不会在它们和本机之间传递；用 `gst add` 加一条通向它们的 link），以及本机不能加入网络的原因。`gst ping devbox` 检查到一台机器的路，打印 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`。
 
 现在 `homelab` 能看到同一个网络：在 `homelab` 上，`gst status` 列出 `laptop` 和 `devbox`，`ping devbox.gst` 不需要到 `devbox` 的 link 也能通。
 

@@ -102,7 +102,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-Links connect in the background, and machines appear in the list when they do. A machine that no link reaches any more stays in the list as `offline, seen 3h ago`. Below the list, a `Problems:` section names this machine's links that are not running, and anything that keeps it off the network. `gst ping devbox` checks the way to a machine and prints `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`.
+Links connect in the background, and machines appear in the list when they do. A machine that no link reaches any more stays in the list as `offline, seen 3h ago`. Below the list, a `Problems:` section names this machine's links that are not running, machines that no link leads to although packets reach them directly (removals and new names do not travel between them and this machine; `gst add` a link to them), and anything that keeps this machine off the network. `gst ping devbox` checks the way to a machine and prints `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`.
 
 `homelab` now sees the same network: on `homelab`, `gst status` lists `laptop` and `devbox`, and `ping devbox.gst` works without a link to `devbox`.
 

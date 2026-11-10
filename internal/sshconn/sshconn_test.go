@@ -205,8 +205,8 @@ func TestSessionFailure(t *testing.T) {
 	for session.Failure() == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := session.Failure(); got != "error: first line" {
-		t.Fatalf("Failure = %q, want the first stderr line", got)
+	if got := session.Failure(); got != "first line" {
+		t.Fatalf("Failure = %q, want the first stderr line without its error: prefix", got)
 	}
 }
 

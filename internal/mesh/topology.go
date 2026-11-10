@@ -276,9 +276,19 @@ func (n *Node) Call(ctx context.Context, ref, method string, params, result any)
 		return err
 	}
 	if !dest.Reachable {
-		return wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
+		return unreachable(dest)
 	}
 	return n.router.Call(ctx, dest.ID, method, params, result)
+}
+
+// unreachable is the error for a call to dest, which no route leads to.
+// A UDP path carries only packets of the virtual network, so a node that
+// has one is online still.
+func unreachable(dest wire.TopoNode) error {
+	if dest.Direct {
+		return wire.Errorf(wire.CodeUnreachable, "no link leads to %s, which is online only directly", dest.Name)
+	}
+	return wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
 }
 
 // Ping calls ping on the node that ref names, along the links, and
@@ -291,7 +301,7 @@ func (n *Node) Ping(ctx context.Context, ref string) (wire.Ping, error) {
 		return wire.Ping{}, err
 	}
 	if !dest.Reachable {
-		return wire.Ping{}, wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
+		return wire.Ping{}, unreachable(dest)
 	}
 	n.tryDirect(dest.ID)
 	start := time.Now()

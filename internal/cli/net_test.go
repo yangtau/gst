@@ -123,9 +123,12 @@ func TestStatusOfANodeWithOnlyAUDPPath(t *testing.T) {
 		{ID: b, Name: "b", Direct: true},
 	}}
 	contains(t, e.mustGst("status"), "direct")
-	if strings.Contains(e.mustGst("status"), "offline") {
+	out := e.mustGst("status")
+	if strings.Contains(out, "offline") {
 		t.Fatal("a machine with a direct path shows as offline")
 	}
+	// The network's changes travel along the links only.
+	contains(t, out, "no link leads to b, reached only directly")
 }
 
 func TestInstallNeedsRoot(t *testing.T) {

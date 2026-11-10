@@ -164,6 +164,16 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 			problems = append(problems, "link to "+destinationText(l)+": "+linkStateText(l))
 		}
 	}
+	// The network's changes travel along the links only, not directly.
+	var cut []string
+	for _, n := range topo.Nodes {
+		if n.ID != topo.Self && n.Direct && !n.Reachable {
+			cut = append(cut, names[n.ID])
+		}
+	}
+	if len(cut) > 0 {
+		problems = append(problems, "no link leads to "+strings.Join(cut, ", ")+", reached only directly: removals and new names do not travel between them and this machine; link to them with `gst add`")
+	}
 	if st.Net != nil && st.Net.Error != "" {
 		text := "network: " + st.Net.Error
 		if st.Net.Hint != "" {

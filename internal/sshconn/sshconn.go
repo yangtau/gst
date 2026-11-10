@@ -141,7 +141,8 @@ func (s *Session) Failure() string {
 	case <-time.After(time.Second):
 	}
 	line, _, _ := strings.Cut(s.stderr.String(), "\n")
-	return line
+	// What a gst command prints, without the "error: " of its own output.
+	return strings.TrimPrefix(line, "error: ")
 }
 
 // limitedBuffer keeps the first max bytes written to it.

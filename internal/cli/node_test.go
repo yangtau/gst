@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestUpDown(t *testing.T) {
 	if !regexp.MustCompile(`^gst is up\. This machine is [a-z0-9-]+ \([0-9a-f]{8}\)\.\n$`).MatchString(out) {
 		t.Fatalf("output %q", out)
 	}
-	if !e.back.installed || !slices.Equal(e.back.command, []string{e.exe, "--config", e.config, "daemon"}) {
+	if !e.back.installed || !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) {
 		t.Fatalf("installed %v, command %v", e.back.installed, e.back.command)
 	}
 	if !slices.Equal(e.back.calls, []string{"sync"}) || e.load().Down {
@@ -161,6 +162,38 @@ func TestUpPlacesGst(t *testing.T) {
 	e.mustGst("up")
 	if target, _ := os.Readlink(path); target != e.exe {
 		t.Fatalf("link -> %q after an upgrade", target)
+	}
+}
+
+// The service runs the placed gst, so a gst run through another path to
+// the same file, such as a package manager's profile, changes nothing.
+func TestServiceRunsThePlacedGst(t *testing.T) {
+	e := newEnv(t)
+	real := filepath.Join(e.home, "store", "gst")
+	profile := filepath.Join(e.home, "profile", "gst")
+	for _, dir := range []string{filepath.Dir(real), filepath.Dir(profile)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(real, []byte("gst"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, profile); err != nil {
+		t.Fatal(err)
+	}
+	placed := filepath.Join(e.home, remoteGstPath)
+	e.exe = profile
+	e.mustGst("up")
+	for _, exe := range []string{real, placed} {
+		e.exe = exe
+		e.mustGst("name", "devbox"+strconv.Itoa(len(exe)))
+		if target, _ := os.Readlink(placed); target != profile {
+			t.Fatalf("run as %s: link -> %q", exe, target)
+		}
+		if e.back.command[0] != placed {
+			t.Fatalf("run as %s: service runs %v", exe, e.back.command)
+		}
 	}
 }
 

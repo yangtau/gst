@@ -57,7 +57,7 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 - **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`gst up` 装好 helper 就是加入，`gst down` 删除 helper 就是离开，所以没有单独的开关。
 - **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。网络里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。网络里任何 node 都能移除任何 node。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务需要显式用 `gst expose` 暴露。
 - **只有一条数据通路**：应用的数据只走 WireGuard，没有按连接中转字节流的第二条路。路由层只运送控制消息和 WireGuard 的包。
-- **SSH 决定谁在网络里**：SSH 是控制面和兜底。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。
+- **SSH 决定谁在网络里**：SSH 是控制面和兜底。控制消息（表的同步与泛洪、调用、UDP 路径的信令）永远只走 SSH link，不走 UDP 路径或 WireGuard。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。所以 SSH link 图被切成两半时，两半之间各自收不到对方的变更，直到有 link 把它们连起来；`gst status` 把这种只能直连到达的 node 报为问题。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
 ## 单进程 daemon
@@ -318,7 +318,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 - `links`：本机 running 的 link，加上两端都列出对方的其他 link，方向从发起方到接受方。
 - `subnet`：`subnet` 条目的网段。
 
-一个 node `reachable` 或 `direct` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告。
+一个 node `reachable` 或 `direct` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告；`direct` 而不 `reachable` 的 node 也由它报告，因为表只沿 link 泛洪，这样的 node 与本机之间收不到对方的移除和改名。
 
 ## 加入与移除
 

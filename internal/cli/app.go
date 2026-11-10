@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -297,16 +298,13 @@ func (c *linkConn) Close() error {
 	return c.conn.Close()
 }
 
-// daemonCommand is the command line the daemon's service runs.
+// daemonCommand is the command line the daemon's service runs: the gst
+// that placeGst puts in place, so that the service stays the same
+// whichever path ran this gst, and changes only with the gst itself.
 func (a *app) daemonCommand() ([]string, error) {
-	exe, err := a.executable()
+	exe, err := a.placeGst()
 	if err != nil {
 		return nil, err
-	}
-	// "go run" builds into a temporary directory that is deleted on exit.
-	if strings.Contains(exe, "/go-build") {
-		return nil, withHint(errors.New("gst runs from a temporary go build, which a background service cannot use"),
-			"install gst first, for example with `go install github.com/yangtau/ssh-tunnel/cmd/gst@latest`")
 	}
 	command := []string{exe}
 	path, err := a.configPath()
@@ -317,6 +315,55 @@ func (a *app) daemonCommand() ([]string, error) {
 		command = append(command, "--config", path)
 	}
 	return append(command, "daemon"), nil
+}
+
+// placeGst puts a link to this gst at ~/.local/state/gst/bin/gst, where
+// the service and the other machines' links run it, whatever the PATH
+// of the login shell holds, and returns that path. A link that leads to
+// this gst already stays, so that one gst run through another path, such
+// as a package manager's profile, does not move it.
+func (a *app) placeGst() (string, error) {
+	exe, err := a.executable()
+	if err != nil {
+		return "", err
+	}
+	// "go run" builds into a temporary directory that is deleted on exit.
+	if strings.Contains(exe, "/go-build") {
+		return "", withHint(errors.New("gst runs from a temporary go build, which a background service cannot use"),
+			"install gst first, for example with `go install github.com/yangtau/ssh-tunnel/cmd/gst@latest`")
+	}
+	home, err := a.home()
+	if err != nil {
+		return "", errors.New("home directory lookup failed")
+	}
+	path := filepath.Join(home, remoteGstPath)
+	if sameFile(path, exe) {
+		return path, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("put gst in place: %w", err)
+	}
+	tmp := path + ".new"
+	os.Remove(tmp)
+	if err := os.Symlink(exe, tmp); err != nil {
+		return "", fmt.Errorf("put gst in place: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("put gst in place: %w", err)
+	}
+	return path, nil
+}
+
+// sameFile reports whether the link at path leads to exe: the same
+// target, or the same file once both resolve.
+func sameFile(path, exe string) bool {
+	if target, err := os.Readlink(path); err == nil && target == exe {
+		return true
+	}
+	a, err := filepath.EvalSymlinks(path)
+	b, err2 := filepath.EvalSymlinks(exe)
+	return err == nil && err2 == nil && a == b
 }
 
 // sync makes the daemon apply the configuration, starting it unless gst

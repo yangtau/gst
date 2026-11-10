@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -88,9 +87,6 @@ terminal gst does not ask, and only says so.`,
 			if err := a.sync(cmd.Context()); err != nil {
 				return err
 			}
-			if err := a.placeGst(); err != nil {
-				return err
-			}
 			f, err := a.load()
 			if err != nil {
 				return err
@@ -101,36 +97,6 @@ terminal gst does not ask, and only says so.`,
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask before running sudo; gst still says what it runs")
 	return cmd
-}
-
-// placeGst puts a link to this gst where the other machines' links run
-// it, whatever the PATH of the login shell holds.
-func (a *app) placeGst() error {
-	exe, err := a.executable()
-	if err != nil {
-		return err
-	}
-	home, err := a.home()
-	if err != nil {
-		return errors.New("home directory lookup failed")
-	}
-	path := filepath.Join(home, remoteGstPath)
-	if target, err := os.Readlink(path); err == nil && target == exe {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("put gst in place for links to this machine: %w", err)
-	}
-	tmp := path + ".new"
-	os.Remove(tmp)
-	if err := os.Symlink(exe, tmp); err != nil {
-		return fmt.Errorf("put gst in place for links to this machine: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("put gst in place for links to this machine: %w", err)
-	}
-	return nil
 }
 
 func (a *app) downCommand() *cobra.Command {
@@ -158,8 +124,9 @@ and exposed ports; gst up starts it all again.`,
 	return cmd
 }
 
-// notUp is how a machine refuses a link until someone runs gst up there.
-const notUp = "gst is not up on this machine"
+// notUp is how a machine refuses a link until someone runs gst up there,
+// in the words of the machine that the link comes from, which reads it.
+const notUp = "gst is not up on that machine"
 
 // peerBridgeCommand connects its standard input and output to the gst
 // daemon on this machine. Another machine's daemon runs it over SSH to

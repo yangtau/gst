@@ -498,7 +498,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 		t.Fatal("GST_CONFIG was not used")
 	}
 	// A non-default path is passed on to the daemon.
-	if !slices.Equal(e.back.command, []string{e.exe, "--config", e.config, "daemon"}) {
+	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) {
 		t.Fatalf("daemon command %v", e.back.command)
 	}
 }
@@ -526,7 +526,7 @@ func TestAdd(t *testing.T) {
 	if got := e.link("myhost"); got == nil || !reflect.DeepEqual(*got, want) {
 		t.Fatalf("saved %+v, want %+v", got, want)
 	}
-	if !slices.Equal(e.back.command, []string{e.exe, "--config", e.config, "daemon"}) || !e.back.installed {
+	if !slices.Equal(e.back.command, []string{filepath.Join(e.home, remoteGstPath), "--config", e.config, "daemon"}) || !e.back.installed {
 		t.Fatalf("daemon command %v, installed %v", e.back.command, e.back.installed)
 	}
 	if !slices.Equal(e.back.calls, []string{"sync"}) {
@@ -574,7 +574,7 @@ func TestAdd(t *testing.T) {
 // gst add says when the other machine needs gst up.
 func TestAddToANodeThatIsNotUp(t *testing.T) {
 	e := newEnv(t)
-	e.back.linkStates["devbox"] = wire.LinkState{Destination: "devbox", State: wire.StateDown, Error: "the remote gst failed: error: " + notUp + "; run `gst up` there"}
+	e.back.linkStates["devbox"] = wire.LinkState{Destination: "devbox", State: wire.StateDown, Error: "the remote gst failed: " + notUp + "; run `gst up` there"}
 	e.expectError(exitFailure, []string{"add", "devbox", "--", "-l", "deploy"},
 		"error: added the link to devbox, but gst is not up there\n", "hint: run `ssh -t -l deploy devbox gst up`")
 	if e.link("devbox") == nil {
