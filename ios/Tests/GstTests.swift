@@ -133,16 +133,17 @@ final class GstTests: XCTestCase {
           {"node":"bb","name":"devbox","address":"10.87.0.2","way":"direct","endpoint":"203.0.113.7:41642","handshake":"2026-11-10T17:57:35Z","received":10,"sent":20}]}}
         """#)
         let machines = Machine.list(topology: topology, status: status)
-        XCTAssertEqual(machines.map(\.name), ["phone", "attic", "devbox", "homelab"])
+        // This machine, the ones that packets reach, and then the rest.
+        XCTAssertEqual(machines.map(\.name), ["phone", "devbox", "homelab", "attic"])
         XCTAssertEqual(machines[0].way, .here)
+        XCTAssertEqual(machines[1].way, .direct(endpoint: "203.0.113.7:41642"))
+        XCTAssertEqual(machines[1].sent, 20)
+        XCTAssertEqual(machines[1].handshake, seen)
+        XCTAssertEqual(machines[2].way, .relay(via: ["devbox"]))
+        XCTAssertEqual(machines[2].address, "10.87.0.3")
         // An address of another subnet is one that nothing reaches.
-        XCTAssertEqual(machines[1].way, .offline(seen: seen))
-        XCTAssertNil(machines[1].address)
-        XCTAssertEqual(machines[2].way, .direct(endpoint: "203.0.113.7:41642"))
-        XCTAssertEqual(machines[2].sent, 20)
-        XCTAssertEqual(machines[2].handshake, seen)
-        XCTAssertEqual(machines[3].way, .relay(via: ["devbox"]))
-        XCTAssertEqual(machines[3].address, "10.87.0.3")
+        XCTAssertEqual(machines[3].way, .offline(seen: seen))
+        XCTAssertNil(machines[3].address)
         // While gst is off, nothing is online.
         XCTAssertTrue(Machine.list(topology: topology, status: nil).allSatisfy { !$0.isOnline })
     }

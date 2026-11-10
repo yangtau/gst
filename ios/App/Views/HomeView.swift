@@ -48,7 +48,7 @@ struct HomeView: View {
                     if others.isEmpty && !hasLinks {
                         Welcome { sheet = .add }
                     } else {
-                        MachineList(machines: others) { sheet = .machine($0.id) }
+                        MachineList(machines: others, isOn: model.isOn) { sheet = .machine($0.id) }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -167,10 +167,10 @@ private struct ProblemList: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(title(problem.kind))
+                        Text(title(problem.kind).sentence)
                             .font(.subheadline.weight(.semibold))
                         if let detail = detail(problem.kind) {
-                            Text(detail)
+                            Text(detail.sentence.withCode)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -209,6 +209,7 @@ private struct ProblemList: View {
 /// The other machines of the network.
 private struct MachineList: View {
     let machines: [Machine]
+    let isOn: Bool
     let open: (Machine) -> Void
 
     var body: some View {
@@ -231,7 +232,7 @@ private struct MachineList: View {
                         Button {
                             open(machine)
                         } label: {
-                            MachineRow(machine: machine)
+                            MachineRow(machine: machine, isOn: isOn)
                         }
                         .buttonStyle(.plain)
                         if machine.id != machines.last?.id {
@@ -247,6 +248,9 @@ private struct MachineList: View {
 
 private struct MachineRow: View {
     let machine: Machine
+    /// While gst is off, no way leads anywhere, which says nothing of
+    /// the machines: the row then says nothing of the way.
+    let isOn: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -261,10 +265,20 @@ private struct MachineRow: View {
                 }
             }
             Spacer(minLength: 12)
-            Text(detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
+            if isOn {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(machine.way.text)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                    if case .offline(let seen?) = machine.way {
+                        Text(seen.ago)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -273,13 +287,6 @@ private struct MachineRow: View {
         .padding(.vertical, 14)
         .contentShape(.rect)
         .opacity(machine.isOnline ? 1 : 0.6)
-    }
-
-    private var detail: String {
-        if case .offline(let seen?) = machine.way {
-            return String(localized: "Offline, seen \(seen.ago)")
-        }
-        return machine.way.text
     }
 }
 

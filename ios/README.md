@@ -27,6 +27,7 @@ A VPN does not run in the Simulator: the app starts there and shows its screens,
 | `App/` | the app: `Model/` (the calls of gst's methods, the VPN, what the screens show) and `Views/` (SwiftUI, with Liquid Glass for the controls) |
 | `Tunnel/` | the packet tunnel extension, in which gst's daemon runs |
 | `Tests/`, `UITests/` | the tests, below |
+| `screenshots/` | pictures of the screens, which the tests take |
 | `project.yml`, `Config.xcconfig` | the Xcode project, for XcodeGen, and what names and signs the app |
 
 The app is to gst what the `gst` command is on other machines, and the packet tunnel what the daemon is. The app changes the configuration through the `app.…` methods of gst in its own process, and reads everything else from the daemon with the same control methods that the command uses (`daemon.status`, `mesh.topology`, `net.ping`, …), sent as provider messages. The design is in [`docs/design/mesh.md`](../docs/design/mesh.md).
@@ -40,7 +41,7 @@ The texts of the app are in `App/Localizable.xcstrings`, in English and Simplifi
 - `Tests/` (GstTests) runs gst's Go code through `Core`: the app's methods, the daemon's start and its answers, and what the app makes of them.
 - `UITests/` (GstUITests) opens every screen on a made-up network, in English and Chinese, light and dark, and checks that it shows. `App/Demo.swift` is that network: a debug build opens on one of its screens with `-GstDemo <screen>` on its command line, and Xcode's previews (`App/Previews.swift`) show the same.
 
-The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The workflow keeps those as the `screenshots` artifact of a run.
+The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The workflow keeps those as the `screenshots` artifact of a run. The pictures in `screenshots/`, which the README shows, are the workflow's too: it commits them, made smaller, when the message of a commit has `[screenshots]`, or when it is run by hand. Ask for that after a change to what the screens look like.
 
 `internal/mobile`, the daemon without a socket, and the DNS and ping inside the interface have Go unit tests (`make test`), which join a phone to a network through an SSH server, a real daemon, and a fake interface.
 

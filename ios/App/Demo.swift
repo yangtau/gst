@@ -24,6 +24,10 @@ enum Demo: String, CaseIterable {
     /// The screen that the command line asks for.
     static let current = UserDefaults.standard.string(forKey: "GstDemo").flatMap(Demo.init(rawValue:))
 
+    /// Whether the command line asks for the dark appearance, whatever
+    /// the system's is: `-GstDemoAppearance dark`.
+    static let isDark = UserDefaults.standard.string(forKey: "GstDemoAppearance") == "dark"
+
     @MainActor
     var model: AppModel {
         switch self {

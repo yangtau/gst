@@ -153,7 +153,7 @@ private struct LinkRow: View {
                     .foregroundStyle(.secondary)
             }
             if let state, state.state == .down, let error = state.error, !error.isEmpty {
-                Text(error)
+                Text(error.sentence.withCode)
                     .font(.footnote)
                     .foregroundStyle(.red)
             }

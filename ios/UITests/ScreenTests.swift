@@ -28,28 +28,26 @@ final class ScreenTests: XCTestCase {
         continueAfterFailure = true
     }
 
-    override func tearDown() {
-        XCUIDevice.shared.appearance = .light
-    }
-
     func testChinese() {
-        show(screens, language: "zh-Hans", locale: "zh_CN", appearance: .light)
+        show(screens, language: "zh-Hans", locale: "zh_CN", appearance: "light")
     }
 
     func testEnglish() {
-        show(screens, language: "en", locale: "en_US", appearance: .light)
+        show(screens, language: "en", locale: "en_US", appearance: "light")
     }
 
     func testDark() {
-        let dark = screens.filter { ["home", "welcome", "machine", "host-key"].contains($0.name) }
-        show(dark, language: "zh-Hans", locale: "zh_CN", appearance: .dark)
+        let dark = screens.filter { ["home", "problems", "welcome", "machine", "host-key", "settings"].contains($0.name) }
+        show(dark, language: "zh-Hans", locale: "zh_CN", appearance: "dark")
     }
 
-    private func show(_ screens: [Screen], language: String, locale: String, appearance: XCUIDevice.Appearance) {
-        XCUIDevice.shared.appearance = appearance
+    private func show(_ screens: [Screen], language: String, locale: String, appearance: String) {
         for screen in screens {
             let app = XCUIApplication()
-            app.launchArguments = ["-GstDemo", screen.name, "-AppleLanguages", "(\(language))", "-AppleLocale", locale]
+            app.launchArguments = [
+                "-GstDemo", screen.name, "-GstDemoAppearance", appearance,
+                "-AppleLanguages", "(\(language))", "-AppleLocale", locale,
+            ]
             app.launch()
             let shown = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "label CONTAINS %@", screen.shows))
@@ -57,8 +55,7 @@ final class ScreenTests: XCTestCase {
             XCTAssertTrue(shown.waitForExistence(timeout: 30), "\(screen.name) in \(language) does not show \(screen.shows)")
             // A sheet takes a moment to come to rest.
             Thread.sleep(forTimeInterval: 1.5)
-            let appearanceName = appearance == .dark ? "dark" : "light"
-            keep(XCUIScreen.main.screenshot(), as: "\(language)-\(appearanceName)-\(screen.name)")
+            keep(XCUIScreen.main.screenshot(), as: "\(language)-\(appearance)-\(screen.name)")
             app.terminate()
         }
     }

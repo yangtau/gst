@@ -34,6 +34,7 @@ struct RootView: View {
             } else {
                 #if DEBUG
                 HomeView(sheet: Demo.current?.sheet, addStep: Demo.current?.addStep ?? .form)
+                    .preferredColorScheme(Demo.isDark ? .dark : nil)
                 #else
                 HomeView()
                 #endif

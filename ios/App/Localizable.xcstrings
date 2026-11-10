@@ -441,16 +441,6 @@
         }
       }
     },
-    "Offline, seen %@": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "离线，最后在线：%@"
-          }
-        }
-      }
-    },
     "On": {
       "localizations": {
         "zh-Hans": {

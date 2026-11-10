@@ -266,6 +266,12 @@ gst ui --port 8370   # 在 devbox 上运行；然后在网络里任意机器上�
 
 gst app 把 iPhone 或 iPad 加入网络。gst 在上面以 VPN 的方式运行：只有网络的网段和 `.gst` 下的名字经过它，对所有 app 生效，其他流量不受影响。手机有一把由 app 生成的、自己的 SSH 密钥，用它 link 到你的机器；手机上没有 `~/.ssh/config`。
 
+<p>
+<img src="ios/screenshots/zh-Hans-light-home.jpg" width="230" alt="首页：本机、网络中的机器和开关">
+<img src="ios/screenshots/zh-Hans-light-host-key.jpg" width="230" alt="添加机器：核对服务器的主机密钥">
+<img src="ios/screenshots/zh-Hans-light-machine.jpg" width="230" alt="一台机器：gst IP、名字，以及包怎么到达它">
+</p>
+
 app 没有上架 App Store。用 Xcode 从 [`ios/`](ios/README.md) 构建，需要一个能为 VPN 签名的 Apple Developer 账号。
 
 加入网络的步骤：

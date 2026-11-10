@@ -266,6 +266,12 @@ The address ends with a random secret after `#`, which the page needs; anyone wi
 
 The gst app puts an iPhone or iPad in the network. gst runs there as a VPN: the subnet of the network and the names under `.gst` go through it, to every app, and nothing else does. The phone has an SSH key of its own, made by the app, and links to your machines with it; it has no `~/.ssh/config`.
 
+<p>
+<img src="ios/screenshots/en-light-home.jpg" width="230" alt="The first screen: this machine, the machines of the network, and the switch">
+<img src="ios/screenshots/en-light-host-key.jpg" width="230" alt="Adding a machine: the server's host key to check">
+<img src="ios/screenshots/en-light-machine.jpg" width="230" alt="One machine: its gst IP, its name, and how packets reach it">
+</p>
+
 The app is not in the App Store. Build it with Xcode from [`ios/`](ios/README.md), which takes an Apple Developer account that can sign a VPN.
 
 To join a network:

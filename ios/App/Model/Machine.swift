@@ -37,7 +37,8 @@ struct Machine: Identifiable, Hashable {
     /// The id as gst status shows it.
     var shortID: String { String(id.prefix(8)) }
 
-    /// The machines of `topology`, this machine first and then by name.
+    /// The machines of `topology`: this machine, then the ones that
+    /// packets reach, then the rest, each group by name.
     /// `status` adds what only a running network knows; without it, as
     /// while gst is off, every other machine is offline.
     static func list(topology: Topology, status: DaemonStatus?) -> [Machine] {
@@ -75,6 +76,7 @@ struct Machine: Identifiable, Hashable {
         }
         return machines.sorted { a, b in
             if (a.id == topology.me) != (b.id == topology.me) { return a.id == topology.me }
+            if a.isOnline != b.isOnline { return a.isOnline }
             if a.name != b.name { return a.name < b.name }
             return a.id < b.id
         }

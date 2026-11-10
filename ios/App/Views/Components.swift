@@ -129,6 +129,20 @@ struct Aura: View {
     }
 }
 
+extension String {
+    /// The text as a sentence starts: gst's own words, which the app
+    /// shows as they are, start small, as errors do.
+    var sentence: String {
+        prefix(1).uppercased() + dropFirst()
+    }
+
+    /// The text for `Text` to show, with the commands that it quotes in
+    /// backticks set as code, as `Text` does for a key.
+    var withCode: LocalizedStringKey {
+        LocalizedStringKey(self)
+    }
+}
+
 extension Date {
     /// How long ago it was, as "3 hours ago".
     var ago: String {
