@@ -62,6 +62,8 @@ targets:
       properties:
         com.apple.developer.networking.networkextension: [packet-tunnel-provider]
         com.apple.security.application-groups: [$(GST_APP_GROUP)]
+    scheme:
+      testTargets: [GstTests]
 
   # The packet tunnel: what the gst daemon is on other machines.
   Tunnel:
@@ -91,3 +93,22 @@ targets:
       properties:
         com.apple.developer.networking.networkextension: [packet-tunnel-provider]
         com.apple.security.application-groups: [$(GST_APP_GROUP)]
+
+  # Tests of what the app does without the system: gst's Go code through
+  # Core, and the app's reading of what it reports.
+  GstTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+      - Shared/Core.swift
+      - App/Model/Wire.swift
+      - App/Model/Gst.swift
+      - App/Model/Machine.swift
+    dependencies:
+      - framework: build/GstKit.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(GST_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
