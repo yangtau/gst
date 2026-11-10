@@ -25,8 +25,8 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Generate the project
@@ -41,8 +41,10 @@ jobs:
       - name: Test in the simulator
         if: always()
         run: |
+          set -o pipefail
           xcodebuild -project ios/Gst.xcodeproj -scheme Gst -derivedDataPath ios/build/derived \
-            -destination "id=$(ios/simulator.sh)" -quiet test
+            -destination "id=$(ios/simulator.sh),arch=arm64" test |
+            grep -E "^Test (Case|Suite) .*(passed|failed)|Executed [0-9]+ tests|error:|warning:|\*\* TEST"
       - name: Take screenshots
         run: |
           ios/screenshots.sh ios/build/derived/Build/Products/Debug-iphonesimulator/gst.app ios/build/screenshots

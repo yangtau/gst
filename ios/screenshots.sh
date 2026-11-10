@@ -10,14 +10,17 @@ bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist
 udid=$("$(dirname "$0")/simulator.sh")
 mkdir -p "$out"
 
+echo "booting simulator $udid"
 xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" -b >/dev/null
+echo "installing $bundle"
 xcrun simctl install "$udid" "$app"
 xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiBars 3 \
 	--cellularBars 4 --batteryState charged --batteryLevel 100
 
 # shot LANGUAGE LOCALE APPEARANCE SCREEN
 shot() {
+	echo "$1 $3 $4"
 	xcrun simctl ui "$udid" appearance "$3"
 	xcrun simctl launch "$udid" "$bundle" -GstDemo "$4" -AppleLanguages "($1)" -AppleLocale "$2" >/dev/null
 	sleep 5 # for the app to draw, and its sheet to settle
