@@ -203,7 +203,11 @@ func (d *Daemon) Call(ctx context.Context, req wire.Request) wire.Response {
 // network. The function it returns stops them all and waits for that.
 func (d *Daemon) start(ctx context.Context) (stop func()) {
 	meshCtx, stopMesh := context.WithCancel(ctx)
-	go d.mesh.Run(meshCtx)
+	meshDone := make(chan struct{})
+	go func() {
+		defer close(meshDone)
+		d.mesh.Run(meshCtx) // It saves the table once more as it returns.
+	}()
 	if d.cfg.Addresses != nil {
 		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
 	}
@@ -225,6 +229,7 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		stopMesh()
 		<-netDone
 		d.stopAll()
+		<-meshDone
 	}
 }
 
