@@ -1,5 +1,5 @@
 // Package version says which gst this is: its release and the git commit
-// it was built from. The gst command and the iOS app are both built from
+// it was built from. The gst command and the phone apps are all built from
 // it, show it to people, and tell it to the other nodes.
 package version
 

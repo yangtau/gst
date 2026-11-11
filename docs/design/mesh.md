@@ -429,7 +429,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 
 ## iOS
 
-iPhone 和 iPad 没有命令行、ssh 和后台服务，系统也不让 VPN 进程自己的 socket 进入它的网卡。gst 在那里是一个 app 加一个 packet tunnel 扩展（`ios/`），Go 代码是 `internal/mobile`，编译成 C 库（`ios/gstkit`，`gstkit.h` 的五个函数）链接进这两个进程。
+iPhone 和 iPad 没有命令行、ssh 和后台服务，系统也不让 VPN 进程自己的 socket 进入它的网卡。gst 在那里是一个 app 加一个 packet tunnel 扩展（`ios/`），Go 代码是 `internal/mobile`，编译成 C 库（`gstkit`，`gstkit.h` 的五个函数，Android 也用它，见下一节）静态链接进这两个进程。
 
 - **两个进程**：app 相当于其他机器上的 gst 命令，扩展相当于 daemon，两者共用 app group 里的一个目录。app 进程里的 gst 应答 `app.…` 方法：改配置文件（同一把锁、同样的原子写入）、生成密钥、检查服务器。扩展里 `daemon.Run` 运行同一个 daemon，不监听 socket，`Daemon.Call` 在进程内应答 control 方法。app 把请求（`{"method", "params"}`，与 control 连接上的请求相同）作为 provider message 发给扩展，取回 `{"result"}` 或 `{"error"}`，所以它和 CLI 用的是同一套方法：`daemon.status`、`mesh.topology`、`net.ping`、`mesh.remove`。app 改完配置后调 `daemon.reload`。
 - **目录**：`config.json`、`state.json`、`net.json`、`id_ed25519`（app 生成的无口令私钥）、`known_hosts`、`gst.log`（1 MiB 轮转，Go 运行时崩溃时的输出也在其中）。目录不进备份：恢复到另一台手机上，会有两台 id 相同的 node。
@@ -447,10 +447,20 @@ iPhone 和 iPad 没有命令行、ssh 和后台服务，系统也不让 VPN 进�
   | `app.log` | 无 | `{"text"}`：日志的最后 64 KiB |
 
 - **link**：destination 只能是 `user@host` 或 `ssh://user@host:port`（`sshconfig.Literal`），必须写出用户，没有 ssh 参数；私钥和 known_hosts 就是目录里的那两个文件。主机密钥由人在 app 里核对指纹后信任：`sshconn.Try` 登录一次，区分未知的主机密钥、变了的主机密钥和未授权的私钥；对未知的服务器优先要 ED25519 密钥，和 OpenSSH 给人看的一致。没有 node 能 link 到手机：它没有 sshd，也没有 control socket。
-- **网卡**：系统创建并配置 utun，gst 只说怎么配。`vnet` 打开和更新网卡变成对扩展的一次回调，参数是 `Settings`：本机地址、路由（subnet 和 DNS 地址）、DNS 地址和它负责的域 `gst`、MTU。扩展据此调用 `setTunnelNetworkSettings`，完成后返回；之后 `tun.Inherited` 在进程已打开的描述符中找到 utun，复制一份交给 wireguard-go。只有 subnet 和 `.gst` 经过 VPN，其他流量和名字解析不变。
+- **网卡**：系统创建并配置 utun，gst 只说怎么配。`vnet` 打开和更新网卡变成对扩展的一次回调（`mobile.System.Apply`），参数是 `Settings`：本机地址、路由（subnet 和 DNS 地址）、DNS 地址和它负责的域 `gst`、MTU。扩展据此调用 `setTunnelNetworkSettings`，完成后返回 -1（不交出描述符）；之后 `tun.Inherited` 在进程已打开的描述符中找到 utun，复制一份交给 wireguard-go。只有 subnet 和 `.gst` 经过 VPN，其他流量和名字解析不变。
 - **在网卡的包上应答**（`vnet` 的 `inside`）：系统只向一个地址的 53 端口查询，daemon 又不能在自己的地址上收发，所以这些都直接在包上做。DNS 地址是 `198.18.0.53`：`198.18.0.0/15` 留给网络设备测试（RFC 2544），不会出现在手机遇到的任何网络里，也不在 gst 只用私有地址的 subnet 里。系统发给它的 UDP 查询在读网卡时被截下，应答直接写回网卡。`gst ping` 也一样：WireGuard 解密后发往本机 15354 端口的包被截下并原样送回 WireGuard，本机发出的 ping 是直接交给 WireGuard 的 UDP 包。不处理分片：从手机发出的 ping 最大为 MTU − 28 字节，别的机器发给手机的超过 MTU 的 ping 没有应答。
 - **内存**：iOS 给 VPN 进程 50 MiB。`bind` 的入站队列每个包只占 2048 字节（所有平台都是），Go 的内存软上限设为 32 MiB。
 - **开关**：在 app 里开启，就是保存带 on-demand 规则的 VPN 配置并启动它，系统在重启和进程结束后会再次启动；关闭则先关掉 on-demand 再停止。配置里不写 `down`。
+
+## Android
+
+Android 同样没有命令行、ssh 和后台服务。gst 在那里是一个 app（`android/`，Kotlin 和 Jetpack Compose），daemon 运行在它的 `VpnService` 里。Go 代码与 iOS 相同：`internal/mobile` 经 `gstkit` 编译成共享库 `libgstkit.so`，`gstkit/jni.c`（只在 `android` 或 `jni` 构建标签下编译）把 `gstkit.h` 的函数变成 Java 类 `gst.app.Core` 的 native 方法，文本以 UTF-8 字节数组传递。
+
+- **一个进程**：app 和 `VpnService` 在同一个进程里，共用一个 `mobile.App`。`app.…` 方法和 daemon 的 control 方法都直接经 `gst_call` 调用，不需要 iOS 的 provider message。目录是 app 的 `noBackupFilesDir/gst`，不进备份；内容和方法与 iOS 相同。
+- **网卡**：`VpnService.Builder` 按 `Settings` 配置地址、路由、DNS 和 MTU，`establish()` 交出网卡的描述符，`Apply` 把它返回给 gst，gst 用 `tun.Adopt` 接管。每次设置变化（地址或网段）都会建一张新网卡并结束旧的，所以 `mobile` 给 wireguard-go 的是一个会切换的设备（`switching`）：读写总在最新的那张网卡上，旧的被关掉时正在进行的读换到新的上继续。gst 自己的 app 不经过 VPN（`addDisallowedApplication`），link 和 UDP 直连的 socket 直接走下面的网络，这和 iOS 一样需要 `inside` 在包上应答 DNS 和 ping。
+- **DNS**：Android 没有按域名分流的 DNS，VPN 的 DNS 服务器收到所有查询。`.gst` 之外的查询由 `vnet.Config.Forward`（`mobile.System.Forward`，C 里是 `gst_forward_fn`）交给系统自己的解析器：app 用 `DnsResolver.rawQuery` 在 VPN 下面的网络上查询，把原样的应答写回网卡。同时等待的转发最多 64 个，多出的丢弃，由查询方重试。所以 Android 要求 10 及以上。
+- **地址**：Android 不让 app 列出网卡（`net.Interfaces` 失败），UDP 直连只提供发包使用的那个地址。
+- **开关**：开启时系统先问一次是否允许 gst 建立 VPN（`VpnService.prepare`）。app 记住开着的状态，手机重启或 app 更新后（`BootReceiver`）重新开启；也支持系统设置里的“始终开启的 VPN”。另一个 VPN 接管或用户在系统里关掉时（`onRevoke`），gst 停止并记为关闭。
 
 ## 端口暴露
 

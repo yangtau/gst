@@ -4,7 +4,7 @@
 -include integration/local.mk
 export CONTAINER_RUNTIME IT_BASE_IMAGE IT_APT_MIRROR IT_BUILD_FLAGS
 
-.PHONY: help build install test test-integration release ios
+.PHONY: help build install test test-integration release ios android
 
 help:
 	@printf '%s\n' \
@@ -13,7 +13,8 @@ help:
 	  'make test              run the unit tests' \
 	  'make test-integration  run the integration tests against sshd in a container' \
 	  'make release V=X.Y.Z   set the version, test, commit, and tag' \
-	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)'
+	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)' \
+	  'make android           build the Android app, with its Go code, into android/app/build/outputs/apk'
 
 build:
 	go build -o bin/gst ./cmd/gst
@@ -33,3 +34,7 @@ release:
 ios:
 	ios/build-core.sh
 	cd ios && xcodegen generate
+
+android:
+	android/build-core.sh
+	cd android && ./gradlew assembleDebug

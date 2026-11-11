@@ -21,10 +21,9 @@ const maxPerFamily = 8
 // address the probe came to, and a firewall on the other side lets through
 // only what comes from an address it sent to.
 func Addresses() []netip.Addr {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
+	// Android keeps the list of interfaces from apps; the address that
+	// packets leave from is all there is to offer there.
+	interfaces, _ := net.Interfaces()
 	index4, index6 := defaultInterfaces()
 	v4 := sendingAddress("udp4", "203.0.113.1:9", index4)
 	v6 := sendingAddress("udp6", "[2001:db8::1]:9", index6)

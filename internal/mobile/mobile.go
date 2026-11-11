@@ -1,9 +1,9 @@
 // Package mobile is gst on a phone or tablet, a machine whose system
-// gives it no command line, no ssh, and no background service: an iPhone
-// or iPad. An app does there what the gst command does elsewhere, and
-// the system runs the daemon inside the process of a VPN, which it
-// starts and stops. Both are this package, in two processes that share
-// one directory.
+// gives it no command line, no ssh, and no background service: an iPhone,
+// an iPad, or an Android device. An app does there what the gst command
+// does elsewhere, and the system runs the daemon inside the process of a
+// VPN, which it starts and stops. Both are this package: on iOS in two
+// processes that share one directory, on Android in one.
 //
 // The app's part (the methods "app.…" of Call) keeps what the command
 // line and ssh keep elsewhere: the node's identity, a key of its own to
@@ -137,7 +137,7 @@ type App struct {
 	// connect opens the connection of a link, and device returns the
 	// system's interface once it is set up; tests replace them.
 	connect func(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error)
-	device  func() (Device, error)
+	device  func(fd int) (Device, error)
 
 	mu      sync.Mutex
 	running *running // the daemon, between Start and Stop

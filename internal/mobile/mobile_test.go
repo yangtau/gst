@@ -305,13 +305,18 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 		t.Fatalf("status without the VPN: %v", err)
 	}
 	device := newFakeDevice()
-	vpn.device = func() (Device, error) { return device, nil }
+	vpn.device = func(fd int) (Device, error) {
+		if fd != -1 {
+			t.Errorf("the device of descriptor %d", fd)
+		}
+		return device, nil
+	}
 	settings := make(chan Settings, 16)
-	if err := vpn.Start(func(s Settings) error { settings <- s; return nil }); err != nil {
+	if err := vpn.Start(System{Apply: func(s Settings) (int, error) { settings <- s; return -1, nil }}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(vpn.Stop)
-	if err := vpn.Start(nil); err == nil {
+	if err := vpn.Start(System{}); err == nil {
 		t.Fatal("started twice")
 	}
 	var set Settings
@@ -403,5 +408,57 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	}
 	if host, _, _ := net.SplitHostPort(s.address); strings.Contains(logged.Text, host) || strings.Contains(logged.Text, "tester") {
 		t.Fatalf("the log names the server: %q", logged.Text)
+	}
+}
+
+// TestSwitching replaces the interface while WireGuard reads it, as
+// Android does when the settings change.
+func TestSwitching(t *testing.T) {
+	var s switching
+	first, second := newFakeDevice(), newFakeDevice()
+	s.set(first)
+	events := s.Events()
+	read := make(chan string)
+	go func() {
+		buf, sizes := [][]byte{make([]byte, 64)}, []int{0}
+		for {
+			n, err := s.Read(buf, sizes, 0)
+			if err != nil {
+				close(read)
+				return
+			}
+			if n == 1 {
+				read <- string(buf[0][:sizes[0]])
+			}
+		}
+	}()
+	first.in <- []byte("one")
+	if got := <-read; got != "one" {
+		t.Fatalf("read %q", got)
+	}
+	s.set(second)
+	select {
+	case <-first.closed:
+	default:
+		t.Fatal("the interface before is still open")
+	}
+	second.in <- []byte("two")
+	if got := <-read; got != "two" {
+		t.Fatalf("read %q after the switch", got)
+	}
+	if _, err := s.Write([][]byte{[]byte("out")}, 0); err != nil || string(<-second.out) != "out" {
+		t.Fatalf("write: %v", err)
+	}
+	s.Close()
+	if _, ok := <-read; ok {
+		t.Fatal("Read goes on after Close")
+	}
+	if _, ok := <-events; ok {
+		t.Fatal("the events go on after Close")
+	}
+	select {
+	case <-second.closed:
+	default:
+		t.Fatal("the interface is still open after Close")
 	}
 }

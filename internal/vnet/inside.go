@@ -33,6 +33,10 @@ const (
 	// maxInsidePing is the largest packet of a ping from here: nothing
 	// here cuts a packet into fragments.
 	maxInsidePing = tun.MTU - 28
+	// maxForwarding is how many queries for names outside .gst wait for
+	// the system's resolver at once; more go unanswered, and the asker
+	// tries again.
+	maxForwarding = 64
 )
 
 // inside is the interface as WireGuard sees it on such a system.
@@ -42,6 +46,8 @@ type inside struct {
 	dns          netip.AddrPort                        // answers for .gst; zero for no DNS
 	echo         uint16                                // the port that answers pings; 0 for none
 	resolve      func(string) (netip.Addr, bool, bool) // as serveDNS takes it
+	forward      func([]byte) ([]byte, error)          // answers for the names outside .gst; see Config.Forward
+	forwarding   chan struct{}                         // a token for each query on its way to forward
 
 	out    chan insidePacketBuf // from the interface and from here, to WireGuard
 	pool   sync.Pool
@@ -68,9 +74,10 @@ type insidePing struct {
 	back    chan struct{}
 }
 
-func newInside(device wgtun.Device, own func() netip.Addr, dns netip.AddrPort, echo uint16, resolve func(string) (netip.Addr, bool, bool)) *inside {
+func newInside(device wgtun.Device, own func() netip.Addr, dns netip.AddrPort, echo uint16, resolve func(string) (netip.Addr, bool, bool), forward func([]byte) ([]byte, error)) *inside {
 	d := &inside{
 		Device: device, own: own, dns: dns, echo: echo, resolve: resolve,
+		forward: forward, forwarding: make(chan struct{}, maxForwarding),
 		out:    make(chan insidePacketBuf, insideQueue),
 		closed: make(chan struct{}),
 		ended:  make(chan struct{}),
@@ -187,12 +194,31 @@ func (d *inside) answerDNS(packet []byte) bool {
 	if !ok || u.to != d.dns {
 		return false
 	}
+	if d.forward != nil && outside(u.payload) {
+		select {
+		case d.forwarding <- struct{}{}:
+			query := bytes.Clone(u.payload)
+			go func() {
+				defer func() { <-d.forwarding }()
+				if reply, err := d.forward(query); err == nil && len(reply) > 0 {
+					d.reply(u, reply)
+				}
+			}()
+		default:
+		}
+		return true
+	}
 	if reply := answer(u.payload, d.resolve); reply != nil {
-		out := make([]byte, insideHeadroom, insideHeadroom+28+len(reply))
-		out = d.appendUDP(out, u.to, u.from, reply)
-		d.Device.Write([][]byte{out}, insideHeadroom)
+		d.reply(u, reply)
 	}
 	return true
+}
+
+// reply writes the answer to the DNS query u into the interface.
+func (d *inside) reply(u udpPacket, reply []byte) {
+	out := make([]byte, insideHeadroom, insideHeadroom+28+len(reply))
+	out = d.appendUDP(out, u.to, u.from, reply)
+	d.Device.Write([][]byte{out}, insideHeadroom)
 }
 
 // take handles a packet from another node if it is for here: a ping to

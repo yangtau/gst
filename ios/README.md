@@ -22,7 +22,7 @@ A VPN does not run in the Simulator: the app starts there and shows its screens,
 
 | Path | What |
 | --- | --- |
-| `gstkit/` | gst's Go code as a C library: `internal/mobile` behind the five functions of `gstkit.h`. `build-core.sh` builds it into `build/GstKit.xcframework` |
+| `../gstkit/` | gst's Go code as a C library, which the Android app uses too: `internal/mobile` behind the five functions of `gstkit.h`. `build-core.sh` builds it into `build/GstKit.xcframework`, with `module.modulemap`, which makes it a module for Swift |
 | `Shared/` | `Core`, the Swift face of that library, for both targets |
 | `App/` | the app: `Model/` (the calls of gst's methods, the VPN, what the screens show) and `Views/` (SwiftUI, with Liquid Glass for the controls) |
 | `Tunnel/` | the packet tunnel extension, in which gst's daemon runs |

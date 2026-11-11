@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有网络。体验接近 Tailscale，直接使用你已有的 SSH 登录：每台机器都有一个 gst IP 和名字 `<machine>.gst`，所有程序和协议都能用。流量是端到端的 WireGuard。网络允许时经 UDP 直连，否则经 SSH link 中转。支持 Linux 和 macOS，每台机器需要用一次 root；iPhone 和 iPad 上有 app（见 [iPhone 和 iPad](#iphone-和-ipad)）。
+`gst`（go ssh tunnel）通过 SSH 把你的多台机器连成一个私有网络。体验接近 Tailscale，直接使用你已有的 SSH 登录：每台机器都有一个 gst IP 和名字 `<machine>.gst`，所有程序和协议都能用。流量是端到端的 WireGuard。网络允许时经 UDP 直连，否则经 SSH link 中转。支持 Linux 和 macOS，每台机器需要用一次 root；iPhone、iPad 和 Android 上有 app（见 [iPhone 和 iPad](#iphone-和-ipad) 和 [Android](#android)）。
 
 只需要三个词：
 
@@ -299,6 +299,27 @@ app 没有上架 App Store。用 Xcode 从 [`ios/`](ios/README.md) 构建，需�
 - app 中没有 `gst expose`、`gst subnet` 和 `gst ui` 的对应功能，请在其他机器上执行。在那里运行的 `gst ui` 页面可以用手机的浏览器打开。
 - 其他机器对手机执行 `gst ping` 时，包不能超过网卡的 MTU。
 - 只要 gst 在运行，iOS 就显示 VPN 已连接，不管 link 是否连上。link 的状态请看 app。
+
+## Android
+
+Android 版 gst app 把 Android 手机或平板（Android 10 及以上）加入网络，与上面的 iPhone app 一样：gst 以 VPN 的方式运行，只承载网络的网段和 `.gst` 下的名字，手机用自己的 SSH 密钥 link 到你的机器。
+
+<p>
+<img src="android/screenshots/zh-Hans-light-home.jpg" width="230" alt="首页：本机、网络中的机器和开关">
+<img src="android/screenshots/zh-Hans-light-host-key.jpg" width="230" alt="添加机器：核对服务器的主机密钥">
+<img src="android/screenshots/zh-Hans-light-machine.jpg" width="230" alt="一台机器：gst IP、名字，以及包怎么到达它">
+</p>
+
+app 没有上架 Google Play。用 `make android` 从 [`android/`](android/README.md) 构建，或者从 CI 运行的 `android-apks` artifact 中取出 APK，然后安装。
+
+加入网络的步骤与 iPhone 相同：点 **+**，输入 `user@host`，端口不是 22 时再填端口；核对指纹后信任服务器的主机密钥；在那台机器上执行为手机公钥授权的命令，然后点 **重试**。app 随后添加 link 并开启 gst；Android 会询问一次是否允许 gst 建立 VPN 连接。首页、机器详情和 **设置** 的内容和用法都与 iPhone 一致。
+
+与 iPhone 的不同：
+
+- gst 会一直开着，直到你关闭它：手机重启或 app 更新后，app 会重新开启它。也可以在 Android 的设置中为 gst 打开 **始终开启的 VPN**。
+- Android 会把所有 DNS 查询发给 VPN，所以 gst 回答 `.gst` 下的名字，其他名字交给手机自己的解析器，经 VPN 下面的网络查询。
+- Android 同时只运行一个 VPN。开启另一个 VPN 会关闭 gst。
+- gst 自己的连接，即 link 和 UDP 直连，不经过 VPN。其他 app 经 VPN 访问网络。
 
 ## 升级
 

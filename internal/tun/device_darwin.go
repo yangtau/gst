@@ -47,6 +47,11 @@ func openDevice() (*os.File, string, error) {
 	return os.NewFile(uintptr(fd), "tun"), name, nil
 }
 
+// deviceName returns the name of the utun interface that fd is open on.
+func deviceName(fd int) (string, error) {
+	return unix.GetsockoptString(fd, 2, 2) // SYSPROTO_CONTROL, UTUN_OPT_IFNAME
+}
+
 func newSystem() system { return newDarwinSystem() }
 
 // Inherited returns the utun device that the system opened in this

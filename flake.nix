@@ -88,9 +88,10 @@
         in
         {
           # NoCC: nixpkgs' C compiler brings its own xcrun and macOS SDK,
-          # which hide Xcode's iOS SDKs from ios/build-core.sh.
+          # which hide Xcode's iOS SDKs from ios/build-core.sh. The JDK is
+          # Gradle's, for the Android app; its SDK and NDK come from Google.
           default = pkgs.mkShellNoCC {
-            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh ]
+            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh pkgs.jdk21 ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.xcodegen ];
           };
         });

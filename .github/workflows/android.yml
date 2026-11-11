@@ -1,0 +1,59 @@
+# Builds the Android app, with gst's Go code for each ABI, and runs its
+# tests: the model, gst's Go code through JNI, and the screens, of which it
+# keeps a picture each as the artifact `android-screenshots`. The APKs are
+# the artifact `android-apks`. See android/README.md.
+name: Android
+
+on:
+  push:
+    paths:
+      - .github/workflows/android.yml
+      - android/**
+      - gstkit/**
+      - internal/**
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build the Go code
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          android/build-core.sh
+          android/build-core.sh host
+      - name: Build and test
+        working-directory: android
+        run: ./gradlew --no-configuration-cache assembleDebug assembleRelease testDebugUnitTest
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-screenshots
+          path: android/app/build/screenshots
+          if-no-files-found: warn
+      - name: Keep the APKs
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-apks
+          path: android/app/build/outputs/apk/*/*.apk

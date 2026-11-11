@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`gst` (go ssh tunnel) links your machines into a private network over SSH. It feels like Tailscale, and uses the SSH logins you already have: every machine gets a gst IP and the name `<machine>.gst`, for any program and protocol. Traffic is WireGuard, end to end. It goes directly over UDP when the network allows it, and is relayed along the SSH links otherwise. It runs on Linux and macOS, where it needs root once on each machine, and on iPhone and iPad as an app (see [iPhone and iPad](#iphone-and-ipad)).
+`gst` (go ssh tunnel) links your machines into a private network over SSH. It feels like Tailscale, and uses the SSH logins you already have: every machine gets a gst IP and the name `<machine>.gst`, for any program and protocol. Traffic is WireGuard, end to end. It goes directly over UDP when the network allows it, and is relayed along the SSH links otherwise. It runs on Linux and macOS, where it needs root once on each machine, and on iPhone, iPad, and Android as an app (see [iPhone and iPad](#iphone-and-ipad) and [Android](#android)).
 
 Three words are all you need:
 
@@ -299,6 +299,27 @@ What differs from the other machines:
 - `gst expose`, `gst subnet`, and `gst ui` have no counterpart in the app; run them on another machine. A page that `gst ui` serves there opens in the phone's browser.
 - `gst ping` from another machine to the phone works for packets up to the interface's MTU.
 - iOS shows the VPN as connected while gst runs, whether or not a link is up. The app shows what the links do.
+
+## Android
+
+The gst app for Android puts an Android phone or tablet (Android 10 or later) in the network, as the iPhone app does above: gst runs as a VPN that carries only the subnet of the network and the names under `.gst`, and the phone links to your machines with an SSH key of its own.
+
+<p>
+<img src="android/screenshots/en-light-home.jpg" width="230" alt="The first screen: this machine, the machines of the network, and the switch">
+<img src="android/screenshots/en-light-host-key.jpg" width="230" alt="Adding a machine: the server's host key to check">
+<img src="android/screenshots/en-light-machine.jpg" width="230" alt="One machine: its gst IP, its name, and how packets reach it">
+</p>
+
+The app is not on Google Play. Build it from [`android/`](android/README.md) with `make android`, or take the APK from the `android-apks` artifact of a CI run, and install it.
+
+Joining a network takes the same steps as on an iPhone: tap **+**, enter `user@host` and the port if it is not 22, trust the server's host key after comparing its fingerprint, run the command that authorizes the phone's key on that machine, and tap **Try again**. The app then adds the link and turns gst on; Android asks once whether gst may set up a VPN connection. The first screen, a machine's details, and **Settings** show and do what they do on an iPhone.
+
+What differs from an iPhone:
+
+- gst stays on until you turn it off: the app turns it on again after the phone restarts or the app is updated. Android's **Always-on VPN** setting for gst works too.
+- Android sends every DNS query to a VPN, so gst answers the names under `.gst` and passes the others to the phone's own resolver, on the network beneath the VPN.
+- Android runs one VPN at a time. Turning on another one turns gst off.
+- gst's own connections, its links and UDP paths, go around the VPN. Apps reach the network through it.
 
 ## Upgrading
 
