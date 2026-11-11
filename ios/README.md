@@ -41,7 +41,7 @@ The texts of the app are in `App/Localizable.xcstrings`, in English and Simplifi
 - `Tests/` (GstTests) runs gst's Go code through `Core`: the app's methods, the daemon's start and its answers, and what the app makes of them.
 - `UITests/` (GstUITests) opens every screen on a made-up network, in English and Chinese, light and dark, and checks that it shows. `App/Demo.swift` is that network: a debug build opens on one of its screens with `-GstDemo <screen>` on its command line, and Xcode's previews (`App/Previews.swift`) show the same.
 
-The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The workflow keeps those as the `screenshots` artifact of a run. The pictures in `screenshots/`, which the README shows, are the workflow's too: it commits them, made smaller, when the message of a commit has `[screenshots]`, or when it is run by hand. Ask for that after a change to what the screens look like.
+The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The workflow keeps those as the `screenshots` artifact of a run. The pictures in `screenshots/`, which the README shows, come from that artifact; CI does not commit them.
 
 `internal/mobile`, the daemon without a socket, and the DNS and ping inside the interface have Go unit tests (`make test`), which join a phone to a network through an SSH server, a real daemon, and a fake interface.
 
