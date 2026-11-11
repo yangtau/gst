@@ -103,32 +103,6 @@ struct CodeBlock: View {
     }
 }
 
-/// The soft light behind the network: colored while gst is on, and
-/// fading into the background below.
-struct Aura: View {
-    let isOn: Bool
-
-    var body: some View {
-        MeshGradient(
-            width: 3,
-            height: 3,
-            points: [
-                [0, 0], [0.5, 0], [1, 0],
-                [0, 0.5], [0.6, 0.4], [1, 0.5],
-                [0, 1], [0.5, 1], [1, 1],
-            ],
-            colors: isOn
-                ? [.teal, .mint, .cyan, .green, .teal, .blue, .mint, .cyan, .teal]
-                : Array(repeating: Color.gray, count: 9)
-        )
-        .opacity(isOn ? 0.35 : 0.12)
-        .mask(LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .center))
-        .background(Color(uiColor: .systemBackground))
-        .ignoresSafeArea()
-        .animation(.smooth(duration: 1.2), value: isOn)
-    }
-}
-
 extension String {
     /// The text as a sentence starts: gst's own words, which the app
     /// shows as they are, start small, as errors do.

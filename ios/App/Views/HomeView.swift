@@ -57,7 +57,7 @@ struct HomeView: View {
                 .frame(maxWidth: 640)
                 .frame(maxWidth: .infinity)
             }
-            .background { Aura(isOn: model.isOn) }
+            .background(Color(uiColor: .systemGroupedBackground))
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Settings", systemImage: "slider.horizontal.3") { sheet = .settings }
@@ -225,7 +225,7 @@ private struct MachineList: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(18)
-                    .background(.regularMaterial, in: .rect(cornerRadius: 22))
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
             } else {
                 VStack(spacing: 0) {
                     ForEach(machines) { machine in
@@ -240,7 +240,7 @@ private struct MachineList: View {
                         }
                     }
                 }
-                .background(.regularMaterial, in: .rect(cornerRadius: 22))
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
             }
         }
     }
@@ -318,7 +318,7 @@ private struct Welcome: View {
             .controlSize(.large)
         }
         .padding(22)
-        .background(.regularMaterial, in: .rect(cornerRadius: 28))
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 28))
     }
 
     private func step(_ symbol: String, _ text: LocalizedStringKey) -> some View {
