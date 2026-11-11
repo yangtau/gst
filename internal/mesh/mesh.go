@@ -85,6 +85,7 @@ type Node struct {
 	directTries map[string]*directTry         // by node id
 	directWaits map[string]directWait         // by node id
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
+	directPrev  map[string][]wire.DirectEvent // the one before it
 	directIdle  time.Duration                 // see runDirect
 
 	subnetPrefix atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
@@ -111,6 +112,7 @@ func New(cfg Config) *Node {
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},
 		directTrace: map[string][]wire.DirectEvent{},
+		directPrev:  map[string][]wire.DirectEvent{},
 		directIdle:  directIdle,
 	}
 	route.Handle(n.router, wire.MethodPeerPing, func(context.Context, string, struct{}) (any, error) { return n.Self(), nil })
@@ -224,6 +226,7 @@ func (n *Node) Run(ctx context.Context) {
 		n.table.Run(ctx)
 	}()
 	defer func() { <-saved }()
+	go n.watchSleep(ctx)
 	tick := time.NewTicker(refresh)
 	defer tick.Stop()
 	force := false

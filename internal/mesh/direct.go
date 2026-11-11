@@ -135,11 +135,16 @@ func (n *Node) trace(id, format string, args ...any) {
 func (n *Node) serveTrace(_ context.Context, from string, _ struct{}) (any, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return wire.DirectTrace{Events: slices.Clone(n.directTrace[from])}, nil
+	return n.traceOf(from), nil
+}
+
+// traceOf returns the latest tries with node id. n.mu is held.
+func (n *Node) traceOf(id string) wire.DirectTrace {
+	return wire.DirectTrace{Events: slices.Clone(n.directTrace[id]), Previous: slices.Clone(n.directPrev[id])}
 }
 
 // DirectReport reports the UDP path to the node that ref names, and
-// what this node and that node did in their latest try at one.
+// what this node and that node did in their latest two tries at one.
 func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport, error) {
 	dest, err := FindNode(n.Topology(), ref)
 	if err != nil {
@@ -167,7 +172,7 @@ func (n *Node) DirectReport(ctx context.Context, ref string) (wire.DirectReport,
 	if next := n.directWaits[dest.ID].next; next.After(time.Now()) {
 		r.Next = next
 	}
-	r.Local.Events = slices.Clone(n.directTrace[dest.ID])
+	r.Local = n.traceOf(dest.ID)
 	return r, nil
 }
 
@@ -192,6 +197,9 @@ func (n *Node) startDirect(id string, offering bool) (context.Context, *directTr
 	}
 	try := &directTry{offering: offering, cancel: cancel}
 	n.directTries[id] = try
+	if events := n.directTrace[id]; len(events) > 0 {
+		n.directPrev[id] = events // Its end says why there is a try again.
+	}
 	n.directTrace[id] = nil
 	return ctx, try
 }

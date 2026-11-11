@@ -423,6 +423,18 @@ func TestPingVerbose(t *testing.T) {
 		}
 	}
 
+	// The try before comes first, and how it ended.
+	e.back.direct = func(node string) (wire.DirectReport, error) {
+		return wire.DirectReport{Node: peerOf(node), Peer: wire.DirectTrace{
+			Previous: []wire.DirectEvent{event(0, "up"), event(20*time.Second, "fell silent")},
+			Events:   []wire.DirectEvent{event(25*time.Second, "offer over SSH")},
+		}}, nil
+	}
+	out = e.mustGst("ping", "devbox", "-c", "1", "-v")
+	if want := "devbox:\n  the try before:\n    0.000s  up\n   20.000s  fell silent\n  the latest try:\n   25.000s  offer over SSH\n"; !strings.Contains(out, want) {
+		t.Fatalf("output %q lacks %q", out, want)
+	}
+
 	// Without a path, it says when the next try is.
 	e.back.direct = func(node string) (wire.DirectReport, error) {
 		return wire.DirectReport{Node: peerOf(node), Next: time.Now().Add(time.Minute), PeerError: "no way"}, nil

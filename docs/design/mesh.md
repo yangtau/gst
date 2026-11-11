@@ -161,7 +161,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `mesh.remove` | `{"node": <machine>}` | `Removal`：`node`、`self`（移除的是本机）、`stranded`（只经它连到本机、移除后会离线的机器），见[移除](#移除gst-remove-machine) |
 | `mesh.subnet` | `{"subnet": cidr}` | 无：写入人选的 `subnet` 条目 |
 | `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
-| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近一次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
+| `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近两次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
 
 link 状态：`connecting`（建立 SSH 与握手中）、`running`（握手完成）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。
 
@@ -307,7 +307,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | `status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同） |
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方寻找 UDP 路径 |
 | `direct.update` | `DirectOffer`（运行中路径的 token 和调用方现在的地址） | 无；被调方加入这些地址，重新测量这条路径 |
-| `direct.trace` | 无 | `{"events": [{"time": …, "text": …}...]}`：被调方与调用方最近一次寻找 UDP 路径的过程 |
+| `direct.trace` | 无 | `{"events": [{"time": …, "text": …}...], "previous": [...]}`：被调方与调用方最近一次寻找 UDP 路径的过程，和它之前的一次（显示那次怎么结束）。机器睡眠时，每个过程都记下睡了多久 |
 | `net.prefixes` | 无 | `UsedPrefixes`：`{"interfaces": [...], "routes": [...]}`，被调方网卡的网段和路由的目的网段（IPv4），供选择网段时避开 |
 
 ### 拓扑

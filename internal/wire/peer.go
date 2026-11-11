@@ -21,7 +21,7 @@ const (
 	// the callee measures the path again.
 	MethodDirectUpdate = "direct.update"
 	// MethodDirectTrace ("direct.trace") takes no params and returns
-	// DirectTrace: what the callee did in its latest try at a UDP path
+	// DirectTrace: what the callee did in its latest tries at a UDP path
 	// with the caller.
 	MethodDirectTrace = "direct.trace"
 	// MethodNetPrefixes ("net.prefixes") takes no params and returns
@@ -118,10 +118,12 @@ type UsedPrefixes struct {
 	Routes     []string `json:"routes"`
 }
 
-// DirectTrace is what a node did in its latest try at a UDP path, in
-// order. It holds addresses, so it stays out of the daemon log.
+// DirectTrace is what a node did in its latest try at a UDP path, and in
+// the one before, which shows how that ended, each in order. It holds
+// addresses, so it stays out of the daemon log.
 type DirectTrace struct {
-	Events []DirectEvent `json:"events"`
+	Events   []DirectEvent `json:"events"`
+	Previous []DirectEvent `json:"previous,omitempty"`
 }
 
 // DirectEvent is one thing that a try at a UDP path did.

@@ -403,3 +403,32 @@ func TestTraceKeepsTheLatest(t *testing.T) {
 		t.Fatalf("%d events, from %q", len(events), events[0].Text)
 	}
 }
+
+// A new try keeps the one before, which says how it ended, and a sleep of
+// the machine shows in every trace.
+func TestTraceKeepsTheTryBefore(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	enableDirect(t, a, c)
+	a.trace(nid("c"), "fell silent")
+	a.mu.Lock()
+	_, try := a.startDirect(nid("c"), true)
+	a.mu.Unlock()
+	a.endDirect(nid("c"), try)
+	a.trace(nid("c"), "offering")
+	a.slept(9800 * time.Millisecond)
+
+	got := a.traceOf(nid("c"))
+	if len(got.Previous) != 1 || got.Previous[0].Text != "fell silent" {
+		t.Fatalf("the try before: %v", got.Previous)
+	}
+	if len(got.Events) != 2 || got.Events[0].Text != "offering" || got.Events[1].Text != "this machine slept for 9.8s" {
+		t.Fatalf("the latest try: %v", got.Events)
+	}
+}
+
+func TestSleptFor(t *testing.T) {
+	last := time.Now()
+	if d := sleptFor(last, last.Add(time.Second)); d != 0 {
+		t.Fatalf("awake: slept for %s", d)
+	}
+}

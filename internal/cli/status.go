@@ -408,19 +408,29 @@ func writeDirect(out io.Writer, r wire.DirectReport) {
 	writeTrace(out, r.Node.Name, r.Peer, r.PeerError)
 }
 
-// writeTrace prints a machine's events with the time since its first.
+// writeTrace prints a machine's latest tries, each event with the time
+// since the first: the try before, which shows how it ended, and the
+// latest.
 func writeTrace(out io.Writer, ref string, t wire.DirectTrace, failure string) {
 	fmt.Fprintf(out, "\n%s:\n", ref)
 	if failure != "" {
 		fmt.Fprintf(out, "  no answer: %s\n", failure)
 		return
 	}
-	if len(t.Events) == 0 {
+	all := append(slices.Clone(t.Previous), t.Events...)
+	if len(all) == 0 {
 		fmt.Fprintln(out, "  no try yet")
 		return
 	}
-	for _, e := range t.Events {
-		fmt.Fprintf(out, "  %7.3fs  %s\n", e.Time.Sub(t.Events[0].Time).Seconds(), e.Text)
+	for i, e := range all {
+		switch {
+		case len(t.Previous) == 0:
+		case i == 0:
+			fmt.Fprintln(out, "  the try before:")
+		case i == len(t.Previous):
+			fmt.Fprintln(out, "  the latest try:")
+		}
+		fmt.Fprintf(out, "  %7.3fs  %s\n", e.Time.Sub(all[0].Time).Seconds(), e.Text)
 	}
 }
 
