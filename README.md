@@ -287,7 +287,7 @@ To join a network:
 
 1. Tap **+** and enter the SSH login of a machine where you ran `gst up`, as `user@host`, and its port if it is not 22.
 2. The app shows the server's host key fingerprint the first time. Compare it with the server's own, which `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints there, and trust it.
-3. The app then shows a command that adds the phone's public key to `~/.ssh/authorized_keys`. Run it on that machine, logged in as that user, and tap **Try Again**. **Settings** shows the key at any time.
+3. The app then shows a command that adds the phone's public key to `~/.ssh/authorized_keys`. Run it on that machine, logged in as that user, and tap **Try Again**. **Settings** shows the key at any time, and **New Key** there replaces it; the machines that authorized the old key then need the new one.
 4. The app adds the link and turns gst on. iOS asks once whether gst may add a VPN configuration.
 
 The first screen lists the machines with `Direct`, `Relay`, or `Offline`, as `gst status` does, and problems above them. Tap a machine for its gst IP and name, a ping, and removing it from the network. The switch at the bottom turns gst on and off; while it is on, iOS keeps it running, and starts it again after a restart. **Settings** renames the phone, lists its links (swipe one to remove it, as `gst unlink` does), and shows the log.

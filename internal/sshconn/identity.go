@@ -13,12 +13,18 @@ import (
 )
 
 // NewIdentity makes sure that path holds a private key: it writes a new
-// ED25519 key without a passphrase there, for its owner only, unless the
-// file exists. It is for machines without ssh-keygen.
+// one there as ReplaceIdentity does, unless the file exists. It is for
+// machines without ssh-keygen.
 func NewIdentity(path string) error {
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	return ReplaceIdentity(path)
+}
+
+// ReplaceIdentity writes a new ED25519 key without a passphrase at path,
+// for its owner only, in place of any key there.
+func ReplaceIdentity(path string) error {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err

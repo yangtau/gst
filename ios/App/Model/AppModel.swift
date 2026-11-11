@@ -204,6 +204,12 @@ final class AppModel {
         return removal
     }
 
+    /// Replaces this machine's key with a new one. Servers accept it once
+    /// it is in their authorized_keys.
+    func newKey() async throws {
+        info = try await app.call("app.new_key")
+    }
+
     /// The end of the daemon's log.
     func log() async throws -> String {
         let log: DaemonLog = try await app.call("app.log")

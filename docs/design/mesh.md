@@ -443,6 +443,7 @@ iPhone 和 iPad 没有命令行、ssh 和后台服务，系统也不让 VPN 进�
   | `app.trust` | `{"destination", "key"}` | 无：把人核对过的主机密钥记入 `known_hosts`，替换该地址原有的记录 |
   | `app.add` | `{"destination"}` | `Info`：同 `gst add`，写入带 `admit` 的 link；主机密钥还没记录时拒绝 |
   | `app.unlink` | `{"destination"}` | `Info`：同 `gst unlink` |
+  | `app.new_key` | 无 | `Info`：换一把新私钥（`id_ed25519`），旧的不再使用；已认可旧公钥的服务器要加上新的，link 下次连接时用新私钥登录 |
   | `app.log` | 无 | `{"text"}`：日志的最后 64 KiB |
 
 - **link**：destination 只能是 `user@host` 或 `ssh://user@host:port`（`sshconfig.Literal`），必须写出用户，没有 ssh 参数；私钥和 known_hosts 就是目录里的那两个文件。主机密钥由人在 app 里核对指纹后信任：`sshconn.Try` 登录一次，区分未知的主机密钥、变了的主机密钥和未授权的私钥；对未知的服务器优先要 ED25519 密钥，和 OpenSSH 给人看的一致。没有 node 能 link 到手机：它没有 sshd，也没有 control socket。

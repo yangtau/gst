@@ -367,6 +367,15 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	if err := call(t, app, MethodName, NameParams{"My Phone"}, nil); err == nil || err.Code != wire.CodeInvalidParams {
 		t.Fatalf("an invalid name: %v", err)
 	}
+	// A new key replaces the one that the server authorized.
+	old := info.PublicKey
+	if err := call(t, app, MethodNewKey, nil, &info); err != nil || info.PublicKey == old ||
+		!strings.HasPrefix(info.PublicKey, "ssh-ed25519 ") || !strings.HasSuffix(info.PublicKey, " gst@phone") {
+		t.Fatalf("new key: %q after %q, %v", info.PublicKey, old, err)
+	}
+	if err := call(t, app, MethodCheck, link, &check); err != nil || check.State != CheckUnauthorized {
+		t.Fatalf("check with the new key: %+v, %v", check, err)
+	}
 	if err := call(t, app, MethodUnlink, link, &info); err != nil || len(info.Links) != 0 {
 		t.Fatalf("unlink: %+v, %v", info, err)
 	}

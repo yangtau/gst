@@ -401,12 +401,32 @@
         }
       }
     },
+    "Make a new key?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "换一把新密钥？"
+          }
+        }
+      }
+    },
     "Name": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "名字"
+          }
+        }
+      }
+    },
+    "New Key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "换新密钥"
           }
         }
       }
@@ -797,6 +817,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这台机器已不在网络中"
+          }
+        }
+      }
+    },
+    "This machine stops using its current key. Machines that authorized it accept the new one once it is in their `~/.ssh/authorized_keys`.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机将不再使用当前的密钥。已认可它的机器，要把新密钥加入 `~/.ssh/authorized_keys` 后才接受本机。"
           }
         }
       }

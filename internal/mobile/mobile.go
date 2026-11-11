@@ -54,6 +54,11 @@ const (
 	// MethodUnlink ("app.unlink") takes LinkParams, removes the link as
 	// gst unlink does, and returns Info.
 	MethodUnlink = "app.unlink"
+	// MethodNewKey ("app.new_key") takes no params, replaces this
+	// machine's key with a new one, and returns Info. Servers accept the
+	// new key once it is in their authorized_keys; links log in with it
+	// from their next connection.
+	MethodNewKey = "app.new_key"
 	// MethodLog ("app.log") takes no params and returns Log: the end of
 	// the daemon's log.
 	MethodLog = "app.log"
@@ -164,6 +169,7 @@ func Open(dir, name string) (*App, error) {
 	wire.Handle(&a.local, MethodTrust, a.trust)
 	wire.Handle(&a.local, MethodAdd, a.add)
 	wire.Handle(&a.local, MethodUnlink, a.unlink)
+	wire.Handle(&a.local, MethodNewKey, none(a.newKey))
 	wire.Handle(&a.local, MethodLog, none(func() (any, error) { return a.log() }))
 	return a, nil
 }
@@ -322,6 +328,14 @@ func (a *App) unlink(_ context.Context, p LinkParams) (any, error) {
 		}
 		f.Links = slices.DeleteFunc(f.Links, func(l config.Link) bool { return l.Destination == p.Destination })
 		return nil
+	})
+}
+
+// newKey replaces the key under the configuration's lock, as Open makes
+// it, so that the other process never reads half a key.
+func (a *App) newKey() (any, error) {
+	return a.update(func(*config.File) error {
+		return sshconn.ReplaceIdentity(a.keyPath())
 	})
 }
 

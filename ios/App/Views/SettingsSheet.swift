@@ -8,6 +8,8 @@ struct SettingsSheet: View {
     @State private var name = ""
     @State private var nameFailure: String?
     @State private var failure: String?
+    @State private var keyFailure: String?
+    @State private var isConfirmingNewKey = false
 
     var body: some View {
         NavigationStack {
@@ -52,10 +54,25 @@ struct SettingsSheet: View {
                         ShareLink(item: key) {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
+                        Button(role: .destructive) {
+                            isConfirmingNewKey = true
+                        } label: {
+                            Label("New Key", systemImage: "arrow.triangle.2.circlepath")
+                                .foregroundStyle(.red)
+                        }
+                        .confirmationDialog("Make a new key?", isPresented: $isConfirmingNewKey, titleVisibility: .visible) {
+                            Button("New Key", role: .destructive, action: newKey)
+                        } message: {
+                            Text("This machine stops using its current key. Machines that authorized it accept the new one once it is in their `~/.ssh/authorized_keys`.")
+                        }
                     } header: {
                         Text("SSH Key")
                     } footer: {
-                        Text("A machine lets this machine link to it once this line is in its `~/.ssh/authorized_keys`. The private key never leaves this machine.")
+                        if let keyFailure {
+                            Text(keyFailure).foregroundStyle(.red)
+                        } else {
+                            Text("A machine lets this machine link to it once this line is in its `~/.ssh/authorized_keys`. The private key never leaves this machine.")
+                        }
                     }
                 }
 
@@ -117,6 +134,17 @@ struct SettingsSheet: View {
                 nameFailure = nil
             } catch {
                 nameFailure = error.localizedDescription
+            }
+        }
+    }
+
+    private func newKey() {
+        Task {
+            do {
+                try await model.newKey()
+                keyFailure = nil
+            } catch {
+                keyFailure = error.localizedDescription
             }
         }
     }
