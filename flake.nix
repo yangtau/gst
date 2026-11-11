@@ -5,8 +5,8 @@
 
   # .github/workflows/nix.yml builds gst on every push and pushes it here.
   nixConfig = {
-    extra-substituters = [ "https://gst.cachix.org" ];
-    extra-trusted-public-keys = [ "gst.cachix.org-1:ISwNNjTDFM6zYGVSaaCefcdESJXkLC0MbhFn3Mc/Qsc=" ];
+    extra-substituters = [ "https://tau.cachix.org" ];
+    extra-trusted-public-keys = [ "tau.cachix.org-1:tqAThmpvqthNsfMUwRlljsDKPW8147I/+yzRVZnxKsA=" ];
   };
 
   outputs = { self, nixpkgs }:

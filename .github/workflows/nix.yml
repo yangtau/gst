@@ -36,7 +36,7 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v16
         with:
-          name: gst
+          name: tau
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build
         run: nix build --print-build-logs .#packages.${{ matrix.system }}.gst

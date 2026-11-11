@@ -22,11 +22,11 @@ go install github.com/yangtau/ssh-tunnel/cmd/gst@latest
 nix profile add github:yangtau/ssh-tunnel
 ```
 
-flake 指定了二进制缓存 `gst.cachix.org`，其中有每个 commit 构建好的 gst，Nix 会直接下载而不是自己编译。Nix 会询问是否使用这个缓存（`--accept-flake-config` 表示同意），而 Nix daemon 只允许其 `trusted-users` 中的用户使用。否则把缓存加到 `/etc/nix/nix.conf`（NixOS 上用 `nix.settings`），然后重启 daemon：
+flake 指定了二进制缓存 `tau.cachix.org`，其中有每个 commit 构建好的 gst，Nix 会直接下载而不是自己编译。Nix 会询问是否使用这个缓存（`--accept-flake-config` 表示同意），而 Nix daemon 只允许其 `trusted-users` 中的用户使用。否则把缓存加到 `/etc/nix/nix.conf`（NixOS 上用 `nix.settings`），然后重启 daemon：
 
 ```
-extra-substituters = https://gst.cachix.org
-extra-trusted-public-keys = gst.cachix.org-1:ISwNNjTDFM6zYGVSaaCefcdESJXkLC0MbhFn3Mc/Qsc=
+extra-substituters = https://tau.cachix.org
+extra-trusted-public-keys = tau.cachix.org-1:tqAThmpvqthNsfMUwRlljsDKPW8147I/+yzRVZnxKsA=
 ```
 
 不使用缓存时，Nix 会自己编译 gst，需要几分钟。
