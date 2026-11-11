@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build gst's Go code for the iOS app: ios/build/GstKit.xcframework, a
-# static library (ios/gstkit) for devices and for the simulator on Apple
+# static library (gstkit) for devices and for the simulator on Apple
 # silicon, and ios/build/Version.xcconfig, which gives the app the release
 # of gst. It needs Xcode and Go.
 set -eu
@@ -12,7 +12,7 @@ out=ios/build
 command -v xcrun >/dev/null || { echo "error: building the iOS app needs Xcode" >&2; exit 1; }
 rm -rf "$out/GstKit.xcframework" "$out/core"
 mkdir -p "$out/core/include"
-cp ios/gstkit/gstkit.h ios/gstkit/module.modulemap "$out/core/include/"
+cp gstkit/gstkit.h ios/module.modulemap "$out/core/include/"
 
 # build SDK TARGET DIRECTORY
 build() {
@@ -20,7 +20,7 @@ build() {
 	flags="-isysroot $sdk -target $2"
 	CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="$(xcrun --sdk "$1" --find clang)" \
 		CGO_CFLAGS="$flags" CGO_LDFLAGS="$flags" \
-		go build -trimpath -buildmode=c-archive -o "$out/core/$3/libgstkit.a" ./ios/gstkit
+		go build -trimpath -buildmode=c-archive -o "$out/core/$3/libgstkit.a" ./gstkit
 	rm -f "$out/core/$3/libgstkit.h" # cgo's own header; gstkit.h is the one to use
 }
 build iphoneos "arm64-apple-ios$min" device

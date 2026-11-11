@@ -39,7 +39,9 @@ enum Core {
     static func start(apply: @escaping (InterfaceSettings) -> String?) throws {
         let handler = ApplyHandler(apply)
         applying = handler
-        let failed = gst_start({ context, settings in
+        // iOS keeps the interface, so the descriptor stays at -1, and
+        // it sends gst only the names under .gst, so nothing is forwarded.
+        let failed = gst_start({ context, settings, _ in
             guard let context, let settings else { return nil }
             let handler = Unmanaged<ApplyHandler>.fromOpaque(context).takeUnretainedValue()
             let data = Data(bytes: settings, count: strlen(settings))
@@ -50,7 +52,7 @@ enum Core {
                 return strdup(failure)
             }
             return nil
-        }, Unmanaged.passUnretained(handler).toOpaque())
+        }, nil, Unmanaged.passUnretained(handler).toOpaque())
         if let failed {
             throw take(failed)
         }

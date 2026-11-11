@@ -91,6 +91,11 @@ type Config struct {
 	// sockets off the interface (see inside.go). DNS is then an address
 	// that the interface routes.
 	Inside bool
+	// Forward answers, with Inside, the DNS queries for names outside
+	// .gst, for a system that sends every query to DNS (Android): it asks
+	// the system's own resolver. Without it, gst says that such names do
+	// not exist.
+	Forward func(query []byte) ([]byte, error)
 }
 
 // state is what a node keeps between runs.
@@ -548,7 +553,7 @@ func (m *Manager) up(ctx context.Context) error {
 	var seen wgtun.Device = m.loop
 	if m.cfg.Inside {
 		dns, _ := netip.ParseAddrPort(m.cfg.DNS)
-		in := newInside(m.loop, m.loop.own, dns, uint16(m.cfg.Echo), m.resolve)
+		in := newInside(m.loop, m.loop.own, dns, uint16(m.cfg.Echo), m.resolve, m.cfg.Forward)
 		m.inside.Store(in)
 		seen = in
 	}

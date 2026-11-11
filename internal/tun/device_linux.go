@@ -29,4 +29,13 @@ func openDevice() (*os.File, string, error) {
 	return os.NewFile(uintptr(fd), "tun"), interfaceName, nil
 }
 
+// deviceName returns the name of the interface that fd is open on.
+func deviceName(fd int) (string, error) {
+	var req [unix.IFNAMSIZ + 64]byte
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNGETIFF, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
+		return "", errno
+	}
+	return unix.ByteSliceToString(req[:unix.IFNAMSIZ]), nil
+}
+
 func newSystem() system { return newLinuxSystem() }

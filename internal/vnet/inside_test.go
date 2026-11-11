@@ -70,6 +70,67 @@ func TestInsideAnswersDNS(t *testing.T) {
 	}
 }
 
+func TestInsideForwardsDNS(t *testing.T) {
+	var w world
+	asked := make(chan string, 4)
+	a := &testNode{mesh: w.add("a0", "phone"), dir: t.TempDir(), tune: func(cfg *Config) {
+		cfg.Inside, cfg.DNS, cfg.Echo = true, "198.18.0.53:53", 15354
+		cfg.Forward = func(query []byte) ([]byte, error) {
+			var m dnsmessage.Message
+			if err := m.Unpack(query); err != nil {
+				return nil, err
+			}
+			asked <- m.Questions[0].Name.String()
+			m.Response = true
+			m.Answers = []dnsmessage.Resource{{
+				Header: dnsmessage.ResourceHeader{Name: m.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+				Body:   &dnsmessage.AResource{A: [4]byte{192, 0, 2, 1}},
+			}}
+			return m.Pack()
+		}
+	}}
+	a.run(t)
+	a.manager.Configure(t.Context())
+	waitFor(t, "a is up", up(a, 0))
+
+	var pk inside
+	own := netip.AddrPortFrom(netip.MustParseAddr(a.manager.Status().Address), 50000)
+	dns := netip.MustParseAddrPort("198.18.0.53:53")
+	ask := func(name string) dnsmessage.Message {
+		t.Helper()
+		a.device().in <- pk.appendUDP(nil, own, dns, query(t, name, dnsmessage.TypeA))
+		select {
+		case p := <-a.device().out:
+			reply, ok := parseUDP(p)
+			var m dnsmessage.Message
+			if !ok || reply.from != dns || m.Unpack(reply.payload) != nil {
+				t.Fatalf("the reply is %x", p)
+			}
+			return m
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no reply for %s", name)
+		}
+		return dnsmessage.Message{}
+	}
+
+	// A name outside .gst goes to the system's resolver.
+	if m := ask("www.example.com."); len(m.Answers) != 1 || m.Answers[0].Body.(*dnsmessage.AResource).A != [4]byte{192, 0, 2, 1} {
+		t.Fatalf("the answer for www.example.com is %+v", m)
+	}
+	if got := <-asked; got != "www.example.com." {
+		t.Fatalf("the resolver was asked for %s", got)
+	}
+	// A name under .gst stays with gst.
+	if m := ask("phone.gst."); len(m.Answers) != 1 || netip.AddrFrom4(m.Answers[0].Body.(*dnsmessage.AResource).A) != own.Addr() {
+		t.Fatalf("the answer for phone.gst is %+v", m)
+	}
+	select {
+	case got := <-asked:
+		t.Fatalf("the resolver was asked for %s", got)
+	default:
+	}
+}
+
 func TestInsidePing(t *testing.T) {
 	var w world
 	a := startInside(t, &w, "a0", "phone")

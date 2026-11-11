@@ -2,10 +2,17 @@
 
 package mobile
 
-import "errors"
+import (
+	"errors"
 
-// systemDevice has nothing to return: only Apple's systems make an
-// interface for a process.
-func systemDevice() (Device, error) {
-	return nil, errors.New("this system gives a process no interface")
+	"github.com/yangtau/ssh-tunnel/internal/tun"
+)
+
+// systemDevice returns the interface of descriptor fd, which the system
+// made for this process, as Android does.
+func systemDevice(fd int) (Device, error) {
+	if fd < 0 {
+		return nil, errors.New("the system gave this process no interface")
+	}
+	return tun.Adopt(fd)
 }

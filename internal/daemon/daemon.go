@@ -58,7 +58,10 @@ type Config struct {
 	NetEcho int // the UDP port that answers gst ping
 	// NetInside answers on NetDNS and NetEcho at the packets of the
 	// interface rather than on sockets; see vnet.Config.Inside.
-	NetInside    bool
+	NetInside bool
+	// NetForward answers the DNS queries for names outside .gst; see
+	// vnet.Config.Forward.
+	NetForward   func(query []byte) ([]byte, error)
 	UsedPrefixes func(skip string) vnet.UsedPrefixes
 	// RetryDelay is the first wait after a link fails, which doubles with
 	// each failure up to maxRetry; 5 s when zero.
@@ -111,6 +114,7 @@ func New(cfg Config) *Daemon {
 		DNS:          cfg.NetDNS,
 		Echo:         cfg.NetEcho,
 		Inside:       cfg.NetInside,
+		Forward:      cfg.NetForward,
 	})
 	d.config.Store(&config.File{})
 	none := func(f func() any) func(context.Context, struct{}) (any, error) {

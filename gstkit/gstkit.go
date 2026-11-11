@@ -1,13 +1,19 @@
-// Command gstkit is gst as a C library for the iOS app (-buildmode=c-archive):
-// internal/mobile behind the functions of gstkit.h, which the app and its
-// packet tunnel extension call. ios/build-core.sh builds it.
+// Command gstkit is gst as a C library for the phone apps:
+// internal/mobile behind the functions of gstkit.h. ios/build-core.sh
+// builds it for the iOS app (-buildmode=c-archive), and
+// android/build-core.sh for the Android app (-buildmode=c-shared), with
+// jni.c, which Java calls.
 package main
 
 /*
 #include <stdlib.h>
 
-typedef char *(*gst_apply_fn)(void *context, const char *settings);
-char *gst_apply(gst_apply_fn apply, void *context, const char *settings);
+// As in gstkit.h, which cgo's own declarations of the functions below
+// would contradict.
+typedef char *(*gst_apply_fn)(void *context, const char *settings, int *fd);
+typedef unsigned char *(*gst_forward_fn)(void *context, const unsigned char *query, int length, int *answer_length);
+char *gst_call_apply(gst_apply_fn apply, void *context, const char *settings, int *fd);
+unsigned char *gst_call_forward(gst_forward_fn forward, void *context, const unsigned char *query, int length, int *answer_length);
 */
 import "C"
 
@@ -39,7 +45,10 @@ func text(err error) *C.char {
 	return C.CString(err.Error())
 }
 
-var errNotOpen = errors.New("gst is not open")
+var (
+	errNotOpen  = errors.New("gst is not open")
+	errNoAnswer = errors.New("the system's resolver gave no answer")
+)
 
 //export gst_open
 func gst_open(dir, name *C.char) *C.char {
@@ -70,21 +79,36 @@ func gst_call(request *C.char) *C.char {
 }
 
 //export gst_start
-func gst_start(apply C.gst_apply_fn, context unsafe.Pointer) *C.char {
+func gst_start(apply C.gst_apply_fn, forward C.gst_forward_fn, context unsafe.Pointer) *C.char {
 	a := app.Load()
 	if a == nil {
 		return text(errNotOpen)
 	}
-	return text(a.Start(func(s mobile.Settings) error {
+	sys := mobile.System{Apply: func(s mobile.Settings) (int, error) {
 		settings, _ := json.Marshal(s)
 		in := C.CString(string(settings))
 		defer C.free(unsafe.Pointer(in))
-		if failed := C.gst_apply(apply, context, in); failed != nil {
+		fd := C.int(-1)
+		if failed := C.gst_call_apply(apply, context, in, &fd); failed != nil {
 			defer C.free(unsafe.Pointer(failed))
-			return errors.New(C.GoString(failed))
+			return -1, errors.New(C.GoString(failed))
 		}
-		return nil
-	}))
+		return int(fd), nil
+	}}
+	if forward != nil {
+		sys.Forward = func(query []byte) ([]byte, error) {
+			in := C.CBytes(query)
+			defer C.free(in)
+			var length C.int
+			answer := C.gst_call_forward(forward, context, (*C.uchar)(in), C.int(len(query)), &length)
+			if answer == nil {
+				return nil, errNoAnswer
+			}
+			defer C.free(unsafe.Pointer(answer))
+			return C.GoBytes(unsafe.Pointer(answer), length), nil
+		}
+	}
+	return text(a.Start(sys))
 }
 
 //export gst_stop

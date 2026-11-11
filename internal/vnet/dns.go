@@ -79,6 +79,21 @@ func answer(query []byte, lookup func(string) (netip.Addr, bool, bool)) []byte {
 	return packed
 }
 
+// outside reports whether query is a query for a name outside .gst.
+func outside(query []byte) bool {
+	var p dnsmessage.Parser
+	header, err := p.Start(query)
+	if err != nil || header.Response {
+		return false
+	}
+	q, err := p.Question()
+	if err != nil {
+		return false
+	}
+	name := strings.ToLower(q.Name.String())
+	return name != "gst." && !strings.HasSuffix(name, ".gst.")
+}
+
 // soa is the SOA record of the zone, for answers without an address.
 func soa() dnsmessage.Resource {
 	return dnsmessage.Resource{
