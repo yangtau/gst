@@ -22,6 +22,15 @@ With Nix (flakes enabled):
 nix profile add github:yangtau/ssh-tunnel
 ```
 
+The flake names the binary cache `gst.cachix.org`, which has gst built for every commit, so Nix downloads gst instead of building it. Nix asks whether to use the cache (`--accept-flake-config` answers yes), and the Nix daemon allows it only for users in its `trusted-users`. Otherwise add the cache to `/etc/nix/nix.conf` (on NixOS, `nix.settings`) and restart the daemon:
+
+```
+extra-substituters = https://gst.cachix.org
+extra-trusted-public-keys = gst.cachix.org-1:ISwNNjTDFM6zYGVSaaCefcdESJXkLC0MbhFn3Mc/Qsc=
+```
+
+Without the cache, Nix builds gst itself, which takes a few minutes.
+
 From a checkout:
 
 ```bash

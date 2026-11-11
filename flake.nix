@@ -3,6 +3,12 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
+  # .github/workflows/nix.yml builds gst on every push and pushes it here.
+  nixConfig = {
+    extra-substituters = [ "https://gst.cachix.org" ];
+    extra-trusted-public-keys = [ "gst.cachix.org-1:ISwNNjTDFM6zYGVSaaCefcdESJXkLC0MbhFn3Mc/Qsc=" ];
+  };
+
   outputs = { self, nixpkgs }:
     let
       systems = [
