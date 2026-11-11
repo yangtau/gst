@@ -1,0 +1,44 @@
+# Builds gst with Nix on every system the flake supports, which also runs
+# the unit tests and vet (the package's checkPhase), and pushes what it
+# built to the Cachix cache that flake.nix names, so that installing the
+# flake fetches gst instead of building it. Pushing needs the repository
+# secret CACHIX_AUTH_TOKEN; without it the build only reads the cache.
+name: Nix
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-15
+    name: ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: gst
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build
+        run: nix build --print-build-logs .#packages.${{ matrix.system }}.gst
+      - name: Run
+        run: ./result/bin/gst version
