@@ -87,8 +87,11 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
-          default = pkgs.mkShell {
-            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh ];
+          # NoCC: nixpkgs' C compiler brings its own xcrun and macOS SDK,
+          # which hide Xcode's iOS SDKs from ios/build-core.sh.
+          default = pkgs.mkShellNoCC {
+            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh ]
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.xcodegen ];
           };
         });
     };

@@ -4,11 +4,11 @@ How to use the app is in the [README](../README.md#iphone-and-ipad). This is how
 
 ## Build
 
-You need a Mac with Xcode 26 or later, Go, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`), and an Apple Developer Program membership: the app is a VPN, and a free account cannot sign the Network Extension entitlement that a VPN needs.
+You need a Mac with Xcode 26 or later, Go, [XcodeGen](https://github.com/yonaskolb/XcodeGen), which `nix develop` provides, and an Apple Developer Program membership: the app is a VPN, and a free account cannot sign the Network Extension entitlement that a VPN needs.
 
 ```sh
 cp ios/Local.xcconfig.example ios/Local.xcconfig   # then set your team id and a bundle identifier of your own
-make ios                                           # builds the Go code and generates ios/Gst.xcodeproj
+nix develop -c make ios                            # builds the Go code and generates ios/Gst.xcodeproj
 open ios/Gst.xcodeproj
 ```
 
