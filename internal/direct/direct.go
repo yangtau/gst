@@ -11,11 +11,18 @@
 // Packets go the way the system's routes say, with one exception: on macOS
 // the sockets send through the interface that reaches the internet, because
 // a proxy that takes the routes sends UDP again from another port, which
-// holes in firewalls do not fit (see bind_darwin.go). Each side measures its addresses of the other and
-// sends to the fastest, so the two directions may differ. The path then
-// carries the packets of the virtual network, which WireGuard encrypts and
-// authenticates. Nothing here protects them: the token only keeps stray
-// packets out.
+// holes in firewalls do not fit (see bind_darwin.go). The address they
+// leave from is this package's, though, not the system's: a firewall or NAT
+// between the machines lets through only what comes from the address that
+// it saw before, and a machine with several addresses, such as temporary
+// IPv6 ones, may pick another for any packet. So an answer leaves from the
+// address its probe came to, and a path sends from the address that an
+// answer came to, the pair of addresses that proved itself.
+//
+// Each side measures its addresses of the other and sends to the fastest,
+// so the two directions may differ. The path then carries the packets of
+// the virtual network, which WireGuard encrypts and authenticates. Nothing
+// here protects them: the token only keeps stray packets out.
 package direct
 
 import (
@@ -29,6 +36,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
@@ -93,6 +103,52 @@ type socket struct {
 	bound   atomic.Int64 // the interface it sends through; 0 when the routes decide
 }
 
+// controlSize is room for the control message that says where a packet
+// arrived.
+var controlSize = max(len(ipv4.NewControlMessage(ipv4.FlagDst)), len(ipv6.NewControlMessage(ipv6.FlagDst)))
+
+// control returns the control message that makes a packet leave from local;
+// nil, which leaves it to the system, when local is not valid. It names no
+// interface: on macOS the socket's own decides.
+func control(local netip.Addr) []byte {
+	switch {
+	case !local.IsValid():
+		return nil
+	case local.Is4():
+		return (&ipv4.ControlMessage{Src: local.AsSlice()}).Marshal()
+	default:
+		return (&ipv6.ControlMessage{Src: local.AsSlice()}).Marshal()
+	}
+}
+
+// write sends packet to addr, from the address that oob names.
+func (s *socket) write(packet, oob []byte, to netip.AddrPort) error {
+	_, _, err := s.udp.WriteMsgUDPAddrPort(packet, oob, to)
+	return err
+}
+
+// arrivedAt reads the address of this machine that a packet came to from
+// its control message; not valid when the system did not say.
+func (s *socket) arrivedAt(oob []byte) netip.Addr {
+	var ip net.IP
+	if s.network == "udp4" {
+		var cm ipv4.ControlMessage
+		if cm.Parse(oob) == nil {
+			ip = cm.Dst
+		}
+	} else {
+		var cm ipv6.ControlMessage
+		if cm.Parse(oob) == nil {
+			ip = cm.Dst
+		}
+	}
+	addr, _ := netip.AddrFromSlice(ip)
+	if addr = addr.Unmap(); addr.IsUnspecified() {
+		return netip.Addr{}
+	}
+	return addr
+}
+
 // Listen opens the sockets, on port if it is free. addrs returns this
 // machine's addresses to offer. skip says which addresses to have nothing
 // to do with, in offers, in what the other side offers, and as the source
@@ -129,11 +185,15 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 	return t, nil
 }
 
+// interfaces returns the interfaces for the sockets to send through; tests
+// leave it to the routes.
+var interfaces = defaultInterfaces
+
 // bind points the sockets at the interfaces that reach the internet now,
 // and reports whether that changed anything.
 func (t *Transport) bind() bool {
 	changed := false
-	v4, v6 := defaultInterfaces()
+	v4, v6 := interfaces()
 	for _, b := range []struct {
 		s     *socket
 		index int
@@ -227,6 +287,13 @@ func listen(network string, port int) *socket {
 		}
 		udp.SetReadBuffer(socketBuffer)
 		udp.SetWriteBuffer(socketBuffer)
+		// Where packets arrive; without it, they leave from wherever the
+		// system says.
+		if network == "udp4" {
+			ipv4.NewPacketConn(udp).SetControlMessage(ipv4.FlagDst, true)
+		} else {
+			ipv6.NewPacketConn(udp).SetControlMessage(ipv6.FlagDst, true)
+		}
 		return &socket{udp: udp, network: network, port: udp.LocalAddr().(*net.UDPAddr).AddrPort().Port()}
 	}
 	return nil
@@ -338,16 +405,20 @@ func (t *Transport) disallow(drop func(netip.AddrPort, *Path) bool) {
 
 // read hands on the packets of the socket until it closes.
 func (t *Transport) read(s *socket) {
-	buf := make([]byte, maxPacket)
+	buf, oob := make([]byte, maxPacket), make([]byte, controlSize)
 	for {
-		n, from, err := s.udp.ReadFromUDPAddrPort(buf)
+		n, oobn, _, from, err := s.udp.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
 			continue // Such as the ICMP error of a port that nobody listens on.
 		}
-		t.receive(s, buf[:n], netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
+		var local netip.Addr
+		if !wireGuard(buf[:n]) {
+			local = s.arrivedAt(oob[:oobn])
+		}
+		t.receive(s, buf[:n], netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), local)
 	}
 }
 
@@ -357,9 +428,11 @@ func wireGuard(packet []byte) bool {
 	return len(packet) > 0 && packet[0] >= 1 && packet[0] <= 4
 }
 
-// receive handles a packet. WireGuard's belong to the path that their
-// source proved itself on, and the others carry the token of their path.
-func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
+// receive handles a packet that came from source to local, the address of
+// this machine, which is not valid when the system did not say; it is not
+// read for WireGuard's packets. Those belong to the path that their source
+// proved itself on, and the others carry the token of their path.
+func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort, local netip.Addr) {
 	if wireGuard(packet) {
 		if p := (*t.sources.Load())[source]; p != nil {
 			p.packet(packet)
@@ -383,7 +456,14 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
 		if [idLen]byte(body[:idLen]) == t.id {
 			return // A probe of this daemon, to an address that another machine has too.
 		}
-		s.udp.WriteToUDPAddrPort(answer(p.token, body[idLen:], source), source)
+		// From the address it came to, which is the one the other side
+		// and what lies between know. macOS may refuse an address of
+		// another interface than the one the socket is bound to; an answer
+		// to a probe that came to one leaves from where the system says.
+		packet := answer(p.token, body[idLen:], source)
+		if err := s.write(packet, control(local), source); err != nil && local.IsValid() && gone(err) {
+			s.write(packet, nil, source)
+		}
 		p.probed(source)
 	case packet[0] == kindAnswer && len(packet) == answerLen:
 		sent := time.Duration(binary.BigEndian.Uint64(body))
@@ -393,7 +473,7 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
 		if !ok || !seenOK || rtt < 0 || rtt > maxRTT {
 			return
 		}
-		p.answered(to, source, rtt)
+		p.answered(to, source, local, rtt)
 		t.sawPublic(seen)
 	case packet[0] == kindBye:
 		if p.knows(source) && !p.ended() {
@@ -403,18 +483,19 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort) {
 	}
 }
 
-func (t *Transport) probe(p *Path, to netip.AddrPort) {
-	s := t.socketFor(to.Addr())
+// probe sends a probe of p between the addresses of to.
+func (t *Transport) probe(p *Path, to pair) error {
+	s := t.socketFor(to.remote.Addr())
 	if s == nil {
-		return
+		return nil
 	}
 	packet := make([]byte, 0, probeLen)
 	packet = append(packet, kindProbe)
 	packet = append(packet, p.token[:]...)
 	packet = append(packet, t.id[:]...)
 	packet = binary.BigEndian.AppendUint64(packet, uint64(time.Since(t.start)))
-	packet = appendAddr(packet, to)
-	s.udp.WriteToUDPAddrPort(packet, to)
+	packet = appendAddr(packet, to.remote)
+	return s.write(packet, to.control, to.remote)
 }
 
 // answer makes the answer to a probe, whose time and address are echo.

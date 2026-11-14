@@ -17,9 +17,8 @@ const maxPerFamily = 8
 // must stay out, which the Transport's skip sees to.
 //
 // The address that packets leave from comes first, and is never cut off:
-// the sockets are not bound to an address, so answers leave from it whatever
-// address the probe came to, and a firewall on the other side lets through
-// only what comes from an address it sent to.
+// the first probes leave from it, and a firewall on the other side lets
+// through only what comes from an address it sent to.
 func Addresses() []netip.Addr {
 	// Android keeps the list of interfaces from apps; the address that
 	// packets leave from is all there is to offer there.
