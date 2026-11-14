@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 // localAddresses returns the loopback addresses of this machine that a
@@ -184,8 +186,21 @@ func TestRemeasureAsksTheSystem(t *testing.T) {
 	if got := p.best.Load(); got.local != first {
 		t.Fatalf("using %s before an answer", got)
 	}
+	// A late answer to a probe from before takes the place first, and the
+	// next answer then waits until it stops answering.
 	p.mu.Lock()
-	p.record(remote, second, time.Millisecond, now.Add(time.Millisecond))
+	p.record(remote, first, time.Millisecond, now.Add(time.Millisecond))
+	p.record(remote, second, time.Millisecond, now.Add(2*time.Millisecond))
+	p.mu.Unlock()
+	if got := p.best.Load(); got.local != first {
+		t.Fatalf("using %s", got)
+	}
+	later := now.Add(staleLimit + time.Second)
+	if got := p.due(later); len(got) != 1 || got[0].local.IsValid() {
+		t.Fatalf("probing %v after it stopped answering", got)
+	}
+	p.mu.Lock()
+	p.record(remote, second, time.Millisecond, later)
 	p.mu.Unlock()
 	if got := p.best.Load(); got.local != second {
 		t.Fatalf("using %s", got)
@@ -257,4 +272,81 @@ func TestConnectOverIPv6(t *testing.T) {
 	if want := netip.AddrPortFrom(netip.IPv6Loopback(), c.t.v6.port).String(); c.Local() != want {
 		t.Fatalf("local %q", c.Local())
 	}
+}
+
+// fakeAnswers answers the probes that c receives, to the port they came
+// from but at the address at, as a NAT in front of the prober might, and
+// hands on the rest.
+func fakeAnswers(c *net.UDPConn, at netip.Addr, rest chan<- netip.AddrPort) {
+	buf := make([]byte, 2048)
+	for {
+		n, from, err := c.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			return
+		}
+		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
+		if n == probeLen && buf[0] == kindProbe {
+			token := [tokenLen]byte(buf[1 : 1+tokenLen])
+			c.WriteToUDPAddrPort(answer(token, buf[1+tokenLen+idLen:n], from), netip.AddrPortFrom(at, from.Port()))
+			continue
+		}
+		select {
+		case rest <- from:
+		default:
+		}
+	}
+}
+
+// Where answers arrive is read from the packets themselves: two paths whose
+// answers come to two addresses send from those, at once.
+func TestAnswersPinTheSource(t *testing.T) {
+	several(t, func(t *testing.T, network string, locals []netip.Addr) {
+		tr := transport(t)
+		type side struct {
+			p    *Path
+			at   netip.Addr
+			rest chan netip.AddrPort
+		}
+		sides := make([]side, 2)
+		for i := range sides {
+			c, addr := peer(t, network, locals[0])
+			at := locals[len(locals)-1-i]
+			rest := make(chan netip.AddrPort, 256)
+			go fakeAnswers(c, at, rest)
+			p, err := tr.Start(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { p.Close() })
+			if err := p.Connect(within(t, 5*time.Second), wire.DirectOffer{Addresses: []string{addr.String()}}); err != nil {
+				t.Fatal(err)
+			}
+			sides[i] = side{p, at, rest}
+		}
+		const count = 100
+		var wg sync.WaitGroup
+		for _, s := range sides {
+			if got := s.p.Local(); got != netip.AddrPortFrom(s.at, tr.v4.port).String() {
+				t.Fatalf("local %s, answers come to %s", got, s.at)
+			}
+			wg.Go(func() {
+				for range count {
+					s.p.WritePacket(wg4())
+				}
+			})
+		}
+		wg.Wait()
+		for i, s := range sides {
+			for range count / 2 {
+				select {
+				case got := <-s.rest:
+					if got.Addr() != s.at {
+						t.Fatalf("path %d: a packet from %s, not %s", i, got, s.at)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatalf("path %d: the packets did not arrive", i)
+				}
+			}
+		}
+	})
 }

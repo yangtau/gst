@@ -509,7 +509,9 @@ func (p *Path) Idle() time.Duration {
 
 // WritePacket sends a WireGuard packet to the other side, between the pair
 // of addresses in use. An error leaves the pair: the answers to probes
-// decide it.
+// decide it. macOS may drop a packet from an address it cannot send from
+// without an error; the probes to the address then go unanswered, and once
+// it is stale, leave from where the system says.
 func (p *Path) WritePacket(packet []byte) error {
 	best := p.best.Load()
 	if best == nil {
