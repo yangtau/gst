@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"time"
 )
 
@@ -50,6 +51,10 @@ type linkConn struct {
 	*Session
 	conn *Conn
 }
+
+// Remote returns the IP address of the server, which the link tells the
+// daemon there (wire.Hello.Seen).
+func (c *linkConn) Remote() netip.Addr { return c.conn.Remote() }
 
 func (c *linkConn) Close() error {
 	c.Session.Close()

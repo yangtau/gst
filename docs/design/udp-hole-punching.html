@@ -289,13 +289,14 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
   <span class="no">6 / 地址</span>
   <h2>怎么拿到对端的实际地址</h2>
   <div class="col">
-    <p>只有一个来源：<strong>收到的包的源地址。</strong>你的公网地址是 NAT 写在包头上的，所以必须有人收到你的包，再告诉你或直接用它。下面是三种情况：</p>
+    <p>只有一个来源：<strong>收到的包的源地址。</strong>你的公网地址是 NAT 写在包头上的，所以必须有人收到你的包，再告诉你或直接用它。下面是四种情况：</p>
   </div>
   <div class="tw col">
     <table>
       <tr><th>来源</th><th>怎么来的</th><th>什么时候有用</th></tr>
       <tr><td>本机网卡地址</td><td>程序读自己的网卡，放进 offer，经 SSH 发给对方</td><td>公网 IPv6、同一内网、或对方能路由到这个私网地址</td></tr>
       <tr><td>对方的来包</td><td>对方的探测到达时，<code>recvfrom</code> 返回的源地址。<strong>gst 用这个</strong></td><td>至少有一方能被对方打到</td></tr>
+      <tr><td>SSH link 的两端</td><td>link 是一条 SSH 连接，TCP 的包头同样被 NAT 改写。握手时每一端把自己看到的对方 IP 告诉对方。<strong>gst 用这个</strong></td><td>还没有任何 UDP 路径时。只有 IP，端口靠猜：公网地址一对一映射到这台机器，或 NAT 保持源端口时才对</td></tr>
       <tr><td>STUN</td><td>向公网上的 STUN 服务器发包，它回复“我看到你的地址是这个”。<strong>gst 没用</strong></td><td>两边都不可达时才必须</td></tr>
     </table>
   </div>
@@ -310,7 +311,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     proved &lt;- path{s, source}           <span class="c">// 这条路径被证明可用</span>
 }</pre>
     <p>为了不让无关的包混进来，探测里带 16 字节的 token。token 事先经 SSH 交换，只有 token 正确的包，来源才会被当成对端。探测包本身是明文，所以 token 只用来找路径，确认身份靠之后 WireGuard 的握手。在 <button class="jump" data-sc="1" type="button">场景二</button> 里可以看到这个过程。</p>
-    <p>这个方法的边界也很清楚：<strong>学习地址的前提是对方的包能到你这里。</strong>如果两边都在 NAT 后面，谁的包也到不了谁，就谁都学不到，看 <button class="jump" data-sc="2" type="button">场景三</button>。解法是找一个两边都能到的第三方，就是 <button class="jump" data-sc="3" type="button">场景四</button> 的 STUN。</p>
+    <p>这个方法的边界也很清楚：<strong>学习地址的前提是对方的包能到你这里。</strong>如果两边都在 NAT 后面，谁的包也到不了谁，就谁都学不到，看 <button class="jump" data-sc="2" type="button">场景三</button>。解法是找一个两边都能到的第三方，就是 <button class="jump" data-sc="3" type="button">场景四</button> 的 STUN。gst 里 SSH link 另一端的机器先充当这个第三方：它从 TCP 连接看到你的公网 IP，在握手里告诉你，你配上自己的 UDP 端口放进 offer。它给不了 UDP 的公网端口，所以只在 NAT 不改端口时管用。</p>
   </div>
 </section>
 
@@ -401,7 +402,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     </table>
   </div>
   <div class="col">
-    <p>如果 <code>homelab</code> 换了网络，失去公网 IPv6，它和 <code>laptop</code>、<code>devbox</code> 之间就会变成场景三：两边都在 NAT 后，又没有 STUN，直连建不起来，gst 继续走 SSH，不会断。</p>
+    <p>如果 <code>homelab</code> 换了网络，失去公网 IPv6，它和 <code>laptop</code>、<code>devbox</code> 之间就会变成场景三：两边都在 NAT 后，又没有 STUN，NAT 再换掉 UDP 的端口，直连就建不起来，gst 继续走 SSH，不会断。</p>
   </div>
 </section>
 
@@ -487,7 +488,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
           path: [H('A', aP, bPub, 'WireGuard 握手，同一个 socket'), H('FA', aN, bPub, '同一条映射'), H('B', aN, bPub, '用记录里的公钥校验')] }
       ] },
     { name: '三 · 两边 NAT，没有 STUN', kinds: ['nat', 'nat'], stun: false,
-      intro: '这是 gst 打不通的情况。两边都只知道自己的私网地址，谁的包都到不了对方，所以谁也学不到地址。',
+      intro: '这是 gst 打不通的情况。两边都只知道自己的私网地址，谁的包都到不了对方，所以谁也学不到地址。SSH link 另一端的机器会告诉它们公网 IP，但 UDP 的公网端口它看不到：图里的 NAT 把端口 5000 换成了 40001，猜原端口没有用。NAT 不换端口时，这一步就够了，情形和场景四一样。',
       nodes: { A: aP, B: bP },
       steps: [
         { t: '经 SSH 交换 offer', d: '两边 offer 里都只有私网地址。除非它们恰好在同一个内网，否则这些地址都用不了。',

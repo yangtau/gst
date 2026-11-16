@@ -3,6 +3,7 @@ package link
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -247,5 +248,31 @@ func TestAcceptingSideAnswersAfterCheck(t *testing.T) {
 	la, err, _, _ := shake(t, a, b)
 	if err != nil || la.Membership.Generation != 4 {
 		t.Fatalf("%v %+v", err, la)
+	}
+}
+
+// Each side tells the other where its end of the connection sees it. (A
+// daemon that accepts a link has no connection to read that from: gst
+// peer-bridge adds it to its Hello on the way.) A side that says nothing,
+// or no address, leaves the other without one.
+func TestHandshakeTellsWhereItSeesTheOther(t *testing.T) {
+	a, b := side(idA, "laptop", 0), side(idB, "devbox", 0)
+	a.Seen, b.Seen = netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("::ffff:198.51.100.9")
+	la, errA, lb, errB := shake(t, a, b)
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if lb.Seen != a.Seen || la.Seen != b.Seen.Unmap() {
+		t.Fatalf("seen at %v and %v", la.Seen, lb.Seen)
+	}
+	la, errA, lb, errB = shake(t, side(idA, "laptop", 0), side(idB, "devbox", 0))
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if la.Seen.IsValid() || lb.Seen.IsValid() {
+		t.Fatalf("seen at %v and %v, which nobody said", la.Seen, lb.Seen)
+	}
+	if l := newLink(nil, wire.NodeInfo{}, wire.Membership{}, "no address", true, fast); l.Seen.IsValid() {
+		t.Fatalf("seen at %v", l.Seen)
 	}
 }

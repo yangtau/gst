@@ -509,7 +509,9 @@ func (n *Node) Accept(ctx context.Context, conn io.ReadWriteCloser, theirs wire.
 // added the link and it has not run yet. onUp is called with the other
 // node once the link runs. Link returns why the link ended, or nil when
 // ctx is done. When conn has a Failure method, as an sshconn.Session does,
-// what it returns explains a remote gst that did not answer.
+// what it returns explains a remote gst that did not answer; when it has a
+// Remote method, as the connection of sshconn.Link does, that is the
+// address it reached the other machine at, which the handshake tells it.
 func (n *Node) Link(ctx context.Context, admit bool, conn io.ReadWriteCloser, onUp func(peer wire.NodeInfo)) error {
 	defer conn.Close()
 	defer context.AfterFunc(ctx, func() { conn.Close() })()
@@ -524,7 +526,11 @@ func (n *Node) Link(ctx context.Context, admit bool, conn io.ReadWriteCloser, on
 			return errors.New("this machine was removed from the network; `gst add` joins it again")
 		}
 	}
-	l, err := n.handshake(admit).Dial(conn)
+	h := n.handshake(admit)
+	if reached, ok := conn.(interface{ Remote() netip.Addr }); ok {
+		h.Seen = reached.Remote()
+	}
+	l, err := h.Dial(conn)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -592,6 +598,7 @@ func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) 
 		}
 	}
 	n.links[l] = struct{}{}
+	n.offerSeen()
 	n.mu.Unlock()
 	removeFlood := n.flood.Add(peer, func(body []byte) bool { return l.Send(link.Sync, body, true) })
 	removeRoute := n.router.AddLink(peer, func(body []byte, urgent bool) bool { return l.Send(link.Msg, body, urgent) })
@@ -615,6 +622,7 @@ func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) 
 	removeFlood()
 	n.mu.Lock()
 	delete(n.links, l)
+	n.offerSeen()
 	n.mu.Unlock()
 	n.Update()
 	if ctx.Err() != nil {

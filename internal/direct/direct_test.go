@@ -731,3 +731,46 @@ func TestStats(t *testing.T) {
 }
 
 func wg() []byte { return []byte{4, 0, 0, 0} }
+
+// What the SSH links show of this machine is offered with the port of the
+// sockets, unless it tells nothing new or is no way in.
+func TestSeenAddresses(t *testing.T) {
+	own := netip.MustParseAddr("100.64.0.7") // as a VPN's interface has
+	skipped := netip.MustParseAddr("192.0.2.9")
+	tr, err := Listen(0, Network{
+		Addresses: func() []netip.Addr { return []netip.Addr{loopback} },
+		Has:       func(a netip.Addr) bool { return a == own || a == loopback },
+	}, func(a netip.Addr) bool { return a == skipped })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tr.Close)
+	public := netip.MustParseAddr("203.0.113.7")
+	tr.SetSeen([]netip.Addr{public, own, skipped, loopback, netip.MustParseAddr("fe80::1")})
+	want := []string{
+		netip.AddrPortFrom(loopback, tr.v4.port).String(),
+		netip.AddrPortFrom(public, tr.v4.port).String(),
+	}
+	if got := tr.offerAddresses(); !slices.Equal(got, want) {
+		t.Fatalf("offer %v, want %v", got, want)
+	}
+	// It holds through a change of network: the links say when it ends.
+	tr.known = nil
+	tr.look()
+	if got := tr.offerAddresses(); !slices.Equal(got, want) {
+		t.Fatalf("offer %v after a change, want %v", got, want)
+	}
+	tr.SetSeen(nil)
+	if got := tr.offerAddresses(); !slices.Equal(got, want[:1]) {
+		t.Fatalf("offer %v with nothing seen", got)
+	}
+	// The limit counts what is of use: the machine's own come first here.
+	many := []netip.Addr{own, skipped, loopback}
+	for i := range 2 * maxSeen {
+		many = append(many, netip.AddrFrom4([4]byte{203, 0, 113, byte(10 + i)}))
+	}
+	tr.SetSeen(many)
+	if got := len(tr.offerAddresses()); got != 1+maxSeen {
+		t.Fatalf("%d addresses", got)
+	}
+}

@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -195,5 +198,42 @@ func TestServiceRunsThePlacedGst(t *testing.T) {
 		if e.back.command[0] != placed {
 			t.Fatalf("run as %s: service runs %v", exe, e.back.command)
 		}
+	}
+}
+
+// gst peer-bridge adds where the SSH connection came from to the daemon's
+// Hello, and leaves the rest of it, and what follows it, as it is.
+func TestPeerBridgeTellsSeen(t *testing.T) {
+	hello := wire.Hello{Protocol: wire.Protocol, Software: "gst test", Role: wire.RolePeer, Node: &wire.NodeInfo{ID: nodeID("a"), Name: "devbox"}}
+	for _, c := range []struct{ connection, want string }{
+		{"203.0.113.7 51234 192.0.2.1 22", "203.0.113.7"},
+		{"::ffff:203.0.113.7 51234 ::ffff:192.0.2.1 22", "203.0.113.7"},
+		{"2001:db8::7 51234 2001:db8::1 22", "2001:db8::7"},
+		{"", ""},
+		{"nonsense", ""},
+	} {
+		var in, out bytes.Buffer
+		if err := wire.WriteFrame(&in, hello); err != nil {
+			t.Fatal(err)
+		}
+		in.WriteString("frames")
+		if err := tellSeen(&out, &in, c.connection); err != nil {
+			t.Fatal(err)
+		}
+		var got wire.Hello
+		if err := wire.ReadFrame(&out, &got); err != nil {
+			t.Fatal(err)
+		}
+		want := hello
+		want.Seen = c.want
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: Hello %+v, want %+v", c.connection, got, want)
+		}
+		if out.Len() != 0 || in.String() != "frames" {
+			t.Errorf("%q: read past the Hello, or wrote more than it", c.connection)
+		}
+	}
+	if err := tellSeen(io.Discard, strings.NewReader(""), ""); err == nil {
+		t.Error("no error without a Hello")
 	}
 }

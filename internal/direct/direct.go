@@ -53,6 +53,7 @@ const (
 	socketBuffer = 4 << 20 // in bytes; a frame of video arrives as a burst of hundreds of packets
 	maxPacket    = 1 << 16
 	maxPublic    = 4                // addresses that others saw this machine at, kept for offers
+	maxSeen      = 4                // addresses that the SSH links show this machine at, kept for offers
 	publicLife   = 10 * time.Minute // for how long such an address counts
 	maxRTT       = 10 * time.Second // an answer that took longer is no measure
 	watchEvery   = 5 * time.Second  // how often the machine's network is checked
@@ -84,12 +85,15 @@ type Network struct {
 	// routes decide all, as for tests on the loopback interface, which a
 	// socket bound to another cannot reach on Linux.
 	Interfaces func() (v4, v6 int)
+	// Has reports whether an interface of this machine has addr; when it
+	// is nil, none has.
+	Has func(addr netip.Addr) bool
 }
 
 // System returns this machine's network: its addresses, and on macOS and
 // Linux the interfaces that reach the internet around any VPN or proxy.
 func System() Network {
-	return Network{Addresses: Addresses, Interfaces: defaultInterfaces}
+	return Network{Addresses: Addresses, Interfaces: defaultInterfaces, Has: func(addr netip.Addr) bool { return interfaceOf(addr) != nil }}
 }
 
 // Transport is this daemon's end of all its UDP paths.
@@ -106,6 +110,7 @@ type Transport struct {
 	mu      sync.Mutex
 	tokens  map[[tokenLen]byte]*Path
 	public  map[netip.AddrPort]time.Time // this machine as others see it
+	seen    []netip.Addr                 // this machine as its SSH links show it; replaced, never changed
 	closed  bool
 	done    chan struct{}                            // closed by Close
 	changed chan struct{}                            // for Changed
@@ -348,9 +353,27 @@ func (t *Transport) socketFor(addr netip.Addr) *socket {
 // offerAddresses lists where the other side can try to reach this machine.
 func (t *Transport) offerAddresses() []string {
 	list := []netip.AddrPort{}
+	kept := 0
 	for _, a := range t.network.Addresses() {
 		if s := t.socketFor(a); s != nil && !t.skip(a) {
 			list = append(list, netip.AddrPortFrom(a, s.port))
+		}
+	}
+	t.mu.Lock()
+	seen := t.seen
+	t.mu.Unlock()
+	for _, a := range seen {
+		// An address of this machine's own says nothing new: it is in the
+		// list already, or it is a tunnel's, which is left out on purpose.
+		s := t.socketFor(a)
+		if s == nil || !a.IsGlobalUnicast() || t.skip(a) || (t.network.Has != nil && t.network.Has(a)) {
+			continue
+		}
+		if kept++; kept > maxSeen {
+			break
+		}
+		if a := netip.AddrPortFrom(a, s.port); !slices.Contains(list, a) {
+			list = append(list, a)
 		}
 	}
 	now := time.Now()
@@ -369,6 +392,20 @@ func (t *Transport) offerAddresses() []string {
 		texts = append(texts, a.String())
 	}
 	return texts
+}
+
+// SetSeen sets the addresses that the SSH links show this machine at: where
+// their connections come from or go to, as the machines at their other
+// ends see it. Behind a NAT that is the public address, which no interface
+// has, and with the port of the sockets it is an address to offer where
+// the NAT keeps the port, or passes it on, as one that maps a public
+// address to one machine does. Unlike what sawPublic notes, it needs no
+// UDP path to have worked before, and it holds for as long as the links
+// say so. Offers name the first maxSeen of them that are of use.
+func (t *Transport) SetSeen(addrs []netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seen = slices.Clone(addrs) // replaced, never changed
 }
 
 // sawPublic notes that another machine saw this one at addr. Behind a NAT

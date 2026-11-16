@@ -46,6 +46,7 @@ func (n *Node) EnableDirect(ctx context.Context, network direct.Network) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.directCtx, n.udp = ctx, udp
+	n.offerSeen()
 	go func() {
 		for {
 			select {
@@ -56,6 +57,24 @@ func (n *Node) EnableDirect(ctx context.Context, network direct.Network) {
 			}
 		}
 	}()
+}
+
+// offerSeen has the offers of UDP paths name the addresses that the peers
+// of the running links see this machine at: the ends of their SSH
+// connections, which behind NAT show its public address when no node has
+// yet reached it over UDP. They hold while their links run. n.mu is held.
+func (n *Node) offerSeen() {
+	if n.udp == nil {
+		return
+	}
+	var seen []netip.Addr
+	for l := range n.links {
+		if l.Seen.IsValid() {
+			seen = append(seen, l.Seen)
+		}
+	}
+	slices.SortFunc(seen, netip.Addr.Compare)
+	n.udp.SetSeen(slices.Compact(seen))
 }
 
 // Moved returns a channel that is closed the next time this machine's

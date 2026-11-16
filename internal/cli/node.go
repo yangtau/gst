@@ -2,16 +2,20 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/service"
+	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
 func (a *app) nameCommand() *cobra.Command {
@@ -124,6 +128,25 @@ and exposed ports; gst up starts it all again.`,
 	return cmd
 }
 
+// tellSeen copies the daemon's Hello, the first frame of r, to w, and adds
+// where the SSH connection came from to it (wire.Hello.Seen): sshd tells
+// only its session, in SSH_CONNECTION, whose value is connection. The
+// machine that opened the link learns its address from it, as this one
+// sees it. Without that address the Hello passes as it is.
+func tellSeen(w io.Writer, r io.Reader, connection string) error {
+	var hello json.RawMessage
+	if err := wire.ReadFrame(r, &hello); err != nil {
+		return err
+	}
+	client, _, _ := strings.Cut(connection, " ")
+	var fields map[string]json.RawMessage
+	if addr, err := netip.ParseAddr(client); err == nil && json.Unmarshal(hello, &fields) == nil && fields != nil {
+		fields["seen"], _ = json.Marshal(addr.Unmap().String())
+		return wire.WriteFrame(w, fields)
+	}
+	return wire.WriteFrame(w, hello)
+}
+
 // notUp is how a machine refuses a link until someone runs gst up there,
 // in the words of the machine that the link comes from, which reads it.
 const notUp = "gst is not up on that machine"
@@ -135,7 +158,7 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:    "peer-bridge",
 		Short:  "Connect standard input and output to the gst daemon",
-		Long:   "Connect standard input and output to the gst daemon on this machine, for another machine's gst, which runs this command over SSH to link with this one. It refuses unless someone ran gst up here. The daemon restarts first if it stopped, or runs another gst.",
+		Long:   "Connect standard input and output to the gst daemon on this machine, for another machine's gst, which runs this command over SSH to link with this one, and tell it the address that its SSH connection came from. It refuses unless someone ran gst up here. The daemon restarts first if it stopped, or runs another gst.",
 		Hidden: true,
 		Args:   a.args(0, 0),
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
@@ -168,7 +191,9 @@ func (a *app) peerBridgeCommand() *cobra.Command {
 				done <- struct{}{}
 			}()
 			go func() {
-				io.Copy(os.Stdout, conn)
+				if tellSeen(os.Stdout, conn, os.Getenv("SSH_CONNECTION")) == nil {
+					io.Copy(os.Stdout, conn)
+				}
 				done <- struct{}{}
 			}()
 			// The link ends when either side ends.

@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +80,16 @@ func (c *Conn) end(err error) {
 func (c *Conn) Close() error {
 	c.end(errClosed)
 	return nil
+}
+
+// Remote returns the IP address of the server that the connection reached;
+// not valid when it is unknown.
+func (c *Conn) Remote() netip.Addr {
+	addr, _ := c.client.RemoteAddr().(*net.TCPAddr)
+	if addr == nil {
+		return netip.Addr{}
+	}
+	return addr.AddrPort().Addr().Unmap()
 }
 
 // Done is closed when the connection has ended.

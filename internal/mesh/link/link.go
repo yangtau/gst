@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,6 +86,9 @@ type Handshake struct {
 	// it returns nil to accept it.
 	Check  func(peer wire.NodeInfo, m wire.Membership) *Refusal
 	Timing Timing
+	// Seen is where the connection shows the other machine, for the
+	// Hello to tell it; not valid when this side cannot say.
+	Seen netip.Addr
 }
 
 func (h Handshake) hello() wire.Hello {
@@ -92,6 +96,9 @@ func (h Handshake) hello() wire.Hello {
 	mine := wire.Hello{Software: self.Software, Role: wire.RolePeer, Node: &wire.NodeInfo{ID: self.ID, Name: self.Name}}
 	if h.Membership != nil {
 		mine.Membership = h.Membership()
+	}
+	if h.Seen.IsValid() {
+		mine.Seen = h.Seen.String()
 	}
 	return mine
 }
@@ -147,7 +154,7 @@ func (h Handshake) Dial(conn io.ReadWriteCloser) (*Link, error) {
 		conn.Close()
 		return nil, &RefusedError{Peer: &peer, Err: refusal.Err, Membership: refusal.Membership}
 	}
-	return newLink(conn, peer, membership, true, h.Timing), nil
+	return newLink(conn, peer, membership, theirs.Seen, true, h.Timing), nil
 }
 
 // Accept answers theirs, the Hello that opened conn, as the side that
@@ -180,7 +187,7 @@ func (h Handshake) Accept(conn io.ReadWriteCloser, theirs wire.Hello) (*Link, er
 		}
 		return nil, err
 	}
-	return newLink(conn, peer, membership, false, h.Timing), nil
+	return newLink(conn, peer, membership, theirs.Seen, false, h.Timing), nil
 }
 
 func writeBye(w io.Writer, bye wire.Bye) error {
@@ -218,6 +225,9 @@ type Link struct {
 	Peer       wire.NodeInfo
 	Membership wire.Membership // the peer's, from its Hello
 	Opened     bool            // this side opened it
+	// Seen is where the peer's end of the connection shows this machine,
+	// from its Hello; not valid when it did not say.
+	Seen netip.Addr
 
 	conn   io.ReadWriteCloser
 	timing Timing
@@ -236,7 +246,7 @@ type Link struct {
 	lastRecv atomic.Int64
 }
 
-func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, membership wire.Membership, opened bool, t Timing) *Link {
+func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, membership wire.Membership, seen string, opened bool, t Timing) *Link {
 	if t.Alive <= 0 {
 		t.Alive = DefaultTiming.Alive
 	}
@@ -247,6 +257,9 @@ func newLink(conn io.ReadWriteCloser, peer wire.NodeInfo, membership wire.Member
 		Peer: peer, Membership: membership, Opened: opened,
 		conn: conn, timing: t,
 		wake: make(chan struct{}, 1), bulk: make(chan []byte, bulkQueue), done: make(chan struct{}),
+	}
+	if addr, err := netip.ParseAddr(seen); err == nil {
+		l.Seen = addr.Unmap()
 	}
 	l.lastRecv.Store(time.Now().UnixNano())
 	return l

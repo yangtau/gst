@@ -44,7 +44,8 @@ const (
 // Hello opens a connection. The connecting side sends one; the accepting
 // side answers with its own, setting Error when it refuses the connection.
 // Peers say who they are (Node) and whether they belong to the network
-// (Membership).
+// (Membership), and each tells the other where the SSH connection under
+// the link shows it (Seen).
 type Hello struct {
 	Protocol   int         `json:"protocol"`
 	Software   string      `json:"software"`
@@ -52,7 +53,13 @@ type Hello struct {
 	Build      string      `json:"build,omitempty"`
 	Node       *NodeInfo   `json:"node,omitempty"`
 	Membership *Membership `json:"membership,omitempty"`
-	Error      *Error      `json:"error,omitempty"`
+	// Seen is the IP address of the other side's machine as the sender's
+	// end of the SSH connection sees it: the server's that the side that
+	// opened the link connected to, and the client's that the server
+	// accepted, which gst peer-bridge fills in. Behind NAT that is the
+	// machine's public address, an address to offer for UDP paths.
+	Seen  string `json:"seen,omitempty"`
+	Error *Error `json:"error,omitempty"`
 }
 
 // Request calls a method.

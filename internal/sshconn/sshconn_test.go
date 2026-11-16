@@ -37,6 +37,9 @@ func TestDial(t *testing.T) {
 		t.Fatal("connection ended early")
 	default:
 	}
+	if got := c.Remote(); !got.IsLoopback() {
+		t.Fatalf("Remote = %v, want the server's address", got)
+	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}

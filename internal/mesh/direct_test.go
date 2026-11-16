@@ -1,6 +1,8 @@
 package mesh
 
 import (
+	"context"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -470,4 +472,50 @@ func TestSleptFor(t *testing.T) {
 	if d := sleptFor(last, last.Add(time.Second)); d != 0 {
 		t.Fatalf("awake: slept for %s", d)
 	}
+}
+
+// reachedAt is a link's connection that knows the address it reached the
+// other machine at, as the connection of sshconn.Link does.
+type reachedAt struct {
+	net.Conn
+	addr netip.Addr
+}
+
+func (c reachedAt) Remote() netip.Addr { return c.addr }
+
+// The machine that opens a link tells the other the address its SSH
+// connection reached, which that machine offers for UDP paths while the
+// link runs: behind NAT, it is the public address that no interface has.
+func TestOffersNameWhatLinksSee(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	enableDirect(t, a, b)
+	public := netip.MustParseAddr("203.0.113.7")
+	offers := func(n *Node) bool {
+		p, err := n.udp.Start(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+		return slices.ContainsFunc(p.Offer().Addresses, func(text string) bool {
+			addr, err := netip.ParseAddrPort(text)
+			return err == nil && addr.Addr() == public
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	x, y := net.Pipe()
+	go func() {
+		if theirs, err := wire.ReadHello(y); err == nil {
+			b.Accept(ctx, y, theirs)
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- a.Link(ctx, false, reachedAt{x, public}, nil) }()
+	waitFor(t, "b offers where a reached it", func() bool { return offers(b) })
+	if offers(a) {
+		t.Fatal("a offers b's address")
+	}
+	cancel()
+	<-done
+	waitFor(t, "the address goes with the link", func() bool { return !offers(b) })
 }
