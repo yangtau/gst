@@ -260,7 +260,7 @@ func TestConnectOverIPv6(t *testing.T) {
 		c.Close()
 	}
 	listen := func() *Transport {
-		tr, err := Listen(0, func() []netip.Addr { return []netip.Addr{netip.IPv6Loopback()} }, never)
+		tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return []netip.Addr{netip.IPv6Loopback()} }}, never)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -486,6 +486,12 @@ func (p *Path) Local() string {
 	}
 }
 
+// Answering reports whether the other side answered on the path lately,
+// which says that it still uses the path.
+func (p *Path) Answering() bool {
+	return p.best.Load() != nil && !p.ended() && time.Since(time.Unix(0, p.heard.Load())) <= staleLimit
+}
+
 // Remote returns the IP:port that this end sends to now.
 func (p *Path) Remote() string {
 	if best := p.best.Load(); best != nil {

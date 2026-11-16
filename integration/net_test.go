@@ -417,6 +417,45 @@ func TestNetDirectThroughAPortChange(t *testing.T) {
 	})
 }
 
+// A proxy on Linux takes UDP with a routing rule and a table of its own,
+// and here loses it, as its interface leads nowhere. The UDP path goes
+// around it, through the interface of the main table's default route, and
+// the proxy's address, on an interface that leads to it alone, is not
+// offered. The rule takes only what goes to the port of UDP paths, so that
+// the packets of the network and of gst ping get through.
+func TestNetDirectAroundAProxy(t *testing.T) {
+	t.Parallel()
+	client, _, address := directPair(t, func(client, _ *node) {
+		if _, err := client.exec("root", "sh", "-c", `set -e
+ip tuntap add dev proxy0 mode tun
+ip address add 198.18.0.1/30 dev proxy0
+ip link set proxy0 up
+ip address add fd00:198:18::1/64 dev proxy0
+ip route add default dev proxy0 table 100
+ip -6 route add default dev proxy0 table 100
+ip rule add priority 9000 ipproto udp dport 15355 lookup 100
+ip -6 rule add priority 9000 ipproto udp dport 15355 lookup 100`); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// The reply may take longer than gst ping waits on a busy machine;
+	// what -v shows of the path comes all the same.
+	_, out, _ := client.gst("ping", "devbox", "-c", "1", "-v")
+	for _, want := range []string{"UDP path to devbox: up", "bound to eth0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gst ping devbox -v lacks %q: %q", want, out)
+		}
+	}
+	// This machine's addresses, whichever side offered first.
+	if !strings.Contains(out, "offering over SSH: ") && !strings.Contains(out, "answering with: ") {
+		t.Fatalf("gst ping devbox -v shows no addresses of this machine: %q", out)
+	}
+	if strings.Contains(out, "198.18.0.1") || strings.Contains(out, "fd00:198:18::1") {
+		t.Fatalf("the proxy's address is offered: %q", out)
+	}
+	client.waitPing(address)
+}
+
 // directPair starts two machines with a UDP path between them, and returns
 // the second's address. prepare, if any, runs first.
 func directPair(t *testing.T, prepare ...func(client, server *node)) (client, server *node, address string) {

@@ -103,7 +103,7 @@ func (a *App) Start(sys System) error {
 		StateDir:   a.dir,
 		Software:   version.Software,
 		Connect:    a.connect,
-		Addresses:  direct.Addresses,
+		Direct:     direct.System(),
 		OpenNet: func(spec tun.Spec) (vnet.Interface, error) {
 			i := &systemInterface{apply: sys.Apply, device: a.device}
 			if _, err := i.Set(spec); err != nil {

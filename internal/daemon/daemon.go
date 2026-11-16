@@ -15,7 +15,6 @@ import (
 	"io/fs"
 	"log"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/direct"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/vnet"
@@ -46,9 +46,9 @@ type Config struct {
 	// under it. Its errors are logged, so they must not quote addresses,
 	// users, or paths.
 	Connect func(ctx context.Context, l *config.Link) (io.ReadWriteCloser, error)
-	// Addresses returns the local addresses that UDP paths use; they are
-	// off when it is nil.
-	Addresses func() []netip.Addr
+	// Direct is the network of UDP paths, usually direct.System(); they
+	// are off when its Addresses is nil.
+	Direct direct.Network
 	// OpenNet sets up the interface of the virtual network, which cannot
 	// run when it is nil; NetDNS is the UDP address to answer for .gst on,
 	// and UsedPrefixes what is in use on this machine, by default as
@@ -212,8 +212,8 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		defer close(meshDone)
 		d.mesh.Run(meshCtx) // It saves the table once more as it returns.
 	}()
-	if d.cfg.Addresses != nil {
-		d.mesh.EnableDirect(meshCtx, d.cfg.Addresses)
+	if d.cfg.Direct.Addresses != nil {
+		d.mesh.EnableDirect(meshCtx, d.cfg.Direct)
 	}
 
 	if err := d.Reload(ctx); err != nil {

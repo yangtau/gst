@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
+	"github.com/yangtau/ssh-tunnel/internal/direct"
 	"github.com/yangtau/ssh-tunnel/internal/wire"
 )
 
-func loopback() []netip.Addr { return []netip.Addr{netip.MustParseAddr("127.0.0.1")} }
+// loopback is a network of the loopback address alone, where the routes
+// decide.
+var loopback = direct.Network{Addresses: func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("127.0.0.1")} }}
 
 // enableDirect lets nodes use UDP paths on the loopback interface, and
 // puts them on the virtual network; it returns what each receives.
@@ -233,6 +236,30 @@ func TestDirectOffersCross(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	a.SendPacket(nid("b"), wg("hello"))
 	waitFor(t, "the packet arrives", func() bool { return boxes[b].has(nid("a"), string(wg("hello"))) })
+}
+
+// An offer that crossed this node's, and arrives once the path runs, leaves
+// the path alone: the other node answers on it, so it gave up its own
+// offer, and taking it would end the path for one that never comes up.
+func TestStaleOfferLeavesThePath(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	enableDirect(t, a, c)
+	linkUp(t, a, c)
+	goDirect(t, a, c)
+	running := c.packetPeer(nid("a")).direct.Load()
+	waitFor(t, "a answers on the path", running.Answering)
+
+	given, err := a.udp.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	given.Close()
+	if _, err := c.serveOffer(t.Context(), nid("a"), given.Offer()); err == nil {
+		t.Fatal("c took an offer while its path runs")
+	}
+	if c.packetPeer(nid("a")).direct.Load() != running || !running.Answering() {
+		t.Fatal("the path that runs ended")
+	}
 }
 
 // A node with UDP paths off refuses, and the other waits before it tries

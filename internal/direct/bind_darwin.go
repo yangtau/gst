@@ -2,7 +2,6 @@ package direct
 
 import (
 	"cmp"
-	"net"
 	"strings"
 	"syscall"
 
@@ -15,13 +14,15 @@ import (
 // Such a proxy sends each flow again from a socket of its own, even a flow
 // that its rules call direct, so the port changes, and what the other side's
 // firewall let through for the old port drops the packets from the new one.
-// So the sockets send through that interface, as if the proxy were not there.
+// So, while the routes lead into a tunnel (see bind.go), the sockets send
+// through that interface, as if the proxy were not there.
 // A VPN that routes packets would have kept the port, but nothing here can
 // tell the two apart.
 
-// defaultInterfaces returns the interfaces that reach the internet, for IPv4
-// and for IPv6; 0 when there is none, which leaves it to the routes.
-func defaultInterfaces() (v4, v6 int) {
+// physicalInterfaces returns the interfaces that reach the internet below
+// any tunnel, for IPv4 and for IPv6; 0 when there is none, which leaves it
+// to the routes.
+func physicalInterfaces() (v4, v6 int) {
 	rib, err := route.FetchRIB(syscall.AF_UNSPEC, syscall.NET_RT_DUMP2, 0)
 	if err != nil {
 		return 0, 0
@@ -30,14 +31,7 @@ func defaultInterfaces() (v4, v6 int) {
 	if err != nil {
 		return 0, 0
 	}
-	return chooseInterfaces(messages, tunnel)
-}
-
-// tunnel says whether an interface leads to another machine alone, as a VPN's
-// does, rather than to a network.
-func tunnel(index int) bool {
-	i, err := net.InterfaceByIndex(index)
-	return err != nil || i.Flags&(net.FlagPointToPoint|net.FlagLoopback) != 0
+	return chooseInterfaces(messages, tunnelAt)
 }
 
 // chooseInterfaces finds the default routes through a gateway that are not a

@@ -56,9 +56,9 @@ func (a *app) daemonRunCommand() *cobra.Command {
 			if err != nil {
 				return fail(err)
 			}
-			addresses := direct.Addresses
+			udp := direct.System()
 			if os.Getenv("GST_DIRECT") == "off" {
-				addresses = nil
+				udp = direct.Network{}
 			}
 			d := daemon.New(daemon.Config{
 				ConfigPath: configPath,
@@ -66,7 +66,7 @@ func (a *app) daemonRunCommand() *cobra.Command {
 				Software:   software,
 				Build:      build,
 				Connect:    a.connectLink,
-				Addresses:  addresses,
+				Direct:     udp,
 				OpenNet: func(spec tun.Spec) (vnet.Interface, error) {
 					c, err := tun.Dial(tun.Socket, spec)
 					if err != nil {

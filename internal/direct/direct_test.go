@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -22,7 +21,7 @@ func never(netip.Addr) bool { return false }
 
 func transport(t *testing.T) *Transport {
 	t.Helper()
-	tr, err := Listen(0, func() []netip.Addr { return []netip.Addr{loopback} }, never)
+	tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return []netip.Addr{loopback} }}, never)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +260,7 @@ func TestProbesThatReachThisNode(t *testing.T) {
 func TestSkippedAddresses(t *testing.T) {
 	gst := netip.MustParseAddr("10.99.0.1")
 	skip := func(a netip.Addr) bool { return a == gst || a == loopback }
-	tr, err := Listen(0, func() []netip.Addr { return []netip.Addr{gst, netip.MustParseAddr("192.0.2.1")} }, skip)
+	tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return []netip.Addr{gst, netip.MustParseAddr("192.0.2.1")} }}, skip)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +552,7 @@ func TestCloseTransport(t *testing.T) {
 // A taken port does not keep a second daemon from running.
 func TestPortTaken(t *testing.T) {
 	first := transport(t)
-	second, err := Listen(int(first.v4.port), first.addrs, never)
+	second, err := Listen(int(first.v4.port), first.network, never)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +658,7 @@ func TestRefresh(t *testing.T) {
 // A change of addresses is told once, and what others saw is gone with it.
 func TestAddressesChange(t *testing.T) {
 	addrs := []netip.Addr{loopback}
-	tr, err := Listen(0, func() []netip.Addr { return slices.Clone(addrs) }, never)
+	tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return slices.Clone(addrs) }}, never)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -699,6 +698,29 @@ func TestAddressesChange(t *testing.T) {
 	}
 }
 
+// A path answers while the other side does: not before it is up, once it
+// is quiet for longer than an address in use may be, or once it ended.
+func TestAnswering(t *testing.T) {
+	p := &Path{done: make(chan struct{})}
+	if p.Answering() {
+		t.Fatal("a path that is not up answers")
+	}
+	p.best.Store(newPair(netip.Addr{}, netip.MustParseAddrPort("192.0.2.1:1")))
+	p.heard.Store(time.Now().UnixNano())
+	if !p.Answering() {
+		t.Fatal("a path that was just heard does not answer")
+	}
+	p.heard.Store(time.Now().Add(-staleLimit - time.Second).UnixNano())
+	if p.Answering() {
+		t.Fatal("a quiet path answers")
+	}
+	p.heard.Store(time.Now().UnixNano())
+	close(p.done)
+	if p.Answering() {
+		t.Fatal("a path that ended answers")
+	}
+}
+
 func TestStats(t *testing.T) {
 	tr := transport(t)
 	tr.receive(tr.v4, wg(), netip.MustParseAddrPort("192.0.2.1:1"), netip.Addr{})
@@ -709,11 +731,3 @@ func TestStats(t *testing.T) {
 }
 
 func wg() []byte { return []byte{4, 0, 0, 0} }
-
-// The sockets of tests send the way the routes say: on macOS, a socket
-// bound to the interface that reaches the internet sends from the loopback
-// address only now and then.
-func TestMain(m *testing.M) {
-	interfaces = func() (int, int) { return 0, 0 }
-	os.Exit(m.Run())
-}

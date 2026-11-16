@@ -41,6 +41,10 @@ func TestUDPPath(t *testing.T) {
 			t.Fatalf("gst ping c -v lacks %q: %q", want, out)
 		}
 	}
+	// No VPN or proxy takes the routes here, so they decide.
+	if strings.Contains(out, "bound to") {
+		t.Fatalf("the sockets are bound without a proxy: %q", out)
+	}
 
 	b.mustGst("down")
 	a.waitLink(ab.destination(), "down")

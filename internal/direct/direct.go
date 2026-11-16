@@ -8,13 +8,14 @@
 // can be reached; an answer also says where its probe came from, which tells
 // a machine that address, for its offers to others.
 //
-// Packets go the way the system's routes say, with one exception: on macOS
-// the sockets send through the interface that reaches the internet, because
-// a proxy that takes the routes sends UDP again from another port, which
-// holes in firewalls do not fit (see bind_darwin.go). The address they
-// leave from is this package's, though, not the system's: a firewall or NAT
-// between the machines lets through only what comes from the address that
-// it saw before, and a machine with several addresses, such as temporary
+// Packets go the way the system's routes say, but around VPNs and proxies:
+// on macOS and Linux the sockets send through the interface that reaches
+// the internet, because a proxy that takes the routes sends UDP again from
+// another port, which holes in firewalls do not fit (see bind_darwin.go and
+// bind_linux.go), and the addresses of tunnels are not offered. The address
+// they leave from is this package's, though, not the system's: a firewall
+// or NAT between the machines lets through only what comes from the address
+// that it saw before, and a machine with several addresses, such as temporary
 // IPv6 ones, may pick another for any packet. So an answer leaves from the
 // address its probe came to, and a path sends from the address that an
 // answer came to, the pair of addresses that proved itself.
@@ -74,14 +75,31 @@ const (
 	answerLen = 1 + tokenLen + 8 + 2*addrLen
 )
 
+// Network is this machine's network, as UDP paths see it.
+type Network struct {
+	// Addresses returns the addresses to offer.
+	Addresses func() []netip.Addr
+	// Interfaces returns the interfaces for the sockets to send through,
+	// for IPv4 and for IPv6, 0 where the routes decide; when it is nil, the
+	// routes decide all, as for tests on the loopback interface, which a
+	// socket bound to another cannot reach on Linux.
+	Interfaces func() (v4, v6 int)
+}
+
+// System returns this machine's network: its addresses, and on macOS and
+// Linux the interfaces that reach the internet around any VPN or proxy.
+func System() Network {
+	return Network{Addresses: Addresses, Interfaces: defaultInterfaces}
+}
+
 // Transport is this daemon's end of all its UDP paths.
 type Transport struct {
-	addrs func() []netip.Addr
-	skip  func(netip.Addr) bool
-	v4    *socket
-	v6    *socket
-	id    [idLen]byte // tells this daemon's probes, which may reach itself
-	start time.Time   // what the times in probes count from
+	network Network
+	skip    func(netip.Addr) bool
+	v4      *socket
+	v6      *socket
+	id      [idLen]byte // tells this daemon's probes, which may reach itself
+	start   time.Time   // what the times in probes count from
 
 	sweepEvery time.Duration // how often a path measures all its addresses
 
@@ -91,7 +109,7 @@ type Transport struct {
 	closed  bool
 	done    chan struct{}                            // closed by Close
 	changed chan struct{}                            // for Changed
-	known   []netip.Addr                             // what addrs said last; owned by watch
+	known   []netip.Addr                             // what Addresses said last; owned by watch
 	strays  atomic.Uint64                            // WireGuard packets from unknown sources
 	sources atomic.Pointer[map[netip.AddrPort]*Path] // by the addresses that proved themselves; replaced, never changed
 }
@@ -149,14 +167,13 @@ func (s *socket) arrivedAt(oob []byte) netip.Addr {
 	return addr
 }
 
-// Listen opens the sockets, on port if it is free. addrs returns this
-// machine's addresses to offer. skip says which addresses to have nothing
-// to do with, in offers, in what the other side offers, and as the source
-// of a packet: those of the virtual network, whose packets would take the
-// path that they make up.
-func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*Transport, error) {
+// Listen opens the sockets, on port if it is free, on network. skip says
+// which addresses to have nothing to do with, in offers, in what the other
+// side offers, and as the source of a packet: those of the virtual network,
+// whose packets would take the path that they make up.
+func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, error) {
 	t := &Transport{
-		addrs:      addrs,
+		network:    network,
 		skip:       skip,
 		start:      time.Now(),
 		sweepEvery: sweepInterval,
@@ -185,15 +202,14 @@ func Listen(port int, addrs func() []netip.Addr, skip func(netip.Addr) bool) (*T
 	return t, nil
 }
 
-// interfaces returns the interfaces for the sockets to send through; tests
-// leave it to the routes.
-var interfaces = defaultInterfaces
-
 // bind points the sockets at the interfaces that reach the internet now,
 // and reports whether that changed anything.
 func (t *Transport) bind() bool {
+	if t.network.Interfaces == nil {
+		return false
+	}
 	changed := false
-	v4, v6 := interfaces()
+	v4, v6 := t.network.Interfaces()
 	for _, b := range []struct {
 		s     *socket
 		index int
@@ -218,7 +234,7 @@ func (t *Transport) bind() bool {
 // leave from, which a new default route changes while the addresses stay.
 // What others saw of the machine then says nothing any more.
 func (t *Transport) addressesChanged() bool {
-	list := slices.DeleteFunc(slices.Clone(t.addrs()), t.skip)
+	list := slices.DeleteFunc(slices.Clone(t.network.Addresses()), t.skip)
 	if slices.Equal(list, t.known) {
 		return false
 	}
@@ -332,7 +348,7 @@ func (t *Transport) socketFor(addr netip.Addr) *socket {
 // offerAddresses lists where the other side can try to reach this machine.
 func (t *Transport) offerAddresses() []string {
 	list := []netip.AddrPort{}
-	for _, a := range t.addrs() {
+	for _, a := range t.network.Addresses() {
 		if s := t.socketFor(a); s != nil && !t.skip(a) {
 			list = append(list, netip.AddrPortFrom(a, s.port))
 		}

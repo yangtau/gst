@@ -34,10 +34,10 @@ const (
 // the links, as when the machine between its two nodes sleeps, and ends
 // when the other node is removed from the network.
 
-// EnableDirect lets this node find and accept UDP paths until ctx is
-// done. addrs returns the local addresses to offer.
-func (n *Node) EnableDirect(ctx context.Context, addrs func() []netip.Addr) {
-	udp, err := direct.Listen(direct.Port, addrs, n.inSubnet)
+// EnableDirect lets this node find and accept UDP paths on network until
+// ctx is done.
+func (n *Node) EnableDirect(ctx context.Context, network direct.Network) {
+	udp, err := direct.Listen(direct.Port, network, n.inSubnet)
 	if err != nil {
 		n.log.Print("UDP paths are off: no socket")
 		return
@@ -319,12 +319,18 @@ func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer
 	if try := n.directTries[from]; try != nil && try.offering && n.info.ID < from {
 		return nil, wire.Errorf(wire.CodeFailed, "%s is offering a path itself", n.info.Name)
 	}
+	// The other node offers a path when it has none. A path that it still
+	// answers on says otherwise: the offer crossed this node's, and the
+	// other node took this one's since and gave up its own, whose path
+	// would never come up. Taking it would end the path that runs.
+	if old != nil && old.Answering() {
+		return nil, wire.Errorf(wire.CodeFailed, "a UDP path to %s runs", n.info.Name)
+	}
 	path, err := n.udp.Join(offer, func(text string) { n.trace(from, "%s", text) })
 	if err != nil {
 		return nil, wire.Errorf(wire.CodeInvalidParams, "%v", err)
 	}
-	// The other node has no path, or it would not offer one. If this one
-	// thinks there is, that path is gone.
+	// A path that the other node no longer answers on is gone.
 	if old != nil {
 		old.Close()
 	}
