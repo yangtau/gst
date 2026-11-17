@@ -411,6 +411,16 @@
         }
       }
     },
+    "Map of the links between the machines": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "机器之间的 link 关系图"
+          }
+        }
+      }
+    },
     "Name": {
       "localizations": {
         "zh-Hans": {

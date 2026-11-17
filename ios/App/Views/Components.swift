@@ -21,7 +21,7 @@ extension Machine.Way {
     var color: Color {
         switch self {
         case .here, .direct: .green
-        case .relay: .teal
+        case .relay: .accentColor
         case .offline: .secondary
         }
     }

@@ -137,7 +137,13 @@ data class Topology(
     val self: String,
     val subnet: String = "",
     val nodes: List<Node> = emptyList(),
+    /** The running links; null in what an earlier version of the app kept. */
+    val links: List<Link>? = null,
 ) {
+    /** A running link, from the machine that made it. */
+    @Serializable
+    data class Link(val from: String, val to: String)
+
     @Serializable
     data class Node(
         val id: String,

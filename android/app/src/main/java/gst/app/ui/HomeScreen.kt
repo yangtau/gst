@@ -79,8 +79,8 @@ import gst.app.Tunnel
 import kotlinx.coroutines.launch
 
 /**
- * The network: this machine, the switch that turns gst on, and every
- * machine with the way that packets take to it.
+ * The network: this machine, the switch that turns gst on, the map of
+ * the links, and every machine with the way that packets take to it.
  */
 @Composable
 fun HomeScreen(
@@ -138,6 +138,14 @@ fun HomeScreen(
                 if (others.isEmpty() && !hasLinks) {
                     Welcome(openAdd)
                 } else {
+                    // A network of one has nothing to map.
+                    val topology = model.topology
+                    if (topology != null && others.isNotEmpty()) {
+                        NetworkMap(
+                            topology, model.machines(isOn), isOn = isOn, open = openMachine,
+                            modifier = Modifier.background(MaterialTheme.colorScheme.item, RoundedCornerShape(24.dp)),
+                        )
+                    }
                     MachineList(others, isOn, openMachine)
                 }
             }

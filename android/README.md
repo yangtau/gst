@@ -20,8 +20,8 @@ The app's identifier is `gst.app`; `-PgstApplicationId=…`, or `gstApplicationI
 | Path | What |
 | --- | --- |
 | `../gstkit/` | gst's Go code as a C library, which the iOS app uses too; `jni.c` makes it the native methods of `Core` |
-| `app/src/main/java/gst/app/` | the app: `Core` (JNI), `Gst` and `Wire` (the calls of gst's methods and what they return), `Machine` and `AppModel` (what the screens show), `Tunnel` and `GstVpnService` (the VPN, in which gst's daemon runs), `BootReceiver`, and `Demo` (a made-up network) |
-| `app/src/main/java/gst/app/ui/` | the screens, in Jetpack Compose with Material 3 Expressive, in the phone's own colors from Android 12 on and in gst's teal before |
+| `app/src/main/java/gst/app/` | the app: `Core` (JNI), `Gst` and `Wire` (the calls of gst's methods and what they return), `Machine`, `Ring`, and `AppModel` (what the screens show), `Tunnel` and `GstVpnService` (the VPN, in which gst's daemon runs), `BootReceiver`, and `Demo` (a made-up network) |
+| `app/src/main/java/gst/app/ui/` | the screens, in Jetpack Compose with Material 3 Expressive, in the phone's own colors from Android 12 on and in gst's blue before |
 | `app/src/main/res/` | the texts (`values`, and `values-b+zh+Hans` in Simplified Chinese), and the icon |
 | `app/src/test/` | the tests, below |
 | `screenshots/` | pictures of the screens, which the tests take |
@@ -34,7 +34,7 @@ The app is to gst what the `gst` command is on other machines, and its `VpnServi
 
 - `ModelTest` reads what gst reports, as Go writes it, and checks what the app makes of it and of what a person types.
 - `CoreTest` runs gst's Go code through `Core` and its JNI: the app's methods, the daemon's start, and its call of the system for an interface. It needs gst built for the machine that runs the tests (`android/build-core.sh host`), and is skipped without it.
-- `ScreenTest` opens every screen on the made-up network of `Demo`, in English and Chinese, light and dark, with Robolectric, checks that it shows, and keeps a picture of it in `app/build/screenshots`. The workflow keeps those as the `android-screenshots` artifact, and the APKs as `android-apks`. The pictures in `screenshots/`, which the README shows, come from there.
+- `ScreenTest` opens every screen on the made-up network of `Demo`, in English and Chinese, light and dark, with Robolectric, checks that it shows, and keeps a picture of it in `app/build/screenshots`. The pictures in `screenshots/`, which the README shows, come from a run on a developer's machine; the workflow keeps none, only the APKs, as `android-apks`.
 
 A debug build opens on a screen of `Demo` with `adb shell am start -n gst.app/.MainActivity --es GstDemo home` (and `--es GstDemoAppearance dark`), and Android Studio's previews (`ui/Previews.kt`) show the same.
 

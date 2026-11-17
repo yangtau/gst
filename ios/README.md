@@ -24,7 +24,7 @@ A VPN does not run in the Simulator: the app starts there and shows its screens,
 | --- | --- |
 | `../gstkit/` | gst's Go code as a C library, which the Android app uses too: `internal/mobile` behind the five functions of `gstkit.h`. `build-core.sh` builds it into `build/GstKit.xcframework`, with `module.modulemap`, which makes it a module for Swift |
 | `Shared/` | `Core`, the Swift face of that library, for both targets |
-| `App/` | the app: `Model/` (the calls of gst's methods, the VPN, what the screens show) and `Views/` (SwiftUI, with Liquid Glass for the controls) |
+| `App/` | the app: `Model/` (the calls of gst's methods, the VPN, what the screens show), `Views/` (SwiftUI, with Liquid Glass for the controls), and `AppIcon.icon`, the icon, a document for Icon Composer |
 | `Tunnel/` | the packet tunnel extension, in which gst's daemon runs |
 | `Tests/`, `UITests/` | the tests, below |
 | `screenshots/` | pictures of the screens, which the tests take |
@@ -41,7 +41,7 @@ The texts of the app are in `App/Localizable.xcstrings`, in English and Simplifi
 - `Tests/` (GstTests) runs gst's Go code through `Core`: the app's methods, the daemon's start and its answers, and what the app makes of them.
 - `UITests/` (GstUITests) opens every screen on a made-up network, in English and Chinese, light and dark, and checks that it shows. `App/Demo.swift` is that network: a debug build opens on one of its screens with `-GstDemo <screen>` on its command line, and Xcode's previews (`App/Previews.swift`) show the same.
 
-The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The workflow keeps those as the `screenshots` artifact of a run. The pictures in `screenshots/`, which the README shows, come from that artifact; CI does not commit them.
+The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The pictures in `screenshots/`, which the README shows, come from a run on a Mac with that set; the workflow keeps none.
 
 `internal/mobile`, the daemon without a socket, and the DNS and ping inside the interface have Go unit tests (`make test`), which join a phone to a network through an SSH server, a real daemon, and a fake interface.
 

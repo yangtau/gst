@@ -34,11 +34,11 @@ enum Demo: String, CaseIterable {
         case .welcome:
             AppModel(demo: AppInfo(node: Self.phone, publicKey: Self.publicKey, links: []), topology: nil, status: nil)
         case .off:
-            AppModel(demo: Self.info, topology: Self.topology, status: nil)
+            AppModel(demo: Self.info, topology: Self.topology(broken: false), status: nil)
         case .problems:
-            AppModel(demo: Self.info, topology: Self.topology, status: Self.status(broken: true))
+            AppModel(demo: Self.info, topology: Self.topology(broken: true), status: Self.status(broken: true))
         default:
-            AppModel(demo: Self.info, topology: Self.topology, status: Self.status(broken: false))
+            AppModel(demo: Self.info, topology: Self.topology(broken: false), status: Self.status(broken: false))
         }
     }
 
@@ -65,8 +65,10 @@ enum Demo: String, CaseIterable {
         }
     }
 
-    // The network: a phone that links to devbox, and through it reaches
-    // the rest.
+    // The network: a phone that links to devbox and to homelab, which
+    // links to devbox too, as laptop does; the phone reaches laptop
+    // through devbox. `broken` is the network while the phone's link to
+    // homelab is down.
 
     private static func id(_ prefix: String) -> String {
         prefix + String(repeating: "0", count: 32 - prefix.count)
@@ -83,21 +85,25 @@ enum Demo: String, CaseIterable {
         links: [.init(destination: destination, target: id("b1")), .init(destination: "ssh://deploy@192.0.2.20:2222", target: id("c2"))]
     )
 
-    private static let topology: Topology = {
+    private static func topology(broken: Bool) -> Topology {
         func node(_ prefix: String, _ name: String, _ address: String, route: [String]? = nil, direct: Bool = false, seen: TimeInterval? = nil) -> Topology.Node {
             Topology.Node(
                 id: id(prefix), name: name, software: software, reachable: route != nil, route: route?.map(id), direct: direct,
                 seen: seen.map { Date.now.addingTimeInterval(-$0) }, net: .init(address: address)
             )
         }
+        func link(_ from: String, _ to: String) -> Topology.Link {
+            Topology.Link(from: id(from), to: id(to))
+        }
+        // In the daemon's order: this machine, then the others by name.
         return Topology(me: id("4f"), subnet: "10.87.0.0/16", nodes: [
             node("4f", "iphone", "10.87.26.14", route: ["4f"]),
-            node("b1", "devbox", "10.87.61.7", route: ["4f", "b1"], direct: true),
-            node("c2", "homelab", "10.87.140.3", route: ["4f", "b1", "c2"]),
-            node("d3", "laptop", "10.87.26.1", route: ["4f", "b1", "d3"], direct: true),
             node("e4", "attic", "10.87.9.44", seen: 3 * 3600),
-        ])
-    }()
+            node("b1", "devbox", "10.87.61.7", route: ["4f", "b1"], direct: true),
+            node("c2", "homelab", "10.87.140.3", route: broken ? ["4f", "b1", "c2"] : ["4f", "c2"], direct: true),
+            node("d3", "laptop", "10.87.26.1", route: ["4f", "b1", "d3"]),
+        ], links: (broken ? [] : [link("4f", "c2")]) + [link("4f", "b1"), link("c2", "b1"), link("d3", "b1")])
+    }
 
     private static func status(broken: Bool) -> DaemonStatus {
         DaemonStatus(
@@ -115,8 +121,8 @@ enum Demo: String, CaseIterable {
                 hint: broken ? "choose another subnet with `gst subnet <cidr>`" : nil,
                 peers: [
                     .init(node: id("b1"), name: "devbox", address: "10.87.61.7", way: "direct", endpoint: "203.0.113.7:41642", handshake: .now.addingTimeInterval(-12), received: 50_540_000, sent: 3_250_000),
-                    .init(node: id("c2"), name: "homelab", address: "10.87.140.3", way: "relay", handshake: .now.addingTimeInterval(-64), received: 1_204_000, sent: 380_000),
-                    .init(node: id("d3"), name: "laptop", address: "10.87.26.1", way: "direct", endpoint: "192.168.1.23:15355", handshake: .now.addingTimeInterval(-31), received: 912_000, sent: 77_000),
+                    .init(node: id("c2"), name: "homelab", address: "10.87.140.3", way: "direct", endpoint: "192.168.1.23:15355", handshake: .now.addingTimeInterval(-31), received: 1_204_000, sent: 380_000),
+                    .init(node: id("d3"), name: "laptop", address: "10.87.26.1", way: "relay", handshake: .now.addingTimeInterval(-64), received: 912_000, sent: 77_000),
                 ]
             )
         )

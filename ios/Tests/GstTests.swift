@@ -121,7 +121,7 @@ final class GstTests: XCTestCase {
     func testMachines() throws {
         let seen = Date(timeIntervalSince1970: 1_794_333_455)
         let topology = try decode(Topology.self, #"""
-        {"self":"aa","subnet":"10.87.0.0/16","links":[],"nodes":[
+        {"self":"aa","subnet":"10.87.0.0/16","links":[{"from":"aa","to":"bb"}],"nodes":[
          {"id":"aa","name":"phone","reachable":true,"route":["aa"],"net":{"address":"10.87.0.1","public_key":"k"}},
          {"id":"cc","name":"homelab","reachable":true,"route":["aa","bb","cc"],"seen":"2026-11-10T17:57:35Z","net":{"address":"10.87.0.3","public_key":"k"}},
          {"id":"bb","name":"devbox","reachable":true,"direct":true,"route":["aa","bb"],"net":{"address":"10.87.0.2","public_key":"k"}},
@@ -134,6 +134,7 @@ final class GstTests: XCTestCase {
         """#)
         let machines = Machine.list(topology: topology, status: status)
         // This machine, the ones that packets reach, and then the rest.
+        XCTAssertEqual(topology.links, [Topology.Link(from: "aa", to: "bb")])
         XCTAssertEqual(machines.map(\.name), ["phone", "devbox", "homelab", "attic"])
         XCTAssertEqual(machines[0].way, .here)
         XCTAssertEqual(machines[1].way, .direct(endpoint: "203.0.113.7:41642"))
@@ -146,6 +147,43 @@ final class GstTests: XCTestCase {
         XCTAssertNil(machines[3].address)
         // While gst is off, nothing is online.
         XCTAssertTrue(Machine.list(topology: topology, status: nil).allSatisfy { !$0.isOnline })
+    }
+
+    /// The map puts the machines on a circle, the first at the top, and
+    /// draws each link as a line that points at the machine linked to.
+    func testRing() {
+        let center = CGPoint(x: 100, y: 100)
+        let links = [("aa", "cc"), ("cc", "aa"), ("bb", "aa"), ("aa", "gone"), ("bb", "bb")].map { Topology.Link(from: $0.0, to: $0.1) }
+        let ring = Ring(machines: ["aa", "bb", "cc", "dd"], links: links, center: center, radius: 80)
+        XCTAssertEqual(ring.spots.map(\.id), ["aa", "bb", "cc", "dd"])
+        for (spot, (x, y)) in zip(ring.spots, [(100.0, 20.0), (180.0, 100.0), (100.0, 180.0), (20.0, 100.0)]) {
+            XCTAssertEqual(spot.point.x, x, accuracy: 0.001)
+            XCTAssertEqual(spot.point.y, y, accuracy: 0.001)
+        }
+        // Names go outside the circle.
+        XCTAssertEqual(ring.spots.map(\.side), [.above, .right, .below, .left])
+
+        // A link to a machine that is not on the map, or to itself, has no line.
+        XCTAssertEqual(ring.lines.map { [$0.from, $0.to] }, [["aa", "cc"], ["cc", "aa"], ["bb", "aa"]])
+        // A line leaves a little way from its machine, and ends further
+        // from the one it points at, with the arrowhead before it.
+        let down = ring.lines[0]
+        XCTAssertEqual(down.start.x, 100, accuracy: 0.001)
+        XCTAssertEqual(down.start.y, 29, accuracy: 0.001)
+        XCTAssertEqual(down.end.y, 168, accuracy: 0.001)
+        XCTAssertEqual(down.tip[0].y, 171, accuracy: 0.001)
+        // The link back bows aside, so that both show.
+        XCTAssertEqual(down.control.x, 100, accuracy: 0.001)
+        XCTAssertGreaterThan(abs(ring.lines[1].control.x - 100), 10)
+        // A line between neighbors bows towards the center.
+        let side = ring.lines[2]
+        XCTAssertEqual(side.control.x, 140 - 40 * 0.3, accuracy: 0.001)
+        XCTAssertEqual(side.control.y, 60 + 40 * 0.3, accuracy: 0.001)
+
+        // What an earlier version of the app kept has no links.
+        let kept = try? JSONDecoder().decode(Topology.self, from: Data(#"{"self":"aa","subnet":"","nodes":[]}"#.utf8))
+        XCTAssertNotNil(kept)
+        XCTAssertNil(kept?.links)
     }
 
     func testDestinations() {

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The network: this machine, the switch that turns gst on, and every
-/// machine with the way that packets take to it.
+/// The network: this machine, the switch that turns gst on, the map of
+/// the links, and every machine with the way that packets take to it.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var sheet: Sheet?
@@ -48,6 +48,11 @@ struct HomeView: View {
                     if others.isEmpty && !hasLinks {
                         Welcome { sheet = .add }
                     } else {
+                        // A network of one has nothing to map.
+                        if let topology = model.topology, !others.isEmpty {
+                            NetworkMap(topology: topology, machines: model.machines, isOn: model.isOn) { sheet = .machine($0.id) }
+                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
+                        }
                         MachineList(machines: others, isOn: model.isOn) { sheet = .machine($0.id) }
                     }
                 }

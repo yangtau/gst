@@ -22,6 +22,7 @@
     <string name="problem_removed">%1$s 在%2$s把本机移出了网络。</string>
     <string name="problem_removed_detail">添加一台机器即可重新加入网络。</string>
     <string name="problem_link">到 %1$s 的 link 已断开。</string>
+    <string name="map">机器之间的 link 关系图</string>
     <string name="machines">机器</string>
     <string name="machines_empty">link 连上后，网络中的机器会显示在这里。</string>
     <string name="welcome_title">加入你的网络</string>

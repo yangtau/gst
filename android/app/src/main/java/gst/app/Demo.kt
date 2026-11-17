@@ -37,9 +37,9 @@ enum class Demo(val screen: String) {
 
     fun model(now: Instant = Instant.now()): AppModel = when (this) {
         Welcome -> AppModel.demo(AppInfo(phone, publicKey, emptyList()), null, null)
-        Off -> AppModel.demo(info, topology(now), null)
-        Problems -> AppModel.demo(info, topology(now), status(now, broken = true))
-        else -> AppModel.demo(info, topology(now), status(now, broken = false))
+        Off -> AppModel.demo(info, topology(now, broken = false), null)
+        Problems -> AppModel.demo(info, topology(now, broken = true), status(now, broken = true))
+        else -> AppModel.demo(info, topology(now, broken = false), status(now, broken = false))
     }
 
     val route: Route
@@ -70,7 +70,10 @@ enum class Demo(val screen: String) {
             return entries.firstOrNull { it.screen == screen }
         }
 
-        // The network: a phone that links to devbox, and through it reaches the rest.
+        // The network: a phone that links to devbox and to homelab, which
+        // links to devbox too, as laptop does; the phone reaches laptop
+        // through devbox. `broken` is the network while the phone's link
+        // to homelab is down.
 
         private fun id(prefix: String) = prefix + "0".repeat(32 - prefix.length)
 
@@ -84,21 +87,24 @@ enum class Demo(val screen: String) {
             listOf(AppInfo.Link(destination, id("b1")), AppInfo.Link("ssh://deploy@192.0.2.20:2222", id("c2"))),
         )
 
-        private fun topology(now: Instant): Topology {
+        private fun topology(now: Instant, broken: Boolean): Topology {
             fun node(prefix: String, name: String, address: String, route: List<String>? = null, direct: Boolean = false, seen: Long? = null) =
                 Topology.Node(
                     id(prefix), name, SOFTWARE, reachable = route != null, route = route?.map(::id), direct = direct,
                     seen = seen?.let { now.minusSeconds(it) }, net = Topology.Node.Net(address),
                 )
+            fun link(from: String, to: String) = Topology.Link(id(from), id(to))
+            // In the daemon's order: this machine, then the others by name.
             return Topology(
                 id("4f"), "10.87.0.0/16",
                 listOf(
                     node("4f", "pixel", "10.87.26.14", route = listOf("4f")),
-                    node("b1", "devbox", "10.87.61.7", route = listOf("4f", "b1"), direct = true),
-                    node("c2", "homelab", "10.87.140.3", route = listOf("4f", "b1", "c2")),
-                    node("d3", "laptop", "10.87.26.1", route = listOf("4f", "b1", "d3"), direct = true),
                     node("e4", "attic", "10.87.9.44", seen = 3 * 3600),
+                    node("b1", "devbox", "10.87.61.7", route = listOf("4f", "b1"), direct = true),
+                    node("c2", "homelab", "10.87.140.3", route = if (broken) listOf("4f", "b1", "c2") else listOf("4f", "c2"), direct = true),
+                    node("d3", "laptop", "10.87.26.1", route = listOf("4f", "b1", "d3")),
                 ),
+                (if (broken) emptyList() else listOf(link("4f", "c2"))) + listOf(link("4f", "b1"), link("c2", "b1"), link("d3", "b1")),
             )
         }
 
@@ -118,8 +124,8 @@ enum class Demo(val screen: String) {
                 hint = if (broken) "choose another subnet with `gst subnet <cidr>`" else null,
                 peers = listOf(
                     DaemonStatus.Network.Peer(id("b1"), "devbox", "10.87.61.7", "direct", "203.0.113.7:41642", now.minusSeconds(12), 50_540_000, 3_250_000),
-                    DaemonStatus.Network.Peer(id("c2"), "homelab", "10.87.140.3", "relay", null, now.minusSeconds(64), 1_204_000, 380_000),
-                    DaemonStatus.Network.Peer(id("d3"), "laptop", "10.87.26.1", "direct", "192.168.1.23:15355", now.minusSeconds(31), 912_000, 77_000),
+                    DaemonStatus.Network.Peer(id("c2"), "homelab", "10.87.140.3", "direct", "192.168.1.23:15355", now.minusSeconds(31), 1_204_000, 380_000),
+                    DaemonStatus.Network.Peer(id("d3"), "laptop", "10.87.26.1", "relay", null, now.minusSeconds(64), 912_000, 77_000),
                 ),
             ),
         )

@@ -119,14 +119,22 @@ struct Topology: Codable, Equatable {
         var net: Net?
     }
 
+    /// A running link, from the machine that made it.
+    struct Link: Codable, Hashable {
+        var from: String
+        var to: String
+    }
+
     /// This machine's id.
     var me: String
     var subnet: String
     var nodes: [Node]
+    /// The running links; nil in what an earlier version of the app kept.
+    var links: [Link]?
 
     enum CodingKeys: String, CodingKey {
         case me = "self"
-        case subnet, nodes
+        case subnet, nodes, links
     }
 }
 

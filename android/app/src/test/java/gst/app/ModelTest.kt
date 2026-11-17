@@ -46,12 +46,13 @@ class ModelTest {
         assertEquals("devbox", status.removed!!.by.name)
 
         val topology = GstJson.decodeFromString<Topology>(
-            """{"self":"a","subnet":"10.87.0.0/16","nodes":[
+            """{"self":"a","subnet":"10.87.0.0/16","links":[{"from":"a","to":"b"}],"nodes":[
                {"id":"a","name":"pixel","reachable":true,"route":["a"],"net":{"address":"10.87.0.2"}},
                {"id":"b","name":"devbox","reachable":true,"route":["a","b"],"net":{"address":"10.87.0.3"}},
                {"id":"c","name":"homelab","reachable":true,"route":["a","b","c"],"net":{"address":"10.86.0.4"}},
                {"id":"d","name":"attic","reachable":false,"seen":"2026-11-11T08:00:00Z"}]}""",
         )
+        assertEquals(listOf(Topology.Link("a", "b")), topology.links)
         val machines = Machine.list(topology, status)
         assertEquals(listOf("pixel", "devbox", "homelab", "attic"), machines.map { it.name })
         assertEquals(Machine.Way.Here, machines[0].way)
@@ -62,6 +63,43 @@ class ModelTest {
         assertEquals(Machine.Way.Offline(Instant.parse("2026-11-11T08:00:00Z")), machines[3].way)
         // Without a running network, every other machine is offline.
         assertTrue(Machine.list(topology, null).none { it.isOnline })
+    }
+
+    /**
+     * The map puts the machines on a circle, the first at the top, and
+     * draws each link as a line that points at the machine linked to.
+     */
+    @Test
+    fun ring() {
+        val links = listOf("aa" to "cc", "cc" to "aa", "bb" to "aa", "aa" to "gone", "bb" to "bb").map { Topology.Link(it.first, it.second) }
+        val ring = Ring(listOf("aa", "bb", "cc", "dd"), links, Ring.Point(100f, 100f), 80f)
+        assertEquals(listOf("aa", "bb", "cc", "dd"), ring.spots.map { it.id })
+        for ((spot, at) in ring.spots.zip(listOf(100f to 20f, 180f to 100f, 100f to 180f, 20f to 100f))) {
+            assertEquals(at.first, spot.point.x, 0.001f)
+            assertEquals(at.second, spot.point.y, 0.001f)
+        }
+        // Names go outside the circle.
+        assertEquals(listOf(Ring.Side.Above, Ring.Side.Right, Ring.Side.Below, Ring.Side.Left), ring.spots.map { it.side })
+
+        // A link to a machine that is not on the map, or to itself, has no line.
+        assertEquals(listOf("aa" to "cc", "cc" to "aa", "bb" to "aa"), ring.lines.map { it.from to it.to })
+        // A line leaves a little way from its machine, and ends further
+        // from the one it points at, with the arrowhead before it.
+        val down = ring.lines[0]
+        assertEquals(100f, down.start.x, 0.001f)
+        assertEquals(29f, down.start.y, 0.001f)
+        assertEquals(168f, down.end.y, 0.001f)
+        assertEquals(171f, down.tip[0].y, 0.001f)
+        // The link back bows aside, so that both show.
+        assertEquals(100f, down.control.x, 0.001f)
+        assertTrue(kotlin.math.abs(ring.lines[1].control.x - 100f) > 10f)
+        // A line between neighbors bows towards the center.
+        val side = ring.lines[2]
+        assertEquals(140f - 40f * 0.3f, side.control.x, 0.001f)
+        assertEquals(60f + 40f * 0.3f, side.control.y, 0.001f)
+
+        // What an earlier version of the app kept has no links.
+        assertNull(GstJson.decodeFromString<Topology>("""{"self":"aa","subnet":"","nodes":[]}""").links)
     }
 
     @Test

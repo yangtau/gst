@@ -1,17 +1,17 @@
 :root {
-  --bg: #fbfbfc;
+  --bg: #f6f7fb;
   --card: #ffffff;
-  --hover: #f4f4f7;
-  --line: #e7e7ec;
-  --ring: #c6c7d1;
-  --text: #1b1c21;
-  --sub: #5f626c;
-  --faint: #7a7d86;
-  --accent: #4f5bd5;
-  --ok: #1a9460;
-  --warn: #a96b00;
-  --bad: #cf3a3a;
-  --bad-tint: #fdf0f0;
+  --hover: #eef0f7;
+  --line: #e3e6ee;
+  --ring: #c2c7d6;
+  --text: #161922;
+  --sub: #565c6e;
+  --faint: #686e80;
+  --accent: #2f52dc;
+  --ok: #128a4b;
+  --warn: #a15c00;
+  --bad: #c8322f;
+  --bad-tint: #fdf0ef;
   --sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   /* A machine's row: mark, name, gst IP, way, problems, chevron. */
@@ -20,19 +20,19 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111215;
-    --card: #18191d;
-    --hover: #202127;
-    --line: #2a2b32;
-    --ring: #4a4c57;
-    --text: #e8e8ec;
-    --sub: #a3a5ae;
-    --faint: #82848d;
-    --accent: #8b93f0;
-    --ok: #3cc28a;
-    --warn: #e0a43a;
-    --bad: #f06a6a;
-    --bad-tint: #2a1618;
+    --bg: #0f1218;
+    --card: #171b24;
+    --hover: #1f2430;
+    --line: #2a303d;
+    --ring: #4a5266;
+    --text: #e7eaf2;
+    --sub: #a4abbb;
+    --faint: #838a9b;
+    --accent: #93aaff;
+    --ok: #4fce8e;
+    --warn: #e5a640;
+    --bad: #f47070;
+    --bad-tint: #2c181a;
     color-scheme: dark;
   }
 }
@@ -62,7 +62,8 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
 .top { border-bottom: 1px solid var(--line); background: var(--card); }
 .top-in, .page, .foot { width: 100%; max-width: 920px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
 .top-in { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-top: 14px; padding-bottom: 13px; }
-.brand { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+.brand { display: flex; align-items: center; gap: 8px; align-self: center; font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+.brand img { width: 20px; height: 20px; }
 .summary { color: var(--sub); font-size: 12px; text-align: right; }
 .summary .bad { color: var(--bad); }
 .alert { padding: 8px 24px; border-bottom: 1px solid var(--line); background: var(--bad-tint); color: var(--bad); text-align: center; }

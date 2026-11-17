@@ -24,6 +24,7 @@
     <string name="problem_removed">%1$s removed this machine from the network %2$s.</string>
     <string name="problem_removed_detail">Add a machine to join a network again.</string>
     <string name="problem_link">The link to %1$s is down.</string>
+    <string name="map">Map of the links between the machines</string>
     <string name="machines">Machines</string>
     <string name="machines_empty">The machines of the network show here once a link connects.</string>
     <string name="welcome_title">Join your network</string>

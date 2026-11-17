@@ -66,7 +66,7 @@ fun Machine.Way.text(): String = when (this) {
 @Composable
 fun Machine.Way.color(): Color = when (this) {
     Machine.Way.Here, is Machine.Way.Direct -> statusColors.good
-    is Machine.Way.Relay -> MaterialTheme.colorScheme.tertiary
+    is Machine.Way.Relay -> MaterialTheme.colorScheme.primary
     is Machine.Way.Offline -> MaterialTheme.colorScheme.outline
 }
 

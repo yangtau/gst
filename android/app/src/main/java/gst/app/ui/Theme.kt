@@ -21,47 +21,48 @@ import androidx.compose.material3.ListItemColors
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.ui.platform.LocalContext
 
-// gst's colors: the teal of its icon, for a phone without colors of its
-// own (before Android 12), and for the pictures of the screens.
+// gst's colors: the blue of its icon, far from the green, amber, and red
+// that say how things go, for a phone without colors of its own (before
+// Android 12), and for the pictures of the screens.
 
 private val Light = lightColorScheme(
-    primary = Color(0xFF006B5F), onPrimary = Color.White,
-    primaryContainer = Color(0xFF9EF2E2), onPrimaryContainer = Color(0xFF005047),
-    secondary = Color(0xFF4A635E), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFCCE8E1), onSecondaryContainer = Color(0xFF334B46),
-    tertiary = Color(0xFF456179), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFCCE5FF), onTertiaryContainer = Color(0xFF2D4960),
+    primary = Color(0xFF2F52DC), onPrimary = Color.White,
+    primaryContainer = Color(0xFFDDE2FF), onPrimaryContainer = Color(0xFF1A37A8),
+    secondary = Color(0xFF595E72), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDEE1F9), onSecondaryContainer = Color(0xFF414659),
+    tertiary = Color(0xFF7A5298), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFF2DAFF), onTertiaryContainer = Color(0xFF603A7E),
     error = Color(0xFFBA1A1A), onError = Color.White,
     errorContainer = Color(0xFFFFDAD6), onErrorContainer = Color(0xFF93000A),
-    background = Color(0xFFF4FBF8), onBackground = Color(0xFF171D1B),
-    surface = Color(0xFFF4FBF8), onSurface = Color(0xFF171D1B),
-    surfaceVariant = Color(0xFFDAE5E1), onSurfaceVariant = Color(0xFF3F4946),
-    outline = Color(0xFF6F7976), outlineVariant = Color(0xFFBEC9C5),
-    inverseSurface = Color(0xFF2B3230), inverseOnSurface = Color(0xFFECF2EF), inversePrimary = Color(0xFF82D5C6),
-    surfaceDim = Color(0xFFD5DBD9), surfaceBright = Color(0xFFF4FBF8),
-    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFEEF5F2),
-    surfaceContainer = Color(0xFFE9EFEC), surfaceContainerHigh = Color(0xFFE3EAE7),
-    surfaceContainerHighest = Color(0xFFDDE4E1),
+    background = Color(0xFFF8F9FD), onBackground = Color(0xFF191B22),
+    surface = Color(0xFFF8F9FD), onSurface = Color(0xFF191B22),
+    surfaceVariant = Color(0xFFE1E2EC), onSurfaceVariant = Color(0xFF44464F),
+    outline = Color(0xFF757780), outlineVariant = Color(0xFFC5C6D0),
+    inverseSurface = Color(0xFF2E3037), inverseOnSurface = Color(0xFFF0F0F8), inversePrimary = Color(0xFFB7C4FF),
+    surfaceDim = Color(0xFFD8D9E1), surfaceBright = Color(0xFFF8F9FD),
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF2F3FA),
+    surfaceContainer = Color(0xFFECEDF5), surfaceContainerHigh = Color(0xFFE6E7EF),
+    surfaceContainerHighest = Color(0xFFE1E2E9),
 )
 
 private val Dark = darkColorScheme(
-    primary = Color(0xFF82D5C6), onPrimary = Color(0xFF003731),
-    primaryContainer = Color(0xFF005047), onPrimaryContainer = Color(0xFF9EF2E2),
-    secondary = Color(0xFFB1CCC5), onSecondary = Color(0xFF1C3530),
-    secondaryContainer = Color(0xFF334B46), onSecondaryContainer = Color(0xFFCCE8E1),
-    tertiary = Color(0xFFADCAE5), onTertiary = Color(0xFF153349),
-    tertiaryContainer = Color(0xFF2D4960), onTertiaryContainer = Color(0xFFCCE5FF),
+    primary = Color(0xFFB7C4FF), onPrimary = Color(0xFF0A2A8C),
+    primaryContainer = Color(0xFF1A3AAE), onPrimaryContainer = Color(0xFFDDE2FF),
+    secondary = Color(0xFFC1C5DD), onSecondary = Color(0xFF2B3042),
+    secondaryContainer = Color(0xFF414659), onSecondaryContainer = Color(0xFFDEE1F9),
+    tertiary = Color(0xFFE2B7FF), onTertiary = Color(0xFF482366),
+    tertiaryContainer = Color(0xFF603A7E), onTertiaryContainer = Color(0xFFF2DAFF),
     error = Color(0xFFFFB4AB), onError = Color(0xFF690005),
     errorContainer = Color(0xFF93000A), onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF0E1513), onBackground = Color(0xFFDDE4E1),
-    surface = Color(0xFF0E1513), onSurface = Color(0xFFDDE4E1),
-    surfaceVariant = Color(0xFF3F4946), onSurfaceVariant = Color(0xFFBEC9C5),
-    outline = Color(0xFF899390), outlineVariant = Color(0xFF3F4946),
-    inverseSurface = Color(0xFFDDE4E1), inverseOnSurface = Color(0xFF2B3230), inversePrimary = Color(0xFF006B5F),
-    surfaceDim = Color(0xFF0E1513), surfaceBright = Color(0xFF343B39),
-    surfaceContainerLowest = Color(0xFF090F0E), surfaceContainerLow = Color(0xFF171D1B),
-    surfaceContainer = Color(0xFF1B211F), surfaceContainerHigh = Color(0xFF252B2A),
-    surfaceContainerHighest = Color(0xFF303634),
+    background = Color(0xFF111318), onBackground = Color(0xFFE2E2EA),
+    surface = Color(0xFF111318), onSurface = Color(0xFFE2E2EA),
+    surfaceVariant = Color(0xFF44464F), onSurfaceVariant = Color(0xFFC5C6D0),
+    outline = Color(0xFF8F909A), outlineVariant = Color(0xFF44464F),
+    inverseSurface = Color(0xFFE2E2EA), inverseOnSurface = Color(0xFF2E3037), inversePrimary = Color(0xFF2F52DC),
+    surfaceDim = Color(0xFF111318), surfaceBright = Color(0xFF37393F),
+    surfaceContainerLowest = Color(0xFF0C0E13), surfaceContainerLow = Color(0xFF191B22),
+    surfaceContainer = Color(0xFF1D1F26), surfaceContainerHigh = Color(0xFF282A30),
+    surfaceContainerHighest = Color(0xFF33353B),
 )
 
 /** The colors that say how things go, which the scheme has no roles for. */
@@ -78,13 +79,13 @@ data class StatusColors(
 )
 
 private val LightStatus = StatusColors(
-    good = Color(0xFF1B873F), goodContainer = Color(0xFFC4EFCB), onGoodContainer = Color(0xFF00531F),
-    warning = Color(0xFFB45309), warningContainer = Color(0xFFFFE0C2), onWarningContainer = Color(0xFF6B3000),
+    good = Color(0xFF128A4B), goodContainer = Color(0xFFC5EFD2), onGoodContainer = Color(0xFF00522A),
+    warning = Color(0xFFA15C00), warningContainer = Color(0xFFFFE2C4), onWarningContainer = Color(0xFF6B3000),
 )
 
 private val DarkStatus = StatusColors(
-    good = Color(0xFF6DD58C), goodContainer = Color(0xFF00531F), onGoodContainer = Color(0xFFC4EFCB),
-    warning = Color(0xFFFFB870), warningContainer = Color(0xFF5A2A00), onWarningContainer = Color(0xFFFFE0C2),
+    good = Color(0xFF4FCE8E), goodContainer = Color(0xFF00522A), onGoodContainer = Color(0xFFC5EFD2),
+    warning = Color(0xFFE5A640), warningContainer = Color(0xFF532A00), onWarningContainer = Color(0xFFFFE2C4),
 )
 
 val LocalStatusColors = staticCompositionLocalOf { LightStatus }

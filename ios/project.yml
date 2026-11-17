@@ -26,7 +26,12 @@ targets:
     type: application
     platform: iOS
     sources:
-      - App
+      - path: App
+        excludes: [AppIcon.icon]
+      # The icon is one document for Icon Composer, not a folder of files.
+      - path: App/AppIcon.icon
+        type: file
+        buildPhase: resources
       - Shared
     dependencies:
       - target: Tunnel
@@ -105,6 +110,7 @@ targets:
       - App/Model/Wire.swift
       - App/Model/Gst.swift
       - App/Model/Machine.swift
+      - App/Model/Ring.swift
     dependencies:
       - framework: build/GstKit.xcframework
         embed: false

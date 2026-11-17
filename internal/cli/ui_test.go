@@ -77,7 +77,7 @@ func TestUIServesPageAndSecurityHeaders(t *testing.T) {
 	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), "app.js") {
 		t.Fatalf("page: %s %q", res.Status, body)
 	}
-	for _, path := range []string{"/app.js", "/style.css"} {
+	for _, path := range []string{"/app.js", "/style.css", "/icon.svg"} {
 		if res := c.do("GET", path, ""); res.StatusCode != http.StatusOK {
 			t.Errorf("%s: %s", path, res.Status)
 		}
