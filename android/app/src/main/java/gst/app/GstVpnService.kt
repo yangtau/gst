@@ -67,8 +67,9 @@ class GstVpnService : VpnService(), Core.System {
         override fun onLost(network: Network) = changed()
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = changed()
 
+        // On the main thread, as unwatch is: none comes after it.
         private fun changed() {
-            resolver.execute { Core.call("""{"method":"daemon.network"}""".toByteArray()) }
+            if (isWatching) resolver.execute { Core.call("""{"method":"daemon.network"}""".toByteArray()) }
         }
     }
     private var isWatching = false
@@ -116,11 +117,11 @@ class GstVpnService : VpnService(), Core.System {
         isRunning = true
         Tunnel.set(Tunnel.State.Connecting)
         main.postDelayed(timeout, START_TIMEOUT)
-        watch()
         worker.execute {
             try {
                 Tunnel.open(this)
                 Core.start(this)
+                main.post { watch() }
             } catch (e: Exception) {
                 main.post { end(e.message ?: getString(R.string.error_no_network)) }
             }
@@ -129,12 +130,12 @@ class GstVpnService : VpnService(), Core.System {
 
     /** Follows the networks that reach the internet, besides VPNs, gst's own among them. */
     private fun watch() {
-        if (isWatching) return
+        if (isWatching || !isRunning) return
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
-        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, networks)
+        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, networks, main)
         isWatching = true
     }
 

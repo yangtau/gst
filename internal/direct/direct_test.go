@@ -799,14 +799,14 @@ func TestAddressesChange(t *testing.T) {
 			return false
 		}
 	}
-	tr.look()
+	tr.look(false)
 	if changed() {
 		t.Fatal("nothing changed")
 	}
 	public := netip.MustParseAddrPort("203.0.113.7:4000")
 	tr.sawPublic(public)
 	addrs = []netip.Addr{loopback, netip.MustParseAddr("192.0.2.1")}
-	tr.look()
+	tr.look(false)
 	if !changed() {
 		t.Fatal("no word of new addresses")
 	}
@@ -816,13 +816,13 @@ func TestAddressesChange(t *testing.T) {
 	// A new default route: the same addresses, but packets leave from
 	// another, which is a move.
 	addrs = []netip.Addr{netip.MustParseAddr("192.0.2.1"), loopback}
-	tr.look()
+	tr.look(false)
 	select {
 	case <-tr.Moved():
 	default:
 		t.Fatal("no word of another address to leave from")
 	}
-	tr.look()
+	tr.look(false)
 	if changed() {
 		t.Fatal("nothing changed since")
 	}
@@ -861,7 +861,7 @@ func TestMoves(t *testing.T) {
 			defer tr.Close()
 			for i, st := range c.steps {
 				addrs = st.addrs
-				tr.look()
+				tr.look(false)
 				moved := false
 				select {
 				case <-tr.Moved():
@@ -901,6 +901,9 @@ func TestLookNow(t *testing.T) {
 	case <-tr.Moved():
 		if took := time.Since(start); took < settleTime || took > watchEvery/2 {
 			t.Errorf("looked after %v", took)
+		}
+		if !tr.Heard() {
+			t.Error("the move is not one that the system said")
 		}
 	case <-time.After(watchEvery / 2):
 		t.Fatal("no look")
@@ -965,7 +968,7 @@ func TestSeenAddresses(t *testing.T) {
 	}
 	// It holds through a change of network: the links say when it ends.
 	tr.known = nil
-	tr.look()
+	tr.look(false)
 	if got := tr.offerAddresses(); !slices.Equal(got, want) {
 		t.Fatalf("offer %v after a change, want %v", got, want)
 	}

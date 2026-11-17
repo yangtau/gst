@@ -144,6 +144,7 @@ type Transport struct {
 	changed chan struct{}                            // for Changed
 	moved   chan struct{}                            // for Moved
 	poke    chan struct{}                            // see LookNow
+	heard   atomic.Bool                              // see Heard
 	known   []netip.Addr                             // what Addresses said last; owned by watch
 	place   place                                    // where the machine was last; owned by watch
 	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
@@ -299,7 +300,7 @@ func (t *Transport) watch() {
 	for {
 		select {
 		case <-tick.C:
-			t.look()
+			t.look(false)
 		case <-t.poke:
 			// A change comes in steps, such as an interface, then its
 			// addresses, then its routes: one look after them all.
@@ -308,7 +309,7 @@ func (t *Transport) watch() {
 			}
 		case <-settled:
 			settled = nil
-			t.look()
+			t.look(true)
 		case <-t.done:
 			return
 		}
@@ -322,11 +323,14 @@ func (t *Transport) LookNow() { signal(t.poke) }
 
 // look tells Moved if the machine moved to another network, and else
 // Changed if its addresses or interfaces changed.
-func (t *Transport) look() {
+// heard says whether the system said that the network changed, rather
+// than that it was time to look.
+func (t *Transport) look(heard bool) {
 	rebound := t.bind()
 	changed := t.addressesChanged()
 	switch {
 	case t.movedAway():
+		t.heard.Store(heard)
 		signal(t.moved)
 	case changed || rebound:
 		signal(t.changed)
@@ -349,6 +353,11 @@ func (t *Transport) Changed() <-chan struct{} { return t.changed }
 // be stuck on it, as a socket is on iOS: the sockets then need to be new,
 // which takes a new Transport.
 func (t *Transport) Moved() <-chan struct{} { return t.moved }
+
+// Heard reports whether the system said that the network changed before
+// the look that found the latest move, rather than a regular look found
+// it on its own.
+func (t *Transport) Heard() bool { return t.heard.Load() }
 
 // place is where this machine is on the internet, as far as moving goes:
 // the IPv4 address that packets leave from, and the /64 of the IPv6 one,

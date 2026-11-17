@@ -130,7 +130,11 @@ func (n *Node) Moved() <-chan struct{} {
 // startOver returns; nil when there is no socket, and UDP paths are off.
 // The next packets find paths again.
 func (n *Node) startOver(ctx context.Context, network direct.Network, old *direct.Transport) *direct.Transport {
-	n.log.Print("this machine moved to another network; starting the links and UDP paths over")
+	how := "found at a regular look"
+	if old.Heard() {
+		how = "as the system said"
+	}
+	n.log.Printf("this machine moved to another network, %s; starting the links and UDP paths over", how)
 	n.mu.Lock()
 	links := slices.Collect(maps.Keys(n.links))
 	clear(n.directWaits)
