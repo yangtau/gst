@@ -85,7 +85,9 @@ func (s *supervisor) run() {
 		s.mu.Lock()
 		s.attempt = cancel
 		s.mu.Unlock()
+		start, up := time.Now(), false
 		err := s.connect(ctx, func(peer wire.NodeInfo, took string) {
+			up = true
 			s.set(wire.StateRunning, "", &peer)
 			s.logf("up in %s", took)
 			wait = s.d.cfg.RetryDelay
@@ -100,6 +102,9 @@ func (s *supervisor) run() {
 			return
 		}
 		switch {
+		case restarted && !up && err != nil:
+			// Where the try was, to tell what holds links up after a move.
+			err = fmt.Errorf("this machine moved to another network, %s into a try: %w", round(time.Since(start)), err)
 		case restarted:
 			err = errors.New("this machine moved to another network")
 		case err == nil:

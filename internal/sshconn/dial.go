@@ -132,7 +132,10 @@ func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, t
 		return nil
 	}}
 	conn, err := dialer.DialContext(dialCtx, "tcp", address)
-	if err != nil {
+	switch {
+	case err != nil && resolved.Load() == 0:
+		return nil, nil, errors.New("the name did not resolve")
+	case err != nil:
 		return nil, nil, errors.New("TCP connection failed")
 	}
 	connected := time.Now()

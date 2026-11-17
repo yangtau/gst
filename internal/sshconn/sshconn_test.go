@@ -88,6 +88,7 @@ func TestDialFailures(t *testing.T) {
 		{"no identity file", func(t *testing.T, s *testServer) { os.Remove(s.opts.IdentityFiles[0]) }, "no usable identity"},
 		{"passphrase-protected identity", encrypted, "no usable identity"},
 		{"nothing listens", func(t *testing.T, s *testServer) { s.opts.Server = freeAddr(t) }, "TCP connection failed"},
+		{"no such name", func(t *testing.T, s *testServer) { s.opts.Server = "myhost.invalid:22" }, "the name did not resolve"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
