@@ -28,6 +28,7 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
         /** A text of the made-up network that each screen shows in every language. */
         private val shows = mapOf(
             Demo.Home to "homelab",
+            Demo.Map to "homelab",
             Demo.Problems to "192.0.2.20",
             Demo.Welcome to "pixel",
             Demo.Off to "attic",
@@ -37,7 +38,7 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
             Demo.Settings to "admin@ssh.example.com",
         )
 
-        private val darkScreens = setOf(Demo.Home, Demo.Problems, Demo.Welcome, Demo.Machine, Demo.HostKey, Demo.Settings)
+        private val darkScreens = setOf(Demo.Home, Demo.Map, Demo.Problems, Demo.Welcome, Demo.Machine, Demo.HostKey, Demo.Settings)
 
         @JvmStatic
         @ParameterizedRobolectricTestRunner.Parameters(name = "{1}-{2}-{0}")
@@ -59,7 +60,7 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
         val model = demo.model()
         compose.setContent {
             GstTheme(dark = dark, brandColors = true) {
-                GstApp(model, demo.route, demo.machine, demo.addStep)
+                GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings)
             }
         }
         compose.waitForIdle()

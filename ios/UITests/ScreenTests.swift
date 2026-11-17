@@ -7,14 +7,17 @@ import XCTest
 /// LANGUAGE-APPEARANCE-SCREEN.png.
 final class ScreenTests: XCTestCase {
     /// A screen of Demo, and a text of the made-up network that it shows
-    /// in every language.
+    /// in every language. `map` is the first screen once someone asked
+    /// for the map of the links, a choice that the app remembers.
     private struct Screen {
         let name: String
         let shows: String
+        var demo: String { name == "map" ? "home" : name }
     }
 
     private let screens = [
         Screen(name: "home", shows: "homelab"),
+        Screen(name: "map", shows: "homelab"),
         Screen(name: "problems", shows: "192.0.2.20"),
         Screen(name: "welcome", shows: "iphone"),
         Screen(name: "off", shows: "attic"),
@@ -37,7 +40,7 @@ final class ScreenTests: XCTestCase {
     }
 
     func testDark() {
-        let dark = screens.filter { ["home", "problems", "welcome", "machine", "host-key", "settings"].contains($0.name) }
+        let dark = screens.filter { ["home", "map", "problems", "welcome", "machine", "host-key", "settings"].contains($0.name) }
         show(dark, language: "zh-Hans", locale: "zh_CN", appearance: "dark")
     }
 
@@ -45,7 +48,7 @@ final class ScreenTests: XCTestCase {
         for screen in screens {
             let app = XCUIApplication()
             app.launchArguments = [
-                "-GstDemo", screen.name, "-GstDemoAppearance", appearance,
+                "-GstDemo", screen.demo, "-GstDemoAppearance", appearance, "-map", screen.name == "map" ? "YES" : "NO",
                 "-AppleLanguages", "(\(language))", "-AppleLocale", locale,
             ]
             app.launch()

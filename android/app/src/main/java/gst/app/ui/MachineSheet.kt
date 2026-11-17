@@ -13,16 +13,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.NetworkPing
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -31,8 +28,8 @@ import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -43,20 +40,27 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import gst.app.AppModel
 import gst.app.Machine
+import gst.app.Pings
 import gst.app.R
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
-/** A ping and how it went, in the words of `gst ping`. */
-private data class Ping(val text: String, val failed: Boolean)
-
-/** One machine: how to reach it, the way that packets take to it, a ping, and its removal from the network. */
+/**
+ * One machine: the pings that the app sends it while the sheet is open,
+ * how to reach it, and its removal from the network. [pings] are those
+ * that the sheet starts with, which a demo gives it.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MachineSheet(model: AppModel, machineID: String, isOn: Boolean, sheetState: SheetState, close: () -> Unit) {
+fun MachineSheet(model: AppModel, machineID: String, isOn: Boolean, sheetState: SheetState, pings: Pings = Pings(), close: () -> Unit) {
     ModalBottomSheet(onDismissRequest = close, sheetState = sheetState, containerColor = MaterialTheme.colorScheme.page) {
         val machine = model.machines(isOn).firstOrNull { it.id == machineID }
         if (machine == null) {
@@ -66,7 +70,7 @@ fun MachineSheet(model: AppModel, machineID: String, isOn: Boolean, sheetState: 
                 modifier = Modifier.padding(32.dp).navigationBarsPadding(),
             )
         } else {
-            MachineDetails(model, machine, isOn, close)
+            MachineDetails(model, machine, isOn, pings, close)
         }
     }
 }
@@ -92,16 +96,37 @@ private fun Value(index: Int, count: Int, title: String, value: String, mono: Bo
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun MachineDetails(model: AppModel, machine: Machine, isOn: Boolean, close: () -> Unit) {
+private fun MachineDetails(model: AppModel, machine: Machine, isOn: Boolean, initial: Pings, close: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val pings = remember { mutableStateListOf<Ping>() }
-    var isPinging by remember { mutableStateOf(false) }
+    var pings by remember { mutableStateOf(initial) }
     var isConfirmingRemoval by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
-    val direct = stringResource(R.string.way_direct)
-    val relay = stringResource(R.string.way_relay)
-    val relayVia = stringResource(R.string.way_relay_via)
+
+    // The app pings the machine once a second, for as long as the sheet
+    // shows it, the app is on the screen, and packets may reach it. The
+    // VPN keeps the process when the app leaves the screen, and the pings
+    // stop then.
+    val isPinged = isOn && !machine.isHere && machine.isOnline
+    if (isPinged) {
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(machine.id, lifecycle) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val sent = TimeSource.Monotonic.markNow()
+                    pings = try {
+                        val reply = model.ping(machine)
+                        pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        pings.failed(e.message ?: "")
+                    }
+                    delay(1.seconds - sent.elapsedNow())
+                }
+            }
+        }
+    }
 
     Column(
         Modifier
@@ -111,9 +136,15 @@ private fun MachineDetails(model: AppModel, machine: Machine, isOn: Boolean, clo
             .navigationBarsPadding(),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(machine.name, style = MaterialTheme.typography.headlineMediumEmphasized)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(machine.name, style = MaterialTheme.typography.headlineMediumEmphasized, modifier = Modifier.padding(horizontal = 8.dp))
+        if (isPinged) {
+            PingView(pings, machine.way)
+        } else {
+            Row(
+                Modifier.padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 StatusDot(machine.way)
                 Text(machine.way.text(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -125,9 +156,6 @@ private fun MachineDetails(model: AppModel, machine: Machine, isOn: Boolean, clo
             machine.address?.let { address ->
                 add { i, n -> Value(i, n, stringResource(R.string.gst_ip), address, mono = true, copy = true) }
                 add { i, n -> Value(i, n, stringResource(R.string.name), machine.hostname, mono = true, copy = true) }
-            }
-            if (way is Machine.Way.Direct && way.endpoint != null) {
-                add { i, n -> Value(i, n, stringResource(R.string.address), way.endpoint, mono = true) }
             }
             if (way is Machine.Way.Offline && way.seen != null) {
                 add { i, n -> Value(i, n, stringResource(R.string.last_seen), way.seen.ago()) }
@@ -151,53 +179,6 @@ private fun MachineDetails(model: AppModel, machine: Machine, isOn: Boolean, clo
                     add { i, n -> Value(i, n, stringResource(R.string.sent), context.bytes(machine.sent)) }
                 }
                 Segmented { traffic.forEachIndexed { i, row -> row(i, traffic.size) } }
-            }
-
-            // Three pings, a second apart, as `gst ping` sends them.
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(
-                    onClick = {
-                        scope.launch {
-                            isPinging = true
-                            pings.clear()
-                            repeat(3) { round ->
-                                if (round > 0) delay(1000)
-                                pings += try {
-                                    val reply = model.ping(machine)
-                                    var text = if (reply.way == "direct") direct else relay
-                                    if (!reply.endpoint.isNullOrEmpty()) {
-                                        text += " " + reply.endpoint
-                                    } else if (reply.via.isNotEmpty()) {
-                                        text = relayVia.format(reply.via.joinToString(", ") { it.name })
-                                    }
-                                    Ping(text + String.format(Locale.ROOT, ", %.1f ms", reply.timeMs), failed = false)
-                                } catch (e: Exception) {
-                                    Ping(e.message ?: "", failed = true)
-                                }
-                            }
-                            isPinging = false
-                        }
-                    },
-                    enabled = !isPinging && isOn,
-                    modifier = Modifier.fillMaxWidth().height(ButtonDefaults.MediumContainerHeight),
-                ) {
-                    if (isPinging) {
-                        LoadingIndicator(Modifier.size(24.dp))
-                    } else {
-                        Icon(Icons.Rounded.NetworkPing, contentDescription = null)
-                    }
-                    Spacer(Modifier.size(8.dp))
-                    Text(stringResource(R.string.ping), style = MaterialTheme.typography.titleMedium)
-                }
-                for (ping in pings) {
-                    Text(
-                        ping.text,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (ping.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
-                }
             }
         }
 

@@ -56,7 +56,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 if (demo != null) {
-                    GstApp(model, demo.route, demo.machine, demo.addStep)
+                    GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings)
                 } else {
                     GstApp(model)
                 }

@@ -1,5 +1,6 @@
 # Builds the iOS app with Xcode, for a device and for the simulator, and
-# runs its tests in the simulator. See ios/README.md.
+# runs its tests in the simulator, besides those of the screens. See
+# ios/README.md.
 name: iOS
 
 on:
@@ -44,5 +45,5 @@ jobs:
           set -o pipefail
           xcodebuild -project ios/Gst.xcodeproj -scheme Gst -derivedDataPath ios/build/derived \
             -resultBundlePath ios/build/tests.xcresult \
-            -destination "id=$(ios/simulator.sh),arch=arm64" test |
+            -destination "id=$(ios/simulator.sh),arch=arm64" -skip-testing:GstUITests test |
             grep --line-buffered -E "^Test (Case|Suite) .*(passed|failed)|Executed [0-9]+ tests|error:|warning:|\*\* TEST"

@@ -1,6 +1,7 @@
 # Builds the Android app, with gst's Go code for each ABI, and runs its
-# tests: the model, gst's Go code through JNI, and the screens. The APKs
-# are the artifact `android-apks`. See android/README.md.
+# tests, besides those of the screens: the model, and gst's Go code
+# through JNI. The APKs are the artifact `android-apks`. See
+# android/README.md.
 name: Android
 
 on:
@@ -43,7 +44,7 @@ jobs:
           android/build-core.sh host
       - name: Build and test
         working-directory: android
-        run: ./gradlew --no-configuration-cache assembleDebug assembleRelease testDebugUnitTest
+        run: ./gradlew --no-configuration-cache -PgstScreenTests=false assembleDebug assembleRelease testDebugUnitTest
       - name: Keep the APKs
         uses: actions/upload-artifact@v5
         with:

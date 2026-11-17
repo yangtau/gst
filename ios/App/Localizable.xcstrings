@@ -71,16 +71,6 @@
         }
       }
     },
-    "Address": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "地址"
-          }
-        }
-      }
-    },
     "Another key is recorded for %@. Unless someone replaced the server's key, something else answers in its place.": {
       "localizations": {
         "zh-Hans": {
@@ -257,6 +247,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "指纹（%@）"
+          }
+        }
+      }
+    },
+    "Hide the Map": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏 link 关系图"
           }
         }
       }
@@ -491,16 +491,6 @@
         }
       }
     },
-    "Ping": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ping"
-          }
-        }
-      }
-    },
     "Port": {
       "localizations": {
         "zh-Hans": {
@@ -657,6 +647,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "共享"
+          }
+        }
+      }
+    },
+    "Show the Map": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示 link 关系图"
           }
         }
       }

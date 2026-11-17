@@ -51,6 +51,19 @@ enum Demo: String, CaseIterable {
         }
     }
 
+    /// The pings that the machine's sheet starts with: the first ones
+    /// along the links, and the rest direct, once the UDP path was up.
+    var pings: Pings {
+        var pings = Pings()
+        for time in [58.2, 61.7, 55.9, 63.4, 24.8, 22.1, 23.6, 21.9, 26.3, 22.7, 21.4, 34.9, 23.2, 22.0, 24.4, 21.7, 22.9, 23.8] {
+            pings.answered(in: time, way: pings.latest.count < 4 ? .relay(via: []) : .direct(endpoint: "203.0.113.7:41642"))
+        }
+        return pings
+    }
+
+    /// What a ping of the made-up network comes back with.
+    static let ping = PingReply(node: NodeInfo(id: id("b1"), name: "devbox", software: software), address: "10.87.61.7", way: "direct", endpoint: "203.0.113.7:41642", via: [], timeMs: 22.4)
+
     var addStep: AddMachineSheet.Step {
         switch self {
         case .hostKey:

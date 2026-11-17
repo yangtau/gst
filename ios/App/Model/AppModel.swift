@@ -194,7 +194,12 @@ final class AppModel {
 
     /// `gst ping <machine>`, once.
     func ping(_ machine: Machine) async throws -> PingReply {
-        try await daemon.call("net.ping", NodeParams(node: machine.id))
+        #if DEBUG
+        if isDemo {
+            return Demo.ping
+        }
+        #endif
+        return try await daemon.call("net.ping", NodeParams(node: machine.id))
     }
 
     /// `gst remove <machine>`.

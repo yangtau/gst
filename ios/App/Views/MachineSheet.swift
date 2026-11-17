@@ -1,26 +1,32 @@
 import SwiftUI
 
-/// One machine: how to reach it, the way that packets take to it, a ping,
-/// and its removal from the network.
+/// One machine: the pings that the app sends it while the sheet is
+/// open, how to reach it, and its removal from the network.
 struct MachineSheet: View {
     let machineID: String
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var pings: [Ping] = []
-    @State private var isPinging = false
+    @State private var pings: Pings
     @State private var isConfirmingRemoval = false
     @State private var failure: String?
 
-    /// A ping and how it went, in the words of `gst ping`.
-    private struct Ping: Identifiable {
-        let id = UUID()
-        let text: String
-        let failed: Bool
+    /// The machine's sheet; `pings` are those that it starts with, which
+    /// a demo gives it.
+    init(machineID: String, pings: Pings = Pings()) {
+        self.machineID = machineID
+        _pings = State(initialValue: pings)
     }
 
     private var machine: Machine? {
         model.machines.first { $0.id == machineID }
+    }
+
+    /// The machine while packets may reach it, which is when the app
+    /// pings it.
+    private var pinged: Machine? {
+        guard model.isOn, let machine, !machine.isHere, machine.isOnline else { return nil }
+        return machine
     }
 
     var body: some View {
@@ -44,23 +50,25 @@ struct MachineSheet: View {
     private func details(_ machine: Machine) -> some View {
         Form {
             Section {
+                if pinged != nil {
+                    PingView(pings: pings, way: machine.way)
+                } else {
+                    LabeledContent("Connection") {
+                        HStack(spacing: 8) {
+                            StatusDot(way: machine.way)
+                            Text(machine.way.text)
+                        }
+                    }
+                    if case .offline(let seen?) = machine.way {
+                        LabeledContent("Last seen", value: seen.ago)
+                    }
+                }
+            }
+
+            Section {
                 if let address = machine.address {
                     CopyableValue(title: "gst IP", value: address)
                     CopyableValue(title: "Name", value: machine.hostname)
-                }
-                LabeledContent("Connection") {
-                    HStack(spacing: 8) {
-                        StatusDot(way: machine.way)
-                        Text(machine.way.text)
-                    }
-                }
-                if case .direct(let endpoint?) = machine.way {
-                    LabeledContent("Address") {
-                        Text(endpoint).monospaced()
-                    }
-                }
-                if case .offline(let seen?) = machine.way {
-                    LabeledContent("Last seen", value: seen.ago)
                 }
             } footer: {
                 if machine.address == nil && machine.isOnline {
@@ -75,26 +83,6 @@ struct MachineSheet: View {
                     }
                     LabeledContent("Received", value: machine.received.bytes)
                     LabeledContent("Sent", value: machine.sent.bytes)
-                }
-
-                Section {
-                    Button {
-                        Task { await ping(machine) }
-                    } label: {
-                        HStack {
-                            Label("Ping", systemImage: "dot.radiowaves.left.and.right")
-                            Spacer()
-                            if isPinging {
-                                ProgressView()
-                            }
-                        }
-                    }
-                    .disabled(isPinging || !model.isOn)
-                    ForEach(pings) { ping in
-                        Text(ping.text)
-                            .font(.footnote.monospaced())
-                            .foregroundStyle(ping.failed ? Color.red : Color.secondary)
-                    }
                 }
             }
 
@@ -120,6 +108,11 @@ struct MachineSheet: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .task(id: pinged?.id) {
+            if let pinged {
+                await ping(pinged)
+            }
+        }
         .navigationTitle(machine.name)
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -139,27 +132,19 @@ struct MachineSheet: View {
         }
     }
 
-    /// Three pings, a second apart, as `gst ping` sends them.
+    /// Pings the machine once a second, for as long as the sheet shows it
+    /// and packets may reach it.
     private func ping(_ machine: Machine) async {
-        isPinging = true
-        pings = []
-        defer { isPinging = false }
-        for round in 0..<3 {
-            if round > 0 {
-                try? await Task.sleep(for: .seconds(1))
-            }
+        while !Task.isCancelled {
+            let next = ContinuousClock.now + .seconds(1)
             do {
                 let reply = try await model.ping(machine)
-                var way = reply.way == "direct" ? String(localized: "Direct") : String(localized: "Relay")
-                if let endpoint = reply.endpoint, !endpoint.isEmpty {
-                    way += " " + endpoint
-                } else if !reply.via.isEmpty {
-                    way = String(localized: "Relay via \(reply.via.map(\.name).joined(separator: ", "))")
-                }
-                pings.append(Ping(text: way + String(format: ", %.1f ms", reply.timeMs), failed: false))
+                pings.answered(in: reply.timeMs, way: reply.way == "direct" ? .direct(endpoint: reply.endpoint) : .relay(via: reply.via.map(\.name)))
             } catch {
-                pings.append(Ping(text: error.localizedDescription, failed: true))
+                guard !Task.isCancelled else { return }
+                pings.failed(error.localizedDescription)
             }
+            try? await Task.sleep(until: next)
         }
     }
 

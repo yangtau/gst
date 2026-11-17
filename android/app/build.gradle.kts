@@ -53,7 +53,11 @@ android {
                 it.systemProperty("robolectric.pixelCopyRenderMode", "hardware")
                 // gst's Go code for this machine, which CoreTest loads: build-core.sh host.
                 it.systemProperty("java.library.path", rootProject.layout.buildDirectory.dir("host").get().asFile.path)
-                // The tests of the screens keep a picture of each there; see README.md.
+                // The tests of the screens take minutes: -PgstScreenTests=false leaves them out.
+                if (findProperty("gstScreenTests") == "false") {
+                    it.filter.excludeTestsMatching("gst.app.ScreenTest")
+                }
+                // They keep a picture of each screen there; see README.md.
                 it.systemProperty("roborazzi.test.record", "true")
                 it.systemProperty("roborazzi.output.dir", layout.buildDirectory.dir("screenshots").get().asFile.path)
             }

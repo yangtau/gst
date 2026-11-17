@@ -1,19 +1,23 @@
 import SwiftUI
 
-/// The network: this machine, the switch that turns gst on, the map of
-/// the links, and every machine with the way that packets take to it.
+/// The network: this machine, the switch that turns gst on, and every
+/// machine with the way that packets take to it; above them, for
+/// someone who asks for it, the map of the links.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var sheet: Sheet?
     @State private var failure: String?
     @State private var isSwitching = false
     private let addStep: AddMachineSheet.Step
+    private let pings: Pings
 
-    /// The network; `sheet` and `addStep` open it on a sheet, and on a
-    /// step of adding a machine, which a demo does.
-    init(sheet: Sheet? = nil, addStep: AddMachineSheet.Step = .form) {
+    /// The network; `sheet`, `addStep`, and `pings` open it on a sheet,
+    /// on a step of adding a machine, and with pings that a machine's
+    /// sheet starts with, which a demo does.
+    init(sheet: Sheet? = nil, addStep: AddMachineSheet.Step = .form, pings: Pings = Pings()) {
         _sheet = State(initialValue: sheet)
         self.addStep = addStep
+        self.pings = pings
     }
 
     enum Sheet: Identifiable {
@@ -49,11 +53,10 @@ struct HomeView: View {
                         Welcome { sheet = .add }
                     } else {
                         // A network of one has nothing to map.
-                        if let topology = model.topology, !others.isEmpty {
+                        let map = others.isEmpty ? nil : model.topology.map { topology in
                             NetworkMap(topology: topology, machines: model.machines, isOn: model.isOn) { sheet = .machine($0.id) }
-                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
                         }
-                        MachineList(machines: others, isOn: model.isOn) { sheet = .machine($0.id) }
+                        MachineList(machines: others, map: map, isOn: model.isOn) { sheet = .machine($0.id) }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -76,7 +79,7 @@ struct HomeView: View {
             switch sheet {
             case .add: AddMachineSheet(step: addStep)
             case .settings: SettingsSheet()
-            case .machine(let id): MachineSheet(machineID: id)
+            case .machine(let id): MachineSheet(machineID: id, pings: pings)
             }
         }
         .alert("gst could not turn on", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
@@ -211,19 +214,50 @@ private struct ProblemList: View {
     }
 }
 
-/// The other machines of the network.
+/// The other machines of the network, and above them, once the button
+/// beside their title asks for it, the map of the links between them
+/// all. The app remembers the choice.
 private struct MachineList: View {
     let machines: [Machine]
+    /// The map, when the network has one to show.
+    let map: NetworkMap?
     let isOn: Bool
     let open: (Machine) -> Void
+    @AppStorage("map") private var showsMap = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Machines")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .padding(.horizontal, 6)
+            HStack {
+                Text("Machines")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+                if map != nil {
+                    Button {
+                        withAnimation(.smooth) { showsMap.toggle() }
+                    } label: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(showsMap ? Color(uiColor: .systemBackground) : .secondary)
+                            .frame(width: 46, height: 30)
+                            .background(showsMap ? AnyShapeStyle(.primary) : AnyShapeStyle(.fill.secondary), in: .capsule)
+                            // A finger needs more room than the capsule takes in the row.
+                            .frame(height: 44)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, -10)
+                    .accessibilityLabel(showsMap ? "Hide the Map" : "Show the Map")
+                    .accessibilityAddTraits(showsMap ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 6)
+            if showsMap, let map {
+                map
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            }
             if machines.isEmpty {
                 Text("The machines of the network show here once a link connects.")
                     .font(.subheadline)
@@ -318,6 +352,7 @@ private struct Welcome: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
+                    .onAccent()
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)

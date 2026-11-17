@@ -110,6 +110,7 @@ targets:
       - App/Model/Wire.swift
       - App/Model/Gst.swift
       - App/Model/Machine.swift
+      - App/Model/Pings.swift
       - App/Model/Ring.swift
     dependencies:
       - framework: build/GstKit.xcframework

@@ -235,6 +235,7 @@ struct AddMachineSheet: View {
                 .font(.headline)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
+                .onAccent()
         }
         .buttonStyle(.glassProminent)
         .controlSize(.large)

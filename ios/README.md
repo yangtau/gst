@@ -36,12 +36,14 @@ The texts of the app are in `App/Localizable.xcstrings`, in English and Simplifi
 
 ## Tests
 
-`.github/workflows/ios.yml` runs on every push that touches the app or the Go code under it. It generates the project, builds the app for a device, and runs the scheme's tests in the simulator, as `xcodebuild -project ios/Gst.xcodeproj -scheme Gst -destination 'platform=iOS Simulator,name=…' test` does on a Mac:
+The scheme's tests run in the simulator, with `xcodebuild -project ios/Gst.xcodeproj -scheme Gst -destination 'platform=iOS Simulator,name=…' test` on a Mac:
 
 - `Tests/` (GstTests) runs gst's Go code through `Core`: the app's methods, the daemon's start and its answers, and what the app makes of them.
 - `UITests/` (GstUITests) opens every screen on a made-up network, in English and Chinese, light and dark, and checks that it shows. `App/Demo.swift` is that network: a debug build opens on one of its screens with `-GstDemo <screen>` on its command line, and Xcode's previews (`App/Previews.swift`) show the same.
 
-The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The pictures in `screenshots/`, which the README shows, come from a run on a Mac with that set; the workflow keeps none.
+The tests of the screens keep a picture of each screen as an attachment, and as files in the directory that `TEST_RUNNER_GST_SCREENSHOTS` names for xcodebuild. The pictures in `screenshots/`, which the README shows, come from a run with that set.
+
+`.github/workflows/ios.yml` runs on every push that touches the app or the Go code under it. It generates the project, builds the app for a device, and runs the tests besides those of the screens (`-skip-testing:GstUITests`), which only a developer's Mac runs.
 
 `internal/mobile`, the daemon without a socket, and the DNS and ping inside the interface have Go unit tests (`make test`), which join a phone to a network through an SSH server, a real daemon, and a fake interface.
 

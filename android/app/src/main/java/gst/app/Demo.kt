@@ -15,6 +15,9 @@ enum class Demo(val screen: String) {
     /** The first screen of a phone in a network of five. */
     Home("home"),
 
+    /** The same, once someone asked for the map of the links. */
+    Map("map"),
+
     /** The same, with what `Problems:` in `gst status` would list. */
     Problems("problems"),
 
@@ -39,7 +42,7 @@ enum class Demo(val screen: String) {
         Welcome -> AppModel.demo(AppInfo(phone, publicKey, emptyList()), null, null)
         Off -> AppModel.demo(info, topology(now, broken = false), null)
         Problems -> AppModel.demo(info, topology(now, broken = true), status(now, broken = true))
-        else -> AppModel.demo(info, topology(now, broken = false), status(now, broken = false))
+        else -> AppModel.demo(info, topology(now, broken = false), status(now, broken = false)).apply { showMap(this@Demo == Map) }
     }
 
     val route: Route
@@ -50,6 +53,16 @@ enum class Demo(val screen: String) {
         }
 
     val machine: String? get() = if (this == Machine) id("b1") else null
+
+    /**
+     * The pings that the machine's sheet starts with: the first ones along
+     * the links, and the rest direct, once the UDP path was up.
+     */
+    val pings: Pings
+        get() = listOf(58.2, 61.7, 55.9, 63.4, 24.8, 22.1, 23.6, 21.9, 26.3, 22.7, 21.4, 34.9, 23.2, 22.0, 24.4, 21.7, 22.9, 23.8)
+            .foldIndexed(Pings()) { i, pings, time ->
+                pings.answered(time, if (i < 4) gst.app.Machine.Way.Relay(emptyList()) else gst.app.Machine.Way.Direct(ENDPOINT))
+            }
 
     val addStep: AddStep
         get() = when (this) {
@@ -78,6 +91,10 @@ enum class Demo(val screen: String) {
         private fun id(prefix: String) = prefix + "0".repeat(32 - prefix.length)
 
         private const val SOFTWARE = "gst 0.7.0+a2ffc87"
+        private const val ENDPOINT = "203.0.113.7:41642"
+
+        /** What a ping of the made-up network comes back with. */
+        val ping = PingReply(NodeInfo(id("b1"), "devbox", SOFTWARE), "10.87.61.7", "direct", ENDPOINT, timeMs = 22.4)
         private const val destination = "admin@ssh.example.com"
         private val phone = NodeInfo(id("4f"), "pixel", SOFTWARE)
         private const val publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBFJtRmWpNA4ljYiNsI30z0faYkrWoE85zrKftgc8Ar3 gst@pixel"

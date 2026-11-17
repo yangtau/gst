@@ -102,6 +102,46 @@ class ModelTest {
         assertNull(GstJson.decodeFromString<Topology>("""{"self":"aa","subnet":"","nodes":[]}""").links)
     }
 
+    /**
+     * The chart of the pings draws a line for each way that they took,
+     * leaves a gap where no answer came, and keeps the longest below its
+     * top.
+     */
+    @Test
+    fun pings() {
+        assertEquals(emptyList<Pings.Line>(), Pings().lines)
+        assertEquals(0..29, Pings().span)
+        assertEquals(100.0, Pings().scale.top, 0.0)
+
+        val direct = Machine.Way.Direct("203.0.113.7:41642")
+        var pings = Pings()
+            .answered(58.0, Machine.Way.Relay(listOf("devbox")))
+            .answered(61.0, Machine.Way.Relay(listOf("devbox")))
+            .answered(24.0, direct)
+            .failed("no answer")
+            .answered(22.0, direct)
+        // The direct line starts where the relayed one ends.
+        assertEquals(listOf(false, true, true), pings.lines.map { it.isDirect })
+        assertEquals(listOf(listOf(0, 1), listOf(1, 2), listOf(4)), pings.lines.map { line -> line.points.map { it.id } })
+        assertEquals(direct, pings.latest.last().way)
+        assertEquals("no answer", pings.latest[3].error)
+
+        for ((longest, step, top) in listOf(Triple(61.0, 50.0, 100.0), Triple(23.0, 10.0, 30.0), Triple(218.0, 100.0, 300.0), Triple(320.0, 200.0, 400.0), Triple(1.2, 1.0, 2.0), Triple(0.3, 1.0, 2.0))) {
+            val scale = Pings().answered(longest, direct).scale
+            assertEquals("$longest", step, scale.step, 0.0)
+            assertEquals("$longest", top, scale.top, 0.0)
+        }
+
+        // Only the latest stay, and the chart moves along with them.
+        repeat(40) { pings = pings.answered(20.0, direct) }
+        assertEquals(Pings.SHOWN, pings.latest.size)
+        assertEquals(15..44, pings.span)
+        assertEquals(15, pings.latest.first().id)
+
+        assertEquals("1.4 ms", Pings.text(1.44))
+        assertEquals("24 ms", Pings.text(23.6))
+    }
+
     @Test
     fun settings() {
         val settings = GstJson.decodeFromString<InterfaceSettings>(

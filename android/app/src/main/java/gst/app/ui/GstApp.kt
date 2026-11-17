@@ -32,15 +32,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import gst.app.AppModel
+import gst.app.Pings
 import gst.app.R
 
 /** A screen of the app, besides a machine's, which opens over the network. */
 enum class Route { Home, Add, Settings, Log }
 
-/** The app: the network, and the screens that open from it. */
+/**
+ * The app: the network, and the screens that open from it. A demo opens it
+ * on [route], on the sheet of [machine], which starts with [pings], and on
+ * [addStep] of adding a machine.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, addStep: AddStep = AddStep.Form) {
+fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, addStep: AddStep = AddStep.Form, pings: Pings = Pings()) {
     val state by model.tunnel.collectAsStateWithLifecycle()
     var current by remember { mutableStateOf(route) }
     var open by remember { mutableStateOf(machine) }
@@ -82,6 +87,6 @@ fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, 
     open?.let { id ->
         // Half the screen first, as a glance; a demo shows it all.
         val values = if (machine != null) setOf(SheetValue.Hidden, SheetValue.Expanded) else SheetValue.entries.toSet()
-        MachineSheet(model, id, state == gst.app.Tunnel.State.On, rememberBottomSheetState(SheetValue.Hidden, values)) { open = null }
+        MachineSheet(model, id, state == gst.app.Tunnel.State.On, rememberBottomSheetState(SheetValue.Hidden, values), pings) { open = null }
     }
 }

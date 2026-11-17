@@ -21,48 +21,49 @@ import androidx.compose.material3.ListItemColors
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.ui.platform.LocalContext
 
-// gst's colors: the blue of its icon, far from the green, amber, and red
-// that say how things go, for a phone without colors of its own (before
-// Android 12), and for the pictures of the screens.
+// gst's colors: the ink of its icon and grays, beside which the green,
+// amber, and red that say how things go stand out, for a phone without
+// colors of its own (before Android 12), and for the pictures of the
+// screens.
 
 private val Light = lightColorScheme(
-    primary = Color(0xFF2F52DC), onPrimary = Color.White,
-    primaryContainer = Color(0xFFDDE2FF), onPrimaryContainer = Color(0xFF1A37A8),
-    secondary = Color(0xFF595E72), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDEE1F9), onSecondaryContainer = Color(0xFF414659),
-    tertiary = Color(0xFF7A5298), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFF2DAFF), onTertiaryContainer = Color(0xFF603A7E),
+    primary = Color(0xFF1C1C1F), onPrimary = Color.White,
+    primaryContainer = Color(0xFFE4E4E9), onPrimaryContainer = Color(0xFF1C1C1F),
+    secondary = Color(0xFF5D5E66), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE3E3EA), onSecondaryContainer = Color(0xFF45464E),
+    tertiary = Color(0xFF128A4B), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFC5EFD2), onTertiaryContainer = Color(0xFF00522A),
     error = Color(0xFFBA1A1A), onError = Color.White,
     errorContainer = Color(0xFFFFDAD6), onErrorContainer = Color(0xFF93000A),
-    background = Color(0xFFF8F9FD), onBackground = Color(0xFF191B22),
-    surface = Color(0xFFF8F9FD), onSurface = Color(0xFF191B22),
-    surfaceVariant = Color(0xFFE1E2EC), onSurfaceVariant = Color(0xFF44464F),
-    outline = Color(0xFF757780), outlineVariant = Color(0xFFC5C6D0),
-    inverseSurface = Color(0xFF2E3037), inverseOnSurface = Color(0xFFF0F0F8), inversePrimary = Color(0xFFB7C4FF),
-    surfaceDim = Color(0xFFD8D9E1), surfaceBright = Color(0xFFF8F9FD),
-    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF2F3FA),
-    surfaceContainer = Color(0xFFECEDF5), surfaceContainerHigh = Color(0xFFE6E7EF),
-    surfaceContainerHighest = Color(0xFFE1E2E9),
+    background = Color(0xFFF9F9FB), onBackground = Color(0xFF1B1B1F),
+    surface = Color(0xFFF9F9FB), onSurface = Color(0xFF1B1B1F),
+    surfaceVariant = Color(0xFFE3E2E9), onSurfaceVariant = Color(0xFF46464D),
+    outline = Color(0xFF76767E), outlineVariant = Color(0xFFC7C6CE),
+    inverseSurface = Color(0xFF303034), inverseOnSurface = Color(0xFFF2F0F5), inversePrimary = Color(0xFFE6E6EA),
+    surfaceDim = Color(0xFFD9D9DE), surfaceBright = Color(0xFFF9F9FB),
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF3F3F6),
+    surfaceContainer = Color(0xFFEDEDF1), surfaceContainerHigh = Color(0xFFE8E8EC),
+    surfaceContainerHighest = Color(0xFFE2E2E6),
 )
 
 private val Dark = darkColorScheme(
-    primary = Color(0xFFB7C4FF), onPrimary = Color(0xFF0A2A8C),
-    primaryContainer = Color(0xFF1A3AAE), onPrimaryContainer = Color(0xFFDDE2FF),
-    secondary = Color(0xFFC1C5DD), onSecondary = Color(0xFF2B3042),
-    secondaryContainer = Color(0xFF414659), onSecondaryContainer = Color(0xFFDEE1F9),
-    tertiary = Color(0xFFE2B7FF), onTertiary = Color(0xFF482366),
-    tertiaryContainer = Color(0xFF603A7E), onTertiaryContainer = Color(0xFFF2DAFF),
+    primary = Color(0xFFE6E6EA), onPrimary = Color(0xFF1C1C1F),
+    primaryContainer = Color(0xFF3A3A40), onPrimaryContainer = Color(0xFFE6E6EA),
+    secondary = Color(0xFFC7C6CE), onSecondary = Color(0xFF2F3036),
+    secondaryContainer = Color(0xFF45464D), onSecondaryContainer = Color(0xFFE3E2EA),
+    tertiary = Color(0xFF4FCE8E), onTertiary = Color(0xFF00391C),
+    tertiaryContainer = Color(0xFF00522A), onTertiaryContainer = Color(0xFFC5EFD2),
     error = Color(0xFFFFB4AB), onError = Color(0xFF690005),
     errorContainer = Color(0xFF93000A), onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF111318), onBackground = Color(0xFFE2E2EA),
-    surface = Color(0xFF111318), onSurface = Color(0xFFE2E2EA),
-    surfaceVariant = Color(0xFF44464F), onSurfaceVariant = Color(0xFFC5C6D0),
-    outline = Color(0xFF8F909A), outlineVariant = Color(0xFF44464F),
-    inverseSurface = Color(0xFFE2E2EA), inverseOnSurface = Color(0xFF2E3037), inversePrimary = Color(0xFF2F52DC),
-    surfaceDim = Color(0xFF111318), surfaceBright = Color(0xFF37393F),
-    surfaceContainerLowest = Color(0xFF0C0E13), surfaceContainerLow = Color(0xFF191B22),
-    surfaceContainer = Color(0xFF1D1F26), surfaceContainerHigh = Color(0xFF282A30),
-    surfaceContainerHighest = Color(0xFF33353B),
+    background = Color(0xFF121215), onBackground = Color(0xFFE4E3E8),
+    surface = Color(0xFF121215), onSurface = Color(0xFFE4E3E8),
+    surfaceVariant = Color(0xFF46464D), onSurfaceVariant = Color(0xFFC7C6CE),
+    outline = Color(0xFF909098), outlineVariant = Color(0xFF46464D),
+    inverseSurface = Color(0xFFE4E3E8), inverseOnSurface = Color(0xFF303034), inversePrimary = Color(0xFF1C1C1F),
+    surfaceDim = Color(0xFF121215), surfaceBright = Color(0xFF38383D),
+    surfaceContainerLowest = Color(0xFF0D0D10), surfaceContainerLow = Color(0xFF1A1A1E),
+    surfaceContainer = Color(0xFF1E1E22), surfaceContainerHigh = Color(0xFF29292D),
+    surfaceContainerHighest = Color(0xFF343438),
 )
 
 /** The colors that say how things go, which the scheme has no roles for. */

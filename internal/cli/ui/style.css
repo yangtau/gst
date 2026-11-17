@@ -7,7 +7,7 @@
   --text: #161922;
   --sub: #565c6e;
   --faint: #686e80;
-  --accent: #2f52dc;
+  --accent: #1c1c1f;
   --ok: #128a4b;
   --warn: #a15c00;
   --bad: #c8322f;
@@ -28,7 +28,7 @@
     --text: #e7eaf2;
     --sub: #a4abbb;
     --faint: #838a9b;
-    --accent: #93aaff;
+    --accent: #f4f4f6;
     --ok: #4fce8e;
     --warn: #e5a640;
     --bad: #f47070;
@@ -63,7 +63,11 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
 .top-in, .page, .foot { width: 100%; max-width: 920px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
 .top-in { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-top: 14px; padding-bottom: 13px; }
 .brand { display: flex; align-items: center; gap: 8px; align-self: center; font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
-.brand img { width: 20px; height: 20px; }
+/* The icon's shapes, in the page's colors: three machines, this one marked. */
+.logo { width: 20px; height: 20px; }
+.logo-links { fill: none; stroke: var(--text); stroke-linecap: round; }
+.logo-machines { fill: var(--text); }
+.logo-me { fill: var(--ok); }
 .summary { color: var(--sub); font-size: 12px; text-align: right; }
 .summary .bad { color: var(--bad); }
 .alert { padding: 8px 24px; border-bottom: 1px solid var(--line); background: var(--bad-tint); color: var(--bad); text-align: center; }
@@ -166,9 +170,9 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
 .row-empty { display: block; color: var(--faint); }
 .note { margin-top: 12px; color: var(--sub); }
 .note strong { color: var(--text); font-weight: 600; }
-.jump:hover { color: var(--accent); }
-.copy { margin-left: 6px; color: var(--accent); font-size: 12px; }
-.copy:hover { text-decoration: underline; }
+.jump:hover { text-decoration: underline; text-underline-offset: 2px; }
+.copy { margin-left: 6px; color: var(--sub); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.copy:hover { color: var(--text); }
 
 /* Status marks */
 .mark { display: block; width: 14px; height: 14px; }

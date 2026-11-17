@@ -27,6 +27,28 @@ extension Machine.Way {
     }
 }
 
+extension View {
+    /// Colors the label of a prominent button, which the accent color
+    /// fills. The accent is ink on a light screen and nearly white on a
+    /// dark one, so the label takes the color of the screen behind. A
+    /// disabled button, which the system grays, keeps the system's label.
+    func onAccent() -> some View {
+        modifier(OnAccent())
+    }
+}
+
+private struct OnAccent: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.foregroundStyle(Color(uiColor: .systemBackground))
+        } else {
+            content
+        }
+    }
+}
+
 /// A dot that says whether packets reach a machine: filled while they do.
 struct StatusDot: View {
     let way: Machine.Way

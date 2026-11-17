@@ -57,6 +57,18 @@ class AppModel private constructor(
      */
     var askConsent: (suspend (Intent) -> Boolean)? = null
 
+    /**
+     * Whether the first screen shows the map of the links, which someone
+     * asks for there; the app remembers it.
+     */
+    var showsMap by mutableStateOf(context?.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)?.getBoolean(MAP, false) ?: false)
+        private set
+
+    fun showMap(shows: Boolean) {
+        showsMap = shows
+        context?.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)?.edit()?.putBoolean(MAP, shows)?.apply()
+    }
+
     /** The model shows a made-up network, and asks gst nothing; see Demo. */
     private var isDemo = false
 
@@ -216,7 +228,7 @@ class AppModel private constructor(
     }
 
     /** `gst ping <machine>`, once. */
-    suspend fun ping(machine: Machine): PingReply = gst.call("net.ping", params(NodeParams(machine.id)))
+    suspend fun ping(machine: Machine): PingReply = if (isDemo) Demo.ping else gst.call("net.ping", params(NodeParams(machine.id)))
 
     /** `gst remove <machine>`. */
     suspend fun remove(machine: Machine): Removal {
@@ -245,6 +257,7 @@ class AppModel private constructor(
     companion object {
         private const val PREFERENCES = "network"
         private const val TOPOLOGY = "topology"
+        private const val MAP = "map"
 
         /** A model that shows what it is given and asks gst nothing, for previews and screenshots; see Demo. */
         fun demo(info: AppInfo, topology: Topology?, status: DaemonStatus?): AppModel =

@@ -39,6 +39,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemDefaults
@@ -79,8 +80,9 @@ import gst.app.Tunnel
 import kotlinx.coroutines.launch
 
 /**
- * The network: this machine, the switch that turns gst on, the map of
- * the links, and every machine with the way that packets take to it.
+ * The network: this machine, the switch that turns gst on, and every
+ * machine with the way that packets take to it; above them, for someone
+ * who asks for it, the map of the links.
  */
 @Composable
 fun HomeScreen(
@@ -139,14 +141,18 @@ fun HomeScreen(
                     Welcome(openAdd)
                 } else {
                     // A network of one has nothing to map.
-                    val topology = model.topology
-                    if (topology != null && others.isNotEmpty()) {
-                        NetworkMap(
-                            topology, model.machines(isOn), isOn = isOn, open = openMachine,
-                            modifier = Modifier.background(MaterialTheme.colorScheme.item, RoundedCornerShape(24.dp)),
-                        )
+                    val topology = model.topology?.takeIf { others.isNotEmpty() }
+                    MachineList(
+                        others, isOn, openMachine,
+                        showsMap = model.showsMap.takeIf { topology != null }, showMap = model::showMap,
+                    ) {
+                        if (topology != null) {
+                            NetworkMap(
+                                topology, model.machines(isOn), isOn = isOn, open = openMachine,
+                                modifier = Modifier.padding(bottom = 12.dp).background(MaterialTheme.colorScheme.item, RoundedCornerShape(24.dp)),
+                            )
+                        }
                     }
-                    MachineList(others, isOn, openMachine)
                 }
             }
         }
@@ -238,12 +244,34 @@ private fun ProblemList(problems: List<AppModel.Problem>) {
     }
 }
 
-/** The other machines of the network. */
+/**
+ * The other machines of the network, and above them, once the button
+ * beside their title asks for it, the map of the links between them all.
+ * [showsMap] is null when the network has no map to show.
+ */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun MachineList(machines: List<Machine>, isOn: Boolean, open: (String) -> Unit) {
+private fun MachineList(
+    machines: List<Machine>,
+    isOn: Boolean,
+    open: (String) -> Unit,
+    showsMap: Boolean?,
+    showMap: (Boolean) -> Unit,
+    map: @Composable () -> Unit,
+) {
     Column {
-        SectionTitle(stringResource(R.string.machines))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle(stringResource(R.string.machines), Modifier.weight(1f))
+            if (showsMap != null) {
+                val label = stringResource(if (showsMap) R.string.hide_map else R.string.show_map)
+                FilledTonalIconToggleButton(showsMap, showMap, Modifier.size(width = 48.dp, height = 36.dp)) {
+                    Icon(Icons.Rounded.Hub, contentDescription = label, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+        AnimatedVisibility(showsMap == true, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            map()
+        }
         if (machines.isEmpty()) {
             Text(
                 stringResource(R.string.machines_empty),
