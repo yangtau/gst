@@ -79,6 +79,8 @@ type Daemon struct {
 	control wire.Server                 // the methods of control connections
 	config  atomic.Pointer[config.File] // as the last reload read it
 
+	tail logTail // the end of the log
+
 	ops     sync.Mutex             // serializes reloads and restarts
 	stopped bool                   // Serve ended, and no link starts again; guarded by ops
 	mu      sync.Mutex             // guards links
@@ -97,6 +99,10 @@ func New(cfg Config) *Daemon {
 		cfg.StateDir = filepath.Dir(cfg.Socket)
 	}
 	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}}
+	// The end of the log, for gst log: the system may keep the log where
+	// no gst command reads it, as journald does, or a phone's app.
+	cfg.Log = log.New(io.MultiWriter(cfg.Log.Writer(), &d.tail), cfg.Log.Prefix(), cfg.Log.Flags())
+	d.cfg.Log = cfg.Log
 	m := mesh.New(mesh.Config{
 		Software:       cfg.Software,
 		Log:            cfg.Log,
@@ -153,7 +159,16 @@ func New(cfg Config) *Daemon {
 		}
 		return struct{}{}, m.SetSubnet(subnet.String(), true)
 	})
+	wire.Handle(&d.control, wire.MethodLog, func(ctx context.Context, p wire.NodeParams) (any, error) {
+		if p.Node == "" {
+			return wire.Log{Text: d.tail.String()}, nil
+		}
+		var l wire.Log
+		err := m.Call(ctx, p.Node, wire.MethodPeerLog, nil, &l)
+		return l, err
+	})
 	mesh.Handle(m, wire.MethodNetPrefixes, func(context.Context, struct{}) (any, error) { return d.net.UsedPrefixes(), nil })
+	mesh.Handle(m, wire.MethodPeerLog, func(context.Context, struct{}) (any, error) { return wire.Log{Text: d.tail.String()}, nil })
 	return d
 }
 

@@ -163,6 +163,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `mesh.subnet` | `{"subnet": cidr}` | 无：写入人选的 `subnet` 条目 |
 | `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近两次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
+| `daemon.log` | `{"node": <machine>}`，可省 | `{"text": …}`：本机 daemon 日志的末尾，给了机器时经路由层调用它的 `log`。daemon 在内存里保留启动以来最后 128 KiB 的整行，因为系统可能把日志放在 gst 命令读不到的地方（journald、手机 App 的目录）。`gst log` 用它 |
 
 link 状态：`connecting`（建立 SSH 与握手中）、`running`（握手完成）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。本机换到另一个网络时（[UDP 路径](#udp-路径)的地址检查发现，见那里的「换网络」），所有 link 重新开始，等待回到 5 秒：运行中的 link 由 mesh 发 `bye` 关闭，连接中的由 daemon 取消（`Node.Moved`），然后立即重连。旧网络上的连接可能已经悄悄断了：它从已经不在的地址发出，两端往往收不到错误，要等 45 秒没收到东西才发现；连接中的也可能卡在旧网络上。挡住等待中的 link 的原因也可能已经不在了，而手机这样常换网络的机器否则每次都要等满最长的间隔。对端那头的旧 link 收到 `bye` 就结束，收不到也会在新 link 连上时被替换。
 
@@ -310,6 +311,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | `direct.update` | `DirectOffer`（运行中路径的 token 和调用方现在的地址） | 无；被调方加入这些地址，重新测量这条路径 |
 | `direct.trace` | 无 | `{"events": [{"time": …, "text": …}...], "previous": [...]}`：被调方与调用方最近一次寻找 UDP 路径的过程，和它之前的一次（显示那次怎么结束）。机器睡眠时，每个过程都记下睡了多久 |
 | `net.prefixes` | 无 | `UsedPrefixes`：`{"interfaces": [...], "routes": [...]}`，被调方网卡的网段和路由的目的网段（IPv4），供选择网段时避开 |
+| `log` | 无 | `{"text": …}`：被调方 daemon 日志的末尾，同 `daemon.log`。日志本来就不含服务器地址、用户和对方报告的内容，所以网络里的机器可以互相读 |
 
 ### 拓扑
 

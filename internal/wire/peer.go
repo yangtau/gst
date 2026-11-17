@@ -29,6 +29,9 @@ const (
 	// UsedPrefixes: what the subnet of the virtual network must not overlap
 	// on the callee's machine.
 	MethodNetPrefixes = "net.prefixes"
+	// MethodPeerLog ("log") takes no params and returns Log: the end of
+	// the callee's daemon log.
+	MethodPeerLog = "log"
 )
 
 // NodeInfo identifies a gst node.

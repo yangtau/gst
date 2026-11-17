@@ -147,6 +147,7 @@ var meshMethods = map[string]bool{
 	wire.MethodNetPing:    true,
 	wire.MethodPing:       true,
 	wire.MethodDirect:     true,
+	wire.MethodLog:        true,
 }
 
 func (b *daemonBackend) Call(ctx context.Context, method string, params, result any) error {

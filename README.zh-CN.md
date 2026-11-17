@@ -156,7 +156,7 @@ link 在后台连接，连上后机器出现在列表里。没有 link 再能到
 - **网段。** 所有机器共用一个网段（subnet）。第一台机器根据能应答的机器上的网卡和路由，选一个它们没有在用的 `/16`。两个网络合成一个时，保留较早那个网络的选择。`gst subnet 10.99.0.0/16` 为整个网络设置另一个网段：人的选择胜过 gst 的，最新的选择胜出，所有机器都迁移过去，gst IP 随之改变，离线的机器在回来时迁移。它必须是私有网段（在 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 或 `100.64.0.0/10` 之内）。某台机器把网段的一部分用在别处时（网卡的网段与它重叠，或者有落在它里面的路由），那台机器在 `gst status` 中报告。更宽的路由不算，比如 VPN 覆盖所有地址的路由，因为网段自己的路由更窄，优先生效。
 - **gst IP。** 机器重启后 gst IP 不变。只承载 IPv4。
 - **名字。** `<machine>.gst` 对所有程序生效，可以用机器的名字或 id 前缀。在 macOS 和使用 systemd-resolved 的 Linux 上，只有 `.gst` 交给 gst 解析。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 中。
-- **direct 和 relay。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 中转，这些流量让两台机器经 link 寻找 UDP 直连：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器可能继续 relay，不过每台机器能从任何已经 direct 的机器得知自己的公网地址，常常因此打通；在那之前，SSH link 另一端的机器看得到 SSH 连接从哪里来、连到哪里，也会告诉它：公网地址只属于这一台机器（比如云服务器）而且防火墙放行 UDP 时，或者 NAT 不改 UDP 端口时，这就够了。所有直连共用一个 UDP 端口，默认 15355，被占用时换一个；包按系统路由走，路由指向别的 VPN 就走 VPN。在 macOS 和 Linux 上，如果 VPN 或代理接管了路由，包改走它下面的网卡，因为代理会换一个端口重新发包，规则是直连也一样，防火墙随后就会丢掉这些包；只有那个 VPN 才能到达的地址因此继续 relay，只有本机另一块网卡（比如第二块网卡或通往容器的网桥）才能到达的地址也是，VPN 自己网卡上的地址也不提供给对方。gst 持续测量到对方各地址的延迟，有明显更快的地址时切过去，不打断任何连接；私网地址（比如同一个局域网里的）和别的地址差不多快时优先，因为这些包不经过公网。`gst status` 在每台机器后面显示 `direct` 或 `relay`，`gst status -v` 显示每条直连的地址。直连 45 秒没有流量就关闭，空闲的机器不再发探测包；之后的包先 relay，同时两台机器像第一次那样重新找直连。UDP 失效时，包在几秒内改为 relay，程序的连接不断。机器换到另一个网络时，gst 立刻重试，不用等之前失败的等待时间结束，运行中的直连也会得知新地址。直连建立后不再依赖 link，所以 SSH 断开或两台机器之间的机器休眠时，它继续运行，只在不通或两台机器之一被移出网络时关闭。relay 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
+- **direct 和 relay。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 中转，这些流量让两台机器经 link 寻找 UDP 直连：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器可能继续 relay，不过每台机器能从任何已经 direct 的机器得知自己的公网地址，常常因此打通；在那之前，SSH link 另一端的机器看得到 SSH 连接从哪里来、连到哪里，也会告诉它：公网地址只属于这一台机器（比如云服务器）而且防火墙放行 UDP 时，或者 NAT 不改 UDP 端口时，这就够了。所有直连共用一个 UDP 端口，默认 15355，被占用时换一个；包按系统路由走，路由指向别的 VPN 就走 VPN。在 macOS 和 Linux 上，如果 VPN 或代理接管了路由，包改走它下面的网卡，因为代理会换一个端口重新发包，规则是直连也一样，防火墙随后就会丢掉这些包；只有那个 VPN 才能到达的地址因此继续 relay，只有本机另一块网卡（比如第二块网卡或通往容器的网桥）才能到达的地址也是，VPN 自己网卡上的地址也不提供给对方。gst 持续测量到对方各地址的延迟，有明显更快的地址时切过去，不打断任何连接；私网地址（比如同一个局域网里的）和别的地址差不多快时优先，因为这些包不经过公网。`gst status` 在每台机器后面显示 `direct` 或 `relay`，`gst status -v` 显示每条直连的地址。直连 45 秒没有流量就关闭，空闲的机器不再发探测包；之后的包先 relay，同时两台机器像第一次那样重新找直连。UDP 失效时，包在几秒内改为 relay，程序的连接不断。机器换到另一个网络时（比如手机从 Wi-Fi 换到蜂窝网络），gst 立刻让 link 和直连像重启一样重新开始，不用等之前失败的等待时间结束，程序的连接不断。同一网络里只是地址变了时，运行中的直连只会得知新地址。直连建立后不再依赖 link，所以 SSH 断开或两台机器之间的机器休眠时，它继续运行，只在不通或两台机器之一被移出网络时关闭。relay 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
 - **MTU。** 网卡的 MTU 是 1168 字节，适合每条直连。自己选择包大小的程序应该低于这个值，否则包会被分片。
 - `gst down` 撤销 `gst up`：停止 gst，删除它的服务、网卡、路由、名字和 network helper。network helper 自己删除自己，所以不需要密码，下次 `gst up` 会重新询问。只留下配置和日志，机器的 gst IP、link 和暴露的端口都保留。gst 只是意外停止时，网卡、路由和名字也会消失，network helper 保留。
 
@@ -198,6 +198,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `gst status -v` | 再列出所有机器之间的 link（`from -> to`、destination 和状态；本机的 link 断开也会列出，其他机器的只列运行中的），以及与每台机器的流量：怎么走（`direct` 和 `ip:port`，或 `relay`）、最近一次握手和收发字节数 |
 | `gst status <machine>` | 经网络查询，显示一台机器的 gst IP、暴露的端口，以及从它出发或连到它的所有 link（`from -> to`、destination 和状态） |
 | `gst ping <machine> [-c N] [-s BYTES] [-v]` | 每秒向一台机器发一个包并收回（默认 3 次），打印怎么走的和时间，最后打印丢了多少；`-s` 设置包的大小，超过网卡 MTU 时分片；`-v` 还检查 SSH link，并显示直连或没有直连的原因、双方最近两次尝试的过程（前一次显示上一条直连是怎么结束的），以及本机在哪里丢了包 |
+| `gst log [machine]` | 显示本机 gst 日志的末尾，或经网络查询另一台机器的：link 和直连何时建立、何时结束，机器何时睡眠或换到另一个网络。gst 保留启动以来最多 128 KiB。手机的日志也用它在别的机器上查看 |
 | `gst expose [target] [--port port] [--udp]` | 不带 target 时列出本机暴露的端口；带 target 时把它暴露到本机 gst IP 上 |
 | `gst unexpose <port> [--udp]` | 停止暴露一个端口，并关闭其连接 |
 | `gst unlink <destination>...` | 删除本机到这些 destination 的 link；那些机器仍在网络里 |
@@ -222,7 +223,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `relay via devbox` | 经 SSH link 中转，途经列出的机器 |
 | `offline, seen 3h ago` | 现在没有路通向它；它最后一次报告自己是这么久之前 |
 
-加 `-v` 时，link 显示为两端的机器，例如 `laptop -> gateway`。`Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。机器换到另一个网络时，失败的 link 立刻重试。
+加 `-v` 时，link 显示为两端的机器，例如 `laptop -> gateway`。`Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。机器换到另一个网络时，所有 link 立刻重新连接，因为旧网络上建立的连接可能已经悄悄断了。
 
 `gst ping` 的输出例如 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`，或者 `reply from gateway (10.87.2.9): relay via devbox, 41.3 ms`。这个包和所有程序的包走同一条路，经过网卡和 WireGuard，所以 `direct` 和 `ip:port` 说明到这个地址的直连是通的，时间和 `ping <machine>.gst` 差不多。直连由流量触发，所以最初几次回复可能是 relay。`-v` 还会检查承载网络控制的 SSH link：`SSH links: gateway answered via devbox in 41.3 ms`。这个时间更长，因为包括经过每台机器时建立通路的时间。没有收到回复时退出码为 1。
 
@@ -252,7 +253,7 @@ gst 自己检查运行中的 link：两端每 15 秒发一次消息，45 秒什�
 - 每个用户有一个后台进程，即 gst daemon，运行 link 和网络，并接受其他机器的 link。它是一个用户级服务：Linux 上是 systemd 用户服务 `gst.service`，macOS 上是 launchd 代理 `local.gst`。`gst up` 或第一次修改配置时，gst 会安装它，不需要手动管理。别的机器 link 到本机时绝不会安装它。`gst down` 停止它并删除服务，`gst up` 恢复。
 - gst 命令通过只有你能访问的 socket 与它通信：Linux 上是 `~/.local/state/gst/gst.sock`（设置了 `$XDG_STATE_HOME` 时在其下），macOS 上是 `~/Library/Application Support/gst/gst.sock`。
 - 它退出后，服务会在 5 秒后重启它。
-- 它的日志（也包含 link 的事件：已连接、失败、重连；直连的建立、结束及原因；机器睡眠了多久）：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`。日志用一个短 id 指代 link，不写它的 destination。
+- 它的日志（也包含 link 的事件：已连接、失败、重连；直连的建立、结束及原因；机器睡眠了多久）：Linux 上在 journald（`journalctl --user -u gst`），macOS 上在 `~/Library/Logs/gst-daemon.log`；`gst log` 显示任何一台机器日志的末尾。日志用一个短 id 指代 link，不写它的 destination。
 - 为保护隐私，日志不记录服务器地址、用户、密钥路径和目标地址，也不记录对方 gst 返回的错误。这些只出现在交互式输出中：`gst status`、`gst ping` 和 `gst ui`。直连的地址同样不进日志。要看 link 失败的完整原因，执行 `ssh -v <destination>`。
 - Linux 上，要让 link 在注销后继续运行、开机后自动启动，需要执行 `loginctl enable-linger "$USER"`；gst 发现没有开启时会提示。macOS 上，gst 在登录后启动、注销后停止。
 - 服务运行的是 `gst daemon`，link 经 SSH 在对方机器上运行 `~/.local/state/gst/bin/gst peer-bridge`，`gst up` 没有在那里放 gst 时运行 `PATH` 中的 `gst peer-bridge`；这两个都不是需要你自己执行的命令。
@@ -353,7 +354,7 @@ gst add devbox               # 在原来有 link 的机器上
 
 ## 排查问题
 
-由外向内排查：`gst status` 显示机器是否连得上，并列出本机未运行的 link 及其最近一次错误，以及本机不能加入网络的原因；`gst ping <machine>` 检查到它的路，`gst ping <machine> -v` 显示直连为什么建立或没建立，或上一条为什么结束，比如合盖的笔记本上的 `this machine slept for 9.8s`；日志记录 link 的事件（Linux 上 `journalctl --user -u gst`，macOS 上 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
+由外向内排查：`gst status` 显示机器是否连得上，并列出本机未运行的 link 及其最近一次错误，以及本机不能加入网络的原因；`gst ping <machine>` 检查到它的路，`gst ping <machine> -v` 显示直连为什么建立或没建立，或上一条为什么结束，比如合盖的笔记本上的 `this machine slept for 9.8s`；日志记录 link 的事件（`gst log [machine]`，完整的在 Linux 上用 `journalctl --user -u gst`，macOS 上在 `~/Library/Logs/gst-daemon.log`）；`ssh -v <destination>` 显示 ssh 自己对登录过程的说明。`gst add` 也会先检查私钥和 known_hosts，不通过时不保存。
 
 | 现象 | 处理 |
 | --- | --- |

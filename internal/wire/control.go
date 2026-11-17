@@ -25,7 +25,18 @@ const (
 	// MethodDirect ("mesh.direct") takes NodeParams and returns
 	// DirectReport.
 	MethodDirect = "mesh.direct"
+	// MethodLog ("daemon.log") takes NodeParams and returns Log: the end
+	// of this daemon's log when Node is empty, and else of that node's,
+	// asked through the mesh.
+	MethodLog = "daemon.log"
 )
+
+// Log is the end of a daemon's log, its latest lines, as the daemon
+// keeps them since it started. Like the log, it names no servers, users,
+// or addresses.
+type Log struct {
+	Text string `json:"text"`
+}
 
 // Link states reported by the daemon.
 const (

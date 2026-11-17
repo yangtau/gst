@@ -1030,3 +1030,37 @@ func TestMovingRestartsLinks(t *testing.T) {
 		t.Errorf("log:\n%s", a.log.String())
 	}
 }
+
+// gst log reads the end of the log of this daemon, and of another
+// through the mesh.
+func TestLog(t *testing.T) {
+	a, b := pair(t)
+	for _, tc := range []struct {
+		node string
+		of   *testNode
+	}{{"", a}, {"b", b}} {
+		var l wire.Log
+		res := a.d.Call(t.Context(), wire.Request{Method: wire.MethodLog, Params: json.RawMessage(`{"node": "` + tc.node + `"}`)})
+		if res.Error != nil {
+			t.Fatalf("log of %q: %v", tc.node, res.Error)
+		}
+		if err := json.Unmarshal(res.Result, &l); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(l.Text, "gst test daemon ready") || l.Text != tc.of.log.String() {
+			t.Errorf("log of %q:\n%s\nwant\n%s", tc.node, l.Text, tc.of.log.String())
+		}
+	}
+}
+
+func TestLogTailKeepsWholeLines(t *testing.T) {
+	var tail logTail
+	line := strings.Repeat("x", 99) + "\n"
+	for range 3 * logTailSize / len(line) {
+		tail.Write([]byte(line))
+	}
+	got := tail.String()
+	if len(got) > logTailSize || len(got) < logTailSize-len(line) || !strings.HasPrefix(got, line) {
+		t.Fatalf("%d bytes, starting %q", len(got), got[:min(len(got), 20)])
+	}
+}

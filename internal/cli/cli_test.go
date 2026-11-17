@@ -46,6 +46,7 @@ type fakeBackend struct {
 	pingSize   int
 	links      func(node string) (wire.Ping, error)
 	direct     func(node string) (wire.DirectReport, error)
+	logs       map[string]string // the end of the log, by machine; "" is this one
 	topology   wire.Topology
 	synced     *wire.Topology // the topology after the next sync, which links change
 	net        *wire.NetState // what the daemon reports of the network
@@ -93,6 +94,12 @@ func (f *fakeBackend) Call(_ context.Context, method string, params, result any)
 		r, err = f.removeNode(p.Node)
 	case wire.MethodSubnet:
 		err = f.setSubnet(p.Subnet)
+	case wire.MethodLog:
+		text, ok := f.logs[p.Node]
+		if !ok {
+			err = wire.Errorf(wire.CodeUnreachable, "%s is offline", p.Node)
+		}
+		r = wire.Log{Text: text}
 	default:
 		return wire.Errorf(wire.CodeUnsupportedMethod, "no method %s", method)
 	}

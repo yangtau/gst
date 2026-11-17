@@ -49,7 +49,7 @@ Errors go to stderr, usually with a hint. Exit status is 0 on success,
 	).Replace(root.UsageTemplate()))
 
 	root.AddCommand(
-		a.upCommand(), a.addCommand(), a.statusCommand(), a.pingCommand(),
+		a.upCommand(), a.addCommand(), a.statusCommand(), a.pingCommand(), a.logCommand(),
 		a.exposeCommand(), a.unexposeCommand(), a.unlinkCommand(), a.removeCommand(),
 		a.nameCommand(), a.subnetCommand(), a.uiCommand(), a.downCommand(), a.versionCommand(),
 	)
