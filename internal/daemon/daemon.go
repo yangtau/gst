@@ -239,10 +239,16 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 
 // listen takes the lock beside socket and listens on it, replacing a
 // socket file left behind by a daemon that is gone. The socket and its
-// directory are accessible to their owner only.
+// directory are accessible to their owner only: the directory is, before
+// the socket exists. The umask, which would do it for the socket alone,
+// belongs to the whole process, whose other goroutines may create files
+// and directories meanwhile.
 func listen(socket string) (net.Listener, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create the socket directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(socket), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("protect the socket directory: %w", err)
 	}
 	lock, err := os.OpenFile(socket+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -256,12 +262,15 @@ func listen(socket string) (net.Listener, func(), error) {
 		lock.Close()
 		return nil, nil, fmt.Errorf("remove the old control socket: %w", err)
 	}
-	old := syscall.Umask(0o177)
 	listener, err := net.Listen("unix", socket)
-	syscall.Umask(old)
 	if err != nil {
 		lock.Close()
 		return nil, nil, fmt.Errorf("listen on the control socket: %w", err)
+	}
+	if err := os.Chmod(socket, 0o600); err != nil {
+		listener.Close()
+		lock.Close()
+		return nil, nil, fmt.Errorf("protect the control socket: %w", err)
 	}
 	return listener, func() { listener.Close(); lock.Close() }, nil
 }
