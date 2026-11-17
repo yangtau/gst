@@ -24,7 +24,7 @@ A VPN does not run in the Simulator: the app starts there and shows its screens,
 
 1. In App Store Connect, add an app with your bundle identifier, and in TestFlight a group of internal testers with yourself in it. Internal testers need no review.
 2. In Users and Access, Integrations, make an API key with the App Manager role. Put its file in `~/.appstoreconnect/private_keys/`, and its key id and issuer id in `Local.xcconfig` as `ASC_KEY_ID` and `ASC_ISSUER_ID`.
-3. After the first upload, answer the questions on encryption that App Store Connect asks of the build.
+3. App Store Connect asks each build whether the app uses encryption, unless its Info.plist says: `project.yml` gives the answer for an app that implements standard algorithms, as gst does with WireGuard and SSH, and is not offered in France (`ITSAppUsesNonExemptEncryption`). Check that it holds for you.
 
 A build expires in TestFlight after 90 days.
 

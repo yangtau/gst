@@ -49,6 +49,12 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleLocalizations: [en, zh-Hans]
+        # The answer to App Store Connect's questions on encryption, so
+        # that it does not ask them of each build: gst implements standard
+        # algorithms (WireGuard's, SSH's) and is not offered in France,
+        # which App Store Connect takes as exempt. Ask again if either
+        # changes.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
