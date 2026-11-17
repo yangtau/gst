@@ -7,8 +7,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -28,11 +27,11 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,11 +46,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -59,9 +54,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import gst.app.AppModel
 import gst.app.Destination
 import gst.app.R
@@ -196,7 +189,7 @@ fun AddMachineScreen(model: AppModel, close: () -> Unit, initialStep: AddStep = 
 @Composable
 private fun Heading(title: String, text: String) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(title, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
+        Text(title, style = TitleStyle)
         Text(code(text), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -262,25 +255,8 @@ private fun Progress(text: String) {
 /** A text button that copies, and says for a moment that it did. */
 @Composable
 private fun CopyTextButton(text: String, label: String) {
-    val clipboard = LocalClipboard.current
-    val haptics = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    var isCopied by remember { mutableStateOf(false) }
-    PillButton(
-        label,
-        {
-            scope.launch {
-                clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("gst", text)))
-                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                isCopied = true
-                kotlinx.coroutines.delay(1500)
-                isCopied = false
-            }
-        },
-        modifier = Modifier,
-        icon = if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
-        prominent = false,
-    )
+    val (isCopied, copy) = rememberCopy(text)
+    PillButton(label, copy, modifier = Modifier, icon = copyIcon(isCopied), prominent = false)
 }
 
 /** The colors of a field: gray, with no line beneath it. */
@@ -364,7 +340,7 @@ private fun Waiting(reason: String?, done: () -> Unit) {
 
 @Composable
 private fun Failed(message: String, retry: () -> Unit, change: () -> Unit) {
-    Text(stringResource(R.string.failed_title), fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
+    Text(stringResource(R.string.failed_title), style = TitleStyle)
     CodeBlock(message)
     PillButton(stringResource(R.string.try_again), retry)
     TextButton(onClick = change, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.change_login)) }

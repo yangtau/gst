@@ -534,14 +534,20 @@ func (d *Daemon) dropRemovedLinks(ctx context.Context) {
 // of addresses on the same network, the links that do not run: the
 // change may be what they lacked, as when IPv6 comes a moment after IPv4
 // (Readdressed).
+//
+// Each channel is taken again as soon as it closes, before the links
+// restart, so that a change while they do closes the one it waits on.
 func (d *Daemon) followNetwork(ctx context.Context) {
+	moved, changed := d.mesh.Moved(), d.mesh.Readdressed()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.mesh.Moved():
+		case <-moved:
+			moved = d.mesh.Moved()
 			d.restartLinks(movedAway, true)
-		case <-d.mesh.Readdressed():
+		case <-changed:
+			changed = d.mesh.Readdressed()
 			d.restartLinks(readdressed, false)
 		}
 	}

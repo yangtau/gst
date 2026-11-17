@@ -20,7 +20,7 @@ adb pair <gst IP>:<pairing port> <code>
 adb connect <gst IP>:<port>   # the port on the Wireless debugging screen, which changes each time it turns on
 ```
 
-The install ends the VPN, and with it the connection of adb over gst, so `android/install.sh` first leaves a job on the phone that opens the app once the update is in; the app turns gst on again when it opens, if it was on. Run `adb connect` again once gst is back.
+The install ends the VPN, and with it the connection of adb over gst, so `android/install.sh` copies the APK to the phone and leaves the rest to a job there, which installs it and opens the app; the app turns gst on again when it opens, if it was on. Run `adb connect` again once gst is back; `adb shell cat /data/local/tmp/gst-install.log` says how the install went.
 
 `make android` runs `android/build-core.sh`, which builds `gstkit` into `android/build/jniLibs/<abi>/libgstkit.so` for arm64-v8a, armeabi-v7a, and x86_64 with the newest NDK (or `ANDROID_NDK_HOME`), and then `./gradlew assembleDebug` in `android/`. Run `build-core.sh` again after changing Go code; Android Studio builds the rest. `./gradlew clean` removes the Go code too.
 

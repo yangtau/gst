@@ -68,9 +68,9 @@ struct MachinePage: View {
                 }
             }
 
-            if !exposes.isEmpty {
+            if !shownExposes.isEmpty {
                 Section("Exposed Ports") {
-                    ForEach(exposes, id: \.self) { expose in
+                    ForEach(shownExposes, id: \.self) { expose in
                         ExposeRow(hostname: machine.hostname, expose: expose)
                     }
                 }
@@ -133,19 +133,27 @@ struct MachinePage: View {
         }
     }
 
-    /// Asks for the ports that the machine exposes every few seconds, for
-    /// as long as the page shows it and gst is on; what cannot be asked
-    /// keeps what was there.
+    /// The ports that the machine exposes: this machine's from its
+    /// status, which the app keeps up to date, another's as its daemon
+    /// last said.
+    private var shownExposes: [Expose] {
+        let all = machine?.isHere == true ? model.status?.exposes ?? [] : exposes
+        return all.sorted { ($0.port, $0.proto) < ($1.port, $1.proto) }
+    }
+
+    /// Asks another machine for the ports it exposes now and then, for as
+    /// long as the page shows it and gst is on; what cannot be asked keeps
+    /// what was there.
     private func loadExposes(_ machine: Machine) async {
-        guard model.isOn else {
+        guard model.isOn, !machine.isHere else {
             exposes = []
             return
         }
         while !Task.isCancelled {
             if let found = try? await model.exposes(of: machine) {
-                exposes = found.sorted { ($0.port, $0.proto) < ($1.port, $1.proto) }
+                exposes = found
             }
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .seconds(30))
         }
     }
 

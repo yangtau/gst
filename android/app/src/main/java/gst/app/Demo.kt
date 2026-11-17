@@ -49,11 +49,9 @@ enum class Demo(val screen: String) {
         get() = when (this) {
             HostKey, Authorize -> Route.Add
             Settings -> Route.Settings
-            Machine -> Route.Machine
+            Machine -> Route.Machine(id("b1"))
             else -> Route.Home
         }
-
-    val machine: String? get() = if (this == Machine) id("b1") else null
 
     /**
      * The pings that the machine's sheet starts with: the first ones along

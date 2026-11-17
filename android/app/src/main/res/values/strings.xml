@@ -86,7 +86,6 @@
     <string name="leave">Leave</string>
     <string name="remove">Remove</string>
     <string name="this_machine">This machine</string>
-    <string name="rename">Rename</string>
     <string name="subnet">Subnet</string>
     <string name="reach_as">Other machines reach this machine as %1$s.gst.</string>
     <string name="name_rule">Use 1 to 32 lowercase letters, digits, or hyphens, starting with a letter or digit.</string>

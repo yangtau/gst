@@ -32,15 +32,16 @@ final class AppModel {
 
     var isOn: Bool { tunnel.state == .on }
 
-    /// The machines of the network, this machine first.
+    /// The machines of the network, this machine first, by the name it
+    /// has now, which a table kept from before a rename may not have yet.
     var machines: [Machine] {
         guard let topology else { return [] }
-        return Machine.list(topology: topology, status: isOn ? status : nil)
-    }
-
-    /// This machine's gst IP, while it has one.
-    var address: String? {
-        isOn ? status?.net?.address : nil
+        return Machine.list(topology: topology, status: isOn ? status : nil).map { machine in
+            guard let me = info?.node, machine.id == me.id else { return machine }
+            var renamed = machine
+            renamed.name = me.name
+            return renamed
+        }
     }
 
     /// What keeps this machine from the network, or from part of it, in
@@ -202,13 +203,9 @@ final class AppModel {
         return try await daemon.call("net.ping", NodeParams(node: machine.id))
     }
 
-    /// The ports that the machine exposes, as `gst status <machine>`
-    /// shows them: this machine's from its daemon, another's from that
-    /// machine's daemon, along the links.
+    /// The ports that another machine exposes, as `gst status <machine>`
+    /// shows them: that machine's daemon says, along the links.
     func exposes(of machine: Machine) async throws -> [Expose] {
-        if machine.isHere {
-            return status?.exposes ?? []
-        }
         #if DEBUG
         if isDemo {
             return Demo.exposes[machine.id] ?? []

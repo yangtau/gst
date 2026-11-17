@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -18,12 +19,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.foundation.layout.size
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,11 +36,12 @@ import gst.app.DaemonStatus
 import gst.app.Machine
 import gst.app.Pings
 import gst.app.R
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 
 /**
  * One machine, on a page of its own: the pings that the app sends it while
@@ -53,31 +55,29 @@ fun MachineScreen(model: AppModel, machineID: String, isOn: Boolean, initial: Pi
     val back = @Composable { CircleButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back), close) }
     val machine = model.machines(isOn).firstOrNull { it.id == machineID }
     if (machine == null) {
-        Page(stringResource(R.string.machine_gone), navigation = back) {}
+        Page("", navigation = back) {
+            Text(stringResource(R.string.machine_gone), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = PageMargin))
+        }
         return
     }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var pings by remember { mutableStateOf(initial) }
-    var exposes by remember { mutableStateOf<List<DaemonStatus.Expose>>(emptyList()) }
+    var remoteExposes by remember { mutableStateOf<List<DaemonStatus.Expose>>(emptyList()) }
     var isConfirmingRemoval by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
 
-    // The ports the machine exposes, which its daemon knows, while the page
-    // shows it.
-    if (isOn && machine.isOnline) {
-        val lifecycle = LocalLifecycleOwner.current.lifecycle
-        LaunchedEffect(machine.id, lifecycle) {
-            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                while (true) {
-                    try {
-                        exposes = model.exposes(machine)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                    }
-                    delay(5.seconds)
-                }
+    // The ports the machine exposes: this machine's from its status, which
+    // the app keeps up to date, another's from its daemon, now and then
+    // while the page shows it.
+    val exposes = if (machine.isHere) model.status?.exposes.orEmpty() else remoteExposes
+    if (isOn && machine.isOnline && !machine.isHere) {
+        RepeatWhileShown(machine.id, 30.seconds) {
+            try {
+                remoteExposes = model.exposes(machine)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
             }
         }
     }
@@ -88,21 +88,14 @@ fun MachineScreen(model: AppModel, machineID: String, isOn: Boolean, initial: Pi
     // stop then.
     val isPinged = isOn && !machine.isHere && machine.isOnline
     if (isPinged) {
-        val lifecycle = LocalLifecycleOwner.current.lifecycle
-        LaunchedEffect(machine.id, lifecycle) {
-            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                while (true) {
-                    val sent = TimeSource.Monotonic.markNow()
-                    pings = try {
-                        val reply = model.ping(machine)
-                        pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        pings.failed(e.message ?: "")
-                    }
-                    delay(1.seconds - sent.elapsedNow())
-                }
+        RepeatWhileShown(machine.id, 1.seconds) {
+            pings = try {
+                val reply = model.ping(machine)
+                pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pings.failed(e.message ?: "")
             }
         }
     }
@@ -206,6 +199,25 @@ private fun ExposeRow(machine: Machine, expose: DaemonStatus.Expose) {
             Subtitle(protocol)
         } else {
             Subtitle("$protocol · ${expose.error?.sentence ?: expose.state}", color = statusColors.warning)
+        }
+    }
+}
+
+/**
+ * Does [work] every [period], counted from when each round starts, while
+ * the app is on the screen and the page shows [key].
+ */
+@Composable
+private fun RepeatWhileShown(key: Any, period: Duration, work: suspend () -> Unit) {
+    val current by rememberUpdatedState(work)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(key, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val started = TimeSource.Monotonic.markNow()
+                current()
+                delay(period - started.elapsedNow())
+            }
         }
     }
 }

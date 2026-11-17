@@ -30,23 +30,18 @@ struct HomeView: View {
         var id: Self { self }
     }
 
-    private var others: [Machine] {
-        model.machines.filter { !$0.isHere && $0.id != model.info?.node.id }
-    }
-
     private var hasLinks: Bool {
         model.info?.links.isEmpty == false
     }
 
-    /// The map, when the network has one to show: a network of one has
-    /// nothing to map.
-    private var map: NetworkMap? {
-        others.isEmpty ? nil : model.topology.map { topology in
-            NetworkMap(topology: topology, machines: model.machines, isOn: model.isOn) { path.append($0.id) }
-        }
-    }
-
     var body: some View {
+        let machines = model.machines
+        // This machine, by its id: while gst is off, nothing says it is here.
+        let me = model.info?.node.id
+        let others = machines.filter { $0.id != me }
+        // The map, when the network has one to show: a network of one has
+        // nothing to map.
+        let topology = others.isEmpty ? nil : model.topology
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -56,12 +51,12 @@ struct HomeView: View {
                     if others.isEmpty && !hasLinks {
                         Welcome { sheet = .add }
                     } else {
-                        if showsMap, let map {
-                            map
+                        if showsMap, let topology {
+                            NetworkMap(topology: topology, machines: machines, isOn: model.isOn) { path.append($0.id) }
                                 .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
                                 .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
                         }
-                        MachineList(machines: model.machines, me: model.topology?.me, hasOthers: !others.isEmpty, isOn: model.isOn) {
+                        MachineList(machines: machines, me: me, isOn: model.isOn) {
                             path.append($0.id)
                         }
                     }
@@ -75,7 +70,7 @@ struct HomeView: View {
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Machines")
             .toolbar {
-                if map != nil {
+                if topology != nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(showsMap ? "Hide the Map" : "Show the Map", systemImage: "point.3.connected.trianglepath.dotted") {
                             withAnimation(.smooth) { showsMap.toggle() }
@@ -186,7 +181,6 @@ private struct MachineList: View {
     let machines: [Machine]
     /// This machine's id.
     let me: String?
-    let hasOthers: Bool
     let isOn: Bool
     let open: (Machine) -> Void
 
@@ -206,7 +200,7 @@ private struct MachineList: View {
                 }
             }
             .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
-            if !hasOthers {
+            if machines.allSatisfy({ $0.id == me }) {
                 Text("The machines of the network show here once a link connects.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

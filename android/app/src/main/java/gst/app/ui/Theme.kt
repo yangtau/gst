@@ -28,7 +28,7 @@ private val Light = lightColorScheme(
     errorContainer = Color(0xFFFFDAD6), onErrorContainer = Color(0xFF93000A),
     background = Color.White, onBackground = Color(0xFF1B1B1F),
     surface = Color.White, onSurface = Color(0xFF1B1B1F),
-    surfaceVariant = Color(0xFFEDEDF0), onSurfaceVariant = Color(0xFF8A8A8E),
+    surfaceVariant = Color(0xFFEDEDF0), onSurfaceVariant = Color(0xFF6C6C70),
     outline = Color(0xFFAEAEB2), outlineVariant = Color(0xFFDEDEE3),
     inverseSurface = Color(0xFF303034), inverseOnSurface = Color(0xFFF2F0F5), inversePrimary = Color(0xFFE6E6EA),
     surfaceDim = Color(0xFFDEDEE3), surfaceBright = Color.White,
@@ -62,8 +62,6 @@ private val Dark = darkColorScheme(
 data class StatusColors(
     /** Packets reach the machine, or the link runs. */
     val good: Color,
-    val goodContainer: Color,
-    val onGoodContainer: Color,
     /** Something keeps part of the network away. */
     val warning: Color,
     val warningContainer: Color,
@@ -71,12 +69,12 @@ data class StatusColors(
 )
 
 private val LightStatus = StatusColors(
-    good = Color(0xFF1FA84F), goodContainer = Color(0xFFD9F5E2), onGoodContainer = Color(0xFF00522A),
+    good = Color(0xFF1FA84F),
     warning = Color(0xFFC77700), warningContainer = Color(0xFFFFF1DC), onWarningContainer = Color(0xFF6B3000),
 )
 
 private val DarkStatus = StatusColors(
-    good = Color(0xFF30D158), goodContainer = Color(0xFF0E3B1E), onGoodContainer = Color(0xFFC5EFD2),
+    good = Color(0xFF30D158),
     warning = Color(0xFFFF9F0A), warningContainer = Color(0xFF3A2400), onWarningContainer = Color(0xFFFFE2C4),
 )
 
@@ -97,10 +95,6 @@ val statusColors: StatusColors
 /** What buttons, cards, and blocks of code are filled with, a gray a little apart from the page. */
 val ColorScheme.fill: Color
     get() = surfaceContainerHigh
-
-/** A sheet that opens over the page: white, or in the dark a gray above the black. */
-val ColorScheme.sheet: Color
-    get() = surfaceContainerLow
 
 /** The lines between the rows of a group, and around glass. */
 val ColorScheme.hairline: Color

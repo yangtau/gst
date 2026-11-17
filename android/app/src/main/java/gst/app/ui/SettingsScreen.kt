@@ -1,6 +1,5 @@
 package gst.app.ui
 
-import android.content.ClipData
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -14,9 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Autorenew
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -30,17 +27,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -50,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import gst.app.AppModel
 import gst.app.DaemonStatus
 import gst.app.R
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** This machine: its name, the key that servers authorize, its links, and what helps when something does not work. */
@@ -114,14 +107,17 @@ fun SettingsScreen(model: AppModel, close: () -> Unit, openLog: () -> Unit) {
                 isError = linkFailure != null,
             ) {
                 for (link in links) {
+                    // Its swipe and its question go with the link, not with its place in the list.
                     row {
-                        LinkRow(link.destination, model.status?.links?.firstOrNull { it.destination == link.destination }) {
-                            scope.launch {
-                                try {
-                                    model.unlink(link.destination)
-                                    linkFailure = null
-                                } catch (e: Exception) {
-                                    linkFailure = e.message
+                        key(link.destination) {
+                            LinkRow(link.destination, model.status?.links?.firstOrNull { it.destination == link.destination }) {
+                                scope.launch {
+                                    try {
+                                        model.unlink(link.destination)
+                                        linkFailure = null
+                                    } catch (e: Exception) {
+                                        linkFailure = e.message
+                                    }
                                 }
                             }
                         }
@@ -209,22 +205,8 @@ fun SettingsScreen(model: AppModel, close: () -> Unit, openLog: () -> Unit) {
 /** The row that copies the key, and says for a moment that it did. */
 @Composable
 private fun CopyKeyRow(key: String) {
-    val clipboard = LocalClipboard.current
-    val haptics = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    var isCopied by remember { mutableStateOf(false) }
-    ListRow(
-        if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
-        onClick = {
-            scope.launch {
-                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("gst", key)))
-                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                isCopied = true
-                delay(1500)
-                isCopied = false
-            }
-        },
-    ) { Text(stringResource(R.string.copy_key)) }
+    val (isCopied, copy) = rememberCopy(key)
+    ListRow(copyIcon(isCopied), onClick = copy) { Text(stringResource(R.string.copy_key)) }
 }
 
 /** A link, named by its destination, and how it goes; swiped away, it is removed once the person says so. */

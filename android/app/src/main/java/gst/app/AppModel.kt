@@ -6,6 +6,7 @@ import android.net.VpnService
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,7 +14,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.time.Instant
 
 /**
  * What the app shows and does: this machine, its links, and the network
@@ -74,14 +74,15 @@ class AppModel private constructor(
 
     val isOn: Boolean get() = tunnel.value == Tunnel.State.On
 
-    /** The machines of the network, this machine first. */
+    /**
+     * The machines of the network, this machine first, by the name it has
+     * now, which a table kept from before a rename may not have yet.
+     */
     fun machines(isOn: Boolean = this.isOn): List<Machine> {
         val topology = topology ?: return emptyList()
-        return Machine.list(topology, if (isOn) status else null)
+        val me = info?.node
+        return Machine.list(topology, if (isOn) status else null).map { if (it.id == me?.id) it.copy(name = me.name) else it }
     }
-
-    /** This machine's gst IP, while it has one. */
-    fun address(isOn: Boolean = this.isOn): String? = if (isOn) status?.net?.address else null
 
     /** What keeps this machine from the network, or from part of it: as `Problems:` in `gst status`. */
     sealed interface Problem {
@@ -233,12 +234,9 @@ class AppModel private constructor(
     /** `gst ping <machine>`, once. */
     suspend fun ping(machine: Machine): PingReply = if (isDemo) Demo.ping else gst.call("net.ping", params(NodeParams(machine.id)))
 
-    /** The ports that [machine] exposes, which `gst status <machine>` lists; its daemon says. */
-    suspend fun exposes(machine: Machine): List<DaemonStatus.Expose> = when {
-        machine.isHere -> status?.exposes ?: emptyList()
-        isDemo -> Demo.exposes(machine.id)
-        else -> gst.call<DaemonStatus>("mesh.status", params(NodeParams(machine.id))).exposes
-    }
+    /** The ports that another [machine] exposes, which `gst status <machine>` lists: its daemon says. */
+    suspend fun exposes(machine: Machine): List<DaemonStatus.Expose> =
+        if (isDemo) Demo.exposes(machine.id) else gst.call<DaemonStatus>("mesh.status", params(NodeParams(machine.id))).exposes
 
     /** `gst remove <machine>`. */
     suspend fun remove(machine: Machine): Removal {

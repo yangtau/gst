@@ -6,44 +6,37 @@ import android.content.Intent
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ProvideTextStyle
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -52,27 +45,37 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import gst.app.Machine
 import gst.app.R
+import java.time.Instant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.time.Instant
 
 /** How packets reach the machine, in the words of `gst status`. */
 @Composable
@@ -93,46 +96,51 @@ fun Machine.Way.color(): Color = when (this) {
 
 /**
  * The color of the machine's dot, which says only whether packets reach
- * it: the way is for its sheet.
+ * it: the way is for its page.
  */
 @Composable
 fun Machine.Way.dotColor(): Color = if (this is Machine.Way.Offline) MaterialTheme.colorScheme.outlineVariant else statusColors.good
 
-/** A dot that says whether packets reach a machine: filled while they do. */
+/** A dot of a color that says how something goes, as whether packets reach a machine. */
 @Composable
-fun StatusDot(color: Color, filled: Boolean = true, size: Int = 10) {
-    val shape = CircleShape
-    Box(
-        Modifier
-            .size(size.dp)
-            .then(if (filled) Modifier.background(color, shape) else Modifier.border(1.5.dp, color, shape)),
-    )
+fun StatusDot(color: Color) {
+    Box(Modifier.size(RowDot).background(color, CircleShape))
 }
 
 @Composable
 fun StatusDot(way: Machine.Way) = StatusDot(way.dotColor())
 
-/** Copies a text, and shows for a moment that it did. */
+/**
+ * What copies [text]: whether it just did, for a moment after, as a button
+ * shows it, and the action that copies.
+ */
 @Composable
-fun CopyButton(text: String, label: String = stringResource(R.string.copy), modifier: Modifier = Modifier) {
+fun rememberCopy(text: String): Pair<Boolean, () -> Unit> {
     val clipboard = LocalClipboard.current
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var isCopied by remember { mutableStateOf(false) }
-    IconButton(
-        onClick = {
-            scope.launch {
-                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("gst", text)))
-                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                isCopied = true
-                delay(1500)
-                isCopied = false
-            }
-        },
-        modifier = modifier.semantics { contentDescription = label },
-    ) {
+    return isCopied to {
+        scope.launch {
+            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("gst", text)))
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            isCopied = true
+            delay(1500)
+            isCopied = false
+        }
+    }
+}
+
+/** The icon of what copies: a check for a moment once it did. */
+fun copyIcon(isCopied: Boolean): ImageVector = if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy
+
+/** Copies a text, and shows for a moment that it did. */
+@Composable
+fun CopyButton(text: String, label: String = stringResource(R.string.copy), modifier: Modifier = Modifier) {
+    val (isCopied, copy) = rememberCopy(text)
+    IconButton(onClick = copy, modifier = modifier.semantics { contentDescription = label }) {
         AnimatedContent(isCopied, label = "copied") { copied ->
-            Icon(if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy, contentDescription = null)
+            Icon(copyIcon(copied), contentDescription = null)
         }
     }
 }
@@ -168,8 +176,8 @@ val RowInset = PageMargin + RowIcon + 16.dp
 val DotRowInset = PageMargin + RowDot + 14.dp
 
 /**
- * A round button, in the bar at the top of a page or beside a title: an
- * icon on glass; [selected] fills it with ink, as a switch that is on.
+ * A round button, in the bar at the top of a page: an icon on gray, which
+ * [selected] fills with ink, as a switch that is on.
  */
 @Composable
 fun CircleButton(
@@ -179,14 +187,14 @@ fun CircleButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     selected: Boolean = false,
-    size: Dp = 44.dp,
 ) {
     val colors = MaterialTheme.colorScheme
     Box(
         modifier
-            .size(size)
-            .glass(CircleShape)
-            .then(if (selected) Modifier.background(colors.primary) else Modifier)
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (selected) colors.primary else colors.fill)
+            .border(0.5.dp, colors.hairline, CircleShape)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
                 contentDescription = label
@@ -202,7 +210,7 @@ fun CircleButton(
                 enabled -> colors.onSurface
                 else -> colors.outline
             },
-            modifier = Modifier.size(size * 0.5f),
+            modifier = Modifier.size(22.dp),
         )
     }
 }
@@ -250,6 +258,9 @@ fun Group(
     }
 }
 
+/** The bold title of a group, or of a part of a page. */
+val TitleStyle = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
+
 /** The bold title over a group, with [action] at its end. */
 @Composable
 fun SectionHeader(text: String, action: (@Composable () -> Unit)? = null) {
@@ -257,7 +268,7 @@ fun SectionHeader(text: String, action: (@Composable () -> Unit)? = null) {
         Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = PageMargin, end = PageMargin, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(text, style = TitleStyle, modifier = Modifier.weight(1f))
         action?.invoke()
     }
 }
@@ -301,7 +312,7 @@ fun ListRow(
         CompositionLocalProvider(LocalContentColor provides tint) {
             when {
                 icon != null -> Icon(icon, contentDescription = null, modifier = Modifier.size(RowIcon).padding(1.dp))
-                dot != null -> Box(Modifier.size(RowDot).background(dot, CircleShape))
+                dot != null -> StatusDot(dot)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp), content = { content() })
@@ -334,25 +345,32 @@ fun ValueRow(label: String, value: String, mono: Boolean = false, copy: Boolean 
         null,
         onClick = onClick,
         trailing = {
+            when {
+                copy -> CopyButton(value, modifier = Modifier.size(36.dp))
+                onClick != null -> Chevron()
+            }
+        },
+    ) {
+        // The label keeps its room; a long value gives way, in the middle.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, maxLines = 1)
+            Spacer(Modifier.width(16.dp))
             val text = @Composable {
                 Text(
                     value,
                     style = MaterialTheme.typography.bodyLarge,
                     fontFamily = if (mono) FontFamily.Monospace else null,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
                     maxLines = 1,
                     overflow = TextOverflow.MiddleEllipsis,
-                    modifier = Modifier.widthIn(max = 220.dp),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            if (onClick == null) SelectionContainer { text() } else text()
-            when {
-                copy -> CopyButton(value, modifier = Modifier.padding(start = 4.dp).size(36.dp))
-                onClick != null -> Chevron()
+            Box(Modifier.weight(1f)) {
+                if (onClick == null) SelectionContainer { text() } else text()
             }
-        },
-    ) {
-        Text(label, maxLines = 1)
+        }
     }
 }
 

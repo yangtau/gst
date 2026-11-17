@@ -33,27 +33,39 @@ import gst.app.AppModel
 import gst.app.Pings
 import gst.app.R
 
-/** A screen of the app, in the order they open from the network: a machine's, adding one, the settings, and the log. */
-enum class Route { Home, Machine, Add, Settings, Log }
+/** A screen of the app. */
+sealed interface Route {
+    data object Home : Route
+    data class Machine(val id: String) : Route
+    data object Add : Route
+    data object Settings : Route
+    data object Log : Route
+}
 
 /**
- * The app: the network, and the screens that open from it. A demo opens it
- * on [route], on the page of [machine], which starts with [pings], and on
- * [addStep] of adding a machine.
+ * The app: the network, and the screens that open from it, one over
+ * another. A demo opens it on [route] (a machine's page starting with
+ * [pings]), and on [addStep] of adding a machine.
  */
 @Composable
-fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, addStep: AddStep = AddStep.Form, pings: Pings = Pings()) {
+fun GstApp(model: AppModel, route: Route = Route.Home, addStep: AddStep = AddStep.Form, pings: Pings = Pings()) {
     // The page, and the color of what is on it.
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Screens(model, route, machine, addStep, pings)
+        Screens(model, route, addStep, pings)
     }
 }
 
 @Composable
-private fun Screens(model: AppModel, route: Route, machine: String?, addStep: AddStep, pings: Pings) {
+private fun Screens(model: AppModel, route: Route, addStep: AddStep, pings: Pings) {
     val state by model.tunnel.collectAsStateWithLifecycle()
-    var current by remember { mutableStateOf(route) }
-    var open by remember { mutableStateOf(machine) }
+    // The screens open, the network first; back closes the last.
+    var stack by remember { mutableStateOf(if (route == Route.Home) listOf(route) else listOf(Route.Home, route)) }
+    fun open(next: Route) {
+        stack = stack + next
+    }
+    fun close() {
+        stack = stack.dropLast(1)
+    }
     val homeScroll = rememberScrollState()
     val failure = model.failure
     if (failure != null) {
@@ -70,28 +82,26 @@ private fun Screens(model: AppModel, route: Route, machine: String?, addStep: Ad
     }
     val spec = MaterialTheme.motionScheme.defaultSpatialSpec<androidx.compose.ui.unit.IntOffset>()
     AnimatedContent(
-        current,
+        stack,
         transitionSpec = {
-            val forward = targetState.ordinal > initialState.ordinal
+            val forward = targetState.size > initialState.size
             (slideInHorizontally(spec) { if (forward) it / 4 else -it / 4 } + fadeIn()) togetherWith
                 (slideOutHorizontally(spec) { if (forward) -it / 4 else it / 4 } + fadeOut())
         },
+        contentKey = { it.last() },
         label = "route",
     ) { shown ->
-        when (shown) {
+        when (val top = shown.last()) {
             Route.Home -> HomeScreen(
                 model, state, homeScroll,
-                openAdd = { current = Route.Add },
-                openSettings = { current = Route.Settings },
-                openMachine = {
-                    open = it
-                    current = Route.Machine
-                },
+                openAdd = { open(Route.Add) },
+                openSettings = { open(Route.Settings) },
+                openMachine = { open(Route.Machine(it)) },
             )
-            Route.Machine -> MachineScreen(model, open ?: "", state == gst.app.Tunnel.State.On, pings) { current = Route.Home }
-            Route.Add -> AddMachineScreen(model, close = { current = Route.Home }, initialStep = addStep)
-            Route.Settings -> SettingsScreen(model, close = { current = Route.Home }, openLog = { current = Route.Log })
-            Route.Log -> LogScreen(model, close = { current = Route.Settings })
+            is Route.Machine -> MachineScreen(model, top.id, state == gst.app.Tunnel.State.On, if (top == route) pings else Pings(), ::close)
+            Route.Add -> AddMachineScreen(model, close = ::close, initialStep = addStep)
+            Route.Settings -> SettingsScreen(model, close = ::close, openLog = { open(Route.Log) })
+            Route.Log -> LogScreen(model, close = ::close)
         }
     }
 }

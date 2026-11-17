@@ -2,7 +2,6 @@ package gst.app
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import gst.app.ui.GstApp
 import gst.app.ui.GstTheme
@@ -60,7 +59,7 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
         val model = demo.model()
         compose.setContent {
             GstTheme(dark = dark) {
-                GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings)
+                GstApp(model, demo.route, demo.addStep, demo.pings)
             }
         }
         compose.waitForIdle()

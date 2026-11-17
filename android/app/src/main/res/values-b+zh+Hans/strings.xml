@@ -84,7 +84,6 @@
     <string name="leave">离开</string>
     <string name="remove">移除</string>
     <string name="this_machine">本机</string>
-    <string name="rename">改名</string>
     <string name="subnet">网段</string>
     <string name="reach_as">其他机器用 %1$s.gst 访问本机。</string>
     <string name="name_rule">请使用 1 到 32 个小写字母、数字或连字符，并以字母或数字开头。</string>

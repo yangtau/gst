@@ -51,7 +51,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,7 +80,10 @@ fun HomeScreen(
     openMachine: (String) -> Unit,
 ) {
     val isOn = state == Tunnel.State.On
-    val others = model.machines(isOn).filter { !it.isHere && it.id != model.info?.node?.id }
+    // This machine, by its id: while gst is off, nothing says it is here.
+    val machines = model.machines(isOn)
+    val me = model.info?.node?.id
+    val others = machines.filter { it.id != me }
     val hasLinks = model.info?.links?.isNotEmpty() == true
     val problems = model.problems(isOn)
     var failure by remember { mutableStateOf<String?>(null) }
@@ -104,7 +106,6 @@ fun HomeScreen(
         }
     }
 
-    val here = model.machines(isOn).firstOrNull { it.isHere || it.id == model.info?.node?.id }
     // A network of one has nothing to map.
     val topology = model.topology?.takeIf { others.isNotEmpty() }
     val showsMap = model.showsMap && topology != null
@@ -134,14 +135,14 @@ fun HomeScreen(
                 AnimatedVisibility(showsMap, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                     if (topology != null) {
                         NetworkMap(
-                            topology, model.machines(isOn), isOn = isOn, open = openMachine,
+                            topology, machines, isOn = isOn, open = openMachine,
                             modifier = Modifier
                                 .padding(horizontal = 16.dp)
                                 .background(MaterialTheme.colorScheme.fill, RoundedCornerShape(20.dp)),
                         )
                     }
                 }
-                MachineList(listOfNotNull(here) + others, isOn, openMachine)
+                MachineList(machines, me, isOn, openMachine)
             }
         }
     }
@@ -190,8 +191,8 @@ private fun ProblemList(problems: List<AppModel.Problem>) {
 
 /** The machines of the network, this one first, each with whether packets reach it. */
 @Composable
-private fun MachineList(machines: List<Machine>, isOn: Boolean, open: (String) -> Unit) {
-    if (machines.none { !it.isHere }) {
+private fun MachineList(machines: List<Machine>, me: String?, isOn: Boolean, open: (String) -> Unit) {
+    if (machines.all { it.id == me }) {
         Footer(stringResource(R.string.machines_empty))
     }
     Group(inset = DotRowInset) {
@@ -208,7 +209,7 @@ private fun MachineList(machines: List<Machine>, isOn: Boolean, open: (String) -
                         // off, nothing reaches the machines, which says
                         // nothing of them.
                         val way = machine.way
-                        if (machine.isHere) {
+                        if (machine.id == me) {
                             Tag(stringResource(R.string.this_machine))
                         } else if (isOn && way is Machine.Way.Offline && way.seen != null) {
                             Text(way.seen.ago(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -243,7 +244,7 @@ private fun Tag(text: String) {
 private fun Welcome(add: () -> Unit) {
     Column(Modifier.padding(horizontal = PageMargin), verticalArrangement = Arrangement.spacedBy(24.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.welcome_title), fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.welcome_title), style = TitleStyle)
             Text(stringResource(R.string.welcome_text), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {

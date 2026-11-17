@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +37,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -146,27 +146,21 @@ fun Page(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     navigation?.invoke()
-                    Spacer(Modifier.weight(1f))
-                    actions()
-                }
-                Box(
-                    Modifier
-                        .statusBarsPadding()
-                        .height(BarHeight)
-                        .fillMaxWidth()
-                        .padding(horizontal = 112.dp)
-                        .graphicsLayer {
-                            alpha = ((scroll.value - with(density) { 32.dp.toPx() }) / with(density) { 16.dp.toPx() }).coerceIn(0f, 1f)
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
+                    // The title, small, in the room the buttons leave.
                     Text(
                         title,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .graphicsLayer {
+                                alpha = ((scroll.value - with(density) { 32.dp.toPx() }) / with(density) { 16.dp.toPx() }).coerceIn(0f, 1f)
+                            },
                     )
+                    actions()
                 }
             }
             floating?.invoke(this)
@@ -176,7 +170,7 @@ fun Page(
 
 /** The title of a page, large and bold. */
 @Composable
-fun LargeTitle(text: String, modifier: Modifier = Modifier) {
+private fun LargeTitle(text: String) {
     Text(
         text,
         fontSize = 34.sp,
@@ -184,6 +178,5 @@ fun LargeTitle(text: String, modifier: Modifier = Modifier) {
         fontWeight = FontWeight.Bold,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = modifier,
     )
 }

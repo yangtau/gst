@@ -27,8 +27,7 @@ type supervisor struct {
 	now     chan struct{} // ends the wait before the next try; see retry
 
 	mu         sync.Mutex
-	attempt    context.CancelFunc // ends the current try; nil between tries
-	why        string             // why restart ended the current try
+	attempt    context.CancelCauseFunc // ends the current try, for why; nil between tries
 	current    string
 	since      time.Time
 	lastErr    string
@@ -82,7 +81,7 @@ func (s *supervisor) run() {
 	retried := false
 	for {
 		s.set(wire.StateConnecting, "", nil)
-		ctx, cancel := context.WithCancel(s.ctx)
+		ctx, cancel := context.WithCancelCause(s.ctx)
 		s.mu.Lock()
 		s.attempt = cancel
 		s.mu.Unlock()
@@ -96,19 +95,18 @@ func (s *supervisor) run() {
 		})
 		s.mu.Lock()
 		s.attempt = nil
-		why := s.why
 		s.mu.Unlock()
-		restarted := ctx.Err() != nil
-		cancel()
+		why := context.Cause(ctx) // why restart ended the try, if it did
+		cancel(nil)
 		if s.ctx.Err() != nil {
 			return
 		}
 		switch {
-		case restarted && !up && err != nil:
+		case why != nil && !up && err != nil:
 			// Where the try was, to tell what holds links up after a move.
-			err = fmt.Errorf("%s, %s into a try: %w", why, round(time.Since(start)), err)
-		case restarted:
-			err = errors.New(why)
+			err = fmt.Errorf("%v, %s into a try: %w", why, round(time.Since(start)), err)
+		case why != nil:
+			err = why
 		case err == nil:
 			err = errors.New("the link ended")
 		}
@@ -174,8 +172,7 @@ func (s *supervisor) restart(why string, running bool) {
 		return
 	}
 	if s.attempt != nil {
-		s.why = why
-		s.attempt()
+		s.attempt(errors.New(why))
 	}
 	s.mu.Unlock()
 	select {
