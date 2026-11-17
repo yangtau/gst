@@ -4,7 +4,7 @@
 -include integration/local.mk
 export CONTAINER_RUNTIME IT_BASE_IMAGE IT_APT_MIRROR IT_BUILD_FLAGS
 
-.PHONY: help build install test test-integration release ios testflight android
+.PHONY: help build install test test-integration release ios testflight android android-install
 
 help:
 	@printf '%s\n' \
@@ -15,7 +15,8 @@ help:
 	  'make release V=X.Y.Z   set the version, test, commit, and tag' \
 	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)' \
 	  'make testflight        build the iOS app of the current commit and upload it to TestFlight' \
-	  'make android           build the Android app, with its Go code, into android/app/build/outputs/apk'
+	  'make android           build the Android app, with its Go code, into android/app/build/outputs/apk' \
+	  'make android-install   build the release APK and install it on the phone that adb is connected to'
 
 build:
 	go build -o bin/gst ./cmd/gst
@@ -42,3 +43,7 @@ testflight: ios
 android:
 	android/build-core.sh
 	cd android && ./gradlew assembleDebug
+
+android-install:
+	android/build-core.sh
+	cd android && ./gradlew installRelease

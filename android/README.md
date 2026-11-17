@@ -4,11 +4,20 @@ How to use the app is in the [README](../README.md#android). This is how to buil
 
 ## Build
 
-You need Go, a JDK 21 (which `nix develop` provides), and the Android SDK with an NDK: Android Studio's, or the command-line tools' (`sdkmanager "platforms;android-37.0" "ndk;29.0.14206865"`). Tell Gradle where the SDK is with `ANDROID_HOME` or `sdk.dir` in `android/local.properties`.
+`nix develop .#android` gives everything (on macOS and x86_64 Linux): Go, a JDK 21, and the Android SDK with the platform, build tools, and NDK that the app needs, at `ANDROID_HOME`. Using it accepts the Android SDK's license. Without Nix, Android Studio's SDK or the command-line tools' (`sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;29.0.14206865"`) do too; tell Gradle where it is with `ANDROID_HOME` or `sdk.dir` in `android/local.properties`.
 
 ```sh
-make android    # builds the Go code for each ABI, then the debug APK
-adb install android/app/build/outputs/apk/debug/app-debug.apk
+nix develop .#android -c make android          # the Go code for each ABI, then the debug APK
+nix develop .#android -c make android-install  # the release APK, installed on the phone that adb is connected to
+```
+
+`make android-install` installs over the app from GitHub's releases, data and all, when the build has the release key: `gstKeystore` and `gstKeystorePassword` in `~/.gradle/gradle.properties` (below). Otherwise the phone refuses it until the app is uninstalled.
+
+adb reaches the phone over gst, from wherever both are in the network: on the phone, turn on Developer options, then Wireless debugging in them, which needs Wi-Fi, and pair once with "Pair device with pairing code", using the phone's gst IP (`gst status`) and the port and code that it shows:
+
+```sh
+adb pair <gst IP>:<pairing port> <code>
+adb connect <gst IP>:<port>   # the port on the Wireless debugging screen, which changes each time it turns on
 ```
 
 `make android` runs `android/build-core.sh`, which builds `gstkit` into `android/build/jniLibs/<abi>/libgstkit.so` for arm64-v8a, armeabi-v7a, and x86_64 with the newest NDK (or `ANDROID_NDK_HOME`), and then `./gradlew assembleDebug` in `android/`. Run `build-core.sh` again after changing Go code; Android Studio builds the rest. `./gradlew clean` removes the Go code too.

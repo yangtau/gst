@@ -85,15 +85,37 @@
       devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
           # NoCC: nixpkgs' C compiler brings its own xcrun and macOS SDK,
-          # which hide Xcode's iOS SDKs from ios/build-core.sh. The JDK is
-          # Gradle's, for the Android app; its SDK and NDK come from Google.
+          # which hide Xcode's iOS SDKs from ios/build-core.sh.
           default = pkgs.mkShellNoCC {
-            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh pkgs.jdk21 ]
+            packages = [ pkgs.go_1_26 pkgs.gopls pkgs.gnumake pkgs.openssh ]
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.xcodegen ];
           };
-        });
+          # The Android SDK is Google's, under its own license, which
+          # using this shell accepts; its NDK runs only on x86_64 Linux
+          # and macOS. The versions are the app's: compileSdk in
+          # android/app/build.gradle.kts, the build tools that its Android
+          # Gradle plugin asks for, and the NDK of android/README.md.
+          android =
+            let
+              unfree = import nixpkgs {
+                inherit system;
+                config = { allowUnfree = true; android_sdk.accept_license = true; };
+              };
+              sdk = (unfree.androidenv.composeAndroidPackages {
+                platformVersions = [ "37.0" ];
+                buildToolsVersions = [ "36.0.0" ];
+                includeNDK = true;
+                ndkVersions = [ "29.0.14206865" ];
+                includeCmake = false;
+              }).androidsdk;
+            in
+            pkgs.mkShellNoCC {
+              inputsFrom = [ default ];
+              packages = [ sdk pkgs.jdk21 ];
+              ANDROID_HOME = "${sdk}/libexec/android-sdk";
+            };
+        in
+        { inherit default; } // pkgs.lib.optionalAttrs (system != "aarch64-linux") { inherit android; });
     };
 }

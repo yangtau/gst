@@ -6,8 +6,8 @@ gst links a user's machines into a private network over SSH: one background daem
 
 ## Commands
 
-- `make build`, `make test`, `make test-integration`, `make release V=X.Y.Z`, `make android` (with the Android SDK and NDK), and, on a Mac, `make ios` and `make testflight` (see `Makefile`, `android/README.md`, and `ios/README.md`).
-- `nix develop` provides Go, gopls, Make, OpenSSH, and the JDK for `make android`, and on a Mac XcodeGen for `make ios`. `nix build` builds gst;
+- `make build`, `make test`, `make test-integration`, `make release V=X.Y.Z`, `make android` and `make android-install` (with the Android SDK and NDK), and, on a Mac, `make ios` and `make testflight` (see `Makefile`, `android/README.md`, and `ios/README.md`).
+- `nix develop` provides Go, gopls, Make, OpenSSH, and on a Mac XcodeGen for `make ios`; `nix develop .#android` adds the JDK and the Android SDK and NDK for `make android` and `make android-install` (macOS and x86_64 Linux). `nix build` builds gst;
   `nix flake check` runs the unit tests and both vet checks as part of the build.
   On every push, `.github/workflows/nix.yml` builds the package on each system
   of the flake and pushes it to the Cachix cache `tau` (secret `CACHIX_AUTH_TOKEN`).
