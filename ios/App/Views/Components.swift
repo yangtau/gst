@@ -18,12 +18,22 @@ extension Machine.Way {
         }
     }
 
+    /// The color of the way, as the ping chart draws it.
     var color: Color {
         switch self {
         case .here, .direct: .green
         case .relay: .accentColor
         case .offline: .secondary
         }
+    }
+
+    /// The color of the machine's dot, which says only whether packets
+    /// reach it: the way is for its sheet.
+    var dotColor: Color {
+        if case .offline = self {
+            return Color(uiColor: .systemGray3)
+        }
+        return .green
     }
 }
 
@@ -54,14 +64,9 @@ struct StatusDot: View {
     let way: Machine.Way
 
     var body: some View {
-        Group {
-            if case .offline = way {
-                Circle().strokeBorder(.tertiary, lineWidth: 1.5)
-            } else {
-                Circle().fill(way.color)
-            }
-        }
-        .frame(width: 9, height: 9)
+        Circle()
+            .fill(way.dotColor)
+            .frame(width: 9, height: 9)
         .accessibilityHidden(true)
     }
 }

@@ -287,8 +287,8 @@ private struct MachineList: View {
 
 private struct MachineRow: View {
     let machine: Machine
-    /// While gst is off, no way leads anywhere, which says nothing of
-    /// the machines: the row then says nothing of the way.
+    /// While gst is off, nothing reaches the machines, which says nothing
+    /// of them: the row then says nothing of when they were seen.
     let isOn: Bool
 
     var body: some View {
@@ -304,19 +304,12 @@ private struct MachineRow: View {
                 }
             }
             Spacer(minLength: 12)
-            if isOn {
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(machine.way.text)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                        .lineLimit(2)
-                    if case .offline(let seen?) = machine.way {
-                        Text(seen.ago)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
+            // The dot says whether packets reach the machine; the way they
+            // take is in its sheet.
+            if isOn, case .offline(let seen?) = machine.way {
+                Text(seen.ago)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))

@@ -63,12 +63,20 @@ fun Machine.Way.text(): String = when (this) {
     is Machine.Way.Offline -> stringResource(R.string.way_offline)
 }
 
+/** The color of the way, as the ping chart draws it. */
 @Composable
 fun Machine.Way.color(): Color = when (this) {
     Machine.Way.Here, is Machine.Way.Direct -> statusColors.good
     is Machine.Way.Relay -> MaterialTheme.colorScheme.primary
     is Machine.Way.Offline -> MaterialTheme.colorScheme.outline
 }
+
+/**
+ * The color of the machine's dot, which says only whether packets reach
+ * it: the way is for its sheet.
+ */
+@Composable
+fun Machine.Way.dotColor(): Color = if (this is Machine.Way.Offline) MaterialTheme.colorScheme.outlineVariant else statusColors.good
 
 /** A dot that says whether packets reach a machine: filled while they do. */
 @Composable
@@ -82,7 +90,7 @@ fun StatusDot(color: Color, filled: Boolean = true, size: Int = 10) {
 }
 
 @Composable
-fun StatusDot(way: Machine.Way) = StatusDot(way.color(), filled = way !is Machine.Way.Offline)
+fun StatusDot(way: Machine.Way) = StatusDot(way.dotColor())
 
 /** Copies a text, and shows for a moment that it did. */
 @Composable

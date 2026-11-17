@@ -49,7 +49,7 @@ import kotlin.math.min
 fun NetworkMap(topology: Topology, machines: List<Machine>, isOn: Boolean, open: (String) -> Unit, modifier: Modifier = Modifier) {
     val known = machines.associateBy { it.id }
     val shown = topology.nodes.mapNotNull { known[it.id] }
-    val colors = shown.map { it.way.color() }
+    val colors = shown.map { it.way.dotColor() }
     val plain = MaterialTheme.colorScheme.outlineVariant
     val mine = MaterialTheme.colorScheme.primary
     val name = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -113,12 +113,8 @@ fun NetworkMap(topology: Topology, machines: List<Machine>, isOn: Boolean, open:
                 val machine = shown[i]
                 val isMe = machine.id == topology.self
                 val at = spot.point.px()
-                // The dot of the list: filled while packets reach the machine.
-                if (machine.isOnline) {
-                    drawCircle(colors[i], 5.dp.toPx(), at)
-                } else {
-                    drawCircle(colors[i], 4.25.dp.toPx(), at, style = Stroke(1.5.dp.toPx()))
-                }
+                // The dot of the list: green while packets reach the machine.
+                drawCircle(colors[i], 5.dp.toPx(), at)
                 if (isMe) {
                     drawCircle(mine, 9.dp.toPx(), at, style = Stroke(1.5.dp.toPx()))
                 }

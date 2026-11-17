@@ -87,12 +87,8 @@ struct NetworkMap: View {
     private func draw(_ spots: [Ring.Spot], in context: inout GraphicsContext) {
         for (spot, machine) in zip(spots, machines) {
             let isMe = machine.id == me
-            // The dot of the list: filled while packets reach the machine.
-            if machine.isOnline {
-                context.fill(circle(at: spot.point, radius: 4.5), with: .color(machine.way.color))
-            } else {
-                context.stroke(circle(at: spot.point, radius: 3.75), with: .color(Color(uiColor: .tertiaryLabel)), lineWidth: 1.5)
-            }
+            // The dot of the list: green while packets reach the machine.
+            context.fill(circle(at: spot.point, radius: 4.5), with: .color(machine.way.dotColor))
             if isMe {
                 context.stroke(circle(at: spot.point, radius: 8.5), with: .color(.accentColor), lineWidth: 1.5)
             }

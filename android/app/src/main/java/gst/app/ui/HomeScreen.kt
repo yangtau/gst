@@ -70,7 +70,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import gst.app.AppModel
@@ -295,23 +294,13 @@ private fun MachineList(
                     supportingContent = machine.address?.let { { Text(it, fontFamily = FontFamily.Monospace) } },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // While gst is off, no way leads anywhere, which
-                            // says nothing of the machines: the row then says
-                            // nothing of the way.
-                            if (isOn) {
-                                Column(horizontalAlignment = Alignment.End, modifier = Modifier.widthIn(max = 150.dp)) {
-                                    Text(
-                                        machine.way.text(),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        textAlign = TextAlign.End,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    val way = machine.way
-                                    if (way is Machine.Way.Offline && way.seen != null) {
-                                        Text(way.seen.ago(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                                    }
-                                }
+                            // The dot says whether packets reach the machine;
+                            // the way they take is in its sheet. While gst is
+                            // off, nothing reaches the machines, which says
+                            // nothing of them.
+                            val way = machine.way
+                            if (isOn && way is Machine.Way.Offline && way.seen != null) {
+                                Text(way.seen.ago(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                             }
                             Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
                         }
