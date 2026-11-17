@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -45,21 +46,37 @@ func (n *Node) EnableDirect(ctx context.Context, network direct.Network) {
 		n.log.Print("UDP paths are off: no socket")
 		return
 	}
-	context.AfterFunc(ctx, udp.Close)
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	n.directCtx, n.udp = ctx, udp
 	n.offerSeen()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
+	n.mu.Unlock()
+	go n.watchNetwork(ctx, network, udp)
+}
+
+// watchNetwork follows this machine from network to network until ctx is
+// done, with udp, the transport of the UDP paths, at first.
+func (n *Node) watchNetwork(ctx context.Context, network direct.Network, udp *direct.Transport) {
+	for {
+		select {
+		case <-ctx.Done():
+			udp.Close()
+			return
+		case <-udp.Changed():
+			n.addressesChanged(ctx)
+		case <-udp.Moved():
+			if udp = n.startOver(ctx, network, udp); udp == nil {
 				return
-			case <-udp.Changed():
-				n.addressesChanged(ctx)
 			}
 		}
-	}()
+	}
+}
+
+// transport returns the transport of the UDP paths; nil while they are
+// off.
+func (n *Node) transport() *direct.Transport {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.udp
 }
 
 // offerSeen has the offers of UDP paths name the addresses that the peers
@@ -80,24 +97,76 @@ func (n *Node) offerSeen() {
 	n.udp.SetSeen(slices.Compact(seen))
 }
 
-// Moved returns a channel that is closed the next time this machine's
-// addresses change, as when it moves to another network. Nothing closes
-// it while UDP paths are off.
+// Moved returns a channel that is closed the next time this machine moves
+// to another network, once the links and UDP paths started over (see
+// startOver), for the daemon to connect its links again at once. Nothing
+// closes it while UDP paths are off, as their transport finds out.
 func (n *Node) Moved() <-chan struct{} {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.moved
 }
 
-// addressesChanged starts over after this machine moved to another network:
-// what failed may work now, and what was measured no longer holds. Each
-// running path measures again, and the other side learns the addresses.
-// Moved tells the rest of the daemon.
+// startOver ends the links and the UDP paths after this machine moved to
+// another network, as a restart of gst would, but keeps the virtual
+// network and what runs on it. What was opened on the old network may be
+// stuck there: a connection that leaves from an address now gone hears
+// nothing until the alive frames give up on it, and on iOS a socket keeps
+// sending to where the old network was. What was learned of the old
+// network, what failed and what was measured, holds no longer either.
+//
+// The links end with a bye, which the other side gets if it still can;
+// otherwise it ends its side when a new link replaces it. The daemon then
+// connects its links again at once (Moved). The paths end with their
+// transport, old, and a new one with new sockets takes its place, which
+// startOver returns; nil when there is no socket, and UDP paths are off.
+// The next packets find paths again.
+func (n *Node) startOver(ctx context.Context, network direct.Network, old *direct.Transport) *direct.Transport {
+	n.log.Print("this machine moved to another network; starting the links and UDP paths over")
+	n.mu.Lock()
+	links := slices.Collect(maps.Keys(n.links))
+	clear(n.directWaits)
+	for _, try := range n.directTries {
+		try.cancel()
+	}
+	n.mu.Unlock()
+	bye := &wire.Bye{Error: wire.Errorf(wire.CodeFailed, "%s moved to another network", n.Self().Name)}
+	for _, l := range links {
+		l.Close(bye)
+	}
+	n.mu.Lock()
+	close(n.moved) // after the links closed, which the daemon's restart would close as stopped
+	n.moved = make(chan struct{})
+	n.mu.Unlock()
+	old.Close()
+	udp, err := direct.Listen(direct.Port, network, n.inSubnet)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err != nil || ctx.Err() != nil {
+		if udp != nil {
+			udp.Close()
+		}
+		n.directCtx, n.udp = nil, nil
+		if err != nil {
+			n.log.Print("UDP paths are off: no socket")
+		}
+		return nil
+	}
+	n.udp = udp
+	n.offerSeen()
+	if through := udp.Stats().Interfaces; len(through) > 0 {
+		n.log.Printf("UDP paths send through %s", strings.Join(through, ", "))
+	}
+	return udp
+}
+
+// addressesChanged takes in new addresses of this machine on the same
+// network, as when a temporary IPv6 address comes: what failed may work
+// now, and what was measured may not hold. Each running path measures
+// again, and the other side learns the addresses.
 func (n *Node) addressesChanged(ctx context.Context) {
 	n.mu.Lock()
 	clear(n.directWaits)
-	close(n.moved)
-	n.moved = make(chan struct{})
 	n.mu.Unlock()
 	n.packets.Range(func(key, value any) bool {
 		id := key.(string)
@@ -289,7 +358,11 @@ func (n *Node) offerDirect(ctx context.Context, id string, try *directTry) {
 // connectDirect offers a path to node id and finds one. Its errors are
 // logged, so they leave out what the other node reports.
 func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Path, error) {
-	path, err := n.udp.Start(func(text string) { n.trace(id, "%s", text) })
+	udp := n.transport()
+	if udp == nil {
+		return nil, errors.New("UDP paths are off")
+	}
+	path, err := udp.Start(func(text string) { n.trace(id, "%s", text) })
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +405,7 @@ func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	switch {
-	case n.directCtx == nil:
+	case n.directCtx == nil || n.udp == nil:
 		return nil, wire.Errorf(wire.CodeFailed, "UDP paths are off on %s", n.info.Name)
 	case from == n.info.ID:
 		return nil, wire.Errorf(wire.CodeInvalidParams, "a UDP path needs another machine")
@@ -387,7 +460,7 @@ func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer
 func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 	n.mu.Lock()
 	delete(n.directWaits, id)
-	ctx := n.directCtx
+	ctx, moved := n.directCtx, n.moved
 	n.mu.Unlock()
 	n.attachPackets(id, path)
 	defer n.Update() // after the path is gone: the watchers see it go
@@ -402,13 +475,22 @@ func (n *Node) runDirect(id string, path *direct.Path, try *directTry) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-moved:
+			n.log.Printf("UDP path to %s: closed, as this machine moved", n.nodeName(id))
+			n.trace(id, "closed, as this machine moved")
+			return
 		case <-path.Done():
 			// Only a failure waits: the other side closed the path on
 			// purpose, as it was idle there or the node left.
 			why := "closed by the other node"
-			if path.FellSilent() {
-				why = "fell silent"
-				n.backOff(id)
+			select {
+			case <-moved: // the transport closed it after the move
+				why = "closed, as this machine moved"
+			default:
+				if path.FellSilent() {
+					why = "fell silent"
+					n.backOff(id)
+				}
 			}
 			n.log.Printf("UDP path to %s: %s", n.nodeName(id), why)
 			n.trace(id, "%s", why)

@@ -135,7 +135,9 @@ type Transport struct {
 	closed  bool
 	done    chan struct{}                            // closed by Close
 	changed chan struct{}                            // for Changed
+	moved   chan struct{}                            // for Moved
 	known   []netip.Addr                             // what Addresses said last; owned by watch
+	place   place                                    // where the machine was last; owned by watch
 	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
 	strays  atomic.Uint64                            // WireGuard packets from unknown sources
 	sources atomic.Pointer[map[netip.AddrPort]*Path] // by the addresses that proved themselves; replaced, never changed
@@ -208,6 +210,7 @@ func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, 
 		public:     map[netip.AddrPort]time.Time{},
 		done:       make(chan struct{}),
 		changed:    make(chan struct{}, 1),
+		moved:      make(chan struct{}, 1),
 	}
 	rand.Read(t.id[:])
 	t.sources.Store(&map[netip.AddrPort]*Path{})
@@ -221,6 +224,7 @@ func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, 
 	}
 	t.bind()
 	t.addressesChanged()
+	t.place = placeOf(t.known)
 	go t.watch()
 	for _, s := range []*socket{t.v4, t.v6} {
 		if s != nil {
@@ -288,19 +292,74 @@ func (t *Transport) watch() {
 	}
 }
 
-// look tells Changed if the machine is on another network now.
+// look tells Moved if the machine moved to another network, and else
+// Changed if its addresses or interfaces changed.
 func (t *Transport) look() {
-	moved := t.bind()
-	if t.addressesChanged() || moved {
-		select {
-		case t.changed <- struct{}{}:
-		default:
-		}
+	rebound := t.bind()
+	changed := t.addressesChanged()
+	switch {
+	case t.movedAway():
+		signal(t.moved)
+	case changed || rebound:
+		signal(t.changed)
 	}
 }
 
-// Changed receives when this machine's addresses or interfaces changed.
+func signal(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
+}
+
+// Changed receives when this machine's addresses or interfaces changed,
+// on the same network.
 func (t *Transport) Changed() <-chan struct{} { return t.changed }
+
+// Moved receives when this machine moved to another network, as a phone
+// does from Wi-Fi to cellular. What was opened on the network before may
+// be stuck on it, as a socket is on iOS: the sockets then need to be new,
+// which takes a new Transport.
+func (t *Transport) Moved() <-chan struct{} { return t.moved }
+
+// place is where this machine is on the internet, as far as moving goes:
+// the IPv4 address that packets leave from, and the /64 of the IPv6 one,
+// in which temporary addresses come and go without a move.
+type place struct {
+	v4 netip.Addr
+	v6 netip.Prefix
+}
+
+// placeOf returns the place of addrs, which Addresses lists with the
+// addresses that packets leave from first.
+func placeOf(addrs []netip.Addr) place {
+	var p place
+	for _, addr := range addrs {
+		switch {
+		case addr.Is4() && !p.v4.IsValid():
+			p.v4 = addr
+		case addr.Is6() && !p.v6.IsValid():
+			p.v6, _ = addr.Prefix(64)
+		}
+	}
+	return p
+}
+
+// movedAway reports whether the machine moved since the last look: an
+// address family that it had then and has now changed. On the way from
+// one network to another, the machine may have no address for a moment,
+// or one family before the other; neither is a move of its own, so that
+// one move counts once.
+func (t *Transport) movedAway() bool {
+	now := placeOf(t.known)
+	if !now.v4.IsValid() && !now.v6.IsValid() {
+		return false // between networks: the next look tells where to
+	}
+	was := t.place
+	t.place = now
+	return was.v4.IsValid() && now.v4.IsValid() && was.v4 != now.v4 ||
+		was.v6.IsValid() && now.v6.IsValid() && was.v6 != now.v6
+}
 
 // Stats reports the sockets, and what they could not place: the fields of
 // wire.DirectStats that belong to this machine's UDP sockets.

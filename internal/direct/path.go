@@ -102,7 +102,7 @@ type Path struct {
 	sweepUntil time.Time
 	nextSweep  time.Time
 	nextBeat   time.Time
-	sendError  string // the kind of error of the latest probe that did not leave, told once
+	sendErrors map[string]bool // the kinds of error of probes that did not leave, each told once
 }
 
 // target is an address of the other side.
@@ -565,8 +565,13 @@ func (p *Path) sendFailed(to netip.AddrPort, err error) {
 		kind = op.Err.Error()
 	}
 	p.mu.Lock()
-	news := kind != p.sendError
-	p.sendError = kind
+	news := !p.sendErrors[kind]
+	if news {
+		if p.sendErrors == nil {
+			p.sendErrors = map[string]bool{}
+		}
+		p.sendErrors[kind] = true
+	}
 	p.mu.Unlock()
 	if news {
 		p.tracef("a probe to %s did not leave: %v", to, err)

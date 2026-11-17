@@ -26,6 +26,7 @@ type supervisor struct {
 	now     chan struct{} // ends the wait before the next try; see retry
 
 	mu         sync.Mutex
+	attempt    context.CancelFunc // ends the current try; nil between tries
 	current    string
 	since      time.Time
 	lastErr    string
@@ -79,16 +80,28 @@ func (s *supervisor) run() {
 	retried := false
 	for {
 		s.set(wire.StateConnecting, "", nil)
-		err := s.connect(func(peer wire.NodeInfo) {
+		ctx, cancel := context.WithCancel(s.ctx)
+		s.mu.Lock()
+		s.attempt = cancel
+		s.mu.Unlock()
+		err := s.connect(ctx, func(peer wire.NodeInfo) {
 			s.set(wire.StateRunning, "", &peer)
 			s.logf("up")
 			wait = s.d.cfg.RetryDelay
 			go s.d.linkUp(s.spec.Destination, peer)
 		})
+		s.mu.Lock()
+		s.attempt = nil
+		s.mu.Unlock()
+		restarted := ctx.Err() != nil
+		cancel()
 		if s.ctx.Err() != nil {
 			return
 		}
-		if err == nil {
+		switch {
+		case restarted:
+			err = errors.New("this machine moved to another network")
+		case err == nil:
 			err = errors.New("the link ended")
 		}
 		logged := err.Error()
@@ -119,18 +132,23 @@ func (s *supervisor) run() {
 	}
 }
 
-func (s *supervisor) connect(onUp func(wire.NodeInfo)) error {
-	conn, err := s.d.cfg.Connect(s.ctx, &s.spec)
+func (s *supervisor) connect(ctx context.Context, onUp func(wire.NodeInfo)) error {
+	conn, err := s.d.cfg.Connect(ctx, &s.spec)
 	if err != nil {
 		return err
 	}
-	return s.d.mesh.Link(s.ctx, s.d.admitted(s.spec.Destination), conn, onUp)
+	return s.d.mesh.Link(ctx, s.d.admitted(s.spec.Destination), conn, onUp)
 }
 
-// retry makes a link that waits to try again try now, and start over
-// with the shortest wait: the machine moved to another network. A link
-// that is connecting takes it as its next wait.
-func (s *supervisor) retry() {
+// restart ends the link's try, whether it runs or still connects, and
+// tries again at once with the shortest wait: the machine moved to
+// another network, where the try may be stuck.
+func (s *supervisor) restart() {
+	s.mu.Lock()
+	if s.attempt != nil {
+		s.attempt()
+	}
+	s.mu.Unlock()
 	select {
 	case s.now <- struct{}{}:
 	default:

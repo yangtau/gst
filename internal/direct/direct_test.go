@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -550,6 +551,17 @@ func TestProbesThatDoNotLeave(t *testing.T) {
 	if len(trace) != 1 || !strings.Contains(trace[0], "did not leave") {
 		t.Fatalf("trace: %q", trace)
 	}
+	mu.Unlock()
+	// Errors of two kinds, as IPv4 and IPv6 give, are told once each.
+	for range 3 {
+		for _, err := range []error{syscall.EHOSTUNREACH, syscall.ENETUNREACH} {
+			p.sendFailed(netip.MustParseAddrPort("192.0.2.1:1"), &net.OpError{Op: "write", Net: "udp", Err: err})
+		}
+	}
+	mu.Lock()
+	if len(trace) != 3 {
+		t.Fatalf("trace: %q", trace)
+	}
 }
 
 // A side that moved to another address keeps its path: its probes prove
@@ -793,7 +805,7 @@ func TestAddressesChange(t *testing.T) {
 	}
 	public := netip.MustParseAddrPort("203.0.113.7:4000")
 	tr.sawPublic(public)
-	addrs = []netip.Addr{netip.MustParseAddr("192.0.2.1"), loopback}
+	addrs = []netip.Addr{loopback, netip.MustParseAddr("192.0.2.1")}
 	tr.look()
 	if !changed() {
 		t.Fatal("no word of new addresses")
@@ -802,15 +814,65 @@ func TestAddressesChange(t *testing.T) {
 		t.Fatal("kept what others saw on the old network")
 	}
 	// A new default route: the same addresses, but packets leave from
-	// another.
-	addrs = []netip.Addr{loopback, netip.MustParseAddr("192.0.2.1")}
+	// another, which is a move.
+	addrs = []netip.Addr{netip.MustParseAddr("192.0.2.1"), loopback}
 	tr.look()
-	if !changed() {
+	select {
+	case <-tr.Moved():
+	default:
 		t.Fatal("no word of another address to leave from")
 	}
 	tr.look()
 	if changed() {
 		t.Fatal("nothing changed since")
+	}
+}
+
+// A move is a change of the address that packets leave from, of a family
+// that the machine had before and has now; temporary IPv6 addresses come
+// and go within a /64, and the way from one network to another passes
+// through having no address, or one family first.
+func TestMoves(t *testing.T) {
+	a := netip.MustParseAddr
+	wifi4, wifi6, wifi6tmp := a("192.168.1.5"), a("2001:db8:1:1::5"), a("2001:db8:1:1:abcd::7")
+	cell4, cell6 := a("10.20.30.40"), a("2001:db8:9:9::40")
+	type step struct {
+		addrs []netip.Addr
+		moved bool
+	}
+	for _, c := range []struct {
+		name  string
+		steps []step
+	}{
+		{"temporary IPv6 address", []step{{[]netip.Addr{wifi4, wifi6tmp, wifi6}, false}}},
+		{"Wi-Fi to cellular", []step{{[]netip.Addr{cell4, cell6}, true}, {[]netip.Addr{cell4, cell6}, false}}},
+		{"through no address", []step{{nil, false}, {[]netip.Addr{cell4, cell6}, true}}},
+		{"one family first", []step{{[]netip.Addr{cell6}, true}, {[]netip.Addr{cell4, cell6}, false}}},
+		{"a family lost and back", []step{{[]netip.Addr{wifi4}, false}, {[]netip.Addr{wifi4, wifi6}, false}}},
+		{"cellular kept, Wi-Fi first", []step{{[]netip.Addr{wifi4, cell4, wifi6, cell6}, false}, {[]netip.Addr{cell4, cell6}, true}}},
+		{"back to Wi-Fi", []step{{[]netip.Addr{cell4, cell6}, true}, {[]netip.Addr{wifi4, wifi6}, true}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			addrs := []netip.Addr{wifi4, wifi6}
+			tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return slices.Clone(addrs) }}, never)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tr.Close()
+			for i, st := range c.steps {
+				addrs = st.addrs
+				tr.look()
+				moved := false
+				select {
+				case <-tr.Moved():
+					moved = true
+				default:
+				}
+				if moved != st.moved {
+					t.Fatalf("step %d (%v): moved %v", i, st.addrs, moved)
+				}
+			}
+		})
 	}
 }
 

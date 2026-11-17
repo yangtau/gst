@@ -76,7 +76,7 @@ type Node struct {
 	routes     map[string][]string  // shortest routes along the links, from this node, by node id
 	lost       map[string]time.Time // when nodes stopped being reachable, by node id
 	changed    chan struct{}        // closed and replaced at every change
-	moved      chan struct{}        // closed and replaced when the machine's addresses change; see Moved
+	moved      chan struct{}        // closed and replaced when the machine moves to another network; see Moved
 	seenTable  <-chan struct{}      // the table's Changed at the last change
 	seenDirect string               // the nodes with UDP paths at the last change
 

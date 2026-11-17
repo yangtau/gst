@@ -994,11 +994,7 @@ func TestMovingRetriesLinksAtOnce(t *testing.T) {
 	failed := a.attemptsTo("refuse")[before-1].at
 
 	moved := time.Now()
-	a.d.mu.Lock()
-	for _, s := range a.d.links {
-		s.retry()
-	}
-	a.d.mu.Unlock()
+	a.d.restartLinks()
 	waitFor(t, "a new attempt", func() bool { return len(a.attemptsTo("refuse")) > before })
 	at := a.attemptsTo("refuse")
 	// The wait that it cut short was 4 x base.
@@ -1010,5 +1006,27 @@ func TestMovingRetriesLinksAtOnce(t *testing.T) {
 	// Without the move, it would be 8 x base by now.
 	if gap := at[before+1].at.Sub(at[before].at); gap < base || gap >= 4*base {
 		t.Errorf("the wait after the move = %v, want about %v", gap, base)
+	}
+}
+
+// Moving connects again at once a link that runs and one that is still
+// connecting, which may both be stuck on the old network, however long
+// the wait after a failure would be.
+func TestMovingRestartsLinks(t *testing.T) {
+	w := newWorld(t)
+	startTestNode(t, w, "b")
+	a := newTestNode(t, w, "a", false, time.Hour)
+	a.start()
+	a.linkTo("b")
+	a.apply(func(f *config.File) { addLinks(f, "hang") })
+	waitFor(t, "a connects to hang", func() bool { return len(a.attemptsTo("hang")) == 1 })
+
+	a.d.restartLinks()
+	waitFor(t, "both connect again", func() bool {
+		return len(a.attemptsTo("hang")) == 2 && len(a.attemptsTo("b")) == 2
+	})
+	waitFor(t, "the link to b runs again", func() bool { l, _ := a.link("b"); return l.State == wire.StateRunning })
+	if !strings.Contains(a.log.String(), linkLog("hang")+": this machine moved to another network") {
+		t.Errorf("log:\n%s", a.log.String())
 	}
 }

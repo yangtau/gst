@@ -222,7 +222,7 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		d.cfg.Log.Print(err)
 	}
 	go d.dropRemovedLinks(meshCtx)
-	go d.retryWhenMoved(meshCtx)
+	go d.restartWhenMoved(meshCtx)
 	netDone := make(chan struct{})
 	go func() {
 		defer close(netDone)
@@ -490,22 +490,29 @@ func (d *Daemon) dropRemovedLinks(ctx context.Context) {
 	}
 }
 
-// retryWhenMoved makes the links that wait to try again try at once
-// whenever this machine moves to another network, until ctx is done: what
-// kept them from connecting may be gone, and a machine that moves often,
-// as a phone does, would otherwise wait out the longest delay each time.
-func (d *Daemon) retryWhenMoved(ctx context.Context) {
+// restartWhenMoved connects every link again at once whenever this
+// machine moves to another network, until ctx is done: a link that ran
+// or was connecting may be stuck on the old network, and what kept a link
+// from connecting may be gone; a machine that moves often, as a phone
+// does, would otherwise wait out the longest delay each time. The mesh
+// ended the links that ran already (Moved).
+func (d *Daemon) restartWhenMoved(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-d.mesh.Moved():
 		}
-		d.mu.Lock()
-		for _, s := range d.links {
-			s.retry()
-		}
-		d.mu.Unlock()
+		d.restartLinks()
+	}
+}
+
+// restartLinks connects every link again at once.
+func (d *Daemon) restartLinks() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, s := range d.links {
+		s.restart()
 	}
 }
 

@@ -429,12 +429,12 @@ func TestPacketsThatUDPCannotSend(t *testing.T) {
 	}
 }
 
-// Moving to another network ends the wait after failures, and a running
-// path measures again, on both sides.
-func TestNetworkChange(t *testing.T) {
+// New addresses on the same network end the wait after failures, and a
+// running path measures again, on both sides; the links stay.
+func TestAddressesChange(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	enableDirect(t, a, c)
-	linkUp(t, a, c)
+	l := linkUp(t, a, c)
 	goDirect(t, a, c)
 	a.backOff(nid("gone"))
 
@@ -446,7 +446,41 @@ func TestNetworkChange(t *testing.T) {
 	if waits != 0 {
 		t.Fatalf("%d waits left", waits)
 	}
-	// The daemon hears of it too, for its links.
+	waitFor(t, "c hears of it", func() bool {
+		r, err := c.DirectReport(t.Context(), "a")
+		return err == nil && slices.ContainsFunc(r.Local.Events, func(e wire.DirectEvent) bool {
+			return strings.HasPrefix(e.Text, "update over SSH")
+		})
+	})
+	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
+		t.Fatal("the path ended")
+	}
+	select {
+	case <-moved:
+		t.Fatal("Moved tells of a move that did not happen")
+	case err := <-l.done:
+		t.Fatalf("the link ended: %v", err)
+	default:
+	}
+}
+
+// Moving to another network ends the links, the UDP paths, and the wait
+// after failures, and tells the daemon; a new link then finds a path
+// again, on new sockets.
+func TestMoving(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	boxes := enableDirect(t, a, c)
+	l := linkUp(t, a, c)
+	goDirect(t, a, c)
+	a.backOff(nid("gone"))
+	old := a.transport()
+
+	moved := a.Moved()
+	udp := a.startOver(t.Context(), loopback, old)
+	if udp == nil || udp == old || a.transport() != udp {
+		t.Fatalf("transport %p, was %p", udp, old)
+	}
+	t.Cleanup(udp.Close)
 	select {
 	case <-moved:
 	default:
@@ -457,15 +491,21 @@ func TestNetworkChange(t *testing.T) {
 		t.Fatal("Moved tells of a move that did not happen")
 	default:
 	}
-	waitFor(t, "c hears of it", func() bool {
-		r, err := c.DirectReport(t.Context(), "a")
-		return err == nil && slices.ContainsFunc(r.Local.Events, func(e wire.DirectEvent) bool {
-			return strings.HasPrefix(e.Text, "update over SSH")
-		})
-	})
-	if !hasDirect(a, nid("c")) || !hasDirect(c, nid("a")) {
-		t.Fatal("the path ended")
+	if err := l.wait(t); err == nil || !strings.Contains(err.Error(), "moved to another network") {
+		t.Fatalf("the link ended with %v", err)
 	}
+	waitFor(t, "the path ends on both sides", func() bool { return !hasDirect(a, nid("c")) && !hasDirect(c, nid("a")) })
+	a.mu.Lock()
+	waits := len(a.directWaits)
+	a.mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("%d waits left", waits)
+	}
+
+	linkUp(t, a, c)
+	goDirect(t, a, c)
+	a.SendPacket(nid("c"), wg("after the move"))
+	waitFor(t, "the packet arrives", func() bool { return boxes[c].has(nid("a"), string(wg("after the move"))) })
 }
 
 func TestDirectUpdateInvalid(t *testing.T) {
