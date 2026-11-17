@@ -112,9 +112,9 @@ func gst_start(apply C.gst_apply_fn, forward C.gst_forward_fn, context unsafe.Po
 }
 
 //export gst_stop
-func gst_stop() {
+func gst_stop(why *C.char) {
 	if a := app.Load(); a != nil {
-		a.Stop()
+		a.Stop(C.GoString(why))
 	}
 }
 

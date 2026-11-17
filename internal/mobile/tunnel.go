@@ -117,6 +117,7 @@ func (a *App) Start(sys System) error {
 		NetInside:  true,
 		NetForward: sys.Forward,
 		Log:        log.New(logFile, "", log.LstdFlags),
+		LogFile:    a.logPath(),
 	})
 	ctx, stop := context.WithCancel(context.Background())
 	r := &running{daemon: d, stop: stop, done: make(chan struct{}), log: logFile}
@@ -128,8 +129,9 @@ func (a *App) Start(sys System) error {
 	return nil
 }
 
-// Stop stops the daemon and waits until it has.
-func (a *App) Stop() {
+// Stop stops the daemon and waits until it has. why, for the log, says
+// what stopped it, such as the system or the person.
+func (a *App) Stop(why string) {
 	a.mu.Lock()
 	r := a.running
 	a.running = nil
@@ -137,6 +139,7 @@ func (a *App) Stop() {
 	if r == nil {
 		return
 	}
+	log.New(r.log, "", log.LstdFlags).Printf("stopping: %s", why)
 	r.stop()
 	<-r.done
 	r.log.Close()

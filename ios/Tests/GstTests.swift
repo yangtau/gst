@@ -54,7 +54,7 @@ final class GstTests: XCTestCase {
             asked.fulfill()
             return "this test has no interface"
         }
-        defer { Core.stop() }
+        defer { Core.stop(why: "the test is done") }
         await fulfillment(of: [asked], timeout: 20)
         let settings = try XCTUnwrap(applied.get())
         XCTAssertEqual(settings.dns, "198.18.0.53")

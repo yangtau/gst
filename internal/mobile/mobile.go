@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -343,22 +342,8 @@ func (a *App) newKey() (any, error) {
 const logTail = 64 << 10
 
 func (a *App) log() (Log, error) {
-	var text []byte
-	// The file before the latest rotation comes first.
-	for _, path := range []string{a.logPath() + ".1", a.logPath()} {
-		data, err := os.ReadFile(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return Log{}, err
-		}
-		text = append(text, data...)
-	}
-	if len(text) > logTail {
-		text = text[len(text)-logTail:]
-		if i := slices.Index(text, '\n'); i >= 0 {
-			text = text[i+1:]
-		}
-	}
-	return Log{Text: string(text)}, nil
+	text, err := logfile.End(a.logPath(), logTail)
+	return Log{Text: text}, err
 }
 
 // connectLink connects to the daemon on the machine of link l over SSH,

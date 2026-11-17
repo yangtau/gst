@@ -2,6 +2,8 @@
 package logfile
 
 import (
+	"bytes"
+	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -66,3 +68,24 @@ func (l *File) Write(p []byte) (int, error) {
 }
 
 func (l *File) Close() error { return l.file.Close() }
+
+// End returns the last size bytes of the log at path, across its latest
+// rotation, from the start of a line: empty when there is no log.
+func End(path string, size int) (string, error) {
+	var text []byte
+	// The file before the latest rotation comes first.
+	for _, p := range []string{path + ".1", path} {
+		data, err := os.ReadFile(p)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		text = append(text, data...)
+	}
+	if len(text) > size {
+		text = text[len(text)-size:]
+		if i := bytes.IndexByte(text, '\n'); i >= 0 {
+			text = text[i+1:]
+		}
+	}
+	return string(text), nil
+}

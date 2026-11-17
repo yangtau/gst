@@ -178,7 +178,9 @@ JNIEXPORT jbyteArray JNICALL Java_gst_app_Core_start(JNIEnv *env, jclass c, jobj
 	return bytes(env, failed);
 }
 
-JNIEXPORT void JNICALL Java_gst_app_Core_stop(JNIEnv *env, jclass c) {
-	gst_stop();
+JNIEXPORT void JNICALL Java_gst_app_Core_stop(JNIEnv *env, jclass c, jbyteArray why) {
+	char *w = text(env, why);
+	gst_stop(w);
+	free(w);
 	release(env);
 }

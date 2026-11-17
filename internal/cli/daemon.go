@@ -76,6 +76,7 @@ func (a *app) daemonRunCommand() *cobra.Command {
 				},
 				NetDNS:  tun.DNSAddress,
 				NetEcho: tun.EchoPort,
+				LogFile: logPath,
 			})
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)

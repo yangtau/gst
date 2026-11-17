@@ -76,14 +76,14 @@ class GstVpnService : VpnService(), Core.System {
 
     private val timeout = Runnable {
         if (Tunnel.state.value == Tunnel.State.Connecting) {
-            end(getString(R.string.error_no_network))
+            end(getString(R.string.error_no_network), "the interface was not set up in time")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             STOP -> {
-                end(null)
+                end(null, "turned off in the app")
                 return START_NOT_STICKY
             }
             // START, the system's own as Always-on VPN starts it, or none
@@ -96,7 +96,7 @@ class GstVpnService : VpnService(), Core.System {
     override fun onRevoke() {
         // Another VPN took over, or the person turned gst off in the system's settings.
         Tunnel.setWanted(this, false)
-        end(null)
+        end(null, "another VPN took over, or the VPN was turned off in the system's settings")
     }
 
     override fun onDestroy() {
@@ -104,7 +104,7 @@ class GstVpnService : VpnService(), Core.System {
         unwatch()
         if (isRunning) {
             isRunning = false
-            worker.execute { Core.stop() }
+            worker.execute { Core.stop("the system stopped the VPN") }
             Tunnel.set(Tunnel.State.Off)
         }
         worker.shutdown()
@@ -123,7 +123,7 @@ class GstVpnService : VpnService(), Core.System {
                 Core.start(this)
                 main.post { watch() }
             } catch (e: Exception) {
-                main.post { end(e.message ?: getString(R.string.error_no_network)) }
+                main.post { end(e.message ?: getString(R.string.error_no_network), "it could not start") }
             }
         }
     }
@@ -145,8 +145,8 @@ class GstVpnService : VpnService(), Core.System {
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networks)
     }
 
-    /** Stops gst, with what went wrong, if something did. */
-    private fun end(failure: String?) {
+    /** Stops gst, with what went wrong for the person, if something did, and [why] for the log. */
+    private fun end(failure: String?, why: String) {
         main.removeCallbacks(timeout)
         unwatch()
         Tunnel.failure = failure
@@ -154,7 +154,7 @@ class GstVpnService : VpnService(), Core.System {
             isRunning = false
             Tunnel.set(Tunnel.State.Disconnecting)
             worker.execute {
-                Core.stop()
+                Core.stop(why)
                 Tunnel.set(Tunnel.State.Off)
                 main.post { stopSelf() }
             }

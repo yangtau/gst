@@ -49,10 +49,12 @@ object Core {
      */
     @JvmStatic external fun call(request: ByteArray): ByteArray
 
-    /** Stops the daemon, and returns once it has. */
-    @JvmStatic external fun stop()
+    /** Stops the daemon, and returns once it has; [why] says, for the log, what stopped it. */
+    fun stop(why: String) = stop(why.encodeToByteArray())
 
     @JvmStatic private external fun open(directory: ByteArray, name: ByteArray): ByteArray?
 
     @JvmStatic @JvmName("start") private external fun startDaemon(system: System): ByteArray?
+
+    @JvmStatic private external fun stop(why: ByteArray)
 }

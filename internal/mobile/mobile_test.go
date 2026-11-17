@@ -316,7 +316,7 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	if err := vpn.Start(System{Apply: func(s Settings) (int, error) { settings <- s; return -1, nil }}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(vpn.Stop)
+	t.Cleanup(func() { vpn.Stop("the test is done") })
 	if err := vpn.Start(System{}); err == nil {
 		t.Fatal("started twice")
 	}
@@ -391,8 +391,17 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	if err := call(t, vpn, wire.MethodReload, nil, &st); err != nil || len(st.Links) != 0 || st.Node.Name != "phone" {
 		t.Fatalf("reload: %+v, %v", st, err)
 	}
+	// gst log, from another machine, reads the log file, which outlasts
+	// the daemon.
+	var daemonLog, appLog wire.Log
+	if err := call(t, vpn, wire.MethodLog, wire.NodeParams{}, &daemonLog); err != nil || !strings.Contains(daemonLog.Text, "daemon ready") {
+		t.Fatalf("daemon log = %q, %v", daemonLog.Text, err)
+	}
+	if err := call(t, app, MethodLog, nil, &appLog); err != nil || appLog.Text != daemonLog.Text {
+		t.Fatalf("app log = %q, %v; the daemon's %q", appLog.Text, err, daemonLog.Text)
+	}
 
-	vpn.Stop()
+	vpn.Stop("the test is done")
 	select {
 	case <-device.closed:
 	default:
@@ -404,6 +413,7 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	// The log is for the app to show, and names no server.
 	var logged Log
 	if err := call(t, app, MethodLog, nil, &logged); err != nil || !strings.Contains(logged.Text, "daemon ready") ||
+		!strings.Contains(logged.Text, "stopping: the test is done\n") ||
 		!strings.Contains(logged.Text, "link "+config.LinkID(link.Destination)+": up in ") ||
 		// How long each step took, to tell what slows a link down.
 		!regexp.MustCompile(`: up in \S+: TCP \S+, SSH \S+, gst peer-bridge \S+, handshake \S+\n`).MatchString(logged.Text) {

@@ -69,7 +69,7 @@ class CoreTest {
             }
             assertTrue(error, "no interface on this machine" in error)
         } finally {
-            Core.stop()
+            Core.stop("the test is done")
         }
         assertTrue(call("daemon.status")["error"].toString().contains("not running"))
     }

@@ -40,7 +40,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         paths.cancel()
         DispatchQueue.global(qos: .userInitiated).async {
-            Core.stop()
+            Core.stop(why: Self.text(of: reason))
             completionHandler()
         }
     }
@@ -85,6 +85,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return nil
     }
 
+    /// Why the system stops the tunnel, for the log.
+    private static func text(of reason: NEProviderStopReason) -> String {
+        switch reason {
+        case .userInitiated: "turned off by the person"
+        case .superceded: "another VPN started"
+        case .configurationDisabled, .configurationRemoved, .providerDisabled: "the VPN was turned off or removed in the system's settings"
+        case .noNetworkAvailable: "no network"
+        case .unrecoverableNetworkChange: "the network changed so that the system restarts the VPN"
+        case .appUpdate: "the app is updated"
+        case .sleep: "the device sleeps"
+        case .idleTimeout: "idle"
+        case .providerFailed: "the system says the VPN failed"
+        default: "the system stopped the VPN (reason \(reason.rawValue))"
+        }
+    }
+
     /// What the system answered, for the thread that waits for it.
     private final class Outcome {
         var error: Error?
@@ -96,8 +112,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return started
         }
         guard let answer else { return }
-        if error != nil {
-            Core.stop()
+        if let error {
+            Core.stop(why: "it could not start: \(error.localizedDescription)")
         }
         answer(error)
     }

@@ -36,3 +36,28 @@ func TestLogFileRotates(t *testing.T) {
 		t.Fatalf("second rotation left %q", old)
 	}
 }
+
+func TestEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "myhost.log")
+	if text, err := End(path, 100); err != nil || text != "" {
+		t.Fatalf("no log: %q, %v", text, err)
+	}
+	if err := os.WriteFile(path+".1", []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("three\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		size int
+		want string
+	}{
+		{100, "one\ntwo\nthree\n"},
+		{10, "three\n"}, // from the start of a line
+		{11, "two\nthree\n"}, // the rotated file comes first
+	} {
+		if text, err := End(path, c.size); err != nil || text != c.want {
+			t.Errorf("End(%d) = %q, %v; want %q", c.size, text, err, c.want)
+		}
+	}
+}

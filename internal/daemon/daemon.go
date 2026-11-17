@@ -25,6 +25,7 @@ import (
 
 	"github.com/yangtau/ssh-tunnel/internal/config"
 	"github.com/yangtau/ssh-tunnel/internal/direct"
+	"github.com/yangtau/ssh-tunnel/internal/logfile"
 	"github.com/yangtau/ssh-tunnel/internal/mesh"
 	"github.com/yangtau/ssh-tunnel/internal/tun"
 	"github.com/yangtau/ssh-tunnel/internal/vnet"
@@ -68,6 +69,12 @@ type Config struct {
 	RetryDelay time.Duration
 	// Log receives the daemon's own log; the standard logger when nil.
 	Log *log.Logger
+	// LogFile, unless it is empty, is the file (internal/logfile) that Log
+	// writes to, whose end gst log shows, from before the daemon started
+	// too. Without it, gst log shows what the daemon logged since it
+	// started: the system may keep the log where no gst command reads it,
+	// as journald does.
+	LogFile string
 }
 
 // Daemon runs links, the virtual network, and control connections.
@@ -99,10 +106,10 @@ func New(cfg Config) *Daemon {
 		cfg.StateDir = filepath.Dir(cfg.Socket)
 	}
 	d := &Daemon{cfg: cfg, links: map[string]*supervisor{}}
-	// The end of the log, for gst log: the system may keep the log where
-	// no gst command reads it, as journald does, or a phone's app.
-	cfg.Log = log.New(io.MultiWriter(cfg.Log.Writer(), &d.tail), cfg.Log.Prefix(), cfg.Log.Flags())
-	d.cfg.Log = cfg.Log
+	if cfg.LogFile == "" {
+		cfg.Log = log.New(io.MultiWriter(cfg.Log.Writer(), &d.tail), cfg.Log.Prefix(), cfg.Log.Flags())
+		d.cfg.Log = cfg.Log
+	}
 	m := mesh.New(mesh.Config{
 		Software:       cfg.Software,
 		Log:            cfg.Log,
@@ -162,15 +169,27 @@ func New(cfg Config) *Daemon {
 	wire.Handle(&d.control, wire.MethodNetwork, none(func() any { m.LookAtNetwork(); return struct{}{} }))
 	wire.Handle(&d.control, wire.MethodLog, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		if p.Node == "" {
-			return wire.Log{Text: d.tail.String()}, nil
+			return d.log()
 		}
 		var l wire.Log
 		err := m.Call(ctx, p.Node, wire.MethodPeerLog, nil, &l)
 		return l, err
 	})
 	mesh.Handle(m, wire.MethodNetPrefixes, func(context.Context, struct{}) (any, error) { return d.net.UsedPrefixes(), nil })
-	mesh.Handle(m, wire.MethodPeerLog, func(context.Context, struct{}) (any, error) { return wire.Log{Text: d.tail.String()}, nil })
+	mesh.Handle(m, wire.MethodPeerLog, func(context.Context, struct{}) (any, error) { return d.log() })
 	return d
+}
+
+// log returns the end of the daemon's log, for gst log.
+func (d *Daemon) log() (wire.Log, error) {
+	if d.cfg.LogFile == "" {
+		return wire.Log{Text: d.tail.String()}, nil
+	}
+	text, err := logfile.End(d.cfg.LogFile, logTailSize)
+	if err != nil {
+		return wire.Log{}, errors.New("the log file cannot be read")
+	}
+	return wire.Log{Text: text}, nil
 }
 
 // Serve takes the control socket, starts what the configuration asks

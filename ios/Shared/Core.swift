@@ -58,9 +58,10 @@ enum Core {
         }
     }
 
-    /// Stops the daemon, and returns once it has.
-    static func stop() {
-        gst_stop()
+    /// Stops the daemon, and returns once it has; `why` says, for the
+    /// log, what stopped it.
+    static func stop(why: String) {
+        gst_stop(why)
     }
 
     /// The handler that gst calls, kept alive while the daemon may.

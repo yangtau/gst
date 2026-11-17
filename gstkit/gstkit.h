@@ -40,8 +40,9 @@ char *gst_call(const char *request);
 // itself. It returns NULL, or what failed.
 char *gst_start(gst_apply_fn apply, gst_forward_fn forward, void *context);
 
-// gst_stop stops the daemon and returns once it has.
-void gst_stop(void);
+// gst_stop stops the daemon and returns once it has. why says, for the
+// log, what stopped it, such as the system or the person.
+void gst_stop(const char *why);
 
 // gst_free frees a text that a function here returned.
 void gst_free(char *text);

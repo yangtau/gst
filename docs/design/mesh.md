@@ -164,7 +164,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近两次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
 | `daemon.network` | 无 | 无：系统说本机网络变了，daemon 立刻检查，不等下一次。手机 App 用它转告系统的通知 |
-| `daemon.log` | `{"node": <machine>}`，可省 | `{"text": …}`：本机 daemon 日志的末尾，给了机器时经路由层调用它的 `log`。daemon 在内存里保留启动以来最后 128 KiB 的整行，因为系统可能把日志放在 gst 命令读不到的地方（journald、手机 App 的目录）。`gst log` 用它 |
+| `daemon.log` | `{"node": <machine>}`，可省 | `{"text": …}`：本机 daemon 日志的末尾，给了机器时经路由层调用它的 `log`。最多 128 KiB 的整行：daemon 有日志文件时（macOS 的 launchd 服务、手机，`Config.LogFile`）读文件的末尾，包括轮转前的那个，所以也包含重启之前的；没有时（Linux 上日志在 journald）是内存里保留的启动以来的部分。手机上 App 停止 daemon 时写下原因（系统给的停止原因、用户关闭、另一个 VPN 接管等）。`gst log` 用它 |
 
 link 状态：`connecting`（建立 SSH 与握手中）、`running`（握手完成）、`down`（失败，等待重试）。失败后的等待从 5 秒起每次翻倍，最长 5 分钟；link 进入 running 后重置。本机换到另一个网络时（[UDP 路径](#udp-路径)的地址检查发现，见那里的「换网络」），所有 link 重新开始，等待回到 5 秒：运行中的 link 由 mesh 发 `bye` 关闭，连接中的由 daemon 取消（`Node.Moved`），然后立即重连。旧网络上的连接可能已经悄悄断了：它从已经不在的地址发出，两端往往收不到错误，要等 45 秒没收到东西才发现；连接中的也可能卡在旧网络上。挡住等待中的 link 的原因也可能已经不在了，而手机这样常换网络的机器否则每次都要等满最长的间隔。对端那头的旧 link 收到 `bye` 就结束，收不到也会在新 link 连上时被替换。link 连上时，日志记下用了多久和每一步的时间，比如 `up in 2.1s: TCP 0.31s, SSH 1.2s, gst peer-bridge 0.4s, handshake 0.2s`（经 `ssh` 命令连接的只有 `ssh` 一项），好知道慢在哪里。
 
