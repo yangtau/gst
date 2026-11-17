@@ -69,7 +69,7 @@ func TestBindAnOpenSocket(t *testing.T) {
 // A socket that sends through one interface still receives from all: here
 // from the loopback interface while it sends through the default one.
 func TestBoundSocketReceivesFromEveryInterface(t *testing.T) {
-	index, _ := physicalInterfaces()
+	index, _ := physicalInterfaces(lookAtInterfaces())
 	if index == 0 {
 		t.Skip("no default route")
 	}

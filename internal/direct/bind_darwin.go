@@ -22,7 +22,7 @@ import (
 // physicalInterfaces returns the interfaces that reach the internet below
 // any tunnel, for IPv4 and for IPv6; 0 when there is none, which leaves it
 // to the routes.
-func physicalInterfaces() (v4, v6 int) {
+func physicalInterfaces(m interfaces) (v4, v6 int) {
 	rib, err := route.FetchRIB(syscall.AF_UNSPEC, syscall.NET_RT_DUMP2, 0)
 	if err != nil {
 		return 0, 0
@@ -31,7 +31,7 @@ func physicalInterfaces() (v4, v6 int) {
 	if err != nil {
 		return 0, 0
 	}
-	return chooseInterfaces(messages, tunnelAt)
+	return chooseInterfaces(messages, m.tunnelAt)
 }
 
 // chooseInterfaces finds the default routes through a gateway that are not a

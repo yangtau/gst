@@ -26,24 +26,15 @@ const maxPerFamily = 8
 func Addresses() []netip.Addr {
 	// Android keeps the list of interfaces from apps; the address that
 	// packets leave from is all there is to offer there.
-	interfaces, _ := net.Interfaces()
-	index4, index6 := defaultInterfaces()
-	v4 := sendingAddress("udp4", internet4, index4)
-	v6 := sendingAddress("udp6", internet6, index6)
-	for _, i := range interfaces {
-		if i.Flags&net.FlagUp == 0 || tunnel(i) {
+	m := lookAtInterfaces()
+	index4, index6 := m.defaultInterfaces()
+	v4 := m.sendingAddress("udp4", internet4, index4)
+	v6 := m.sendingAddress("udp6", internet6, index6)
+	for _, i := range m {
+		if i.Flags&net.FlagUp == 0 || tunnel(i.Interface) {
 			continue
 		}
-		addrs, err := i.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			prefix, err := netip.ParsePrefix(a.String())
-			if err != nil {
-				continue
-			}
-			addr := prefix.Addr().Unmap()
+		for _, addr := range i.addrs {
 			switch {
 			case !addr.IsGlobalUnicast():
 			case addr.Is4():
@@ -66,10 +57,29 @@ const (
 	internet6 = "[2001:db8::1]:15355"
 )
 
+// interfaces is a look at this machine's interfaces and their addresses,
+// taken once for all the questions of a look at the network: listing them
+// costs a system call for each interface.
+type interfaces []iface
+
+type iface struct {
+	net.Interface
+	addrs []netip.Addr
+}
+
+func lookAtInterfaces() interfaces {
+	list, _ := net.Interfaces()
+	m := make(interfaces, 0, len(list))
+	for _, i := range list {
+		m = append(m, iface{i, interfaceAddresses(i)})
+	}
+	return m
+}
+
 // sendingAddress asks the system where packets to target, an address on the
 // internet, would leave from, through the interface at index unless it is
 // 0. Connecting a UDP socket sends nothing.
-func sendingAddress(network, target string, index int) []netip.Addr {
+func (m interfaces) sendingAddress(network, target string, index int) []netip.Addr {
 	dialer := net.Dialer{ControlContext: func(_ context.Context, _, _ string, c syscall.RawConn) error {
 		if index == 0 {
 			return nil
@@ -82,11 +92,13 @@ func sendingAddress(network, target string, index int) []netip.Addr {
 	}
 	defer conn.Close()
 	addr := conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
-	if i := interfaceOf(addr); index != 0 && (i == nil || i.Index != index) {
-		// A kernel that does not apply the interface to a connected
-		// socket reports the address that the routes pick, a tunnel's;
-		// the sockets send from the interface's own.
-		addr = firstAddress(index, addr.Is4())
+	if index != 0 {
+		if i := m.of(addr); i == nil || i.Index != index {
+			// A kernel that does not apply the interface to a connected
+			// socket reports the address that the routes pick, a
+			// tunnel's; the sockets send from the interface's own.
+			addr = m.firstAddress(index, addr.Is4())
+		}
 	}
 	if !addr.IsGlobalUnicast() {
 		return nil
@@ -96,21 +108,30 @@ func sendingAddress(network, target string, index int) []netip.Addr {
 
 // intoTunnel reports whether the routes send packets to target, an address
 // on the internet, into a tunnel, as when a VPN or a proxy took them.
-func intoTunnel(network, target string) bool {
-	addrs := sendingAddress(network, target, 0)
+func (m interfaces) intoTunnel(network, target string) bool {
+	addrs := m.sendingAddress(network, target, 0)
 	if len(addrs) == 0 {
 		return false
 	}
-	i := interfaceOf(addrs[0])
-	return i != nil && tunnel(*i)
+	i := m.of(addrs[0])
+	return i != nil && tunnel(i.Interface)
 }
 
-// interfaceOf returns the interface that has addr; nil when none has.
-func interfaceOf(addr netip.Addr) *net.Interface {
-	interfaces, _ := net.Interfaces()
-	for _, i := range interfaces {
-		if slices.Contains(interfaceAddresses(i), addr) {
-			return &i
+// of returns the interface that has addr; nil when none has.
+func (m interfaces) of(addr netip.Addr) *iface {
+	for i := range m {
+		if slices.Contains(m[i].addrs, addr) {
+			return &m[i]
+		}
+	}
+	return nil
+}
+
+// at returns the interface at index; nil when there is none.
+func (m interfaces) at(index int) *iface {
+	for i := range m {
+		if m[i].Index == index {
+			return &m[i]
 		}
 	}
 	return nil
@@ -118,14 +139,12 @@ func interfaceOf(addr netip.Addr) *net.Interface {
 
 // firstAddress returns the first global address of the interface at index,
 // of IPv4 or of IPv6; not valid when it has none.
-func firstAddress(index int, v4 bool) netip.Addr {
-	i, err := net.InterfaceByIndex(index)
-	if err != nil {
-		return netip.Addr{}
-	}
-	for _, addr := range interfaceAddresses(*i) {
-		if addr.Is4() == v4 && addr.IsGlobalUnicast() {
-			return addr
+func (m interfaces) firstAddress(index int, v4 bool) netip.Addr {
+	if i := m.at(index); i != nil {
+		for _, addr := range i.addrs {
+			if addr.Is4() == v4 && addr.IsGlobalUnicast() {
+				return addr
+			}
 		}
 	}
 	return netip.Addr{}
@@ -152,7 +171,7 @@ func tunnel(i net.Interface) bool {
 }
 
 // tunnelAt says whether the interface at index is a tunnel, or gone.
-func tunnelAt(index int) bool {
-	i, err := net.InterfaceByIndex(index)
-	return err != nil || tunnel(*i)
+func (m interfaces) tunnelAt(index int) bool {
+	i := m.at(index)
+	return i == nil || tunnel(i.Interface)
 }

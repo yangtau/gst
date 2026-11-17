@@ -9,7 +9,10 @@ import (
 )
 
 const (
-	sleepCheck = time.Second     // how often the node looks whether the machine slept
+	// sleepCheck is how often the node looks whether the machine slept. A
+	// look measures all the time since the one before, so a longer wait
+	// only tells it later, and wakes the machine less.
+	sleepCheck = 5 * time.Second
 	sleepMin   = 2 * time.Second // a shorter sleep goes unsaid
 )
 

@@ -110,7 +110,11 @@ type Network struct {
 // System returns this machine's network: its addresses, and on macOS and
 // Linux the interfaces that reach the internet around any VPN or proxy.
 func System() Network {
-	return Network{Addresses: Addresses, Interfaces: defaultInterfaces, Has: func(addr netip.Addr) bool { return interfaceOf(addr) != nil }}
+	return Network{
+		Addresses:  Addresses,
+		Interfaces: func() (v4, v6 int) { return lookAtInterfaces().defaultInterfaces() },
+		Has:        func(addr netip.Addr) bool { return lookAtInterfaces().of(addr) != nil },
+	}
 }
 
 // Transport is this daemon's end of all its UDP paths.

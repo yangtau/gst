@@ -10,12 +10,12 @@ package direct
 // on another network of the machine, behind a second network card or a
 // bridge to containers. A bound socket sends to such an address through the
 // one interface, where it goes nowhere.
-func defaultInterfaces() (v4, v6 int) {
-	into4, into6 := intoTunnel("udp4", internet4), intoTunnel("udp6", internet6)
+func (m interfaces) defaultInterfaces() (v4, v6 int) {
+	into4, into6 := m.intoTunnel("udp4", internet4), m.intoTunnel("udp6", internet6)
 	if !into4 && !into6 {
 		return 0, 0
 	}
-	v4, v6 = physicalInterfaces()
+	v4, v6 = physicalInterfaces(m)
 	if !into4 {
 		v4 = 0
 	}

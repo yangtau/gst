@@ -20,16 +20,17 @@ func routes(skip string) []netip.Prefix {
 	if err != nil {
 		return nil
 	}
+	skipIndex := -1 // looked up once: each lookup lists all the interfaces
+	if skip != "" {
+		if i, err := net.InterfaceByName(skip); err == nil {
+			skipIndex = i.Index
+		}
+	}
 	var out []netip.Prefix
 	for _, m := range messages {
 		r, ok := m.(*route.RouteMessage)
-		if !ok || len(r.Addrs) <= syscall.RTAX_NETMASK {
+		if !ok || len(r.Addrs) <= syscall.RTAX_NETMASK || r.Index == skipIndex {
 			continue
-		}
-		if skip != "" {
-			if i, err := net.InterfaceByIndex(r.Index); err == nil && i.Name == skip {
-				continue
-			}
 		}
 		dst, ok := r.Addrs[syscall.RTAX_DST].(*route.Inet4Addr)
 		if !ok {

@@ -485,6 +485,46 @@ func TestSweeps(t *testing.T) {
 	}
 }
 
+// A path wakes at every probe interval only during a try and a sweep; in
+// between, for its next beat, or earlier when the address in use goes
+// stale or the path would fall silent.
+func TestWakesWhenDue(t *testing.T) {
+	first, other := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
+	p := newTestPath(t, first, other)
+	now := time.Now()
+	if got := p.wakeAt(now); !got.Equal(now.Add(probeInterval)) {
+		t.Fatalf("during the try: %s", got.Sub(now))
+	}
+	p.record(first, netip.Addr{}, time.Millisecond, true, now)
+	p.heard.Store(now.UnixNano())
+	p.due(now)
+	if got := p.wakeAt(now); !got.Equal(now.Add(probeInterval)) {
+		t.Fatalf("during the first sweep: %s", got.Sub(now))
+	}
+	later := now.Add(sweepTime)
+	p.record(first, netip.Addr{}, time.Millisecond, true, later)
+	p.heard.Store(later.UnixNano())
+	p.due(later)
+	if got := p.wakeAt(later); !got.Equal(later.Add(beatInterval)) {
+		t.Fatalf("between sweeps: %s", got.Sub(later))
+	}
+	// Nothing arrived since now, and the next beat is far: the address in
+	// use goes stale first, then the path falls silent.
+	p.heard.Store(now.UnixNano())
+	p.targets[first].heard = now
+	p.nextBeat = now.Add(time.Hour)
+	if got, want := p.wakeAt(later), now.Add(staleLimit+time.Millisecond); !got.Equal(want) {
+		t.Fatalf("with the address in use quiet: %s, want %s", got.Sub(now), want.Sub(now))
+	}
+	p.targets[first].heard = later
+	if got, want := p.wakeAt(later), now.Add(silenceLimit+time.Millisecond); !got.Equal(want) {
+		t.Fatalf("with the path quiet: %s, want %s", got.Sub(now), want.Sub(now))
+	}
+	if got := p.wakeAt(now.Add(time.Hour)); !got.Equal(now.Add(time.Hour + time.Millisecond)) {
+		t.Fatalf("long after it fell silent: %s", got.Sub(now))
+	}
+}
+
 // A probe that cannot leave goes into the trace, once for each kind of
 // error however many addresses fail alike.
 func TestProbesThatDoNotLeave(t *testing.T) {

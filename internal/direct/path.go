@@ -93,6 +93,7 @@ type Path struct {
 
 	confirmed chan struct{} // closed once a pair is confirmed
 	done      chan struct{}
+	wake      chan struct{} // makes run look again at once at what is due
 	once      sync.Once
 
 	mu         sync.Mutex // never held while calling trace
@@ -149,6 +150,7 @@ func (t *Transport) newPath(token [tokenLen]byte, trace func(string)) (*Path, er
 		trace:     trace,
 		confirmed: make(chan struct{}),
 		done:      make(chan struct{}),
+		wake:      make(chan struct{}, 1),
 		targets:   map[netip.AddrPort]*target{},
 	}
 	p.sent.Store(time.Now().UnixNano())
@@ -202,6 +204,8 @@ func (p *Path) Connect(ctx context.Context, theirs wire.DirectOffer) error {
 	p.tracef("probing %d addresses", len(targets))
 	if start {
 		go p.run()
+	} else {
+		p.poke()
 	}
 	select {
 	case <-p.confirmed:
@@ -307,6 +311,15 @@ func (p *Path) remeasure() {
 		t.heard = time.Time{}
 	}
 	p.sweepUntil = time.Now().Add(sweepTime)
+	p.poke()
+}
+
+// poke makes run look at once at what is due, after something changed it.
+func (p *Path) poke() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
 }
 
 // probed handles a probe from source, which the token proves to be the
@@ -464,11 +477,19 @@ func ms(d time.Duration) string {
 }
 
 // run sends the probes until the path ends: to all the addresses during a
-// try and a sweep, and otherwise once in a while to the one in use.
+// try and a sweep, and otherwise once in a while to the one in use. In
+// between it sleeps until something is due: each wakeup costs a phone
+// battery, and a path in use needs one only for its beats.
 func (p *Path) run() {
-	tick := time.NewTicker(probeInterval)
-	defer tick.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
+		select {
+		case <-p.done:
+			return
+		case <-timer.C:
+		case <-p.wake:
+		}
 		now := time.Now()
 		if p.best.Load() != nil && now.Sub(time.Unix(0, p.heard.Load())) > silenceLimit {
 			p.tracef("the other side fell silent")
@@ -477,12 +498,42 @@ func (p *Path) run() {
 			return
 		}
 		p.probe(now)
-		select {
-		case <-p.done:
-			return
-		case <-tick.C:
+		timer.Reset(p.wakeAt(now).Sub(now))
+	}
+}
+
+// wakeAt returns when the path next has something to do, after the probes
+// due at now went: probes again, at probeInterval during a try and a
+// sweep, and otherwise the next beat or sweep, the time the address in use
+// goes stale, which starts probing all the addresses, or the time the path
+// falls silent. Those last two count from signs that may come before, which
+// only makes it look early.
+func (p *Path) wakeAt(now time.Time) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	best := p.best.Load()
+	if best == nil || now.Before(p.sweepUntil) {
+		return now.Add(probeInterval)
+	}
+	next := earliest(p.nextBeat, p.nextSweep, time.Unix(0, p.heard.Load()).Add(silenceLimit+time.Millisecond))
+	if t := p.targets[best.remote]; t != nil {
+		next = earliest(next, t.heard.Add(staleLimit+time.Millisecond))
+	}
+	if soonest := now.Add(time.Millisecond); next.Before(soonest) {
+		return soonest // never in the past, which would spin
+	}
+	return next
+}
+
+// earliest returns the earliest of times.
+func earliest(times ...time.Time) time.Time {
+	first := times[0]
+	for _, t := range times[1:] {
+		if t.Before(first) {
+			first = t
 		}
 	}
+	return first
 }
 
 // probe sends the probes that are due. One that cannot leave from the

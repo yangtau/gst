@@ -24,15 +24,15 @@ import (
 // physicalInterfaces returns the interfaces that reach the internet below
 // any tunnel, for IPv4 and for IPv6; 0 when there is none, which leaves it
 // to the routes.
-func physicalInterfaces() (v4, v6 int) {
-	return defaultInterface(syscall.AF_INET), defaultInterface(syscall.AF_INET6)
+func physicalInterfaces(m interfaces) (v4, v6 int) {
+	return defaultInterface(syscall.AF_INET, m.tunnelAt), defaultInterface(syscall.AF_INET6, m.tunnelAt)
 }
 
 // defaultRoute is a default route of the main table: its interface, and its
 // metric, of which the lowest wins.
 type defaultRoute struct{ index, metric int }
 
-func defaultInterface(family int) int {
+func defaultInterface(family int, tunnelAt func(index int) bool) int {
 	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, family)
 	if err != nil {
 		return 0
