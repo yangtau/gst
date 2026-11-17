@@ -40,11 +40,14 @@ struct PingView: View {
                     .contentTransition(.numericText())
                     .foregroundStyle(last?.time == nil ? .secondary : .primary)
             }
+            .animation(.smooth(duration: 0.35), value: pings) // the time rolls to the next
+            // The chart takes each ping at once: animated, its line and the
+            // mark of its last point move at different paces, and the mark
+            // runs ahead.
             chart
                 .frame(height: 148)
         }
         .padding(.vertical, 6)
-        .animation(.smooth(duration: 0.35), value: pings)
         .accessibilityElement(children: .combine)
     }
 
