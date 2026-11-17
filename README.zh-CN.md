@@ -311,7 +311,7 @@ Android 版 gst app 把 Android 手机或平板（Android 10 及以上）加入�
 <img src="android/screenshots/zh-Hans-light-machine.jpg" width="230" alt="一台机器：gst IP、名字，以及包怎么到达它">
 </p>
 
-app 没有上架 Google Play。用 `make android` 从 [`android/`](android/README.md) 构建，或者从 CI 运行的 `android-apks` artifact 中取出 APK，然后安装。
+app 没有上架 Google Play。从最新的 [release](https://github.com/yangtau/gst/releases/latest) 下载 [`gst-android.apk`](https://github.com/yangtau/gst/releases/latest/download/gst-android.apk)，在手机上打开它，Android 询问时允许安装；以后的 release 可以直接覆盖安装。也可以用 `make android` 从 [`android/`](android/README.md) 构建。
 
 加入网络的步骤与 iPhone 相同：点 **+**，输入 `user@host`，端口不是 22 时再填端口；核对指纹后信任服务器的主机密钥；在那台机器上执行为手机公钥授权的命令，然后点 **重试**。app 随后添加 link 并开启 gst；Android 会询问一次是否允许 gst 建立 VPN 连接。首页、机器详情和 **设置** 的内容和用法都与 iPhone 一致。
 

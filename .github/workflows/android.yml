@@ -1,11 +1,15 @@
 # Builds the Android app, with gst's Go code for each ABI, and runs its
 # tests, besides those of the screens: the model, and gst's Go code
-# through JNI. The APKs are the artifact `android-apks`. See
-# android/README.md.
+# through JNI. The APKs are the artifact `android-apks`; the release APK
+# is signed with the release key, the secrets ANDROID_KEYSTORE (base64)
+# and ANDROID_KEYSTORE_PASSWORD. For a tag vX.Y.Z, it is also the
+# download gst-android.apk of the GitHub release. See android/README.md.
 name: Android
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*'] # whatever the paths: GitHub does not filter tags by them
     paths:
       - .github/workflows/android.yml
       - android/**
@@ -36,6 +40,19 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v5
+      - name: Take the release key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            # A release that the next one could not install over is no release.
+            if [ "$IS_RELEASE" = true ]; then echo "::error::the secret ANDROID_KEYSTORE is not set"; exit 1; fi
+            echo "No release key: the release APK is signed with the debug key."
+            exit 0
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/gst.jks"
+          echo "ORG_GRADLE_PROJECT_gstKeystore=$RUNNER_TEMP/gst.jks" >> "$GITHUB_ENV"
       - name: Build the Go code
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
@@ -44,9 +61,31 @@ jobs:
           android/build-core.sh host
       - name: Build and test
         working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_gstKeystorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: ./gradlew --no-configuration-cache -PgstScreenTests=false assembleDebug assembleRelease testDebugUnitTest
       - name: Keep the APKs
         uses: actions/upload-artifact@v5
         with:
           name: android-apks
           path: android/app/build/outputs/apk/*/*.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: android-apks
+      - name: Add the APK to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp release/app-release.apk gst-android.apk
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          gh release upload "$TAG" gst-android.apk --clobber

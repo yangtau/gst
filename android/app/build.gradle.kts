@@ -29,13 +29,25 @@ android {
     // The Go code, which build-core.sh builds for each ABI.
     sourceSets["main"].jniLibs.directories.add("../build/jniLibs")
 
+    // The key of the releases' APKs, so that each installs over the one
+    // before: -PgstKeystore=… and -PgstKeystorePassword=…, or the same in
+    // ~/.gradle/gradle.properties; its alias is gst.
+    (findProperty("gstKeystore") as String?)?.let { keystore ->
+        signingConfigs.create("gst") {
+            storeFile = file(keystore)
+            storePassword = findProperty("gstKeystorePassword") as String
+            keyAlias = "gst"
+            keyPassword = storePassword
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key unless a release key is configured; see README.md.
-            signingConfig = signingConfigs.getByName("debug")
+            // Signed with the debug key unless the release key is given; see README.md.
+            signingConfig = signingConfigs.findByName("gst") ?: signingConfigs.getByName("debug")
         }
     }
 

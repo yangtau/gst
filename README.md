@@ -311,7 +311,7 @@ The gst app for Android puts an Android phone or tablet (Android 10 or later) in
 <img src="android/screenshots/en-light-machine.jpg" width="230" alt="One machine: its gst IP, its name, and how packets reach it">
 </p>
 
-The app is not on Google Play. Build it from [`android/`](android/README.md) with `make android`, or take the APK from the `android-apks` artifact of a CI run, and install it.
+The app is not on Google Play. Download [`gst-android.apk`](https://github.com/yangtau/gst/releases/latest/download/gst-android.apk) from the latest [release](https://github.com/yangtau/gst/releases/latest) and open it on the phone, allowing the install when Android asks; a later release installs over it. Or build it from [`android/`](android/README.md) with `make android`.
 
 Joining a network takes the same steps as on an iPhone: tap **+**, enter `user@host` and the port if it is not 22, trust the server's host key after comparing its fingerprint, run the command that authorizes the phone's key on that machine, and tap **Try again**. The app then adds the link and turns gst on; Android asks once whether gst may set up a VPN connection. The first screen, a machine's details, and **Settings** show and do what they do on an iPhone.
 

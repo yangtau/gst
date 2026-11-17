@@ -13,7 +13,7 @@ adb install android/app/build/outputs/apk/debug/app-debug.apk
 
 `make android` runs `android/build-core.sh`, which builds `gstkit` into `android/build/jniLibs/<abi>/libgstkit.so` for arm64-v8a, armeabi-v7a, and x86_64 with the newest NDK (or `ANDROID_NDK_HOME`), and then `./gradlew assembleDebug` in `android/`. Run `build-core.sh` again after changing Go code; Android Studio builds the rest. `./gradlew clean` removes the Go code too.
 
-The app's identifier is `gst.app`; `-PgstApplicationId=…`, or `gstApplicationId` in `~/.gradle/gradle.properties`, gives a build of your own another. The release APK (`./gradlew assembleRelease`) is minified and signed with the debug key; sign it with your own key to publish it.
+The app's identifier is `gst.app`; `-PgstApplicationId=…`, or `gstApplicationId` in `~/.gradle/gradle.properties`, gives a build of your own another. The release APK (`./gradlew assembleRelease`) is minified, and signed with the release key when `gstKeystore` and `gstKeystorePassword` name it (a PKCS12 keystore whose key has the alias `gst` and the store's password), else with the debug key. An APK installs over another only if the same key signed both, so the releases keep one key: CI takes it from the secrets `ANDROID_KEYSTORE` (the keystore in base64) and `ANDROID_KEYSTORE_PASSWORD`, and refuses to build a release without it.
 
 ## Layout
 
@@ -36,7 +36,7 @@ The unit tests run on the JVM, with `./gradlew testDebugUnitTest` in `android/`:
 - `CoreTest` runs gst's Go code through `Core` and its JNI: the app's methods, the daemon's start, and its call of the system for an interface. It needs gst built for the machine that runs the tests (`android/build-core.sh host`), and is skipped without it.
 - `ScreenTest` opens every screen on the made-up network of `Demo`, in English and Chinese, light and dark, with Robolectric, checks that it shows, and keeps a picture of it in `app/build/screenshots`. The pictures in `screenshots/`, which the README shows, come from such a run.
 
-`.github/workflows/android.yml` runs on every push that touches the app or the Go code under it. It builds the Go code and the debug and release APKs, which it keeps as `android-apks`, and runs the tests besides `ScreenTest`, which only a developer's machine runs (`-PgstScreenTests=false` leaves it out).
+`.github/workflows/android.yml` runs on every push that touches the app or the Go code under it. It builds the Go code and the debug and release APKs, which it keeps as `android-apks`, and for a tag `vX.Y.Z` adds the release APK to the GitHub release as `gst-android.apk`, and runs the tests besides `ScreenTest`, which only a developer's machine runs (`-PgstScreenTests=false` leaves it out).
 
 A debug build opens on a screen of `Demo` with `adb shell am start -n gst.app/.MainActivity --es GstDemo home` (and `--es GstDemoAppearance dark`), and Android Studio's previews (`ui/Previews.kt`) show the same.
 
