@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/netip"
+	"slices"
 	"time"
 )
 
@@ -33,6 +34,7 @@ func Link(ctx context.Context, opts Options) (io.ReadWriteCloser, error) {
 	// A server can stall opening the session; the mesh handshake bounds
 	// only what follows.
 	stall := time.AfterFunc(DefaultConnectTimeout, func() { conn.Close() })
+	start := time.Now()
 	session, err := conn.Start(LinkCommand)
 	if !stall.Stop() && err == nil {
 		session.Close()
@@ -42,14 +44,21 @@ func Link(ctx context.Context, opts Options) (io.ReadWriteCloser, error) {
 		conn.Close()
 		return nil, err
 	}
-	return &linkConn{session, conn}, nil
+	return &linkConn{session, conn, time.Since(start)}, nil
 }
 
 // linkConn is gst peer-bridge on a link's server; closing it closes the
 // SSH connection too.
 type linkConn struct {
 	*Session
-	conn *Conn
+	conn    *Conn
+	started time.Duration // for the session to start, with gst peer-bridge
+}
+
+// Steps says how long the steps of connecting took: the TCP connection,
+// the SSH handshake and login, and starting gst peer-bridge.
+func (c *linkConn) Steps() string {
+	return steps(append(slices.Clip(c.conn.steps), step{"gst peer-bridge", c.started}))
 }
 
 // Remote returns the IP address of the server, which the link tells the

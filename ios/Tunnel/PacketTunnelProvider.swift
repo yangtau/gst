@@ -1,3 +1,4 @@
+import Network
 import NetworkExtension
 
 /// The packet tunnel: the process that the system runs for gst's VPN.
@@ -9,6 +10,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Answers the system's start, once: when the interface is up, or
     /// with what kept it down.
     private var started: ((Error?) -> Void)?
+    /// Tells gst as soon as the phone's network changes, as from Wi-Fi to
+    /// cellular, rather than at gst's next look at it.
+    private let paths = NWPathMonitor()
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         lock.withLock { started = completionHandler }
@@ -22,6 +26,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             finishStart(error)
             return
         }
+        paths.pathUpdateHandler = { _ in
+            _ = Core.call(Data(#"{"method":"daemon.network"}"#.utf8))
+        }
+        paths.start(queue: DispatchQueue(label: "gst.paths"))
         // gst sets the interface up within a moment of starting. If it
         // cannot, the system should not show a VPN that connects forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + 30) { [weak self] in
@@ -30,6 +38,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        paths.cancel()
         DispatchQueue.global(qos: .userInitiated).async {
             Core.stop()
             completionHandler()

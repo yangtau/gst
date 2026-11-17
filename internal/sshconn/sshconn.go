@@ -34,11 +34,32 @@ type Options struct {
 // is called.
 type Conn struct {
 	client *ssh.Client
+	steps  []step // how long it took to connect
 	stop   context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
 	err    error
 }
+
+// step is a step of connecting, and how long it took.
+type step struct {
+	what string
+	took time.Duration
+}
+
+// steps says how long the steps of connecting took, such as "TCP 0.31s,
+// SSH 1.2s".
+func steps(list []step) string {
+	parts := make([]string, len(list))
+	for i, s := range list {
+		parts[i] = s.what + " " + s.took.Round(10*time.Millisecond).String()
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Steps says how long the steps of connecting took: the TCP connection,
+// and the SSH handshake and login.
+func (c *Conn) Steps() string { return steps(c.steps) }
 
 var errClosed = errors.New("SSH connection closed")
 
@@ -49,12 +70,12 @@ func Dial(ctx context.Context, opts Options) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := dial(ctx, opts.Server, clientConfig, opts.ConnectTimeout)
+	client, took, err := dial(ctx, opts.Server, clientConfig, opts.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
 	ctx, stop := context.WithCancel(ctx)
-	c := &Conn{client: client, stop: stop, done: make(chan struct{})}
+	c := &Conn{client: client, steps: took, stop: stop, done: make(chan struct{})}
 	go func() {
 		<-ctx.Done()
 		c.end(errClosed)

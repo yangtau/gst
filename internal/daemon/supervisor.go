@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -84,9 +85,9 @@ func (s *supervisor) run() {
 		s.mu.Lock()
 		s.attempt = cancel
 		s.mu.Unlock()
-		err := s.connect(ctx, func(peer wire.NodeInfo) {
+		err := s.connect(ctx, func(peer wire.NodeInfo, took string) {
 			s.set(wire.StateRunning, "", &peer)
-			s.logf("up")
+			s.logf("up in %s", took)
 			wait = s.d.cfg.RetryDelay
 			go s.d.linkUp(s.spec.Destination, peer)
 		})
@@ -132,13 +133,28 @@ func (s *supervisor) run() {
 	}
 }
 
-func (s *supervisor) connect(ctx context.Context, onUp func(wire.NodeInfo)) error {
+// connect connects the link and runs it until it ends, calling onUp with
+// the other node once it runs, and how long the steps took to get there.
+func (s *supervisor) connect(ctx context.Context, onUp func(peer wire.NodeInfo, took string)) error {
+	start := time.Now()
 	conn, err := s.d.cfg.Connect(ctx, &s.spec)
 	if err != nil {
 		return err
 	}
-	return s.d.mesh.Link(ctx, s.d.admitted(s.spec.Destination), conn, onUp)
+	connected := time.Since(start)
+	return s.d.mesh.Link(ctx, s.d.admitted(s.spec.Destination), conn, func(peer wire.NodeInfo) {
+		took := time.Since(start)
+		// The ssh command does not say how long its own steps took.
+		steps := "ssh " + round(connected)
+		if c, ok := conn.(interface{ Steps() string }); ok {
+			steps = c.Steps()
+		}
+		onUp(peer, fmt.Sprintf("%s: %s, handshake %s", round(took), steps, round(took-connected)))
+	})
 }
+
+// round rounds d for the log.
+func round(d time.Duration) string { return d.Round(10 * time.Millisecond).String() }
 
 // restart ends the link's try, whether it runs or still connects, and
 // tries again at once with the shortest wait: the machine moved to

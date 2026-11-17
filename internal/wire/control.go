@@ -29,6 +29,11 @@ const (
 	// of this daemon's log when Node is empty, and else of that node's,
 	// asked through the mesh.
 	MethodLog = "daemon.log"
+	// MethodNetwork ("daemon.network") takes no params and returns
+	// nothing: the system said that this machine's network changed, and
+	// the daemon looks at it at once rather than at its next look. A
+	// phone's app says so, where gst cannot hear it from the system.
+	MethodNetwork = "daemon.network"
 )
 
 // Log is the end of a daemon's log, its latest lines, as the daemon

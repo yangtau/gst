@@ -159,6 +159,7 @@ func New(cfg Config) *Daemon {
 		}
 		return struct{}{}, m.SetSubnet(subnet.String(), true)
 	})
+	wire.Handle(&d.control, wire.MethodNetwork, none(func() any { m.LookAtNetwork(); return struct{}{} }))
 	wire.Handle(&d.control, wire.MethodLog, func(ctx context.Context, p wire.NodeParams) (any, error) {
 		if p.Node == "" {
 			return wire.Log{Text: d.tail.String()}, nil

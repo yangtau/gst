@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -403,7 +404,9 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 	// The log is for the app to show, and names no server.
 	var logged Log
 	if err := call(t, app, MethodLog, nil, &logged); err != nil || !strings.Contains(logged.Text, "daemon ready") ||
-		!strings.Contains(logged.Text, "link "+config.LinkID(link.Destination)+": up") {
+		!strings.Contains(logged.Text, "link "+config.LinkID(link.Destination)+": up in ") ||
+		// How long each step took, to tell what slows a link down.
+		!regexp.MustCompile(`: up in \S+: TCP \S+, SSH \S+, gst peer-bridge \S+, handshake \S+\n`).MatchString(logged.Text) {
 		t.Fatalf("log = %q, %v", logged.Text, err)
 	}
 	if host, _, _ := net.SplitHostPort(s.address); strings.Contains(logged.Text, host) || strings.Contains(logged.Text, "tester") {

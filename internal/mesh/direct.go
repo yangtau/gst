@@ -71,6 +71,14 @@ func (n *Node) watchNetwork(ctx context.Context, network direct.Network, udp *di
 	}
 }
 
+// LookAtNetwork has the node look at this machine's network soon: the
+// system said that it changed. Nothing looks while UDP paths are off.
+func (n *Node) LookAtNetwork() {
+	if udp := n.transport(); udp != nil {
+		udp.LookNow()
+	}
+}
+
 // transport returns the transport of the UDP paths; nil while they are
 // off.
 func (n *Node) transport() *direct.Transport {

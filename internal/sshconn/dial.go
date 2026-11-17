@@ -115,17 +115,19 @@ func (unknownKey) Type() string                        { return "" }
 func (unknownKey) Marshal() []byte                     { return nil }
 func (unknownKey) Verify([]byte, *ssh.Signature) error { return errors.New("unknown key") }
 
-// dial opens an SSH client connection. timeout bounds both the TCP connect
-// and the SSH handshake; cancelling ctx aborts the handshake or, later,
-// closes the established connection.
-func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, timeout time.Duration) (*ssh.Client, error) {
+// dial opens an SSH client connection, and says how long its steps took.
+// timeout bounds both the TCP connect and the SSH handshake; cancelling
+// ctx aborts the handshake or, later, closes the established connection.
+func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, timeout time.Duration) (*ssh.Client, []step, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	start := time.Now()
 	conn, err := new(net.Dialer).DialContext(dialCtx, "tcp", address)
 	if err != nil {
-		return nil, errors.New("TCP connection failed")
+		return nil, nil, errors.New("TCP connection failed")
 	}
+	connected := time.Now()
 	stopClosing := closeOnDone(ctx, conn)
 
 	deadline, _ := dialCtx.Deadline()
@@ -140,7 +142,7 @@ func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, t
 	if err != nil {
 		stopClosing()
 		conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	conn.SetDeadline(time.Time{})
 
@@ -149,5 +151,5 @@ func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, t
 		client.Wait()
 		stopClosing()
 	}()
-	return client, nil
+	return client, []step{{"TCP", connected.Sub(start)}, {"SSH", time.Since(connected)}}, nil
 }

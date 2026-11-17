@@ -63,11 +63,12 @@ const Port = 15355
 const (
 	socketBuffer = 4 << 20 // in bytes; a frame of video arrives as a burst of hundreds of packets
 	maxPacket    = 1 << 16
-	maxPublic    = 4                // addresses that others saw this machine at, kept for offers
-	maxSeen      = 4                // addresses that the SSH links show this machine at, kept for offers
-	publicLife   = 10 * time.Minute // for how long such an address counts
-	maxRTT       = 10 * time.Second // an answer that took longer is no measure
-	watchEvery   = 5 * time.Second  // how often the machine's network is checked
+	maxPublic    = 4                      // addresses that others saw this machine at, kept for offers
+	maxSeen      = 4                      // addresses that the SSH links show this machine at, kept for offers
+	publicLife   = 10 * time.Minute       // for how long such an address counts
+	maxRTT       = 10 * time.Second       // an answer that took longer is no measure
+	watchEvery   = 5 * time.Second        // how often the machine's network is checked
+	settleTime   = 300 * time.Millisecond // after the system says the network changed, for the rest of the change
 
 	tokenLen = 16
 	idLen    = 8
@@ -105,6 +106,11 @@ type Network struct {
 	// Has reports whether an interface of this machine has addr; when it
 	// is nil, none has.
 	Has func(addr netip.Addr) bool
+	// Watch, unless it is nil, calls changed whenever the system says
+	// that the machine's interfaces, addresses, or default routes changed,
+	// until done is closed; the transport then looks at the network at
+	// once, rather than at its next look.
+	Watch func(changed func(), done <-chan struct{})
 }
 
 // System returns this machine's network: its addresses, and on macOS and
@@ -114,6 +120,7 @@ func System() Network {
 		Addresses:  Addresses,
 		Interfaces: func() (v4, v6 int) { return lookAtInterfaces().defaultInterfaces() },
 		Has:        func(addr netip.Addr) bool { return lookAtInterfaces().of(addr) != nil },
+		Watch:      watchSystem,
 	}
 }
 
@@ -136,6 +143,7 @@ type Transport struct {
 	done    chan struct{}                            // closed by Close
 	changed chan struct{}                            // for Changed
 	moved   chan struct{}                            // for Moved
+	poke    chan struct{}                            // see LookNow
 	known   []netip.Addr                             // what Addresses said last; owned by watch
 	place   place                                    // where the machine was last; owned by watch
 	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
@@ -211,6 +219,7 @@ func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, 
 		done:       make(chan struct{}),
 		changed:    make(chan struct{}, 1),
 		moved:      make(chan struct{}, 1),
+		poke:       make(chan struct{}, 1),
 	}
 	rand.Read(t.id[:])
 	t.sources.Store(&map[netip.AddrPort]*Path{})
@@ -226,6 +235,9 @@ func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, 
 	t.addressesChanged()
 	t.place = placeOf(t.known)
 	go t.watch()
+	if network.Watch != nil {
+		go network.Watch(t.LookNow, t.done)
+	}
 	for _, s := range []*socket{t.v4, t.v6} {
 		if s != nil {
 			go t.read(s)
@@ -278,19 +290,35 @@ func (t *Transport) addressesChanged() bool {
 	return true
 }
 
-// watch follows the machine from one network to another.
+// watch follows the machine from one network to another: it looks at
+// the network every watchEvery, and soon after LookNow.
 func (t *Transport) watch() {
 	tick := time.NewTicker(watchEvery)
 	defer tick.Stop()
+	var settled <-chan time.Time
 	for {
 		select {
 		case <-tick.C:
+			t.look()
+		case <-t.poke:
+			// A change comes in steps, such as an interface, then its
+			// addresses, then its routes: one look after them all.
+			if settled == nil {
+				settled = time.After(settleTime)
+			}
+		case <-settled:
+			settled = nil
 			t.look()
 		case <-t.done:
 			return
 		}
 	}
 }
+
+// LookNow has the transport look at the network soon, rather than at its
+// next look: the system said that it changed, as when a phone moves from
+// Wi-Fi to cellular.
+func (t *Transport) LookNow() { signal(t.poke) }
 
 // look tells Moved if the machine moved to another network, and else
 // Changed if its addresses or interfaces changed.

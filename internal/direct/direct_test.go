@@ -876,6 +876,37 @@ func TestMoves(t *testing.T) {
 	}
 }
 
+// When the system says that the network changed, the transport looks at
+// once, rather than at its next look.
+func TestLookNow(t *testing.T) {
+	var mu sync.Mutex
+	addrs := []netip.Addr{netip.MustParseAddr("192.168.1.5")}
+	watching := make(chan func(), 1)
+	tr, err := Listen(0, Network{
+		Addresses: func() []netip.Addr { mu.Lock(); defer mu.Unlock(); return slices.Clone(addrs) },
+		Watch:     func(changed func(), _ <-chan struct{}) { watching <- changed },
+	}, never)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	changed := <-watching
+	mu.Lock()
+	addrs = []netip.Addr{netip.MustParseAddr("10.20.30.40")}
+	mu.Unlock()
+	start := time.Now()
+	changed()
+	changed() // A change comes in steps; one look suffices.
+	select {
+	case <-tr.Moved():
+		if took := time.Since(start); took < settleTime || took > watchEvery/2 {
+			t.Errorf("looked after %v", took)
+		}
+	case <-time.After(watchEvery / 2):
+		t.Fatal("no look")
+	}
+}
+
 // A path answers while the other side does: not before it is up, once it
 // is quiet for longer than an address in use may be, or once it ended.
 func TestAnswering(t *testing.T) {

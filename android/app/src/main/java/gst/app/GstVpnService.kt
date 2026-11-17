@@ -3,7 +3,12 @@ package gst.app
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.DnsResolver
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.CancellationSignal
 import android.os.Handler
@@ -52,6 +57,22 @@ class GstVpnService : VpnService(), Core.System {
     private val main = Handler(Looper.getMainLooper())
     private var isRunning = false
 
+    /**
+     * Tells gst as soon as the phone's networks change, as from Wi-Fi to
+     * cellular, rather than at gst's next look at them: gst cannot hear it
+     * from the system itself here.
+     */
+    private val networks = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = changed()
+        override fun onLost(network: Network) = changed()
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = changed()
+
+        private fun changed() {
+            resolver.execute { Core.call("""{"method":"daemon.network"}""".toByteArray()) }
+        }
+    }
+    private var isWatching = false
+
     private val timeout = Runnable {
         if (Tunnel.state.value == Tunnel.State.Connecting) {
             end(getString(R.string.error_no_network))
@@ -79,6 +100,7 @@ class GstVpnService : VpnService(), Core.System {
 
     override fun onDestroy() {
         main.removeCallbacks(timeout)
+        unwatch()
         if (isRunning) {
             isRunning = false
             worker.execute { Core.stop() }
@@ -94,6 +116,7 @@ class GstVpnService : VpnService(), Core.System {
         isRunning = true
         Tunnel.set(Tunnel.State.Connecting)
         main.postDelayed(timeout, START_TIMEOUT)
+        watch()
         worker.execute {
             try {
                 Tunnel.open(this)
@@ -104,9 +127,27 @@ class GstVpnService : VpnService(), Core.System {
         }
     }
 
+    /** Follows the networks that reach the internet, besides VPNs, gst's own among them. */
+    private fun watch() {
+        if (isWatching) return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, networks)
+        isWatching = true
+    }
+
+    private fun unwatch() {
+        if (!isWatching) return
+        isWatching = false
+        getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networks)
+    }
+
     /** Stops gst, with what went wrong, if something did. */
     private fun end(failure: String?) {
         main.removeCallbacks(timeout)
+        unwatch()
         Tunnel.failure = failure
         if (isRunning) {
             isRunning = false
