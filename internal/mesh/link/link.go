@@ -4,7 +4,7 @@
 // in which each side says who it is, a link is an ordered, reliable pipe of
 // typed frames in both directions: sync frames for the replicated table
 // (internal/mesh/state), msg frames for routed messages
-// (internal/mesh/route), and its own alive and bye frames. The package
+// (internal/mesh/route), and its own alive, ask, and bye frames. The package
 // hands the bodies of sync and msg frames on without reading them.
 package link
 
@@ -33,6 +33,7 @@ const (
 	Msg   Type = 2 // a routed message, for the routing layer
 	Alive Type = 3 // nothing: it says that the other side is there
 	Bye   Type = 4 // wire.Bye: the sender ends the link
+	Ask   Type = 5 // nothing: the other side answers with an alive frame at once
 )
 
 const (
@@ -304,6 +305,23 @@ func (l *Link) signal() {
 	}
 }
 
+// Check asks the other side to answer at once, and ends the link unless
+// something arrives within wait. It does not wait. A connection may die
+// without either side hearing of it, as when this machine leaves the
+// network that it went through; Check finds out sooner than the alive
+// frames do.
+func (l *Link) Check(wait time.Duration) {
+	asked := time.Now().UnixNano()
+	if !l.Send(Ask, nil, true) {
+		return
+	}
+	time.AfterFunc(wait, func() {
+		if l.lastRecv.Load() < asked {
+			l.end(fmt.Errorf("the other machine did not answer a check within %s", wait))
+		}
+	})
+}
+
 // Close ends the link after the frames already queued as urgent, and
 // bye, unless it is nil. It does not wait.
 func (l *Link) Close(bye *wire.Bye) {
@@ -406,6 +424,8 @@ func (l *Link) Run(handle func(t Type, body []byte)) error {
 		switch t := Type(header[4]); t {
 		case Sync, Msg:
 			handle(t, body)
+		case Ask:
+			l.Send(Alive, nil, true)
 		case Bye:
 			var bye wire.Bye
 			json.Unmarshal(body, &bye)
