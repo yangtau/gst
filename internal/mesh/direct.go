@@ -89,26 +89,15 @@ func (n *Node) Moved() <-chan struct{} {
 	return n.moved
 }
 
-// linkCheck is how long a link may take to answer a check after this
-// machine moved: the far side answers at once, so only a dead connection
-// takes longer, or one through a network that is still coming up.
-const linkCheck = 5 * time.Second
-
 // addressesChanged starts over after this machine moved to another network:
 // what failed may work now, and what was measured no longer holds. Each
-// link checks that its connection still carries, as one that left from an
-// address now gone would wait out the alive frames (link.Timing) before it
-// ends; each running path measures again, and the other side learns the
-// addresses. Moved tells the rest of the daemon.
+// running path measures again, and the other side learns the addresses.
+// Moved tells the rest of the daemon.
 func (n *Node) addressesChanged(ctx context.Context) {
-	n.log.Print("this machine's addresses changed; checking the links")
 	n.mu.Lock()
 	clear(n.directWaits)
 	close(n.moved)
 	n.moved = make(chan struct{})
-	for l := range n.links {
-		l.Check(linkCheck)
-	}
 	n.mu.Unlock()
 	n.packets.Range(func(key, value any) bool {
 		id := key.(string)

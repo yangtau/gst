@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,55 +173,6 @@ func TestSilentPeerEndsTheLink(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a silent peer kept the link")
 	}
-}
-
-func TestCheck(t *testing.T) {
-	// Alive frames too rare to tell: only the check can end the link.
-	slow := Timing{Alive: time.Hour, Dead: time.Hour}
-	a, b := side(idA, "laptop", 0), side(idB, "devbox", 0)
-	a.Timing, b.Timing = slow, slow
-
-	t.Run("answered", func(t *testing.T) {
-		la, _, lb, _ := shake(t, a, b)
-		var ia, ib inbox
-		endedA, endedB := run(la, &ia), run(lb, &ib)
-		la.Check(50 * time.Millisecond)
-		select {
-		case err := <-endedA:
-			t.Fatalf("the link ended: %v", err)
-		case <-time.After(200 * time.Millisecond):
-		}
-		la.Close(nil)
-		<-endedA
-		<-endedB
-		if got := append(ia.list(), ib.list()...); len(got) != 0 {
-			t.Fatalf("the check reached the layers above: %q", got)
-		}
-	})
-
-	t.Run("unanswered", func(t *testing.T) {
-		la, _, lb, _ := shake(t, a, b)
-		go func() {
-			// A connection that takes what la writes and carries nothing back.
-			buf := make([]byte, 1024)
-			for {
-				if _, err := lb.conn.Read(buf); err != nil {
-					return
-				}
-			}
-		}()
-		var ia inbox
-		ended := run(la, &ia)
-		la.Check(50 * time.Millisecond)
-		select {
-		case err := <-ended:
-			if err == nil || !strings.Contains(err.Error(), "did not answer a check") {
-				t.Fatalf("ended with %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("an unanswered check kept the link")
-		}
-	})
 }
 
 func TestRefusals(t *testing.T) {
