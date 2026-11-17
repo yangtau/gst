@@ -416,7 +416,7 @@ func TestAPhoneJoinsANetwork(t *testing.T) {
 		!strings.Contains(logged.Text, "stopping: the test is done\n") ||
 		!strings.Contains(logged.Text, "link "+config.LinkID(link.Destination)+": up in ") ||
 		// How long each step took, to tell what slows a link down.
-		!regexp.MustCompile(`: up in \S+: TCP \S+, SSH \S+, gst peer-bridge \S+, handshake \S+\n`).MatchString(logged.Text) {
+		!regexp.MustCompile(`: up in \S+: DNS \S+, TCP \S+, SSH \S+, gst peer-bridge \S+, handshake \S+\n`).MatchString(logged.Text) {
 		t.Fatalf("log = %q, %v", logged.Text, err)
 	}
 	if host, _, _ := net.SplitHostPort(s.address); strings.Contains(logged.Text, host) || strings.Contains(logged.Text, "tester") {

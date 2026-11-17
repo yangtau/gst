@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -123,11 +125,18 @@ func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, t
 	defer cancel()
 
 	start := time.Now()
-	conn, err := new(net.Dialer).DialContext(dialCtx, "tcp", address)
+	// The dialer asks for the first socket once the name is resolved.
+	var resolved atomic.Int64
+	dialer := net.Dialer{ControlContext: func(context.Context, string, string, syscall.RawConn) error {
+		resolved.CompareAndSwap(0, time.Now().UnixNano())
+		return nil
+	}}
+	conn, err := dialer.DialContext(dialCtx, "tcp", address)
 	if err != nil {
 		return nil, nil, errors.New("TCP connection failed")
 	}
 	connected := time.Now()
+	dns := time.Unix(0, resolved.Load()).Sub(start)
 	stopClosing := closeOnDone(ctx, conn)
 
 	deadline, _ := dialCtx.Deadline()
@@ -151,5 +160,5 @@ func dial(ctx context.Context, address string, clientConfig *ssh.ClientConfig, t
 		client.Wait()
 		stopClosing()
 	}()
-	return client, []step{{"TCP", connected.Sub(start)}, {"SSH", time.Since(connected)}}, nil
+	return client, []step{{"DNS", dns}, {"TCP", connected.Sub(start) - dns}, {"SSH", time.Since(connected)}}, nil
 }

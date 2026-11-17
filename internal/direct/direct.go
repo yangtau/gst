@@ -45,6 +45,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -144,7 +145,7 @@ type Transport struct {
 	changed chan struct{}                            // for Changed
 	moved   chan struct{}                            // for Moved
 	poke    chan struct{}                            // see LookNow
-	heard   atomic.Bool                              // see Heard
+	move    atomic.Pointer[Move]                     // see LastMove
 	known   []netip.Addr                             // what Addresses said last; owned by watch
 	place   place                                    // where the machine was last; owned by watch
 	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
@@ -329,8 +330,7 @@ func (t *Transport) look(heard bool) {
 	rebound := t.bind()
 	changed := t.addressesChanged()
 	switch {
-	case t.movedAway():
-		t.heard.Store(heard)
+	case t.movedAway(heard):
 		signal(t.moved)
 	case changed || rebound:
 		signal(t.changed)
@@ -354,10 +354,24 @@ func (t *Transport) Changed() <-chan struct{} { return t.changed }
 // which takes a new Transport.
 func (t *Transport) Moved() <-chan struct{} { return t.moved }
 
-// Heard reports whether the system said that the network changed before
-// the look that found the latest move, rather than a regular look found
-// it on its own.
-func (t *Transport) Heard() bool { return t.heard.Load() }
+// Move is how the machine moved to another network, for the log.
+type Move struct {
+	// Heard says whether the system said that the network changed
+	// before the look that found the move, rather than a regular look
+	// found it on its own.
+	Heard bool
+	// Families says which addresses changed: "IPv4", "IPv6", or "IPv4
+	// and IPv6".
+	Families string
+}
+
+// LastMove returns the latest move; the zero Move before any.
+func (t *Transport) LastMove() Move {
+	if m := t.move.Load(); m != nil {
+		return *m
+	}
+	return Move{}
+}
 
 // place is where this machine is on the internet, as far as moving goes:
 // the IPv4 address that packets leave from, and the /64 of the IPv6 one,
@@ -386,16 +400,26 @@ func placeOf(addrs []netip.Addr) place {
 // address family that it had then and has now changed. On the way from
 // one network to another, the machine may have no address for a moment,
 // or one family before the other; neither is a move of its own, so that
-// one move counts once.
-func (t *Transport) movedAway() bool {
+// one move counts once. A move is kept for LastMove, with heard.
+func (t *Transport) movedAway(heard bool) bool {
 	now := placeOf(t.known)
 	if !now.v4.IsValid() && !now.v6.IsValid() {
 		return false // between networks: the next look tells where to
 	}
 	was := t.place
 	t.place = now
-	return was.v4.IsValid() && now.v4.IsValid() && was.v4 != now.v4 ||
-		was.v6.IsValid() && now.v6.IsValid() && was.v6 != now.v6
+	var families []string
+	if was.v4.IsValid() && now.v4.IsValid() && was.v4 != now.v4 {
+		families = append(families, "IPv4")
+	}
+	if was.v6.IsValid() && now.v6.IsValid() && was.v6 != now.v6 {
+		families = append(families, "IPv6")
+	}
+	if len(families) == 0 {
+		return false
+	}
+	t.move.Store(&Move{Heard: heard, Families: strings.Join(families, " and ")})
+	return true
 }
 
 // Stats reports the sockets, and what they could not place: the fields of

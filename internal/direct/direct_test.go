@@ -902,7 +902,7 @@ func TestLookNow(t *testing.T) {
 		if took := time.Since(start); took < settleTime || took > watchEvery/2 {
 			t.Errorf("looked after %v", took)
 		}
-		if !tr.Heard() {
+		if m := tr.LastMove(); !m.Heard || m.Families != "IPv4" {
 			t.Error("the move is not one that the system said")
 		}
 	case <-time.After(watchEvery / 2):
