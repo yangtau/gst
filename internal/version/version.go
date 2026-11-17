@@ -9,7 +9,7 @@ import (
 )
 
 // Release is the gst release. `make release` sets it; see AGENTS.md.
-const Release = "0.8.0"
+const Release = "0.8.1"
 
 // commit ("<revision>[-dirty]") and committed (RFC 3339) describe the git
 // commit gst is built from, for builds without Go's VCS stamp, such as
