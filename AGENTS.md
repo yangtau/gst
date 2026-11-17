@@ -6,7 +6,7 @@ gst links a user's machines into a private network over SSH: one background daem
 
 ## Commands
 
-- `make build`, `make test`, `make test-integration`, `make release V=X.Y.Z`, `make android` (with the Android SDK and NDK), and, on a Mac, `make ios` (see `Makefile`, `android/README.md`, and `ios/README.md`).
+- `make build`, `make test`, `make test-integration`, `make release V=X.Y.Z`, `make android` (with the Android SDK and NDK), and, on a Mac, `make ios` and `make testflight` (see `Makefile`, `android/README.md`, and `ios/README.md`).
 - `nix develop` provides Go, gopls, Make, OpenSSH, and the JDK for `make android`, and on a Mac XcodeGen for `make ios`. `nix build` builds gst;
   `nix flake check` runs the unit tests and both vet checks as part of the build.
   On every push, `.github/workflows/nix.yml` builds the package on each system
@@ -80,6 +80,7 @@ Each version changes for its own reason, and only it:
 - **Release**: `const Release` in `internal/version/version.go`, the single source (`flake.nix`, `ios/build-core.sh`, and `android/app/build.gradle.kts` read it). `make release V=X.Y.Z` sets it, runs the unit tests and vet, commits, and tags `vX.Y.Z`; push yourself. Raise the minor version with `wire.Protocol` or `config.Version`. README and design-doc examples are examples: leave their versions alone.
 - **Commit**: for people only. `gst version` prints it in full with its time; `software` (`gst status`, the handshake) adds it to the release as `+a2ffc87[.dirty]`. It comes from Go's VCS stamp, or in nix, whose source has no `.git`, from `-X internal/version.commit` and `.committed`.
 - **Build**: `daemon.Build`, the executable's SHA-256, is how a gst command decides the daemon runs another gst and restarts it.
+- **App build**: the iOS app's build number (`CURRENT_PROJECT_VERSION`), the count of commits up to HEAD, which `ios/build-core.sh` sets: App Store Connect needs it to grow with each upload.
 - **Protocol**: `wire.Protocol`, raised per the Protocol convention; nodes of different protocols refuse each other, naming both `software`.
 - **Helper**: `tun.HelperVersion`, raised only when the helper's code or the daemon's requests of it change, since updating the helper takes root.
 

@@ -13,7 +13,6 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    CURRENT_PROJECT_VERSION: 1
     CODE_SIGN_STYLE: Automatic
     TARGETED_DEVICE_FAMILY: "1,2"
     # What gst's Go code calls on Apple's systems: the resolver, and

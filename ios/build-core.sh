@@ -2,7 +2,8 @@
 # Build gst's Go code for the iOS app: ios/build/GstKit.xcframework, a
 # static library (gstkit) for devices and for the simulator on Apple
 # silicon, and ios/build/Version.xcconfig, which gives the app the release
-# of gst. It needs Xcode and Go.
+# of gst, and as its build number the commits up to HEAD, which grows with
+# each commit, as App Store Connect needs. It needs Xcode, Go, and git.
 set -eu
 
 min=26.0 # the iOS that the app needs; see project.yml
@@ -33,5 +34,6 @@ xcodebuild -create-xcframework \
 
 version=$(sed -n 's/^const Release = "\(.*\)"$/\1/p' internal/version/version.go)
 [ -n "$version" ] || { echo "error: no release in internal/version/version.go" >&2; exit 1; }
-printf 'MARKETING_VERSION = %s\n' "$version" >"$out/Version.xcconfig"
-echo "built $out/GstKit.xcframework for gst $version"
+number=$(git rev-list --count HEAD)
+printf 'MARKETING_VERSION = %s\nCURRENT_PROJECT_VERSION = %s\n' "$version" "$number" >"$out/Version.xcconfig"
+echo "built $out/GstKit.xcframework for gst $version, build $number"

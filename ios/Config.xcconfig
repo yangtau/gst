@@ -4,7 +4,9 @@
 GST_BUNDLE_ID = com.example.gst
 GST_APP_GROUP = group.$(GST_BUNDLE_ID)
 MARKETING_VERSION = 0.0.0
+CURRENT_PROJECT_VERSION = 1
 
-// The release of gst, which build-core.sh reads from the Go code.
+// The release of gst, which build-core.sh reads from the Go code, and the
+// build number, from git.
 #include? "build/Version.xcconfig"
 #include? "Local.xcconfig"

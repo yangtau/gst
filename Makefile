@@ -4,7 +4,7 @@
 -include integration/local.mk
 export CONTAINER_RUNTIME IT_BASE_IMAGE IT_APT_MIRROR IT_BUILD_FLAGS
 
-.PHONY: help build install test test-integration release ios android
+.PHONY: help build install test test-integration release ios testflight android
 
 help:
 	@printf '%s\n' \
@@ -14,6 +14,7 @@ help:
 	  'make test-integration  run the integration tests against sshd in a container' \
 	  'make release V=X.Y.Z   set the version, test, commit, and tag' \
 	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)' \
+	  'make testflight        build the iOS app of the current commit and upload it to TestFlight' \
 	  'make android           build the Android app, with its Go code, into android/app/build/outputs/apk'
 
 build:
@@ -34,6 +35,9 @@ release:
 ios:
 	ios/build-core.sh
 	cd ios && xcodegen generate
+
+testflight: ios
+	ios/testflight.sh
 
 android:
 	android/build-core.sh

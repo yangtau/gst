@@ -6,3 +6,9 @@ DEVELOPMENT_TEAM = ABCDE12345
 // A bundle identifier of your own. The packet tunnel is
 // $(GST_BUNDLE_ID).tunnel, and the app group group.$(GST_BUNDLE_ID).
 GST_BUNDLE_ID = com.example.gst
+
+// For `make testflight` only: an App Store Connect API key, from Users and
+// Access, Integrations, in App Store Connect. The key itself goes in
+// ~/.appstoreconnect/private_keys/AuthKey_<ASC_KEY_ID>.p8.
+// ASC_KEY_ID = ABC123DEF4
+// ASC_ISSUER_ID = 00000000-0000-0000-0000-000000000000

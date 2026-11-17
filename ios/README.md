@@ -18,6 +18,16 @@ Run `make ios` again after changing Go code, the release, or `project.yml`. Ever
 
 A VPN does not run in the Simulator: the app starts there and shows its screens, and turning gst on fails. To see the screens with a network in them there, add `-GstDemo home` to the scheme's launch arguments (see Tests below).
 
+## TestFlight
+
+`make testflight` builds the app of the current commit and uploads it to App Store Connect, from where TestFlight installs and updates it on your devices over the air. The app's version is gst's release, and its build number the count of commits up to HEAD, which App Store Connect needs to grow with each upload; so it refuses a tree with changes. Once:
+
+1. In App Store Connect, add an app with your bundle identifier, and in TestFlight a group of internal testers with yourself in it. Internal testers need no review.
+2. In Users and Access, Integrations, make an API key with the App Manager role. Put its file in `~/.appstoreconnect/private_keys/`, and its key id and issuer id in `Local.xcconfig` as `ASC_KEY_ID` and `ASC_ISSUER_ID`.
+3. After the first upload, answer the questions on encryption that App Store Connect asks of the build.
+
+A build expires in TestFlight after 90 days.
+
 ## Layout
 
 | Path | What |
