@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -481,6 +482,33 @@ func TestSweeps(t *testing.T) {
 	p.record(first, netip.Addr{}, time.Millisecond, true, next)
 	if got := p.due(next); len(got) != 2 {
 		t.Fatalf("at the next sweep: %v", got)
+	}
+}
+
+// A probe that cannot leave goes into the trace, once for each kind of
+// error however many addresses fail alike.
+func TestProbesThatDoNotLeave(t *testing.T) {
+	var mu sync.Mutex
+	var trace []string
+	p, err := transport(t).Start(func(text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		trace = append(trace, text)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	p.t.locals.Store(&[]netip.Addr{})
+	p.add(netip.MustParseAddrPort("192.0.2.1:1"))
+	p.add(netip.MustParseAddrPort("192.0.2.2:2"))
+	p.t.v4.udp.Close() // Nothing leaves any more.
+	p.probe(time.Now())
+	p.probe(time.Now().Add(probeInterval))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(trace) != 1 || !strings.Contains(trace[0], "did not leave") {
+		t.Fatalf("trace: %q", trace)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -100,6 +101,7 @@ type Path struct {
 	sweepUntil time.Time
 	nextSweep  time.Time
 	nextBeat   time.Time
+	sendError  string // the kind of error of the latest probe that did not leave, told once
 }
 
 // target is an address of the other side.
@@ -487,11 +489,36 @@ func (p *Path) run() {
 // address of this machine that the answers came to, which the machine no
 // longer has, goes again from where the system says. One that tries an
 // address of this machine fails in silence: only answers tell which serve.
+// One from where the system says that cannot leave goes into the trace.
 func (p *Path) probe(now time.Time) {
 	for _, to := range p.due(now) {
-		if err := p.t.probe(p, to.pair, to.works); err != nil && to.local.IsValid() && gone(err) && p.unpin(to.pair, err) {
-			p.t.probe(p, *newPair(netip.Addr{}, to.remote), false)
+		err := p.t.probe(p, to.pair, to.works)
+		if err != nil && to.local.IsValid() && gone(err) && p.unpin(to.pair, err) {
+			err = p.t.probe(p, *newPair(netip.Addr{}, to.remote), false)
+			to.local = netip.Addr{}
 		}
+		if err != nil && !to.local.IsValid() {
+			p.sendFailed(to.remote, err)
+		}
+	}
+}
+
+// sendFailed tells that a probe from where the system says did not leave,
+// once for each kind of error, as several addresses fail alike: otherwise
+// nothing tells a try that sent nothing from one whose probes got lost on
+// the way.
+func (p *Path) sendFailed(to netip.AddrPort, err error) {
+	kind := err.Error()
+	var op *net.OpError // which names the address, unlike its cause
+	if errors.As(err, &op) {
+		kind = op.Err.Error()
+	}
+	p.mu.Lock()
+	news := kind != p.sendError
+	p.sendError = kind
+	p.mu.Unlock()
+	if news {
+		p.tracef("a probe to %s did not leave: %v", to, err)
 	}
 }
 
