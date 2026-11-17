@@ -51,8 +51,34 @@ func cost(addr netip.Addr, rtt time.Duration) time.Duration {
 }
 
 // Path is a UDP path to one node: the addresses to reach it at, and the
-// pair of addresses in use. It starts as a try, and once an address answers
-// it carries packets, until it falls silent or a side closes it.
+// pair of addresses in use. It starts as a try, and carries packets once the
+// two sides confirmed a pair, until it falls silent or a side closes it.
+//
+// A pair is an address of this machine and one of the other side's. The two
+// sides confirm it in three steps, which either may begin:
+//
+//  1. A probe goes one way and its answer comes back: the side that sent
+//     the probe knows that the pair works both ways.
+//  2. Its next probe of the pair says so (flagWorks). The other side, which
+//     gets it, knows the same, as its answer arrived, and that the first
+//     side knows. It may send packets on the pair from now on.
+//  3. It answers, and the answer repeats what the probe said. The first
+//     side, which gets it, knows that the other knows, and may send too.
+//
+// The pair is confirmed then. So a side begins to send only on a pair that
+// carried packets both ways and that the other side knows of, which is
+// then ready for the packets: a side hands on what arrives once it knows
+// of a pair that works. A pair is the same for both, each seeing it from
+// its end: the side that gets the probe of step 2 takes the address that
+// it came to and the one that it came from. So one side's probes suffice:
+// the side whose own probes all fail, as from an address that nothing
+// returns to, learns the pair from the other's. Among the confirmed pairs,
+// each side uses the one that serves it best.
+//
+// A pair that gave no sign for staleLimit is not known to work any more,
+// and the two sides confirm it again. The pair in use carries the packets
+// meanwhile, until another is confirmed or the path falls silent: it is
+// the best guess, and the links take over once the path ends.
 type Path struct {
 	t      *Transport
 	token  [tokenLen]byte
@@ -62,10 +88,11 @@ type Path struct {
 	heard  atomic.Int64 // when anything last arrived, in Unix nanoseconds
 	sent   atomic.Int64 // when this side last sent a packet, in Unix nanoseconds
 	silent atomic.Bool  // the path ended as the other side fell silent
+	works  atomic.Bool  // this side knew a pair to work; it hands on packets from then on
 
-	proved chan struct{}
-	done   chan struct{}
-	once   sync.Once
+	confirmed chan struct{} // closed once a pair is confirmed
+	done      chan struct{}
+	once      sync.Once
 
 	mu         sync.Mutex // never held while calling trace
 	targets    map[netip.AddrPort]*target
@@ -77,11 +104,12 @@ type Path struct {
 
 // target is an address of the other side.
 type target struct {
-	rtt     time.Duration // smoothed
-	samples int
-	heard   time.Time  // of the latest answer
-	probed  bool       // a probe came from it
-	local   netip.Addr // the address of this machine that its answers come to; not valid until one does
+	rtt       time.Duration // smoothed
+	samples   int
+	heard     time.Time  // of the latest sign that the pair works: an answer, or a probe that says so
+	probed    bool       // a probe came from it
+	local     netip.Addr // the address of this machine that makes the pair with it: where those signs arrive; not valid until one does
+	confirmed bool       // both sides know that the pair works, so it may carry packets
 }
 
 // pair is what packets go between: an address of this machine and one of
@@ -90,6 +118,15 @@ type pair struct {
 	local   netip.Addr // not valid when the system picks it
 	remote  netip.AddrPort
 	control []byte // makes packets leave from local
+}
+
+// bestRemote returns the other side's address of the pair in use; not valid
+// when there is none.
+func bestRemote(best *pair) netip.AddrPort {
+	if best == nil {
+		return netip.AddrPort{}
+	}
+	return best.remote
 }
 
 func newPair(local netip.Addr, remote netip.AddrPort) *pair {
@@ -105,12 +142,12 @@ func (w *pair) String() string {
 
 func (t *Transport) newPath(token [tokenLen]byte, trace func(string)) (*Path, error) {
 	p := &Path{
-		t:       t,
-		token:   token,
-		trace:   trace,
-		proved:  make(chan struct{}),
-		done:    make(chan struct{}),
-		targets: map[netip.AddrPort]*target{},
+		t:         t,
+		token:     token,
+		trace:     trace,
+		confirmed: make(chan struct{}),
+		done:      make(chan struct{}),
+		targets:   map[netip.AddrPort]*target{},
 	}
 	p.sent.Store(time.Now().UnixNano())
 	t.mu.Lock()
@@ -145,8 +182,9 @@ func (p *Path) Offer() wire.DirectOffer {
 	return wire.DirectOffer{Token: hex.EncodeToString(p.token[:]), Addresses: p.t.offerAddresses()}
 }
 
-// Connect probes the addresses of theirs, and returns once one answers,
-// or fails when ctx is done first. The caller closes the path if it fails.
+// Connect probes the addresses of theirs, and returns once the two sides
+// confirmed a pair, which the other side's probes may have done before, or
+// fails when ctx is done first. The caller closes the path if it fails.
 func (p *Path) Connect(ctx context.Context, theirs wire.DirectOffer) error {
 	targets, err := p.t.addresses(theirs)
 	if err != nil {
@@ -164,7 +202,7 @@ func (p *Path) Connect(ctx context.Context, theirs wire.DirectOffer) error {
 		go p.run()
 	}
 	select {
-	case <-p.proved:
+	case <-p.confirmed:
 		return nil
 	case <-p.done:
 		return errors.New("the path ended")
@@ -231,7 +269,7 @@ func (p *Path) knows(addr netip.AddrPort) bool {
 }
 
 // Refresh adds theirs, the addresses of the other side after it changed
-// network, and measures all addresses from scratch.
+// network, and finds the pairs from scratch.
 func (p *Path) Refresh(theirs wire.DirectOffer) error {
 	if theirs.Token != hex.EncodeToString(p.token[:]) {
 		return errors.New("the update is for another path")
@@ -249,10 +287,10 @@ func (p *Path) Refresh(theirs wire.DirectOffer) error {
 	return nil
 }
 
-// Remeasure makes the path measure its addresses from scratch, after this
-// side changed network: probes leave from wherever the system says, and the
-// answers tell which addresses of this machine to send from. Packets keep
-// the pair in use until then.
+// Remeasure makes the path find its pairs from scratch, after this side
+// changed network: no pair is known to work any more, so the probes leave
+// as at the start of a try, and the two sides confirm what answers. Packets
+// keep the pair in use until then.
 func (p *Path) Remeasure() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -263,35 +301,51 @@ func (p *Path) remeasure() {
 	for _, t := range p.targets {
 		t.samples = 0
 		t.local = netip.Addr{}
+		t.confirmed = false
+		t.heard = time.Time{}
 	}
 	p.sweepUntil = time.Now().Add(sweepTime)
 }
 
 // probed handles a probe from source, which the token proves to be the
-// other side: that is how a side learns the address of another behind NAT.
-func (p *Path) probed(source netip.AddrPort) {
+// other side, to local, the address of this machine: that is how a side
+// learns the address of another behind NAT. A probe that says that the pair
+// works, as an answer of this side came back there, confirms the pair.
+func (p *Path) probed(source netip.AddrPort, local netip.Addr, works bool) {
 	p.mu.Lock()
 	t := p.targets[source]
 	fresh, learned := t == nil || !t.probed, t == nil
 	p.add(source).probed = true
+	var events []string
+	if works {
+		events = p.record(source, local, noMeasure, true, time.Now())
+	}
 	p.mu.Unlock()
 	p.t.allow(source, p)
+	if works {
+		p.heard.Store(time.Now().UnixNano())
+	}
 	switch {
 	case fresh && learned:
 		p.tracef("probe from %s: a new address, answering and probing it too", source)
 	case fresh:
 		p.tracef("probe from %s: answering", source)
 	}
+	for _, e := range events {
+		p.tracef("%s", e)
+	}
 }
 
 // answered handles the answer, from source to local, the address of this
 // machine, to a probe sent to addr rtt ago. The address probed gets the
 // credit, wherever the answer came from: a NAT on the other side may change
-// it. Its answers then come to local, so packets to it leave from there.
+// it. Its answers then come to local, which makes the pair with it.
+// confirmed says that the probe told that the pair works, which the other
+// side then knows; otherwise a probe that tells it follows at once.
 //
 // The source becomes an address of the path like any other, so that the
 // bound on those holds for sources too.
-func (p *Path) answered(addr, source netip.AddrPort, local netip.Addr, rtt time.Duration) {
+func (p *Path) answered(addr, source netip.AddrPort, local netip.Addr, rtt time.Duration, confirmed bool) {
 	p.mu.Lock()
 	known := p.targets[addr] != nil
 	if known {
@@ -304,52 +358,81 @@ func (p *Path) answered(addr, source netip.AddrPort, local netip.Addr, rtt time.
 	p.t.allow(source, p)
 	p.heard.Store(time.Now().UnixNano())
 	p.mu.Lock()
-	events := p.record(addr, local, rtt, time.Now())
+	events := p.record(addr, local, rtt, confirmed, time.Now())
+	t := p.targets[addr]
+	tell := t != nil && !t.confirmed && (t.local == local || !local.IsValid())
 	p.mu.Unlock()
 	for _, e := range events {
 		p.tracef("%s", e)
 	}
+	if tell {
+		p.t.probe(p, *newPair(local, addr), true)
+	}
 }
 
-// record measures addr, whose answer came to local, and uses it if it is
-// the better one; p.mu is held. It returns what happened, for the trace.
+// noMeasure is the round trip of a sign that measures none: a probe.
+const noMeasure = -1
+
+// record notes a sign that the pair of local and addr works both ways: an
+// answer that took rtt, or, with noMeasure, a probe that says so. confirmed
+// tells that the other side knows it too. A confirmed pair may carry
+// packets, and is used if it is the better one; p.mu is held. It returns
+// what happened, for the trace.
 //
-// An address answered at one address of this machine keeps it while it
-// answers there: a late answer to a probe that the system sent from another
-// does not move it.
-func (p *Path) record(addr netip.AddrPort, local netip.Addr, rtt time.Duration, now time.Time) []string {
+// An address that makes a pair with one address of this machine keeps it
+// while the pair works: a sign at another, as the first probes leave from
+// several, neither moves it nor counts as a measure. Once the pair stopped
+// working, the next sign decides, and the two sides confirm it again.
+func (p *Path) record(addr netip.AddrPort, local netip.Addr, rtt time.Duration, confirmed bool, now time.Time) []string {
 	var events []string
 	t := p.targets[addr]
 	if t == nil {
 		return nil
 	}
-	if t.heard.IsZero() {
-		events = append(events, fmt.Sprintf("answer from %s in %s: the path works", addr, ms(rtt)))
+	stale := now.Sub(t.heard) > staleLimit
+	if local.IsValid() && t.local.IsValid() && local != t.local && !stale {
+		return nil
 	}
-	if local.IsValid() && (!t.local.IsValid() || now.Sub(t.heard) > staleLimit) {
+	if t.heard.IsZero() && rtt != noMeasure {
+		events = append(events, fmt.Sprintf("answer from %s in %s: it works, telling the other side", addr, ms(rtt)))
+	}
+	if stale {
+		t.confirmed = false
+	}
+	if local.IsValid() && (!t.local.IsValid() || stale) {
 		t.local = local
 	}
 	if now.Sub(t.heard) > measureLife {
 		t.samples = 0
 	}
-	if t.samples == 0 {
-		t.rtt = rtt
-	} else {
-		t.rtt += (rtt - t.rtt) / 4
+	if rtt != noMeasure {
+		if t.samples == 0 {
+			t.rtt = rtt
+		} else {
+			t.rtt += (rtt - t.rtt) / 4
+		}
+		t.samples++
 	}
-	t.samples++
 	t.heard = now
+	p.works.Store(true)
+	if confirmed && !t.confirmed {
+		t.confirmed = true
+		events = append(events, fmt.Sprintf("confirmed %s: both sides know that it works", newPair(t.local, addr)))
+	}
+	if !t.confirmed {
+		return events
+	}
 	best, next := p.best.Load(), newPair(t.local, addr)
 	switch {
 	case best == nil:
 		p.best.Store(next)
 		p.sweepUntil, p.nextSweep = now.Add(sweepTime), now.Add(p.t.sweepEvery)
-		close(p.proved)
+		close(p.confirmed)
 		events = append(events, fmt.Sprintf("up: using %s", next))
 	case best.remote == addr:
 		if t.local.IsValid() && best.local != t.local {
 			p.best.Store(next)
-			events = append(events, fmt.Sprintf("using %s: the answers come there", next))
+			events = append(events, fmt.Sprintf("using %s: the pair works there", next))
 		}
 	default:
 		current := p.targets[best.remote]
@@ -400,14 +483,14 @@ func (p *Path) run() {
 	}
 }
 
-// probe sends the probes that are due. One that cannot leave from its
-// address of this machine, which the machine no longer has, goes again from
-// where the system says.
+// probe sends the probes that are due. One that cannot leave from the
+// address of this machine that the answers came to, which the machine no
+// longer has, goes again from where the system says. One that tries an
+// address of this machine fails in silence: only answers tell which serve.
 func (p *Path) probe(now time.Time) {
 	for _, to := range p.due(now) {
-		if err := p.t.probe(p, to); err != nil && to.local.IsValid() && gone(err) {
-			p.unpin(to, err)
-			p.t.probe(p, *newPair(netip.Addr{}, to.remote))
+		if err := p.t.probe(p, to.pair, to.works); err != nil && to.local.IsValid() && gone(err) && p.unpin(to.pair, err) {
+			p.t.probe(p, *newPair(netip.Addr{}, to.remote), false)
 		}
 	}
 }
@@ -420,31 +503,65 @@ func gone(err error) bool {
 	return err != nil && !errors.Is(err, syscall.ENOBUFS) && !errors.Is(err, syscall.EAGAIN)
 }
 
-// unpin lets the system pick where the probes of to.remote leave from, as
-// to.local failed: the answer then tells which address to use.
-func (p *Path) unpin(to pair, err error) {
+// unpin gives up the pair of to, as nothing leaves from to.local: the
+// probes of to.remote leave as at the start of a try, and an answer then
+// tells which address makes a pair with it. It reports whether to was that
+// pair; a probe that only tried to.local went along with one from where
+// the system says.
+func (p *Path) unpin(to pair, err error) bool {
 	p.mu.Lock()
-	if t := p.targets[to.remote]; t != nil && t.local == to.local {
-		t.local = netip.Addr{}
+	t := p.targets[to.remote]
+	pinned := t != nil && t.local == to.local
+	if pinned {
+		*t = target{rtt: t.rtt, samples: t.samples, probed: t.probed} // the pair is gone
 	}
 	p.mu.Unlock()
-	p.tracef("cannot send from %s: %v; probing from where the system says", to.local, err)
+	if pinned {
+		p.tracef("cannot send from %s: %v; probing from where the system says", to.local, err)
+	}
+	return pinned
 }
 
-// due returns the probes to send now. Those to an address that answers
-// leave from where its answers come; the others, from where the system
-// says, as nothing proves one address of this machine over another.
-func (p *Path) due(now time.Time) []pair {
+// probe is a probe to send: between which addresses, and whether it says
+// that the pair works.
+type probe struct {
+	pair
+	works bool
+}
+
+// due returns the probes to send now. Those to an address whose pair works
+// leave from the pair's address of this machine, and say so. The others
+// leave from where the system says, which follows the routes, to a VPN that
+// the machines share too.
+//
+// While the path has no address that answers, they also leave from each
+// address of this machine: the system's pick may be one that nothing
+// returns to, as an IPv6 address of a prefix that the network gave up, and
+// it picks the same at every try. The first answer decides which address
+// makes the pair, so a pair is one that carried a probe and its answer,
+// whoever picked it. They also open the firewall in front of this machine
+// for what the other side sends to each of its addresses.
+func (p *Path) due(now time.Time) []probe {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	probe := func(addr netip.AddrPort) pair {
-		var local netip.Addr
+	var list []probe
+	var locals []netip.Addr // to try besides the system's pick
+	add := func(addr netip.AddrPort) {
 		if t := p.targets[addr]; t != nil && now.Sub(t.heard) <= staleLimit {
-			local = t.local
+			list = append(list, probe{*newPair(t.local, addr), true})
+			return
 		}
-		return *newPair(local, addr)
+		list = append(list, probe{pair: *newPair(netip.Addr{}, addr)})
+		for _, local := range locals {
+			if local.Is4() == addr.Addr().Is4() {
+				list = append(list, probe{pair: *newPair(local, addr)})
+			}
+		}
 	}
 	best := p.best.Load()
+	if t := p.targets[bestRemote(best)]; t == nil || now.Sub(t.heard) > staleLimit {
+		locals = *p.t.locals.Load()
+	}
 	if best != nil {
 		if !now.Before(p.nextSweep) {
 			p.sweepUntil, p.nextSweep = now.Add(sweepTime), now.Add(p.t.sweepEvery)
@@ -457,12 +574,12 @@ func (p *Path) due(now time.Time) []pair {
 				return nil
 			}
 			p.nextBeat = now.Add(beatInterval)
-			return []pair{probe(best.remote)}
+			add(best.remote)
+			return list
 		}
 	}
-	list := make([]pair, 0, len(p.targets))
 	for addr := range p.targets {
-		list = append(list, probe(addr))
+		add(addr)
 	}
 	return list
 }
@@ -533,27 +650,54 @@ func (p *Path) WritePacket(packet []byte) error {
 
 // HandlePackets makes handle receive the WireGuard packets that arrive,
 // on the goroutine that reads the socket: it must not block or keep the
-// packet. Packets are not authenticated; WireGuard does that.
+// packet. Packets are not authenticated; WireGuard does that. They arrive
+// once this side knows a pair to work, when the other side may have
+// confirmed it and send. That may be before Connect returns, so the caller
+// sets handle before it sends its offer or answer.
 func (p *Path) HandlePackets(handle func(packet []byte)) {
 	p.handle.Store(&handle)
 }
 
 func (p *Path) packet(packet []byte) {
+	if !p.works.Load() {
+		return // The other side sends only on a pair that this side knows too.
+	}
 	p.heard.Store(time.Now().UnixNano())
 	if handle := p.handle.Load(); handle != nil {
 		(*handle)(packet)
 	}
 }
 
-// Close ends the path, telling the other side.
+// Close ends the path, telling the other side: at the address in use, or,
+// when the try found none, wherever its probes came from, so that the other
+// side stops trying too. Nothing proved an address of this machine then, so
+// the system picks where that leaves from.
 func (p *Path) Close() error {
-	if best := p.best.Load(); best != nil && !p.ended() {
-		if s := p.t.socketFor(best.remote.Addr()); s != nil {
-			s.write(append([]byte{kindBye}, p.token[:]...), best.control, best.remote)
+	if !p.ended() {
+		for _, to := range p.farewells() {
+			if s := p.t.socketFor(to.remote.Addr()); s != nil {
+				s.write(append([]byte{kindBye}, p.token[:]...), to.control, to.remote)
+			}
 		}
 	}
 	p.end()
 	return nil
+}
+
+// farewells returns where to tell the other side that the path ends.
+func (p *Path) farewells() []pair {
+	if best := p.best.Load(); best != nil {
+		return []pair{*best}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var list []pair
+	for addr, t := range p.targets {
+		if t.probed {
+			list = append(list, *newPair(netip.Addr{}, addr))
+		}
+	}
+	return list
 }
 
 func (p *Path) ended() bool {

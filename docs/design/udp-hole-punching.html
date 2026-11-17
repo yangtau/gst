@@ -168,7 +168,7 @@ button:disabled { opacity: .4; cursor: default; }
       <div class="w4 lay">UDP 头：一共只有 8 字节</div>
       <div class="hot">源端口</div><div class="hot">目的端口</div><div>长度</div><div>校验和</div>
       <div class="w4 lay">数据</div>
-      <div class="w4">gst 的探测包：0x11 + 16 字节 token，再加发送方 id、时间和目标地址，一共 51 字节</div>
+      <div class="w4">gst 的探测包：0x11 + 16 字节 token，再加发送方 id、时间、目标地址和 1 字节标志，一共 52 字节</div>
     </div>
     <figcaption>高亮的四个字段，再加上协议号，就是常说的五元组。防火墙和 NAT 全部的工作，都是围绕这几个字段做的。</figcaption>
   </figure>
@@ -308,7 +308,7 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     s.send(kindAnswer, a.token, source) <span class="c">// 原路回复</span>
     a.targets[source] = true            <span class="c">// 学到一个新目标</span>
 <span class="k">case</span> kindAnswer:
-    proved &lt;- path{s, source}           <span class="c">// 这条路径被证明可用</span>
+    works(local, probed)                <span class="c">// 这一对地址来回都通，接着和对方确认（第 8 节）</span>
 }</pre>
     <p>为了不让无关的包混进来，探测里带 16 字节的 token。token 事先经 SSH 交换，只有 token 正确的包，来源才会被当成对端。探测包本身是明文，所以 token 只用来找路径，确认身份靠之后 WireGuard 的握手。在 <button class="jump" data-sc="1" type="button">场景二</button> 里可以看到这个过程。</p>
     <p>这个方法的边界也很清楚：<strong>学习地址的前提是对方的包能到你这里。</strong>如果两边都在 NAT 后面，谁的包也到不了谁，就谁都学不到，看 <button class="jump" data-sc="2" type="button">场景三</button>。解法是找一个两边都能到的第三方，就是 <button class="jump" data-sc="3" type="button">场景四</button> 的 STUN。gst 里 SSH link 另一端的机器先充当这个第三方：它从 TCP 连接看到你的公网 IP，在握手里告诉你，你配上自己的 UDP 端口放进 offer。它给不了 UDP 的公网端口，所以只在 NAT 不改端口时管用。</p>
@@ -355,8 +355,13 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
     <p>daemon 每个地址族只开一个通配 socket，端口默认 15355，被占用时由系统分配。所有对端都走它，所以 NAT 上只有一条映射，防火墙也只需要记一个端口。探测靠 token 找到对端，WireGuard 的包靠来源 <code>IP:端口</code> 找到对端，只有用 token 证明过的来源才放行。</p>
     <p>发包不选源地址，听系统路由，走 VPN 也可以，只要能通。macOS 和 Linux 例外：代理的 TUN 接管路由时，它用自己的 socket 重新发包，就算规则是直连，源端口也变了，对方防火墙上的洞对不上，所以 socket 绑到 TUN 下面那块真正上网的网卡。候选地址排除 gst 自己网段里的地址，否则包会钻进它自己组成的路径；也排除 TUN 这类点对点网卡上的地址，socket 不从那里发包，提供了也是白白探测。</p>
 
+    <h3>双方确认了才运包</h3>
+    <p>一对地址（本机地址，对方地址）要两边都确认过才运 WireGuard 的包，分三步，哪一边先开始都行：</p>
+    <p>第一步，甲的探测到了乙，乙的 answer 回到甲：甲知道这一对来回都通。第二步，甲再发一个探测，带上“通了”的标志：乙收到，就知道这一对通，也知道甲知道，乙可以开始发包，对方地址就用这个探测的来源。第三步，乙的 answer 把标志原样带回：甲知道乙也知道了，甲也可以开始发包。</p>
+    <p>所以发包的一方总是知道两件事：这一对地址来回都走通过，对方已经准备好收。两边用的是同一条流的两头，地址和端口不会各说各的。一边探测成功就够了：自己的探测全部失败的一边，照样从对方带标志的探测得到一对能用的地址。一对地址 2 秒没有动静就不再算通，要重新确认；已经在用的那一对在这期间继续用，直到另一对确认了顶替它，或 3 秒什么都没收到，路径结束，包回到 SSH。</p>
+
     <h3>持续选最快的路径</h3>
-    <p>每一轮向所有候选地址发探测，收到 answer 就记下来回时间。第一个回 answer 的地址先用起来，之后两边各自比较：新地址至少测过 3 次，比当前的低 2 毫秒以上且低一成，才换过去，所以路径不会在相近的地址之间来回跳。每 30 秒重测一轮，两个方向可以走不同的路。换地址时不换 socket，WireGuard 也不用重新握手。</p>
+    <p>每一轮向所有候选地址发探测，收到 answer 就记下来回时间。第一对确认过的地址先用起来，之后两边各自在确认过的地址对里比较：新的一对至少测过 3 次，比当前的低 2 毫秒以上且低一成，才换过去，所以路径不会在相近的地址之间来回跳。每 30 秒重测一轮，两个方向可以走不同的一对。换地址时不换 socket，WireGuard 也不用重新握手。</p>
 
     <h3>从触发到连上</h3>
   </div>
@@ -367,8 +372,9 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
       <tr><td>经 SSH 交换地址和 token</td><td><code>connectDirect</code>、<code>serveOffer</code></td><td>代替公共信令服务器</td></tr>
       <tr><td>每 200 毫秒向所有目标发探测</td><td><code>Path.run</code></td><td>第 5 节：留下状态表记录，不必精确同时</td></tr>
       <tr><td>收到探测：回 answer，来源加入目标</td><td><code>Transport.receive</code></td><td>第 6 节：从包头学到真实地址</td></tr>
-      <tr><td>收到 answer：这条路径来回都通，记下来回时间</td><td><code>Path.record</code></td><td>一来一回都到，说明两边的洞都开了</td></tr>
-      <tr><td>WireGuard 的包发往最快的地址，同一个 socket</td><td><code>WritePacket</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
+      <tr><td>收到 answer：这一对地址来回都通，记下来回时间，再发一个带标志的探测</td><td><code>Path.answered</code></td><td>一来一回都到，说明两边的洞都开了</td></tr>
+      <tr><td>收到带标志的探测，或带回标志的 answer：对方也知道了，这一对可以运包</td><td><code>Path.record</code></td><td>两边确认的是同一条流，洞和映射都对得上</td></tr>
+      <tr><td>WireGuard 的包发往确认过的最快的一对地址，同一个 socket</td><td><code>WritePacket</code></td><td>第 2 节：换 socket 就换端口，洞就对不上</td></tr>
       <tr><td>每秒探测在用的地址，3 秒没收到算断开，包回到 SSH；45 秒没有流量就关闭路径</td><td><code>Path.run</code>、<code>Node.runDirect</code></td><td>第 3 节：表项靠超时删除</td></tr>
     </table>
   </div>
@@ -467,8 +473,8 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
           path: [H('B', b6, a6, 'B 发出'), H('FB', b6, a6, '出站：写入状态表，放行'), H('FA', b6, a6, '入站：匹配记录，放行'), H('A', b6, a6, 'A 收到，token 正确')],
           fb: [[b6, a6]] },
         { t: 'A 回 answer：现在 B 的防火墙也放行了', d: 'A 收到探测后立刻回 answer。这次 B 的防火墙已经有记录，放行。两个方向都打通了。',
-          path: [H('A', a6, b6, 'A 回 answer'), H('FA', a6, b6, '出站：刷新记录'), H('FB', a6, b6, '入站：匹配记录，放行'), H('B', a6, b6, 'B 收到，路径被证明')] },
-        { t: '在这条路径上跑 WireGuard', d: '两边选定这条路径，之后 WireGuard 的包走同一个 socket，四个地址字段完全不变，所以直接匹配已有记录。之后探测每秒刷新一次，表项不会过期。',
+          path: [H('A', a6, b6, 'A 回 answer'), H('FA', a6, b6, '出站：刷新记录'), H('FB', a6, b6, '入站：匹配记录，放行'), H('B', a6, b6, 'B 收到：这一对地址来回都通')] },
+        { t: '在这条路径上跑 WireGuard', d: 'B 再发一个带标志的探测告诉 A“我这边通了”，A 的 answer 把标志带回来，双方都确认了这一对地址。之后 WireGuard 的包走同一个 socket，四个地址字段完全不变，所以直接匹配已有记录。之后探测每秒刷新一次，表项不会过期。',
           path: [H('A', a6, b6, 'WireGuard 握手，同一个 socket'), H('FA', a6, b6, '匹配记录'), H('FB', a6, b6, '匹配记录'), H('B', a6, b6, '用记录里的公钥校验')] }
       ] },
     { name: '二 · 一端 NAT，一端可达', kinds: ['nat', 'none'], stun: false,
@@ -483,8 +489,8 @@ NAT 之后  src=<span class="k">203.0.113.7:40001</span>  dst=198.51.100.9:6000
           path: [H('A', aP, bPub, 'A 发出'), H('FA', aN, bPub, 'NAT 改写源地址，写入映射'), H('FB', aN, bPub, 'B 没有防火墙，直接通过'), H('B', aN, bPub, 'B 收到，读到源地址')],
           fa: [[aP, aN, bPub]], tb: [aP, aN] },
         { t: 'B 从来包学到真实地址，原路回复', d: '探测里的 token 正确，所以 B 把来源 203.0.113.7:40001 加入目标，并回 answer。这个包到达 NAT，映射存在，目的地址被改回 10.0.0.2:5000，A 收到。',
-          path: [H('B', bPub, aN, 'B 回 answer'), H('FA', bPub, aP, 'NAT 查映射，改写目的地址'), H('A', bPub, aP, 'A 收到，路径被证明')] },
-        { t: 'A 在同一个 socket 上跑 WireGuard', d: '源端口还是 5000，NAT 继续用 40001 这条映射，所以 B 看到的来源不变。探测让映射不过期。这里全程不需要 STUN，B 自己就充当了告诉你地址的角色。',
+          path: [H('B', bPub, aN, 'B 回 answer'), H('FA', bPub, aP, 'NAT 查映射，改写目的地址'), H('A', bPub, aP, 'A 收到：这一对地址来回都通')] },
+        { t: 'A 在同一个 socket 上跑 WireGuard', d: 'A 再发一个带标志的探测，B 就用它的来源 203.0.113.7:40001 作为 A 的地址，answer 把标志带回，双方确认。源端口还是 5000，NAT 继续用 40001 这条映射，所以 B 看到的来源不变。探测让映射不过期。这里全程不需要 STUN，B 自己就充当了告诉你地址的角色。',
           path: [H('A', aP, bPub, 'WireGuard 握手，同一个 socket'), H('FA', aN, bPub, '同一条映射'), H('B', aN, bPub, '用记录里的公钥校验')] }
       ] },
     { name: '三 · 两边 NAT，没有 STUN', kinds: ['nat', 'nat'], stun: false,

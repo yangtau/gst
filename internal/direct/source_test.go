@@ -3,7 +3,9 @@ package direct
 import (
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,12 +60,18 @@ func sourceOf(t *testing.T, c *net.UDPConn) (netip.Addr, []byte) {
 	return from.Addr().Unmap(), buf[:n]
 }
 
-func probeOf(p *Path, to netip.AddrPort) []byte {
+// probeOf makes a probe of the other side of p, to the address to; works
+// says that the pair works.
+func probeOf(p *Path, to netip.AddrPort, works bool) []byte {
 	packet := make([]byte, 0, probeLen)
 	packet = append(packet, kindProbe)
 	packet = append(packet, p.token[:]...)
 	packet = append(packet, make([]byte, idLen+8)...)
-	return appendAddr(packet, to)
+	packet = appendAddr(packet, to)
+	if works {
+		return append(packet, flagWorks)
+	}
+	return append(packet, 0)
 }
 
 // An answer leaves from the address that its probe came to, whatever
@@ -80,7 +88,7 @@ func TestAnswersLeaveFromTheAddressProbed(t *testing.T) {
 			// From another address, which the system would answer from.
 			other, _ := peer(t, network, locals[(i+1)%len(locals)])
 			to := netip.AddrPortFrom(local, tr.socketFor(local).port)
-			other.WriteToUDPAddrPort(probeOf(p, to), to)
+			other.WriteToUDPAddrPort(probeOf(p, to, false), to)
 			if from, packet := sourceOf(t, other); from != local || packet[0] != kindAnswer {
 				t.Errorf("probe to %s: answer from %s", local, from)
 			}
@@ -105,7 +113,7 @@ func TestPacketsLeaveFromWhereAnswersCame(t *testing.T) {
 			t.Cleanup(func() { p.Close() })
 			p.mu.Lock()
 			p.add(at)
-			p.record(at, locals[len(locals)-1-i], time.Millisecond, time.Now())
+			p.record(at, locals[len(locals)-1-i], time.Millisecond, true, time.Now())
 			p.mu.Unlock()
 			paths[i], peers[i] = p, c
 		}
@@ -153,8 +161,8 @@ func TestAnswersAtAnotherAddress(t *testing.T) {
 	first, second := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2")
 	p := newTestPath(t, remote)
 	now := time.Now()
-	p.record(remote, first, time.Millisecond, now)
-	p.record(remote, second, time.Millisecond, now.Add(time.Millisecond))
+	p.record(remote, first, time.Millisecond, true, now)
+	p.record(remote, second, time.Millisecond, true, now.Add(time.Millisecond))
 	if got := p.best.Load(); got.local != first || p.targets[remote].local != first {
 		t.Fatalf("using %s", got)
 	}
@@ -162,25 +170,26 @@ func TestAnswersAtAnotherAddress(t *testing.T) {
 		t.Fatalf("probing %v", got)
 	}
 	later := now.Add(staleLimit + time.Second)
-	if got := p.due(later); len(got) != 1 || got[0].local.IsValid() {
-		t.Fatalf("probing %v after it stopped answering", got)
+	if got := sources(p, later, remote); !slices.Equal(got, []netip.Addr{{}, loopback}) {
+		t.Fatalf("probing from %v after it stopped answering", got)
 	}
-	p.record(remote, second, time.Millisecond, later)
+	p.record(remote, second, time.Millisecond, true, later)
 	if got := p.best.Load(); got.local != second {
 		t.Fatalf("using %s", got)
 	}
 }
 
-// When this side changes network, the probes leave from where the system
-// says, and the packets keep their address until an answer tells another.
-func TestRemeasureAsksTheSystem(t *testing.T) {
+// When this side changes network, no pair is known to work any more: the
+// probes leave as at the start of a try, and the packets keep their address
+// until an answer tells another.
+func TestRemeasureStartsOver(t *testing.T) {
 	remote := netip.MustParseAddrPort("192.0.2.1:1")
 	first, second := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2")
 	p := newTestPath(t, remote)
 	now := time.Now()
-	p.record(remote, first, time.Millisecond, now)
+	p.record(remote, first, time.Millisecond, true, now)
 	p.Remeasure()
-	if got := p.due(now); len(got) != 1 || got[0].local.IsValid() {
+	if got := p.due(now); len(got) != 2 || got[0].local.IsValid() || got[1].local != loopback || got[0].works || got[1].works {
 		t.Fatalf("probing %v", got)
 	}
 	if got := p.best.Load(); got.local != first {
@@ -189,18 +198,18 @@ func TestRemeasureAsksTheSystem(t *testing.T) {
 	// A late answer to a probe from before takes the place first, and the
 	// next answer then waits until it stops answering.
 	p.mu.Lock()
-	p.record(remote, first, time.Millisecond, now.Add(time.Millisecond))
-	p.record(remote, second, time.Millisecond, now.Add(2*time.Millisecond))
+	p.record(remote, first, time.Millisecond, true, now.Add(time.Millisecond))
+	p.record(remote, second, time.Millisecond, true, now.Add(2*time.Millisecond))
 	p.mu.Unlock()
 	if got := p.best.Load(); got.local != first {
 		t.Fatalf("using %s", got)
 	}
 	later := now.Add(staleLimit + time.Second)
-	if got := p.due(later); len(got) != 1 || got[0].local.IsValid() {
-		t.Fatalf("probing %v after it stopped answering", got)
+	if got := sources(p, later, remote); !slices.Equal(got, []netip.Addr{{}, loopback}) {
+		t.Fatalf("probing from %v after it stopped answering", got)
 	}
 	p.mu.Lock()
-	p.record(remote, second, time.Millisecond, later)
+	p.record(remote, second, time.Millisecond, true, later)
 	p.mu.Unlock()
 	if got := p.best.Load(); got.local != second {
 		t.Fatalf("using %s", got)
@@ -227,7 +236,7 @@ func TestAddressGone(t *testing.T) {
 			other, at := peer(t, c.network, c.at)
 			p := newTestPath(t, at)
 			p.mu.Lock()
-			p.record(at, c.gone, time.Millisecond, time.Now())
+			p.record(at, c.gone, time.Millisecond, true, time.Now())
 			p.mu.Unlock()
 			if err := p.WritePacket(wg4()); err == nil || !gone(err) {
 				t.Fatalf("sent from an address of no machine: %v", err)
@@ -240,7 +249,7 @@ func TestAddressGone(t *testing.T) {
 				t.Fatal("still probing from the address that is gone")
 			}
 			p.mu.Lock()
-			p.record(at, c.at, time.Millisecond, time.Now())
+			p.record(at, c.at, time.Millisecond, true, time.Now())
 			p.mu.Unlock()
 			if got := p.best.Load(); got.local != c.at {
 				t.Fatalf("using %s", got)
@@ -349,4 +358,333 @@ func TestAnswersPinTheSource(t *testing.T) {
 			}
 		}
 	})
+}
+
+// sources returns where the probes to remote that are due leave from; an
+// address that is not valid stands for where the system says.
+func sources(p *Path, now time.Time, remote netip.AddrPort) []netip.Addr {
+	var list []netip.Addr
+	for _, w := range p.due(now) {
+		if w.remote == remote {
+			list = append(list, w.local)
+		}
+	}
+	return list
+}
+
+// Until an address of the other side answers, the probes leave from where
+// the system says and from each address of this machine of the family: the
+// system's pick may be one that nothing returns to. The first answer
+// decides, and the rest stop.
+func TestProbesLeaveFromEachAddress(t *testing.T) {
+	remote, quiet := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
+	old, current, v6 := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2"), netip.MustParseAddr("2001:db8::1")
+	p := newTestPath(t, remote, quiet)
+	p.t.locals.Store(&[]netip.Addr{old, current, v6})
+	system := netip.Addr{}
+	now := time.Now()
+	if got := sources(p, now, remote); !slices.Equal(got, []netip.Addr{system, old, current}) {
+		t.Fatalf("probing from %v", got)
+	}
+	// The answer to the probe that left from one of them proves the pair.
+	p.mu.Lock()
+	p.record(remote, current, time.Millisecond, true, now)
+	p.mu.Unlock()
+	if got := p.best.Load(); got.local != current {
+		t.Fatalf("using %s", got)
+	}
+	if got := sources(p, now, remote); !slices.Equal(got, []netip.Addr{current}) {
+		t.Fatalf("probing from %v once it answers", got)
+	}
+	// With an address in use, the others are left to the system: its pick
+	// follows the routes, and the path does not depend on them.
+	p.sweepUntil = now.Add(sweepTime)
+	if got := sources(p, now, quiet); !slices.Equal(got, []netip.Addr{system}) {
+		t.Fatalf("probing the other address from %v", got)
+	}
+	// Once the address in use stops answering, the path looks again.
+	later := now.Add(staleLimit + time.Second)
+	if got := sources(p, later, remote); !slices.Equal(got, []netip.Addr{system, old, current}) {
+		t.Fatalf("probing from %v after it stopped answering", got)
+	}
+}
+
+// The answers to the probes that left from other addresses of this machine
+// than the one in use are no measures of the pair.
+func TestAnswersAtOtherAddressesAreNoMeasures(t *testing.T) {
+	remote := netip.MustParseAddrPort("192.0.2.1:1")
+	first, second := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2")
+	p := newTestPath(t, remote)
+	now := time.Now()
+	p.record(remote, first, time.Millisecond, true, now)
+	p.record(remote, second, time.Second, true, now)
+	p.record(remote, second, time.Second, true, now)
+	if target := p.targets[remote]; target.samples != 1 || target.rtt != time.Millisecond {
+		t.Fatalf("%d measures, of %s", target.samples, target.rtt)
+	}
+}
+
+// A machine whose address the system picks returns nothing, as when the
+// network gave up its prefix, finds the path all the same, from another of
+// its addresses, without a probe of the other side to tell which.
+func TestConnectWhenTheSystemPicksADeadAddress(t *testing.T) {
+	several(t, func(t *testing.T, network string, locals []netip.Addr) {
+		tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return locals }}, never)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(tr.Close)
+		good := locals[len(locals)-1]
+		c, at := peer(t, network, locals[0])
+		// The other side: it hears every probe, and its answers come back
+		// only to the one address.
+		go func() {
+			buf := make([]byte, 2048)
+			for {
+				n, from, err := c.ReadFromUDPAddrPort(buf)
+				if err != nil {
+					return
+				}
+				from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
+				if n == probeLen && buf[0] == kindProbe && from.Addr() == good {
+					c.WriteToUDPAddrPort(answer([tokenLen]byte(buf[1:1+tokenLen]), buf[1+tokenLen+idLen:n], from), from)
+				}
+			}
+		}()
+		p, err := tr.Start(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { p.Close() })
+		if err := p.Connect(within(t, 5*time.Second), wire.DirectOffer{Addresses: []string{at.String()}}); err != nil {
+			t.Fatal(err)
+		}
+		if want := netip.AddrPortFrom(good, tr.socketFor(good).port).String(); p.Local() != want {
+			t.Fatalf("local %s, not %s", p.Local(), want)
+		}
+	})
+}
+
+// A probe that tries an address of this machine and cannot leave fails with
+// no word in the trace: the one from where the system says left with it.
+func TestAddressTriedGone(t *testing.T) {
+	remote, tried := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddr("198.51.100.1")
+	p := newTestPath(t, remote)
+	p.trace = func(text string) { t.Errorf("traced %q", text) }
+	if p.unpin(*newPair(tried, remote), syscall.EADDRNOTAVAIL) {
+		t.Fatal("a second probe from where the system says")
+	}
+}
+
+// other is the other side of a path, played by the test: a socket that
+// sends what the test says, and tells what arrives.
+type other struct {
+	t  *testing.T
+	c  *net.UDPConn
+	p  *Path
+	to netip.AddrPort // the path's socket
+}
+
+func newOther(t *testing.T, tr *Transport, p *Path) *other {
+	c, _ := peer(t, "udp4", loopback)
+	return &other{t, c, p, netip.AddrPortFrom(loopback, tr.v4.port)}
+}
+
+func (o *other) at() netip.AddrPort {
+	return netip.AddrPortFrom(loopback, o.c.LocalAddr().(*net.UDPAddr).AddrPort().Port())
+}
+
+func (o *other) send(packet []byte) { o.c.WriteToUDPAddrPort(packet, o.to) }
+
+// next returns the next packet of the kind that arrives within a second;
+// nil when none does.
+func (o *other) next(kind byte) []byte {
+	o.t.Helper()
+	buf := make([]byte, 2048)
+	o.c.SetReadDeadline(time.Now().Add(time.Second))
+	for {
+		n, _, err := o.c.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			return nil
+		}
+		if buf[0] == kind {
+			return buf[:n]
+		}
+	}
+}
+
+// confirm runs the three steps from the other side: its probe, the path's
+// answer, and its probe that says that the pair works.
+func (o *other) confirm() {
+	o.t.Helper()
+	o.send(probeOf(o.p, o.to, false))
+	if o.next(kindAnswer) == nil {
+		o.t.Fatal("no answer")
+	}
+	o.send(probeOf(o.p, o.to, true))
+}
+
+// received makes p tell what it hands on.
+func received(p *Path) <-chan []byte {
+	got := make(chan []byte, 16)
+	p.HandlePackets(func(packet []byte) { got <- slices.Clone(packet) })
+	return got
+}
+
+// The side whose own probes all fail, as from an address that nothing
+// returns to, has its path all the same: the other side's probe, this
+// side's answer, and the other side's word that the answer arrived confirm
+// a pair, which both then use.
+func TestTheOtherSideConfirmsThePair(t *testing.T) {
+	tr := transport(t)
+	p, err := tr.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	got := received(p)
+	o := newOther(t, tr, p)
+	// The other side offers an address that never answers.
+	_, silent := peer(t, "udp4", loopback)
+	connected := make(chan error, 1)
+	go func() {
+		connected <- p.Connect(within(t, 5*time.Second), wire.DirectOffer{Addresses: []string{silent.String()}})
+	}()
+	o.confirm()
+	if err := <-connected; err != nil {
+		t.Fatal(err)
+	}
+	if want := netip.AddrPortFrom(loopback, tr.v4.port).String(); p.Local() != want || p.Remote() != o.at().String() {
+		t.Fatalf("using %s to %s, not %s to %s", p.Local(), p.Remote(), want, o.at())
+	}
+	// The answer to the probe that says so repeats it: the other side then
+	// knows that this side knows.
+	if a := o.next(kindAnswer); a == nil || a[1+tokenLen+echoLen-1]&flagWorks == 0 {
+		t.Fatalf("the answer %v does not repeat that the pair works", a)
+	}
+	if err := p.WritePacket(wg4()); err != nil {
+		t.Fatal(err)
+	}
+	if o.next(wg4()[0]) == nil {
+		t.Fatal("the packet did not arrive at the other side")
+	}
+	o.send(wg4())
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the packet did not arrive")
+	}
+}
+
+// The side that offers has its path before it hears the answer to its
+// offer over SSH, when the other side's probes were faster.
+func TestConfirmedBeforeConnect(t *testing.T) {
+	tr := transport(t)
+	p, err := tr.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	o := newOther(t, tr, p)
+	o.confirm()
+	if o.next(kindAnswer) == nil {
+		t.Fatal("no answer")
+	}
+	if err := p.Connect(within(t, 5*time.Second), wire.DirectOffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if p.Remote() != o.at().String() {
+		t.Fatalf("using %s", p.Remote())
+	}
+	// It keeps the pair, saying that it works.
+	if probe := o.next(kindProbe); probe == nil || probe[probeLen-1]&flagWorks == 0 {
+		t.Fatalf("probe %v", probe)
+	}
+}
+
+// A side sends nothing on a pair until the other side knows that it works:
+// answers alone, which never repeat that this side said so, make no path.
+func TestNoPathUntilBothSidesKnow(t *testing.T) {
+	tr := transport(t)
+	p, err := tr.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	o := newOther(t, tr, p)
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, _, err := o.c.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				return
+			}
+			if n == probeLen && buf[0] == kindProbe {
+				echo := slices.Clone(buf[1+tokenLen+idLen : n])
+				echo[echoLen-1] = 0
+				o.send(answer(p.token, echo, o.to))
+			}
+		}
+	}()
+	if err := p.Connect(within(t, time.Second), wire.DirectOffer{Addresses: []string{o.at().String()}}); err == nil {
+		t.Fatal("a path that the other side does not know of")
+	}
+	if !p.works.Load() {
+		t.Fatal("the answers did not arrive")
+	}
+	if err := p.WritePacket(wg4()); err == nil {
+		t.Fatal("sent a packet on it")
+	}
+}
+
+// A side hands on packets once it knows a pair to work, not before: the
+// other side sends only on such a pair, and a probe alone proves none.
+func TestPacketsWaitForAPairThatWorks(t *testing.T) {
+	tr := transport(t)
+	p, err := tr.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	got := received(p)
+	o := newOther(t, tr, p)
+	o.send(probeOf(p, o.to, false))
+	if o.next(kindAnswer) == nil {
+		t.Fatal("no answer")
+	}
+	o.send(wg4())
+	select {
+	case <-got:
+		t.Fatal("handed on a packet before any pair worked")
+	case <-time.After(200 * time.Millisecond):
+	}
+	o.send(probeOf(p, o.to, true))
+	if o.next(kindAnswer) == nil {
+		t.Fatal("no answer")
+	}
+	o.send(wg4())
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the packet did not arrive")
+	}
+}
+
+// A try that ends without a path tells the other side, wherever its probes
+// came from, so that it stops trying too.
+func TestClosingATryTellsTheOtherSide(t *testing.T) {
+	tr := transport(t)
+	p, err := tr.Start(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := newOther(t, tr, p)
+	o.send(probeOf(p, o.to, false))
+	if o.next(kindAnswer) == nil {
+		t.Fatal("no answer")
+	}
+	p.Close()
+	if o.next(kindBye) == nil {
+		t.Fatal("the other side was not told")
+	}
 }

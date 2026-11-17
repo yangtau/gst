@@ -26,7 +26,10 @@ const (
 // A UDP path (internal/direct) carries the WireGuard packets between two
 // nodes of the network, which may have no SSH link between them.
 // Traffic to a node starts a try at one, signaling with routed calls, and
-// takes the links until the path is up, and again after it ends.
+// takes the links until the path is up, and again after it ends. The two
+// nodes confirm the path to each other before either sends on it, and the
+// one that knows of it first is ready for the other's packets, so a try
+// hands on what its path lets through from the start (receiveOn).
 //
 // A path is no link: it carries only the packets of its two nodes, no
 // calls, no table, and nobody else's packets, and the table says nothing
@@ -290,6 +293,7 @@ func (n *Node) connectDirect(ctx context.Context, id string) (*direct.Path, erro
 	if err != nil {
 		return nil, err
 	}
+	n.receiveOn(id, path)
 	offer := path.Offer()
 	n.trace(id, "offering over SSH: %s", strings.Join(offer.Addresses, ", "))
 	var answer wire.DirectOffer
@@ -353,6 +357,7 @@ func (n *Node) serveOffer(_ context.Context, from string, offer wire.DirectOffer
 	if old != nil {
 		old.Close()
 	}
+	n.receiveOn(from, path)
 	answer := path.Offer()
 	answer.Token = ""
 	ctx, try := n.startDirect(from, false)

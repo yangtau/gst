@@ -95,10 +95,15 @@ func (n *Node) PacketEndpoint(id string) string {
 	return ""
 }
 
-// attachPackets makes packets to node id take path, and hands on what
-// arrives on it.
-func (n *Node) attachPackets(id string, path *direct.Path) {
+// receiveOn hands on what arrives on path, a try at a UDP path to node id
+// or the path that came of it. The path lets packets through once this
+// node knows that it works, when the other node may send on it already.
+func (n *Node) receiveOn(id string, path *direct.Path) {
 	path.HandlePackets(func(packet []byte) { n.deliver(id, packet) })
+}
+
+// attachPackets makes packets to node id take path.
+func (n *Node) attachPackets(id string, path *direct.Path) {
 	n.packetPeer(id).direct.Store(path)
 }
 

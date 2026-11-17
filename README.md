@@ -323,6 +323,10 @@ What differs from an iPhone:
 
 ## Upgrading
 
+### From 0.7
+
+The two ends of a direct path now confirm it to each other before they send on it, which changes the gst protocol. Configurations and links carry over. Upgrade every machine and the phone apps together: until both ends of a link run the same protocol, gst refuses the link and names both versions, and packets between the two do not go at all. Then run `gst up` on each machine to restart gst.
+
 ### From 0.6
 
 A machine added to the network now stays in it while offline, until `gst remove` takes it out. gst reads a 0.6 configuration and keeps its links. Commands changed:

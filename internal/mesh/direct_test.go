@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/netip"
@@ -73,6 +74,8 @@ func TestDirectPath(t *testing.T) {
 
 	a.SendPacket(nid("b"), wg("over udp"))
 	waitFor(t, "the packet arrives over UDP", func() bool { return boxes[b].has(nid("a"), string(wg("over udp"))) })
+	b.SendPacket(nid("a"), wg("back over udp"))
+	waitFor(t, "the packet arrives over UDP on the side that offered", func() bool { return boxes[a].has(nid("b"), string(wg("back over udp"))) })
 
 	a.packetPeer(nid("b")).direct.Load().Close()
 	waitFor(t, "the path ends on b", func() bool { return !hasDirect(b, nid("a")) })
@@ -240,6 +243,51 @@ func TestDirectOffersCross(t *testing.T) {
 	waitFor(t, "the packet arrives", func() bool { return boxes[b].has(nid("a"), string(wg("hello"))) })
 }
 
+// probeOf makes a probe of the try with token, a byte repeated, as the
+// other node would send it; works says that the pair of addresses works.
+func probeOf(token byte, works bool) []byte {
+	probe := append([]byte{0x11}, bytes.Repeat([]byte{token}, 16)...)
+	probe = append(probe, make([]byte, 8+8+18)...)
+	if works {
+		return append(probe, 1)
+	}
+	return append(probe, 0)
+}
+
+// A node takes packets on a path, and sends on it, once the two nodes
+// confirmed it to each other, and not before: a probe of the other node
+// proves no path. The other node's word that its probe was answered does,
+// though this node's own probes found nothing.
+func TestPathNeedsBothNodes(t *testing.T) {
+	a, c := newNode(t, "a"), newNode(t, "c")
+	boxes := enableDirect(t, c)
+	linkUp(t, a, c)
+	other, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	// The other node's side of the try, which never answers c's probes.
+	if _, err := c.serveOffer(t.Context(), nid("a"), wire.DirectOffer{Token: strings.Repeat("ab", 16), Addresses: []string{other.LocalAddr().String()}}); err != nil {
+		t.Fatal(err)
+	}
+	to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: c.udp.Stats().Port}
+	other.WriteToUDP(probeOf(0xab, false), to)
+	for range 5 {
+		other.WriteToUDP(wg("early"), to)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if boxes[c].has(nid("a"), string(wg("early"))) || hasDirect(c, nid("a")) {
+		t.Fatal("c took a path that nothing confirmed")
+	}
+	other.WriteToUDP(probeOf(0xab, true), to)
+	waitFor(t, "the path runs on c", func() bool { return hasDirect(c, nid("a")) })
+	waitFor(t, "the packet arrives", func() bool {
+		other.WriteToUDP(wg("confirmed"), to)
+		return boxes[c].has(nid("a"), string(wg("confirmed")))
+	})
+}
+
 // An offer that crossed this node's, and arrives once the path runs, leaves
 // the path alone: the other node answers on it, so it gave up its own
 // offer, and taking it would end the path for one that never comes up.
@@ -343,7 +391,7 @@ func TestDirectReport(t *testing.T) {
 	if !slices.ContainsFunc(opener, hasText("offering")) {
 		opener, other = other, opener // c offered.
 	}
-	for _, want := range []string{"offering", "the answer offers", "the path works", "up: using "} {
+	for _, want := range []string{"offering", "the answer offers", "both sides know that it works", "up: using "} {
 		if !slices.ContainsFunc(opener, hasText(want)) {
 			t.Fatalf("the offering side's trace lacks %q: %v", want, opener)
 		}

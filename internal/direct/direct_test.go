@@ -310,6 +310,24 @@ func TestPublicAddress(t *testing.T) {
 	}
 }
 
+// An address of this machine's own that others saw takes no place among
+// those kept: the offers name it already, and the probes that leave from
+// each address would fill the places with them.
+func TestOwnAddressesAreNotPublic(t *testing.T) {
+	own := netip.MustParseAddr("2001:db8::7")
+	tr, err := Listen(0, Network{Addresses: func() []netip.Addr { return []netip.Addr{own} }}, never)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tr.Close)
+	tr.sawPublic(netip.AddrPortFrom(own, 41000))
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.public) != 0 {
+		t.Fatalf("kept %v", tr.public)
+	}
+}
+
 // An answer tells the machine that probed where it came from.
 func TestAnswersTellTheSource(t *testing.T) {
 	client, server := transport(t), transport(t)
@@ -333,29 +351,59 @@ func newTestPath(t *testing.T, addrs ...netip.AddrPort) *Path {
 	return p
 }
 
+// Packets move only to a pair that the other side knows to work, however
+// fast its answers are.
+func TestOnlyAPairThatBothKnowIsUsed(t *testing.T) {
+	slow, fast := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
+	p := newTestPath(t, slow, fast)
+	now := time.Now()
+	p.record(fast, netip.Addr{}, time.Millisecond, false, now)
+	if p.best.Load() != nil {
+		t.Fatal("using a pair that the other side does not know of")
+	}
+	p.record(slow, netip.Addr{}, 50*time.Millisecond, true, now)
+	for range minSamples {
+		p.record(fast, netip.Addr{}, time.Millisecond, false, now)
+	}
+	if got := p.best.Load(); got.remote != slow {
+		t.Fatalf("using %s", got)
+	}
+	p.record(fast, netip.Addr{}, time.Millisecond, true, now)
+	if got := p.best.Load(); got.remote != fast {
+		t.Fatalf("using %s once both know", got)
+	}
+	// A pair that stopped working is confirmed again before it is used.
+	later := now.Add(staleLimit + time.Second)
+	p.record(slow, netip.Addr{}, 50*time.Millisecond, true, later)
+	p.record(fast, netip.Addr{}, time.Millisecond, false, later.Add(staleLimit+time.Second))
+	if p.targets[fast].confirmed {
+		t.Fatal("a pair that stopped working still counts as confirmed")
+	}
+}
+
 // A faster address takes over once it is measured to be clearly faster,
 // and only then: paths must not hop between equals.
 func TestChoosingTheFastestAddress(t *testing.T) {
 	slow, fast, near := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2"), netip.MustParseAddrPort("192.0.2.3:3")
 	p := newTestPath(t, slow, fast, near)
 	now := time.Now()
-	p.record(slow, netip.Addr{}, 50*time.Millisecond, now)
+	p.record(slow, netip.Addr{}, 50*time.Millisecond, true, now)
 	if p.Remote() != slow.String() {
 		t.Fatalf("using %s", p.Remote())
 	}
 	for range 10 {
-		p.record(near, netip.Addr{}, 49*time.Millisecond, now)
-		p.record(slow, netip.Addr{}, 50*time.Millisecond, now)
+		p.record(near, netip.Addr{}, 49*time.Millisecond, true, now)
+		p.record(slow, netip.Addr{}, 50*time.Millisecond, true, now)
 	}
 	if p.Remote() != slow.String() {
 		t.Fatalf("hopped to %s", p.Remote())
 	}
-	p.record(fast, netip.Addr{}, 5*time.Millisecond, now)
-	p.record(fast, netip.Addr{}, 5*time.Millisecond, now)
+	p.record(fast, netip.Addr{}, 5*time.Millisecond, true, now)
+	p.record(fast, netip.Addr{}, 5*time.Millisecond, true, now)
 	if p.Remote() != slow.String() {
 		t.Fatal("moved on too few measures")
 	}
-	p.record(fast, netip.Addr{}, 5*time.Millisecond, now)
+	p.record(fast, netip.Addr{}, 5*time.Millisecond, true, now)
 	if p.Remote() != fast.String() {
 		t.Fatalf("still using %s", p.Remote())
 	}
@@ -368,7 +416,7 @@ func TestPreferringPrivateAddresses(t *testing.T) {
 	public, private := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("10.0.0.2:2")
 	measure := func(p *Path, addr netip.AddrPort, rtt time.Duration) {
 		for range minSamples {
-			p.record(addr, netip.Addr{}, rtt, time.Now())
+			p.record(addr, netip.Addr{}, rtt, true, time.Now())
 		}
 	}
 	for _, c := range []struct {
@@ -400,8 +448,8 @@ func TestStaleAddress(t *testing.T) {
 	first, other := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
 	p := newTestPath(t, first, other)
 	now := time.Now()
-	p.record(first, netip.Addr{}, time.Millisecond, now)
-	p.record(other, netip.Addr{}, 90*time.Millisecond, now.Add(staleLimit+time.Second))
+	p.record(first, netip.Addr{}, time.Millisecond, true, now)
+	p.record(other, netip.Addr{}, 90*time.Millisecond, true, now.Add(staleLimit+time.Second))
 	if p.Remote() != other.String() {
 		t.Fatalf("still using %s", p.Remote())
 	}
@@ -412,16 +460,17 @@ func TestStaleAddress(t *testing.T) {
 func TestSweeps(t *testing.T) {
 	first, other := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
 	p := newTestPath(t, first, other)
+	p.t.locals.Store(&[]netip.Addr{}) // One probe to an address: from where the system says.
 	now := time.Now()
 	if got := p.due(now); len(got) != 2 {
 		t.Fatalf("before the path: %v", got)
 	}
-	p.record(first, netip.Addr{}, time.Millisecond, now)
+	p.record(first, netip.Addr{}, time.Millisecond, true, now)
 	if got := p.due(now); len(got) != 2 {
 		t.Fatalf("right after it came up: %v", got)
 	}
 	later := now.Add(sweepTime)
-	p.record(first, netip.Addr{}, time.Millisecond, later)
+	p.record(first, netip.Addr{}, time.Millisecond, true, later)
 	if got := p.due(later); len(got) != 1 || got[0].remote != first {
 		t.Fatalf("between sweeps: %v", got)
 	}
@@ -429,7 +478,7 @@ func TestSweeps(t *testing.T) {
 		t.Fatalf("before the next beat: %v", got)
 	}
 	next := now.Add(sweepInterval)
-	p.record(first, netip.Addr{}, time.Millisecond, next)
+	p.record(first, netip.Addr{}, time.Millisecond, true, next)
 	if got := p.due(next); len(got) != 2 {
 		t.Fatalf("at the next sweep: %v", got)
 	}
@@ -449,12 +498,7 @@ func TestMovingToAnotherAddress(t *testing.T) {
 	defer moved.Close()
 	to := netip.AddrPortFrom(loopback, server.v4.port)
 	moved.WriteToUDPAddrPort([]byte("\x04early"), to)
-	probe := make([]byte, 0, probeLen)
-	probe = append(probe, kindProbe)
-	probe = append(probe, c.token[:]...)
-	probe = append(probe, make([]byte, idLen+8)...)
-	probe = appendAddr(probe, to)
-	moved.WriteToUDPAddrPort(probe, to)
+	moved.WriteToUDPAddrPort(probeOf(c, to, false), to)
 	buf := make([]byte, 128)
 	moved.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if n, _, err := moved.ReadFromUDPAddrPort(buf); err != nil || n != answerLen {
@@ -475,9 +519,9 @@ func TestMovingToAnotherAddress(t *testing.T) {
 func TestTargetLimit(t *testing.T) {
 	first := netip.MustParseAddrPort("192.0.2.1:1")
 	p := newTestPath(t, first)
-	p.record(first, netip.Addr{}, time.Millisecond, time.Now())
+	p.record(first, netip.Addr{}, time.Millisecond, true, time.Now())
 	for i := range 3 * maxTargets {
-		p.probed(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1000+i)))
+		p.probed(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1000+i)), netip.Addr{}, false)
 	}
 	if len(p.targets) > maxTargets || p.targets[first] == nil {
 		t.Fatalf("%d targets, first %v", len(p.targets), p.targets[first])
@@ -586,9 +630,9 @@ func waitFor(t *testing.T, msg string, cond func() bool) {
 func TestAnswerSourcesAreBounded(t *testing.T) {
 	first := netip.MustParseAddrPort("192.0.2.1:1")
 	p := newTestPath(t, first)
-	p.record(first, netip.Addr{}, time.Millisecond, time.Now())
+	p.record(first, netip.Addr{}, time.Millisecond, true, time.Now())
 	for i := range 3 * maxTargets {
-		p.answered(first, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1000+i)), netip.Addr{}, time.Millisecond)
+		p.answered(first, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1000+i)), netip.Addr{}, time.Millisecond, true)
 	}
 	waitFor(t, "the old sources go", func() bool {
 		count := 0
@@ -604,7 +648,7 @@ func TestAnswerSourcesAreBounded(t *testing.T) {
 	}
 
 	stranger := netip.MustParseAddrPort("192.0.2.3:3")
-	p.answered(netip.MustParseAddrPort("192.0.2.4:4"), stranger, netip.Addr{}, time.Millisecond)
+	p.answered(netip.MustParseAddrPort("192.0.2.4:4"), stranger, netip.Addr{}, time.Millisecond, true)
 	if p.knows(stranger) || (*p.t.sources.Load())[stranger] != nil {
 		t.Fatal("an answer to no probe of this path counted")
 	}
@@ -616,9 +660,9 @@ func TestOldMeasuresDoNotCount(t *testing.T) {
 	fast, slow := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
 	p := newTestPath(t, fast, slow)
 	now := time.Now()
-	p.record(slow, netip.Addr{}, 50*time.Millisecond, now)
+	p.record(slow, netip.Addr{}, 50*time.Millisecond, true, now)
 	for range minSamples {
-		p.record(fast, netip.Addr{}, time.Millisecond, now)
+		p.record(fast, netip.Addr{}, time.Millisecond, true, now)
 	}
 	if got := p.best.Load().remote; got != fast {
 		t.Fatalf("best = %s", got)
@@ -626,8 +670,8 @@ func TestOldMeasuresDoNotCount(t *testing.T) {
 	p.best.Store(newPair(netip.Addr{}, slow))
 
 	later := now.Add(measureLife + time.Second)
-	p.record(slow, netip.Addr{}, 50*time.Millisecond, later)
-	p.record(fast, netip.Addr{}, 60*time.Millisecond, later)
+	p.record(slow, netip.Addr{}, 50*time.Millisecond, true, later)
+	p.record(fast, netip.Addr{}, 60*time.Millisecond, true, later)
 	if got := p.best.Load().remote; got != slow {
 		t.Fatalf("moved to %s on an old measure", got)
 	}
@@ -639,7 +683,7 @@ func TestOldMeasuresDoNotCount(t *testing.T) {
 func TestRefresh(t *testing.T) {
 	addr, fresh := netip.MustParseAddrPort("192.0.2.1:1"), netip.MustParseAddrPort("192.0.2.2:2")
 	p := newTestPath(t, addr)
-	p.record(addr, netip.Addr{}, time.Millisecond, time.Now())
+	p.record(addr, netip.Addr{}, time.Millisecond, true, time.Now())
 
 	if err := p.Refresh(wire.DirectOffer{Token: "00", Addresses: []string{fresh.String()}}); err == nil {
 		t.Fatal("took the update of another path")
@@ -650,8 +694,12 @@ func TestRefresh(t *testing.T) {
 	if !p.knows(fresh) || p.targets[addr].samples != 0 {
 		t.Fatalf("targets: %v", p.targets)
 	}
-	if got := p.due(time.Now()); len(got) != 2 {
-		t.Fatalf("probing %v", got)
+	// No pair is known to work any more: the probes leave as at the start.
+	now := time.Now()
+	for _, to := range []netip.AddrPort{addr, fresh} {
+		if got := sources(p, now, to); !slices.Equal(got, []netip.Addr{{}, loopback}) {
+			t.Fatalf("probing %s from %v", to, got)
+		}
 	}
 }
 

@@ -14,7 +14,8 @@ const (
 	// of the callee's daemon.
 	MethodPeerStatus = "status"
 	// MethodDirectOffer ("direct.offer") takes a DirectOffer and returns
-	// the callee's, after which the two nodes look for a UDP path.
+	// the callee's, after which the two nodes look for a UDP path and
+	// confirm it to each other (internal/direct).
 	MethodDirectOffer = "direct.offer"
 	// MethodDirectUpdate ("direct.update") takes the DirectOffer of a
 	// running UDP path, with the caller's addresses now, and returns nothing:

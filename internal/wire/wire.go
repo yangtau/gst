@@ -28,9 +28,12 @@ import (
 // rather than a name that people choose and address machines by. Version
 // 6 splits the mesh into links, a replicated table, and routing: a link is
 // a stream of typed frames rather than a yamux session, nodes stay in
-// the network while offline, and a removal is a record of the table. It does
-// not talk to earlier versions.
-const Protocol = 6
+// the network while offline, and a removal is a record of the table.
+// Version 7 has the two sides of a UDP path confirm a pair of addresses
+// to each other before either sends on it: a probe carries a flag that
+// says the pair works, and its answer repeats it. It does not talk to
+// earlier versions.
+const Protocol = 7
 
 // MaxFrame is the largest frame payload accepted, in bytes.
 const MaxFrame = 1 << 20

@@ -18,11 +18,22 @@
 // that it saw before, and a machine with several addresses, such as temporary
 // IPv6 ones, may pick another for any packet. So an answer leaves from the
 // address its probe came to, and a path sends from the address that an
-// answer came to, the pair of addresses that proved itself.
+// answer came to: the two make a pair, an address of this machine and one
+// of the other side's.
 //
-// Each side measures its addresses of the other and sends to the fastest,
-// so the two directions may differ. The path then carries the packets of
-// the virtual network, which WireGuard encrypts and authenticates. Nothing
+// The system's pick may also be an address that nothing returns to, and it
+// is the same at every try. So until an address of the other side answers,
+// the probes leave from each address of this machine besides: only an
+// answer makes a pair, and the system's pick is one try among them.
+//
+// A pair carries packets once the two sides confirmed it to each other, in
+// three steps (see Path): a side sends only on a pair that carried packets
+// both ways and that the other side knows of. One side's probes suffice
+// for both, as the other takes the pair from them.
+//
+// Each side sends on the fastest of the pairs that both confirmed, so the
+// two directions may differ. The path then carries the packets of the
+// virtual network, which WireGuard encrypts and authenticates. Nothing
 // here protects them: the token only keeps stray packets out.
 package direct
 
@@ -66,14 +77,20 @@ const (
 // The first byte of the packets of this package, then the token. WireGuard
 // uses 1 to 4, for packets that this package hands on.
 const (
-	kindProbe  = 0x11 // token, sender's id, time, address it goes to; asks for an answer
-	kindAnswer = 0x12 // token, the probe's time and address, where the probe came from
+	kindProbe  = 0x11 // token, sender's id, time, address it goes to, flags; asks for an answer
+	kindAnswer = 0x12 // token, the probe's time, address, and flags, where the probe came from
 	kindBye    = 0x13 // token; the path ends now
 )
 
+// flagWorks, in a probe, says that the pair of addresses that it goes
+// between works both ways: an answer of the other side came back there. See
+// Path for what the two sides make of it.
+const flagWorks = 1
+
 const (
-	probeLen  = 1 + tokenLen + idLen + 8 + addrLen
-	answerLen = 1 + tokenLen + 8 + 2*addrLen
+	echoLen   = 8 + addrLen + 1 // what an answer repeats of its probe
+	probeLen  = 1 + tokenLen + idLen + echoLen
+	answerLen = 1 + tokenLen + echoLen + addrLen
 )
 
 // Network is this machine's network, as UDP paths see it.
@@ -115,6 +132,7 @@ type Transport struct {
 	done    chan struct{}                            // closed by Close
 	changed chan struct{}                            // for Changed
 	known   []netip.Addr                             // what Addresses said last; owned by watch
+	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
 	strays  atomic.Uint64                            // WireGuard packets from unknown sources
 	sources atomic.Pointer[map[netip.AddrPort]*Path] // by the addresses that proved themselves; replaced, never changed
 }
@@ -189,6 +207,7 @@ func Listen(port int, network Network, skip func(netip.Addr) bool) (*Transport, 
 	}
 	rand.Read(t.id[:])
 	t.sources.Store(&map[netip.AddrPort]*Path{})
+	t.locals.Store(&[]netip.Addr{})
 	if t.v4 = listen("udp4", port); t.v4 != nil {
 		port = int(t.v4.port)
 	}
@@ -244,6 +263,7 @@ func (t *Transport) addressesChanged() bool {
 		return false
 	}
 	t.known = list
+	t.locals.Store(&list)
 	t.mu.Lock()
 	clear(t.public)
 	t.mu.Unlock()
@@ -409,9 +429,11 @@ func (t *Transport) SetSeen(addrs []netip.Addr) {
 }
 
 // sawPublic notes that another machine saw this one at addr. Behind a NAT
-// that keeps one public port per socket, that address serves for all.
+// that keeps one public port per socket, that address serves for all. An
+// address of this machine's own says nothing new: the offers name it, and
+// the probes that leave from each would fill the few that are kept.
 func (t *Transport) sawPublic(addr netip.AddrPort) {
-	if !addr.Addr().IsGlobalUnicast() || t.skip(addr.Addr()) {
+	if !addr.Addr().IsGlobalUnicast() || t.skip(addr.Addr()) || slices.Contains(*t.locals.Load(), addr.Addr()) {
 		return
 	}
 	t.mu.Lock()
@@ -516,17 +538,18 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort, loc
 		packet := answer(p.token, body[idLen:], source)
 		if err := s.write(packet, control(local), source); err != nil && local.IsValid() && gone(err) {
 			s.write(packet, nil, source)
+			local = netip.Addr{} // Nothing leaves from there, so it makes no pair.
 		}
-		p.probed(source)
+		p.probed(source, local, body[idLen+echoLen-1]&flagWorks != 0)
 	case packet[0] == kindAnswer && len(packet) == answerLen:
 		sent := time.Duration(binary.BigEndian.Uint64(body))
 		to, ok := parseAddr(body[8:])
-		seen, seenOK := parseAddr(body[8+addrLen:])
+		seen, seenOK := parseAddr(body[echoLen:])
 		rtt := time.Since(t.start) - sent
 		if !ok || !seenOK || rtt < 0 || rtt > maxRTT {
 			return
 		}
-		p.answered(to, source, local, rtt)
+		p.answered(to, source, local, rtt, body[echoLen-1]&flagWorks != 0)
 		t.sawPublic(seen)
 	case packet[0] == kindBye:
 		if p.knows(source) && !p.ended() {
@@ -536,8 +559,9 @@ func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort, loc
 	}
 }
 
-// probe sends a probe of p between the addresses of to.
-func (t *Transport) probe(p *Path, to pair) error {
+// probe sends a probe of p between the addresses of to; works says that
+// the pair works both ways.
+func (t *Transport) probe(p *Path, to pair, works bool) error {
 	s := t.socketFor(to.remote.Addr())
 	if s == nil {
 		return nil
@@ -548,10 +572,16 @@ func (t *Transport) probe(p *Path, to pair) error {
 	packet = append(packet, t.id[:]...)
 	packet = binary.BigEndian.AppendUint64(packet, uint64(time.Since(t.start)))
 	packet = appendAddr(packet, to.remote)
+	var flags byte
+	if works {
+		flags |= flagWorks
+	}
+	packet = append(packet, flags)
 	return s.write(packet, to.control, to.remote)
 }
 
-// answer makes the answer to a probe, whose time and address are echo.
+// answer makes the answer to a probe, whose time, address, and flags are
+// echo.
 func answer(token [tokenLen]byte, echo []byte, source netip.AddrPort) []byte {
 	packet := make([]byte, 0, answerLen)
 	packet = append(packet, kindAnswer)
