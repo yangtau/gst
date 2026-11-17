@@ -257,7 +257,7 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		d.cfg.Log.Print(err)
 	}
 	go d.dropRemovedLinks(meshCtx)
-	go d.restartWhenMoved(meshCtx)
+	go d.followNetwork(meshCtx)
 	netDone := make(chan struct{})
 	go func() {
 		defer close(netDone)
@@ -525,29 +525,41 @@ func (d *Daemon) dropRemovedLinks(ctx context.Context) {
 	}
 }
 
-// restartWhenMoved connects every link again at once whenever this
-// machine moves to another network, until ctx is done: a link that ran
-// or was connecting may be stuck on the old network, and what kept a link
-// from connecting may be gone; a machine that moves often, as a phone
-// does, would otherwise wait out the longest delay each time. The mesh
-// ended the links that ran already (Moved).
-func (d *Daemon) restartWhenMoved(ctx context.Context) {
+// followNetwork connects links again at once as this machine's network
+// changes, until ctx is done; a machine that moves often, as a phone
+// does, would otherwise wait out the longest delay each time. After a
+// move to another network, every link: one that ran or was connecting
+// may be stuck on the old network, and what kept one from connecting may
+// be gone; the mesh ended those that ran already (Moved). After a change
+// of addresses on the same network, the links that do not run: the
+// change may be what they lacked, as when IPv6 comes a moment after IPv4
+// (Readdressed).
+func (d *Daemon) followNetwork(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-d.mesh.Moved():
+			d.restartLinks(movedAway, true)
+		case <-d.mesh.Readdressed():
+			d.restartLinks(readdressed, false)
 		}
-		d.restartLinks()
 	}
 }
 
-// restartLinks connects every link again at once.
-func (d *Daemon) restartLinks() {
+// Why links connect again, for the log.
+const (
+	movedAway   = "this machine moved to another network"
+	readdressed = "this machine's addresses changed"
+)
+
+// restartLinks connects links again at once, for why: those that run too
+// when running is set, else only the others.
+func (d *Daemon) restartLinks(why string, running bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, s := range d.links {
-		s.restart()
+		s.restart(why, running)
 	}
 }
 

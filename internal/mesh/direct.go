@@ -62,7 +62,7 @@ func (n *Node) watchNetwork(ctx context.Context, network direct.Network, udp *di
 			udp.Close()
 			return
 		case <-udp.Changed():
-			n.addressesChanged(ctx)
+			n.addressesChanged(ctx, udp.LastChange())
 		case <-udp.Moved():
 			if udp = n.startOver(ctx, network, udp); udp == nil {
 				return
@@ -115,6 +115,25 @@ func (n *Node) Moved() <-chan struct{} {
 	return n.moved
 }
 
+// Readdressed returns a channel that is closed the next time this machine's
+// addresses change on its network, for the daemon to connect at once the
+// links that do not run: what kept them from connecting may be gone, as
+// when IPv6 comes a moment after IPv4 on a new network. Nothing closes it
+// while UDP paths are off, as their transport finds out.
+func (n *Node) Readdressed() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.readdressed
+}
+
+// how says how this machine's network change was found, for the log.
+func how(c direct.Change) string {
+	if c.Heard {
+		return "as the system said"
+	}
+	return "found at a regular look"
+}
+
 // startOver ends the links and the UDP paths after this machine moved to
 // another network, as a restart of gst would, but keeps the virtual
 // network and what runs on it. What was opened on the old network may be
@@ -131,11 +150,7 @@ func (n *Node) Moved() <-chan struct{} {
 // The next packets find paths again.
 func (n *Node) startOver(ctx context.Context, network direct.Network, old *direct.Transport) *direct.Transport {
 	move := old.LastMove()
-	how := "found at a regular look"
-	if move.Heard {
-		how = "as the system said"
-	}
-	n.log.Printf("this machine moved to another network (%s), %s; starting the links and UDP paths over", move.Families, how)
+	n.log.Printf("this machine moved to another network (%s), %s; starting the links and UDP paths over", move.Families, how(move))
 	n.mu.Lock()
 	links := slices.Collect(maps.Keys(n.links))
 	clear(n.directWaits)
@@ -176,10 +191,18 @@ func (n *Node) startOver(ctx context.Context, network direct.Network, old *direc
 // addressesChanged takes in new addresses of this machine on the same
 // network, as when a temporary IPv6 address comes: what failed may work
 // now, and what was measured may not hold. Each running path measures
-// again, and the other side learns the addresses.
-func (n *Node) addressesChanged(ctx context.Context) {
+// again, the other side learns the addresses, and the daemon connects
+// the links that do not run (Readdressed).
+func (n *Node) addressesChanged(ctx context.Context, change direct.Change) {
+	if change.Families != "" {
+		n.log.Printf("this machine's addresses changed (%s), %s", change.Families, how(change))
+	} else {
+		n.log.Printf("this machine reaches the internet through other interfaces, %s", how(change))
+	}
 	n.mu.Lock()
 	clear(n.directWaits)
+	close(n.readdressed)
+	n.readdressed = make(chan struct{})
 	n.mu.Unlock()
 	n.packets.Range(func(key, value any) bool {
 		id := key.(string)

@@ -53,7 +53,7 @@ func TestEnd(t *testing.T) {
 		want string
 	}{
 		{100, "one\ntwo\nthree\n"},
-		{10, "three\n"}, // from the start of a line
+		{10, "three\n"},      // from the start of a line
 		{11, "two\nthree\n"}, // the rotated file comes first
 	} {
 		if text, err := End(path, c.size); err != nil || text != c.want {

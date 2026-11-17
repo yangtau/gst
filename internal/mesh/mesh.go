@@ -66,19 +66,20 @@ type Node struct {
 	router *route.Router
 	update chan struct{} // asks Run to look again
 
-	mu         sync.Mutex
-	info       wire.NodeInfo // ID is empty until Configure gives the node an identity
-	generation int64
-	lastSeq    int64
-	links      map[*link.Link]struct{}
-	net        *wire.NodeNet        // this node's part in the virtual network; see SetNet
-	removed    *wire.Removed        // set while this node is removed from the network
-	routes     map[string][]string  // shortest routes along the links, from this node, by node id
-	lost       map[string]time.Time // when nodes stopped being reachable, by node id
-	changed    chan struct{}        // closed and replaced at every change
-	moved      chan struct{}        // closed and replaced when the machine moves to another network; see Moved
-	seenTable  <-chan struct{}      // the table's Changed at the last change
-	seenDirect string               // the nodes with UDP paths at the last change
+	mu          sync.Mutex
+	info        wire.NodeInfo // ID is empty until Configure gives the node an identity
+	generation  int64
+	lastSeq     int64
+	links       map[*link.Link]struct{}
+	net         *wire.NodeNet        // this node's part in the virtual network; see SetNet
+	removed     *wire.Removed        // set while this node is removed from the network
+	routes      map[string][]string  // shortest routes along the links, from this node, by node id
+	lost        map[string]time.Time // when nodes stopped being reachable, by node id
+	changed     chan struct{}        // closed and replaced at every change
+	moved       chan struct{}        // closed and replaced when the machine moves to another network; see Moved
+	readdressed chan struct{}        // closed and replaced when the machine's addresses change on its network; see Readdressed
+	seenTable   <-chan struct{}      // the table's Changed at the last change
+	seenDirect  string               // the nodes with UDP paths at the last change
 
 	// UDP paths; see EnableDirect. directCtx is nil while they are off.
 	directCtx   context.Context
@@ -104,12 +105,13 @@ func New(cfg Config) *Node {
 	n := &Node{
 		cfg: cfg, log: cfg.Log,
 		table: table, flood: state.NewFlood(table), router: route.New(),
-		update:  make(chan struct{}, 1),
-		links:   map[*link.Link]struct{}{},
-		routes:  map[string][]string{},
-		lost:    map[string]time.Time{},
-		changed: make(chan struct{}),
-		moved:   make(chan struct{}),
+		update:      make(chan struct{}, 1),
+		links:       map[*link.Link]struct{}{},
+		routes:      map[string][]string{},
+		lost:        map[string]time.Time{},
+		changed:     make(chan struct{}),
+		moved:       make(chan struct{}),
+		readdressed: make(chan struct{}),
 
 		directTries: map[string]*directTry{},
 		directWaits: map[string]directWait{},

@@ -28,6 +28,7 @@ type supervisor struct {
 
 	mu         sync.Mutex
 	attempt    context.CancelFunc // ends the current try; nil between tries
+	why        string             // why restart ended the current try
 	current    string
 	since      time.Time
 	lastErr    string
@@ -95,6 +96,7 @@ func (s *supervisor) run() {
 		})
 		s.mu.Lock()
 		s.attempt = nil
+		why := s.why
 		s.mu.Unlock()
 		restarted := ctx.Err() != nil
 		cancel()
@@ -104,9 +106,9 @@ func (s *supervisor) run() {
 		switch {
 		case restarted && !up && err != nil:
 			// Where the try was, to tell what holds links up after a move.
-			err = fmt.Errorf("this machine moved to another network, %s into a try: %w", round(time.Since(start)), err)
+			err = fmt.Errorf("%s, %s into a try: %w", why, round(time.Since(start)), err)
 		case restarted:
-			err = errors.New("this machine moved to another network")
+			err = errors.New(why)
 		case err == nil:
 			err = errors.New("the link ended")
 		}
@@ -161,12 +163,18 @@ func (s *supervisor) connect(ctx context.Context, onUp func(peer wire.NodeInfo, 
 // round rounds d for the log.
 func round(d time.Duration) string { return d.Round(10 * time.Millisecond).String() }
 
-// restart ends the link's try, whether it runs or still connects, and
-// tries again at once with the shortest wait: the machine moved to
-// another network, where the try may be stuck.
-func (s *supervisor) restart() {
+// restart ends the link's try, while it still connects, or also while it
+// runs when running is set, and tries again at once with the shortest
+// wait: this machine's network changed, for why, and the try may be stuck
+// on how it was.
+func (s *supervisor) restart(why string, running bool) {
 	s.mu.Lock()
+	if s.current == wire.StateRunning && !running {
+		s.mu.Unlock()
+		return
+	}
 	if s.attempt != nil {
+		s.why = why
 		s.attempt()
 	}
 	s.mu.Unlock()

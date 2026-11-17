@@ -994,7 +994,7 @@ func TestMovingRetriesLinksAtOnce(t *testing.T) {
 	failed := a.attemptsTo("refuse")[before-1].at
 
 	moved := time.Now()
-	a.d.restartLinks()
+	a.d.restartLinks(movedAway, true)
 	waitFor(t, "a new attempt", func() bool { return len(a.attemptsTo("refuse")) > before })
 	at := a.attemptsTo("refuse")
 	// The wait that it cut short was 4 x base.
@@ -1021,12 +1021,33 @@ func TestMovingRestartsLinks(t *testing.T) {
 	a.apply(func(f *config.File) { addLinks(f, "hang") })
 	waitFor(t, "a connects to hang", func() bool { return len(a.attemptsTo("hang")) == 1 })
 
-	a.d.restartLinks()
+	a.d.restartLinks(movedAway, true)
 	waitFor(t, "both connect again", func() bool {
 		return len(a.attemptsTo("hang")) == 2 && len(a.attemptsTo("b")) == 2
 	})
 	waitFor(t, "the link to b runs again", func() bool { l, _ := a.link("b"); return l.State == wire.StateRunning })
 	if !strings.Contains(a.log.String(), linkLog("hang")+": this machine moved to another network") {
+		t.Errorf("log:\n%s", a.log.String())
+	}
+}
+
+// New addresses on the same network connect again at once a link that
+// is still connecting, which may lack them, and leave one that runs.
+func TestReaddressingRetriesLinksThatDoNotRun(t *testing.T) {
+	w := newWorld(t)
+	startTestNode(t, w, "b")
+	a := newTestNode(t, w, "a", false, time.Hour)
+	a.start()
+	a.linkTo("b")
+	a.apply(func(f *config.File) { addLinks(f, "hang") })
+	waitFor(t, "a connects to hang", func() bool { return len(a.attemptsTo("hang")) == 1 })
+
+	a.d.restartLinks(readdressed, false)
+	waitFor(t, "hang connects again", func() bool { return len(a.attemptsTo("hang")) == 2 })
+	if n := len(a.attemptsTo("b")); n != 1 {
+		t.Errorf("the link to b connected %d times", n)
+	}
+	if !strings.Contains(a.log.String(), linkLog("hang")+": this machine's addresses changed, ") {
 		t.Errorf("log:\n%s", a.log.String())
 	}
 }

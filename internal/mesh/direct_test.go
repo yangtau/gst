@@ -429,8 +429,9 @@ func TestPacketsThatUDPCannotSend(t *testing.T) {
 	}
 }
 
-// New addresses on the same network end the wait after failures, and a
-// running path measures again, on both sides; the links stay.
+// New addresses on the same network end the wait after failures, a
+// running path measures again, on both sides, and the daemon hears of
+// them; the links stay.
 func TestAddressesChange(t *testing.T) {
 	a, c := newNode(t, "a"), newNode(t, "c")
 	enableDirect(t, a, c)
@@ -438,8 +439,13 @@ func TestAddressesChange(t *testing.T) {
 	goDirect(t, a, c)
 	a.backOff(nid("gone"))
 
-	moved := a.Moved()
-	a.addressesChanged(t.Context())
+	moved, readdressed := a.Moved(), a.Readdressed()
+	a.addressesChanged(t.Context(), direct.Change{Heard: true, Families: "IPv6"})
+	select {
+	case <-readdressed:
+	default:
+		t.Fatal("Readdressed does not tell of it")
+	}
 	a.mu.Lock()
 	waits := len(a.directWaits)
 	a.mu.Unlock()

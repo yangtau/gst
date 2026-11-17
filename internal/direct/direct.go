@@ -45,7 +45,6 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -145,7 +144,8 @@ type Transport struct {
 	changed chan struct{}                            // for Changed
 	moved   chan struct{}                            // for Moved
 	poke    chan struct{}                            // see LookNow
-	move    atomic.Pointer[Move]                     // see LastMove
+	move    atomic.Pointer[Change]                   // see LastMove
+	change  atomic.Pointer[Change]                   // see LastChange
 	known   []netip.Addr                             // what Addresses said last; owned by watch
 	place   place                                    // where the machine was last; owned by watch
 	locals  atomic.Pointer[[]netip.Addr]             // the same, for the paths to probe from; replaced, never changed
@@ -279,17 +279,45 @@ func (t *Transport) bind() bool {
 // ones of the last look, in the same order: the first says where packets
 // leave from, which a new default route changes while the addresses stay.
 // What others saw of the machine then says nothing any more.
-func (t *Transport) addressesChanged() bool {
+func (t *Transport) addressesChanged() (families string, changed bool) {
 	list := slices.DeleteFunc(slices.Clone(t.network.Addresses()), t.skip)
 	if slices.Equal(list, t.known) {
-		return false
+		return "", false
 	}
+	families = familiesOf(
+		!slices.Equal(only(list, netip.Addr.Is4), only(t.known, netip.Addr.Is4)),
+		!slices.Equal(only(list, netip.Addr.Is6), only(t.known, netip.Addr.Is6)),
+	)
 	t.known = list
 	t.locals.Store(&list)
 	t.mu.Lock()
 	clear(t.public)
 	t.mu.Unlock()
-	return true
+	return families, true
+}
+
+// only returns the addresses of list that are of one family.
+func only(list []netip.Addr, of func(netip.Addr) bool) []netip.Addr {
+	var in []netip.Addr
+	for _, addr := range list {
+		if of(addr) {
+			in = append(in, addr)
+		}
+	}
+	return in
+}
+
+// familiesOf names the address families that changed, for the log.
+func familiesOf(v4, v6 bool) string {
+	switch {
+	case v4 && v6:
+		return "IPv4 and IPv6"
+	case v4:
+		return "IPv4"
+	case v6:
+		return "IPv6"
+	}
+	return ""
 }
 
 // watch follows the machine from one network to another: it looks at
@@ -328,11 +356,12 @@ func (t *Transport) LookNow() { signal(t.poke) }
 // than that it was time to look.
 func (t *Transport) look(heard bool) {
 	rebound := t.bind()
-	changed := t.addressesChanged()
+	families, changed := t.addressesChanged()
 	switch {
 	case t.movedAway(heard):
 		signal(t.moved)
 	case changed || rebound:
+		t.change.Store(&Change{Heard: heard, Families: families})
 		signal(t.changed)
 	}
 }
@@ -354,23 +383,31 @@ func (t *Transport) Changed() <-chan struct{} { return t.changed }
 // which takes a new Transport.
 func (t *Transport) Moved() <-chan struct{} { return t.moved }
 
-// Move is how the machine moved to another network, for the log.
-type Move struct {
+// Change is how this machine's network changed, for the log.
+type Change struct {
 	// Heard says whether the system said that the network changed
-	// before the look that found the move, rather than a regular look
+	// before the look that found the change, rather than a regular look
 	// found it on its own.
 	Heard bool
 	// Families says which addresses changed: "IPv4", "IPv6", or "IPv4
-	// and IPv6".
+	// and IPv6"; none when only the interfaces that reach the internet
+	// did.
 	Families string
 }
 
-// LastMove returns the latest move; the zero Move before any.
-func (t *Transport) LastMove() Move {
-	if m := t.move.Load(); m != nil {
-		return *m
+// LastMove returns the latest move to another network; the zero Change
+// before any.
+func (t *Transport) LastMove() Change { return last(&t.move) }
+
+// LastChange returns the latest change on the same network, which
+// Changed told of; the zero Change before any.
+func (t *Transport) LastChange() Change { return last(&t.change) }
+
+func last(c *atomic.Pointer[Change]) Change {
+	if p := c.Load(); p != nil {
+		return *p
 	}
-	return Move{}
+	return Change{}
 }
 
 // place is where this machine is on the internet, as far as moving goes:
@@ -408,17 +445,14 @@ func (t *Transport) movedAway(heard bool) bool {
 	}
 	was := t.place
 	t.place = now
-	var families []string
-	if was.v4.IsValid() && now.v4.IsValid() && was.v4 != now.v4 {
-		families = append(families, "IPv4")
-	}
-	if was.v6.IsValid() && now.v6.IsValid() && was.v6 != now.v6 {
-		families = append(families, "IPv6")
-	}
-	if len(families) == 0 {
+	families := familiesOf(
+		was.v4.IsValid() && now.v4.IsValid() && was.v4 != now.v4,
+		was.v6.IsValid() && now.v6.IsValid() && was.v6 != now.v6,
+	)
+	if families == "" {
 		return false
 	}
-	t.move.Store(&Move{Heard: heard, Families: strings.Join(families, " and ")})
+	t.move.Store(&Change{Heard: heard, Families: families})
 	return true
 }
 

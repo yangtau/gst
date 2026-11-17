@@ -910,6 +910,37 @@ func TestLookNow(t *testing.T) {
 	}
 }
 
+// New addresses on the same network are a change, not a move, which
+// names the family that changed.
+func TestLookFindsChanges(t *testing.T) {
+	var mu sync.Mutex
+	addrs := []netip.Addr{netip.MustParseAddr("192.168.1.5"), netip.MustParseAddr("2001:db8::1")}
+	watching := make(chan func(), 1)
+	tr, err := Listen(0, Network{
+		Addresses: func() []netip.Addr { mu.Lock(); defer mu.Unlock(); return slices.Clone(addrs) },
+		Watch:     func(changed func(), _ <-chan struct{}) { watching <- changed },
+	}, never)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	changed := <-watching
+	mu.Lock()
+	addrs = append(addrs, netip.MustParseAddr("2001:db8::2"))
+	mu.Unlock()
+	changed()
+	select {
+	case <-tr.Changed():
+		if c := tr.LastChange(); !c.Heard || c.Families != "IPv6" {
+			t.Errorf("change = %+v", c)
+		}
+	case <-tr.Moved():
+		t.Fatal("a new address on the same network is a move")
+	case <-time.After(watchEvery / 2):
+		t.Fatal("no look")
+	}
+}
+
 // A path answers while the other side does: not before it is up, once it
 // is quiet for longer than an address in use may be, or once it ended.
 func TestAnswering(t *testing.T) {
