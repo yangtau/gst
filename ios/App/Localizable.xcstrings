@@ -11,16 +11,6 @@
         }
       }
     },
-    "%lld of %lld machines online": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$lld / %2$lld 台机器在线"
-          }
-        }
-      }
-    },
     "22": {
       "localizations": {
         "zh-Hans": {
@@ -241,6 +231,16 @@
         }
       }
     },
+    "Exposed Ports": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暴露的端口"
+          }
+        }
+      }
+    },
     "Fingerprint (%@)": {
       "localizations": {
         "zh-Hans": {
@@ -287,6 +287,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "它把本机的公钥加入 `~/.ssh/authorized_keys`。私钥不会离开本机。"
+          }
+        }
+      }
+    },
+    "Its machine stays in the network.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对应的机器仍在网络中。"
           }
         }
       }
@@ -917,6 +927,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "删除 link"
+          }
+        }
+      }
+    },
+    "Unlink %@?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除到 %@ 的 link？"
           }
         }
       }

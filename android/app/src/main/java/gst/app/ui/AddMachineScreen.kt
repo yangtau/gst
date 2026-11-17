@@ -7,44 +7,32 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ContainedLoadingIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -71,7 +59,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import gst.app.AppModel
 import gst.app.Destination
 import gst.app.R
@@ -109,7 +99,6 @@ sealed interface AddStep {
  * elsewhere: checking the server's host key, and authorizing this
  * machine's key on it.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddMachineScreen(model: AppModel, close: () -> Unit, initialStep: AddStep = AddStep.Form) {
     var server by rememberSaveable { mutableStateOf("") }
@@ -171,50 +160,33 @@ fun AddMachineScreen(model: AppModel, close: () -> Unit, initialStep: AddStep = 
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.add_machine)) },
-                navigationIcon = {
-                    IconButton(onClick = close, enabled = !isBusy) {
-                        Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.close))
-                    }
-                },
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .imePadding()
-                .verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-            val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
-            val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
-            AnimatedContent(
-                step,
-                transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
-                contentKey = { it::class },
-                label = "step",
-                modifier = Modifier.widthIn(max = 560.dp).padding(horizontal = 24.dp).padding(bottom = 24.dp),
-            ) { current ->
-                Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                    when (current) {
-                        AddStep.Form -> Form(server, { server = it }, port, { port = it }, destination != null, ::check)
-                        AddStep.Checking -> Progress(stringResource(R.string.connecting_server))
-                        is AddStep.HostKey -> HostKey(current.check, ::trust)
-                        is AddStep.Authorize -> Authorize(current.check, model.info?.publicKey ?: "", ::check)
-                        AddStep.Joining -> Progress(stringResource(R.string.joining))
-                        is AddStep.Joined -> Outcome(
-                            Icons.Rounded.Check, statusColors.goodContainer, statusColors.onGoodContainer,
-                            stringResource(R.string.joined_title, current.name), stringResource(R.string.joined_text), close,
-                        )
-                        is AddStep.Waiting -> Waiting(current.reason, close)
-                        is AddStep.Failed -> Failed(current.message, ::check) { step = AddStep.Form }
-                    }
+    Page(
+        title = stringResource(R.string.add_machine),
+        modifier = Modifier.imePadding(),
+        navigation = { CircleButton(Icons.Rounded.Close, stringResource(R.string.close), close, enabled = !isBusy) },
+    ) {
+        val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+        val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+        AnimatedContent(
+            step,
+            transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
+            contentKey = { it::class },
+            label = "step",
+            modifier = Modifier.padding(horizontal = PageMargin),
+        ) { current ->
+            Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                when (current) {
+                    AddStep.Form -> Form(server, { server = it }, port, { port = it }, destination != null, ::check)
+                    AddStep.Checking -> Progress(stringResource(R.string.connecting_server))
+                    is AddStep.HostKey -> HostKey(current.check, ::trust)
+                    is AddStep.Authorize -> Authorize(current.check, model.info?.publicKey ?: "", ::check)
+                    AddStep.Joining -> Progress(stringResource(R.string.joining))
+                    is AddStep.Joined -> Outcome(
+                        Icons.Rounded.Check, statusColors.good, Color.White,
+                        stringResource(R.string.joined_title, current.name), stringResource(R.string.joined_text), close,
+                    )
+                    is AddStep.Waiting -> Waiting(current.reason, close)
+                    is AddStep.Failed -> Failed(current.message, ::check) { step = AddStep.Form }
                 }
             }
         }
@@ -223,8 +195,8 @@ fun AddMachineScreen(model: AppModel, close: () -> Unit, initialStep: AddStep = 
 
 @Composable
 private fun Heading(title: String, text: String) {
-    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(title, style = MaterialTheme.typography.headlineMediumEmphasized)
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(title, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
         Text(code(text), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -235,27 +207,12 @@ private fun Caption(text: String) {
 }
 
 @Composable
-private fun PrimaryButton(text: String, enabled: Boolean = true, colors: androidx.compose.material3.ButtonColors = ButtonDefaults.buttonColors(), action: () -> Unit) {
-    val height = ButtonDefaults.MediumContainerHeight
-    Button(
-        onClick = action,
-        enabled = enabled,
-        colors = colors,
-        shapes = ButtonDefaults.shapesFor(height),
-        contentPadding = ButtonDefaults.contentPaddingFor(height),
-        modifier = Modifier.fillMaxWidth().height(height),
-    ) {
-        Text(text, style = ButtonDefaults.textStyleFor(height))
-    }
-}
-
-@Composable
 private fun Form(server: String, setServer: (String) -> Unit, port: String, setPort: (String) -> Unit, isValid: Boolean, next: () -> Unit) {
     val focus = remember { FocusRequester() }
     Heading(stringResource(R.string.where_title), stringResource(R.string.where_text))
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         val mono = TextStyle(fontFamily = FontFamily.Monospace)
-        OutlinedTextField(
+        TextField(
             value = server,
             onValueChange = setServer,
             label = { Text(stringResource(R.string.login)) },
@@ -267,10 +224,11 @@ private fun Form(server: String, setServer: (String) -> Unit, port: String, setP
                 keyboardType = KeyboardType.Email, imeAction = ImeAction.Go,
             ),
             keyboardActions = KeyboardActions(onGo = { if (isValid) next() }),
-            shape = MaterialTheme.shapes.large,
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors(),
             modifier = Modifier.weight(1f).focusRequester(focus),
         )
-        OutlinedTextField(
+        TextField(
             value = port,
             onValueChange = { setPort(it.filter(Char::isDigit).take(5)) },
             label = { Text(stringResource(R.string.port)) },
@@ -279,11 +237,12 @@ private fun Form(server: String, setServer: (String) -> Unit, port: String, setP
             textStyle = MaterialTheme.typography.bodyLarge.merge(mono).copy(textAlign = TextAlign.Center),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { if (isValid) next() }),
-            shape = MaterialTheme.shapes.large,
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors(),
             modifier = Modifier.width(96.dp),
         )
     }
-    PrimaryButton(stringResource(R.string.continue_), enabled = isValid, action = next)
+    PillButton(stringResource(R.string.continue_), next, enabled = isValid)
     LaunchedEffect(Unit) { if (server.isEmpty()) runCatching { focus.requestFocus() } }
 }
 
@@ -295,7 +254,7 @@ private fun Progress(text: String) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        ContainedLoadingIndicator(Modifier.size(72.dp))
+        LoadingIndicator(Modifier.size(64.dp), color = MaterialTheme.colorScheme.onSurface)
         Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -307,20 +266,33 @@ private fun CopyTextButton(text: String, label: String) {
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var isCopied by remember { mutableStateOf(false) }
-    OutlinedButton(onClick = {
-        scope.launch {
-            clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("gst", text)))
-            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-            isCopied = true
-            kotlinx.coroutines.delay(1500)
-            isCopied = false
-        }
-    }) {
-        Icon(if (isCopied) Icons.Rounded.Check else Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.size(8.dp))
-        Text(label)
-    }
+    PillButton(
+        label,
+        {
+            scope.launch {
+                clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("gst", text)))
+                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                isCopied = true
+                kotlinx.coroutines.delay(1500)
+                isCopied = false
+            }
+        },
+        modifier = Modifier,
+        icon = if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
+        prominent = false,
+    )
 }
+
+/** The colors of a field: gray, with no line beneath it. */
+@Composable
+private fun fieldColors() = TextFieldDefaults.colors(
+    focusedContainerColor = MaterialTheme.colorScheme.fill,
+    unfocusedContainerColor = MaterialTheme.colorScheme.fill,
+    disabledContainerColor = MaterialTheme.colorScheme.fill,
+    focusedIndicatorColor = Color.Transparent,
+    unfocusedIndicatorColor = Color.Transparent,
+    disabledIndicatorColor = Color.Transparent,
+)
 
 @Composable
 private fun HostKey(check: ServerCheck, trust: (ServerCheck.HostKey) -> Unit) {
@@ -342,12 +314,9 @@ private fun HostKey(check: ServerCheck, trust: (ServerCheck.HostKey) -> Unit) {
         CopyTextButton(command, stringResource(R.string.copy_command))
     }
     if (changed) {
-        PrimaryButton(
-            stringResource(R.string.replace_key),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
-        ) { trust(key) }
+        PillButton(stringResource(R.string.replace_key), { trust(key) }, color = MaterialTheme.colorScheme.error)
     } else {
-        PrimaryButton(stringResource(R.string.trust_server)) { trust(key) }
+        PillButton(stringResource(R.string.trust_server), { trust(key) })
     }
 }
 
@@ -360,34 +329,29 @@ private fun Authorize(check: ServerCheck, key: String, retry: () -> Unit) {
         CodeBlock(command, maxLines = 4)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CopyTextButton(command, stringResource(R.string.copy_command))
-            OutlinedButton(onClick = { context.share(command) }) {
-                Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.size(8.dp))
-                Text(stringResource(R.string.share))
-            }
+            PillButton(stringResource(R.string.share), { context.share(command) }, modifier = Modifier, icon = Icons.Outlined.Share, prominent = false)
         }
     }
     Text(code(stringResource(R.string.authorize_note)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    PrimaryButton(stringResource(R.string.try_again), action = retry)
+    PillButton(stringResource(R.string.try_again), retry)
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun Outcome(icon: ImageVector, container: Color, content: Color, title: String, text: String, done: () -> Unit) {
     Box(
-        Modifier.padding(top = 32.dp).size(96.dp).background(container, MaterialShapes.Cookie9Sided.toShape()),
+        Modifier.padding(top = 16.dp).size(88.dp).background(container, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(48.dp))
     }
     Heading(title, text)
-    PrimaryButton(stringResource(R.string.done), action = done)
+    PillButton(stringResource(R.string.done), done)
 }
 
 @Composable
 private fun Waiting(reason: String?, done: () -> Unit) {
     Outcome(
-        Icons.Rounded.Schedule, statusColors.warningContainer, statusColors.onWarningContainer,
+        Icons.Rounded.Schedule, statusColors.warning, Color.White,
         stringResource(R.string.waiting_title), stringResource(R.string.waiting_text), done,
     )
     if (reason != null) {
@@ -400,9 +364,9 @@ private fun Waiting(reason: String?, done: () -> Unit) {
 
 @Composable
 private fun Failed(message: String, retry: () -> Unit, change: () -> Unit) {
-    Text(stringResource(R.string.failed_title), style = MaterialTheme.typography.headlineMediumEmphasized, modifier = Modifier.padding(top = 8.dp))
+    Text(stringResource(R.string.failed_title), fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
     CodeBlock(message)
-    PrimaryButton(stringResource(R.string.try_again), action = retry)
+    PillButton(stringResource(R.string.try_again), retry)
     TextButton(onClick = change, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.change_login)) }
 }
 

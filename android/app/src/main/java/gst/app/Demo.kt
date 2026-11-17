@@ -33,7 +33,7 @@ enum class Demo(val screen: String) {
     /** Adding a machine: the server does not accept the phone's key yet. */
     Authorize("authorize"),
 
-    /** One machine. */
+    /** One machine, which exposes a port. */
     Machine("machine"),
     Settings("settings"),
     ;
@@ -49,6 +49,7 @@ enum class Demo(val screen: String) {
         get() = when (this) {
             HostKey, Authorize -> Route.Add
             Settings -> Route.Settings
+            Machine -> Route.Machine
             else -> Route.Home
         }
 
@@ -93,6 +94,10 @@ enum class Demo(val screen: String) {
         private const val SOFTWARE = "gst 0.7.0+a2ffc87"
         private const val ENDPOINT = "203.0.113.7:41642"
 
+        /** The ports that a machine of the made-up network exposes: devbox one. */
+        fun exposes(id: String): List<DaemonStatus.Expose> =
+            if (id == id("b1")) listOf(DaemonStatus.Expose("tcp", 5999, "127.0.0.1:8080", "10.87.61.7", "running")) else emptyList()
+
         /** What a ping of the made-up network comes back with. */
         val ping = PingReply(NodeInfo(id("b1"), "devbox", SOFTWARE), "10.87.61.7", "direct", ENDPOINT, timeMs = 22.4)
         private const val destination = "admin@ssh.example.com"
@@ -135,6 +140,7 @@ enum class Demo(val screen: String) {
                     DaemonStatus.Link("ssh://deploy@192.0.2.20:2222", DaemonStatus.Link.State.Running, now.minusSeconds(600), reconnects = 1, peer = NodeInfo(id("c2"), "homelab"))
                 },
             ),
+            listOf(DaemonStatus.Expose("tcp", 8080, "127.0.0.1:8080", "10.87.26.14", "running")),
             DaemonStatus.Network(
                 "10.87.0.0/16", "10.87.26.14", "tun0",
                 error = if (broken) "the subnet 10.87.0.0/16 overlaps 10.87.3.0/24 on this machine" else null,

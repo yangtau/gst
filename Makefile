@@ -16,7 +16,7 @@ help:
 	  'make ios               build the Go code for the iOS app and generate ios/Gst.xcodeproj (on a Mac)' \
 	  'make testflight        build the iOS app of the current commit and upload it to TestFlight' \
 	  'make android           build the Android app, with its Go code, into android/app/build/outputs/apk' \
-	  'make android-install   build the release APK and install it on the phone that adb is connected to'
+	  'make android-install   build the release APK, install it on the phone that adb is connected to, and open it'
 
 build:
 	go build -o bin/gst ./cmd/gst
@@ -46,4 +46,4 @@ android:
 
 android-install:
 	android/build-core.sh
-	cd android && ./gradlew installRelease
+	android/install.sh

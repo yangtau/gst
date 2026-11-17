@@ -10,7 +10,7 @@ import gst.app.Demo
 @Composable
 private fun Show(demo: Demo, dark: Boolean = false) {
     val model = remember { demo.model() }
-    GstTheme(dark = dark, brandColors = true) { GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings) }
+    GstTheme(dark = dark) { GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings) }
 }
 
 @Preview(device = "id:pixel_9") @Composable private fun Home() = Show(Demo.Home)

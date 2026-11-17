@@ -94,6 +94,8 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.core.ktx)
+    implementation(libs.haze)
+    implementation(libs.haze.blur)
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)
     debugImplementation(libs.compose.ui.tooling)

@@ -20,7 +20,6 @@
     <string name="state_turning_on">Turning on…</string>
     <string name="state_turning_off">Turning off…</string>
     <string name="turn_on">Turn on</string>
-    <string name="machines_online">%1$d of %2$d machines online</string>
     <string name="problem_removed">%1$s removed this machine from the network %2$s.</string>
     <string name="problem_removed_detail">Add a machine to join a network again.</string>
     <string name="problem_link">The link to %1$s is down.</string>
@@ -107,4 +106,7 @@
     <string name="unlink">Unlink</string>
     <string name="log">Log</string>
     <string name="log_empty">The log is empty.</string>
+    <string name="exposed_ports">Exposed ports</string>
+    <string name="unlink_question">Unlink %1$s?</string>
+    <string name="unlink_text">Its machine stays in the network.</string>
 </resources>

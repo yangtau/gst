@@ -44,7 +44,7 @@ fun PingView(pings: Pings, way: Machine.Way, modifier: Modifier = Modifier) {
     Column(
         modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.item, RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.fill, RoundedCornerShape(20.dp))
             .padding(start = 20.dp, top = 18.dp, end = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {

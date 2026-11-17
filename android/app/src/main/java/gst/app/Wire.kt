@@ -84,9 +84,21 @@ data class DaemonStatus(
     val software: String = "",
     val node: NodeInfo,
     val links: List<Link> = emptyList(),
+    val exposes: List<Expose> = emptyList(),
     val net: Network? = null,
     val removed: Removed? = null,
 ) {
+    /** A port exposed on the machine's gst IP (`gst expose`); its state is "running" while it listens. */
+    @Serializable
+    data class Expose(
+        val protocol: String,
+        val port: Int,
+        val target: String = "",
+        val address: String? = null,
+        val state: String = "",
+        val error: String? = null,
+    )
+
     @Serializable
     data class Link(
         val destination: String,

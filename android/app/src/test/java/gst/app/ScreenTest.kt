@@ -30,11 +30,11 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
             Demo.Home to "homelab",
             Demo.Map to "homelab",
             Demo.Problems to "192.0.2.20",
-            Demo.Welcome to "pixel",
+            Demo.Welcome to "devbox.gst",
             Demo.Off to "attic",
             Demo.HostKey to "SHA256:",
             Demo.Authorize to "authorized_keys",
-            Demo.Machine to "devbox.gst",
+            Demo.Machine to "devbox.gst:5999",
             Demo.Settings to "admin@ssh.example.com",
         )
 
@@ -59,12 +59,12 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
         java.util.Locale.setDefault(if (language == "en") java.util.Locale.US else java.util.Locale.SIMPLIFIED_CHINESE)
         val model = demo.model()
         compose.setContent {
-            GstTheme(dark = dark, brandColors = true) {
+            GstTheme(dark = dark) {
                 GstApp(model, demo.route, demo.machine, demo.addStep, demo.pings)
             }
         }
         compose.waitForIdle()
-        // A sheet takes a moment to come to rest.
+        // What a page asks the made-up daemon comes a moment later.
         compose.mainClock.advanceTimeBy(2000)
         val text = shows.getValue(demo)
         assertTrue(

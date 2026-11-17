@@ -1,36 +1,33 @@
 import SwiftUI
 
-/// The network: this machine, the switch that turns gst on, and every
-/// machine with the way that packets take to it; above them, for
-/// someone who asks for it, the map of the links.
+/// The network: every machine, this one first, with whether packets
+/// reach it; above them, for someone who asks for it, the map of the
+/// links; and floating over them the button that turns gst on.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var sheet: Sheet?
+    @State private var path: [String]
     @State private var failure: String?
     @State private var isSwitching = false
+    @AppStorage("map") private var showsMap = false
     private let addStep: AddMachineSheet.Step
     private let pings: Pings
 
-    /// The network; `sheet`, `addStep`, and `pings` open it on a sheet,
-    /// on a step of adding a machine, and with pings that a machine's
-    /// sheet starts with, which a demo does.
-    init(sheet: Sheet? = nil, addStep: AddMachineSheet.Step = .form, pings: Pings = Pings()) {
+    /// The network; `sheet`, `machine`, `addStep`, and `pings` open it on
+    /// a sheet, on the page of a machine, on a step of adding a machine,
+    /// and with pings that a machine's page starts with, which a demo
+    /// does.
+    init(sheet: Sheet? = nil, machine: String? = nil, addStep: AddMachineSheet.Step = .form, pings: Pings = Pings()) {
         _sheet = State(initialValue: sheet)
+        _path = State(initialValue: machine.map { [$0] } ?? [])
         self.addStep = addStep
         self.pings = pings
     }
 
     enum Sheet: Identifiable {
         case add, settings
-        case machine(String)
 
-        var id: String {
-            switch self {
-            case .add: "add"
-            case .settings: "settings"
-            case .machine(let id): "machine " + id
-            }
-        }
+        var id: Self { self }
     }
 
     private var others: [Machine] {
@@ -41,45 +38,70 @@ struct HomeView: View {
         model.info?.links.isEmpty == false
     }
 
+    /// The map, when the network has one to show: a network of one has
+    /// nothing to map.
+    private var map: NetworkMap? {
+        others.isEmpty ? nil : model.topology.map { topology in
+            NetworkMap(topology: topology, machines: model.machines, isOn: model.isOn) { path.append($0.id) }
+        }
+    }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    Header(online: others.filter(\.isOnline).count, total: others.count)
+                VStack(alignment: .leading, spacing: 20) {
                     if !model.problems.isEmpty {
                         ProblemList(problems: model.problems)
                     }
                     if others.isEmpty && !hasLinks {
                         Welcome { sheet = .add }
                     } else {
-                        // A network of one has nothing to map.
-                        let map = others.isEmpty ? nil : model.topology.map { topology in
-                            NetworkMap(topology: topology, machines: model.machines, isOn: model.isOn) { sheet = .machine($0.id) }
+                        if showsMap, let map {
+                            map
+                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
+                                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
                         }
-                        MachineList(machines: others, map: map, isOn: model.isOn) { sheet = .machine($0.id) }
+                        MachineList(machines: model.machines, me: model.topology?.me, hasOthers: !others.isEmpty, isOn: model.isOn) {
+                            path.append($0.id)
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
+                .padding(.top, 8)
                 .padding(.bottom, 32)
                 .frame(maxWidth: 640)
                 .frame(maxWidth: .infinity)
             }
             .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Machines")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Settings", systemImage: "slider.horizontal.3") { sheet = .settings }
+                if map != nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(showsMap ? "Hide the Map" : "Show the Map", systemImage: "point.3.connected.trianglepath.dotted") {
+                            withAnimation(.smooth) { showsMap.toggle() }
+                        }
+                        .symbolVariant(showsMap ? .fill : .none)
+                        .foregroundStyle(showsMap ? Color.accentColor : Color.primary)
+                        .accessibilityAddTraits(showsMap ? .isSelected : [])
+                    }
+                }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("Add a Machine", systemImage: "plus") { sheet = .add }
+                    Button("Settings", systemImage: "gearshape") { sheet = .settings }
                 }
             }
+            .navigationDestination(for: String.self) { id in
+                MachinePage(machineID: id, pings: id == path.first ? pings : Pings())
+            }
             .safeAreaInset(edge: .bottom) {
-                ControlBar(state: model.tunnel.state, isSwitching: isSwitching, toggle: toggle) { sheet = .add }
+                ControlBar(state: model.tunnel.state, isSwitching: isSwitching, toggle: toggle)
             }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .add: AddMachineSheet(step: addStep)
             case .settings: SettingsSheet()
-            case .machine(let id): MachineSheet(machineID: id, pings: pings)
             }
         }
         .alert("gst could not turn on", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
@@ -104,62 +126,6 @@ struct HomeView: View {
             } else {
                 await model.turnOff()
             }
-        }
-    }
-}
-
-/// This machine: its name, its gst IP, and how much of the network it reaches.
-private struct Header: View {
-    @Environment(AppModel.self) private var model
-    let online: Int
-    let total: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(model.isOn ? Color.green : Color.secondary.opacity(0.5))
-                    .frame(width: 8, height: 8)
-                Text(summary)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.opacity)
-            }
-            Text(model.info?.node.name ?? "gst")
-                .font(.system(size: 44, weight: .bold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-            if let address = model.address {
-                HStack(spacing: 10) {
-                    Text(address)
-                        .font(.body.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    CopyButton(text: address)
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .padding(.top, 8)
-        .animation(.smooth, value: model.address)
-        .animation(.smooth, value: model.tunnel.state)
-    }
-
-    private var summary: String {
-        switch model.tunnel.state {
-        case .off:
-            return String(localized: "Off")
-        case .connecting:
-            return String(localized: "Turning on…")
-        case .disconnecting:
-            return String(localized: "Turning off…")
-        case .on:
-            if total == 0 {
-                return String(localized: "On")
-            }
-            return String(localized: "\(online) of \(total) machines online")
         }
     }
 }
@@ -214,72 +180,37 @@ private struct ProblemList: View {
     }
 }
 
-/// The other machines of the network, and above them, once the button
-/// beside their title asks for it, the map of the links between them
-/// all. The app remembers the choice.
+/// The machines of the network, this one first; while the others have
+/// not shown up yet, what will bring them.
 private struct MachineList: View {
     let machines: [Machine]
-    /// The map, when the network has one to show.
-    let map: NetworkMap?
+    /// This machine's id.
+    let me: String?
+    let hasOthers: Bool
     let isOn: Bool
     let open: (Machine) -> Void
-    @AppStorage("map") private var showsMap = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Machines")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                Spacer()
-                if map != nil {
+            VStack(spacing: 0) {
+                ForEach(machines) { machine in
                     Button {
-                        withAnimation(.smooth) { showsMap.toggle() }
+                        open(machine)
                     } label: {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(showsMap ? Color(uiColor: .systemBackground) : .secondary)
-                            .frame(width: 46, height: 30)
-                            .background(showsMap ? AnyShapeStyle(.primary) : AnyShapeStyle(.fill.secondary), in: .capsule)
-                            // A finger needs more room than the capsule takes in the row.
-                            .frame(height: 44)
-                            .contentShape(.rect)
+                        MachineRow(machine: machine, isMe: machine.id == me, isOn: isOn)
                     }
                     .buttonStyle(.plain)
-                    .padding(.vertical, -10)
-                    .accessibilityLabel(showsMap ? "Hide the Map" : "Show the Map")
-                    .accessibilityAddTraits(showsMap ? .isSelected : [])
-                }
-            }
-            .padding(.horizontal, 6)
-            if showsMap, let map {
-                map
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            }
-            if machines.isEmpty {
-                Text("The machines of the network show here once a link connects.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(18)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(machines) { machine in
-                        Button {
-                            open(machine)
-                        } label: {
-                            MachineRow(machine: machine, isOn: isOn)
-                        }
-                        .buttonStyle(.plain)
-                        if machine.id != machines.last?.id {
-                            Divider().padding(.leading, 39)
-                        }
+                    if machine.id != machines.last?.id {
+                        Divider().padding(.leading, 39)
                     }
                 }
-                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
+            }
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
+            if !hasOthers {
+                Text("The machines of the network show here once a link connects.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
             }
         }
     }
@@ -287,6 +218,7 @@ private struct MachineList: View {
 
 private struct MachineRow: View {
     let machine: Machine
+    let isMe: Bool
     /// While gst is off, nothing reaches the machines, which says nothing
     /// of them: the row then says nothing of when they were seen.
     let isOn: Bool
@@ -304,8 +236,16 @@ private struct MachineRow: View {
                 }
             }
             Spacer(minLength: 12)
+            if isMe {
+                Text("This machine")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.fill.tertiary, in: .capsule)
+            }
             // The dot says whether packets reach the machine; the way they
-            // take is in its sheet.
+            // take is in its page.
             if isOn, case .offline(let seen?) = machine.way {
                 Text(seen.ago)
                     .font(.caption)
@@ -366,52 +306,37 @@ private struct Welcome: View {
     }
 }
 
-/// The controls that float over the network: the switch that turns gst
-/// on and off, and the button that adds a machine.
+/// The button that floats over the network and turns gst on and off,
+/// green while it is on.
 private struct ControlBar: View {
     let state: Tunnel.State
     let isSwitching: Bool
     let toggle: () -> Void
-    let add: () -> Void
 
     private var isOn: Bool { state == .on }
     private var isBusy: Bool { isSwitching || state == .connecting || state == .disconnecting }
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
-                Button(action: toggle) {
-                    HStack(spacing: 10) {
-                        if isBusy {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "power")
-                                .font(.body.weight(.bold))
-                                .foregroundStyle(isOn ? Color.green : Color.primary)
-                        }
-                        Text(title)
-                            .font(.headline)
-                            .contentTransition(.opacity)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .contentShape(.capsule)
+        Button(action: toggle) {
+            HStack(spacing: 10) {
+                if isBusy {
+                    ProgressView()
+                } else {
+                    Image(systemName: "power")
+                        .font(.body.weight(.bold))
+                        .foregroundStyle(isOn ? Color.green : Color.primary)
                 }
-                .buttonStyle(.plain)
-                .glassEffect(isOn ? .regular.tint(.green.opacity(0.18)).interactive() : .regular.interactive(), in: .capsule)
-                .disabled(isBusy)
-
-                Button(action: add) {
-                    Image(systemName: "plus")
-                        .font(.title3.weight(.semibold))
-                        .frame(width: 56, height: 56)
-                        .contentShape(.circle)
-                }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .accessibilityLabel(Text("Add a Machine"))
+                Text(title)
+                    .font(.headline)
+                    .contentTransition(.opacity)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .contentShape(.capsule)
         }
+        .buttonStyle(.plain)
+        .glassEffect(isOn ? .regular.tint(.green.opacity(0.18)).interactive() : .regular.interactive(), in: .capsule)
+        .disabled(isBusy)
         .padding(.horizontal, 20)
         .padding(.bottom, 8)
         .animation(.smooth, value: state)

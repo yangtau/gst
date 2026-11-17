@@ -42,6 +42,16 @@ class GstVpnService : VpnService(), Core.System {
             context.startService(Intent(context, GstVpnService::class.java).setAction(START))
         }
 
+        /**
+         * Turns gst on again if a person left it on and it is off, as after
+         * a restart or an update of the app, while the VPN is still allowed.
+         */
+        fun resume(context: Context) {
+            if (Tunnel.isWanted(context) && Tunnel.state.value == Tunnel.State.Off && VpnService.prepare(context) == null) {
+                start(context)
+            }
+        }
+
         /** Turns gst off, and keeps it off after a restart. */
         fun stop(context: Context) {
             Tunnel.setWanted(context, false)

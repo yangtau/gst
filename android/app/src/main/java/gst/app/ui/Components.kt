@@ -6,6 +6,25 @@ import android.content.Intent
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -22,11 +41,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -129,27 +149,247 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.M
             overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.MiddleEllipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.fill, RoundedCornerShape(14.dp))
                 .padding(16.dp),
         )
     }
 }
 
-/** Items that belong together, as Material lists them now: each its own piece, a little apart. */
+/** How wide the icon at the start of a row is. */
+private val RowIcon = 28.dp
+
+/** How wide the dot at the start of a row without an icon is. */
+private val RowDot = 10.dp
+
+/** Where the text of a row with an icon starts, and the line beneath it. */
+val RowInset = PageMargin + RowIcon + 16.dp
+
+/** Where the text of a row with only a dot starts, and the line beneath it. */
+val DotRowInset = PageMargin + RowDot + 14.dp
+
+/**
+ * A round button, in the bar at the top of a page or beside a title: an
+ * icon on glass; [selected] fills it with ink, as a switch that is on.
+ */
 @Composable
-fun Segmented(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap), content = content)
+fun CircleButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    size: Dp = 44.dp,
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        modifier
+            .size(size)
+            .glass(CircleShape)
+            .then(if (selected) Modifier.background(colors.primary) else Modifier)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics {
+                contentDescription = label
+                this.selected = selected
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = when {
+                selected -> colors.onPrimary
+                enabled -> colors.onSurface
+                else -> colors.outline
+            },
+            modifier = Modifier.size(size * 0.5f),
+        )
+    }
 }
 
-/** The title over a group of items. */
+/** The rows of a [Group], which it draws in order with lines between them. */
+class GroupScope internal constructor() {
+    internal val rows = mutableListOf<@Composable () -> Unit>()
+
+    /** Adds a row, usually a [ListRow]. */
+    fun row(content: @Composable () -> Unit) {
+        rows += content
+    }
+}
+
+/**
+ * Rows that belong together, under a bold [header] with [action] at its
+ * end, with fine lines between them that start where their text does, at
+ * [inset] (past the icons of rows that have them), and beneath them a [footer] that says more of them, or what
+ * went wrong when [isError].
+ */
 @Composable
-fun SectionTitle(text: String, modifier: Modifier = Modifier) {
+fun Group(
+    modifier: Modifier = Modifier,
+    inset: Dp = PageMargin,
+    header: String? = null,
+    action: (@Composable () -> Unit)? = null,
+    footer: String? = null,
+    isError: Boolean = false,
+    build: GroupScope.() -> Unit,
+) {
+    val rows = GroupScope().apply(build).rows
+    Column(modifier.fillMaxWidth()) {
+        if (header != null) {
+            SectionHeader(header, action)
+        }
+        rows.forEachIndexed { i, row ->
+            row()
+            if (i < rows.lastIndex) {
+                HorizontalDivider(Modifier.padding(start = inset, end = PageMargin), thickness = 0.5.dp, color = MaterialTheme.colorScheme.hairline)
+            }
+        }
+        if (footer != null) {
+            Footer(footer, isError)
+        }
+    }
+}
+
+/** The bold title over a group, with [action] at its end. */
+@Composable
+fun SectionHeader(text: String, action: (@Composable () -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(start = PageMargin, end = PageMargin, top = 12.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        action?.invoke()
+    }
+}
+
+/** What a group says beneath it, small and gray, or red for what went wrong. */
+@Composable
+fun Footer(text: String, isError: Boolean = false) {
     Text(
-        text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
+        code(text),
+        style = MaterialTheme.typography.bodySmall,
+        color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = PageMargin, vertical = 8.dp),
     )
+}
+
+/**
+ * A row of a group: at its start a line [icon], or a [dot] of a color, or
+ * neither, then the [content] (a title, and a [Subtitle] beneath it) in
+ * [tint], and [trailing] at its end. With [onClick], the whole row is a
+ * button.
+ */
+@Composable
+fun ListRow(
+    icon: ImageVector?,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    dot: Color? = null,
+    trailing: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .heightIn(min = 56.dp)
+            .padding(horizontal = PageMargin, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(if (icon == null) 14.dp else 16.dp),
+    ) {
+        CompositionLocalProvider(LocalContentColor provides tint) {
+            when {
+                icon != null -> Icon(icon, contentDescription = null, modifier = Modifier.size(RowIcon).padding(1.dp))
+                dot != null -> Box(Modifier.size(RowDot).background(dot, CircleShape))
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp), content = { content() })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, content = trailing)
+    }
+}
+
+/** The smaller, gray line beneath the title of a row. */
+@Composable
+fun Subtitle(text: String, mono: Boolean = false, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Text(text, style = MaterialTheme.typography.bodyMedium, fontFamily = if (mono) FontFamily.Monospace else null, color = color)
+}
+
+/** The arrow at the end of a row that opens something. */
+@Composable
+fun Chevron() {
+    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(24.dp))
+}
+
+/**
+ * A row that says one thing: [label], and its [value] in gray at the end,
+ * which a button copies with [copy]. With [onClick], the row is a button
+ * that opens something about the value.
+ */
+@Composable
+fun ValueRow(label: String, value: String, mono: Boolean = false, copy: Boolean = false, onClick: (() -> Unit)? = null) {
+    ListRow(
+        null,
+        onClick = onClick,
+        trailing = {
+            val text = @Composable {
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontFamily = if (mono) FontFamily.Monospace else null,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.MiddleEllipsis,
+                    modifier = Modifier.widthIn(max = 220.dp),
+                )
+            }
+            if (onClick == null) SelectionContainer { text() } else text()
+            when {
+                copy -> CopyButton(value, modifier = Modifier.padding(start = 4.dp).size(36.dp))
+                onClick != null -> Chevron()
+            }
+        },
+    ) {
+        Text(label, maxLines = 1)
+    }
+}
+
+/**
+ * A button as wide as it may be, in the shape of a pill: filled with ink
+ * when [prominent], as the one thing to do next, else with gray, in
+ * [color] when it has one, as red for what removes something.
+ */
+@Composable
+fun PillButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    icon: ImageVector? = null,
+    enabled: Boolean = true,
+    prominent: Boolean = true,
+    color: Color? = null,
+) {
+    val colors = MaterialTheme.colorScheme
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        colors = if (prominent) {
+            ButtonDefaults.buttonColors(containerColor = color ?: colors.primary, contentColor = colors.onPrimary)
+        } else {
+            ButtonDefaults.buttonColors(containerColor = colors.fill, contentColor = color ?: colors.onSurface)
+        },
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        modifier = modifier.heightIn(min = 52.dp),
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.size(8.dp))
+        }
+        Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 /**
@@ -158,7 +398,7 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
  */
 @Composable
 fun code(text: String): AnnotatedString {
-    val background = MaterialTheme.colorScheme.surfaceContainerHighest
+    val background = MaterialTheme.colorScheme.fill
     return buildAnnotatedString {
         text.split('`').forEachIndexed { i, part ->
             if (i % 2 == 1) {

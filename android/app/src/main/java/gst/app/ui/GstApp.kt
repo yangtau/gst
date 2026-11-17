@@ -6,20 +6,18 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Warning
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.SheetValue
-import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,24 +33,32 @@ import gst.app.AppModel
 import gst.app.Pings
 import gst.app.R
 
-/** A screen of the app, besides a machine's, which opens over the network. */
-enum class Route { Home, Add, Settings, Log }
+/** A screen of the app, in the order they open from the network: a machine's, adding one, the settings, and the log. */
+enum class Route { Home, Machine, Add, Settings, Log }
 
 /**
  * The app: the network, and the screens that open from it. A demo opens it
- * on [route], on the sheet of [machine], which starts with [pings], and on
+ * on [route], on the page of [machine], which starts with [pings], and on
  * [addStep] of adding a machine.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, addStep: AddStep = AddStep.Form, pings: Pings = Pings()) {
+    // The page, and the color of what is on it.
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Screens(model, route, machine, addStep, pings)
+    }
+}
+
+@Composable
+private fun Screens(model: AppModel, route: Route, machine: String?, addStep: AddStep, pings: Pings) {
     val state by model.tunnel.collectAsStateWithLifecycle()
     var current by remember { mutableStateOf(route) }
     var open by remember { mutableStateOf(machine) }
+    val homeScroll = rememberScrollState()
     val failure = model.failure
     if (failure != null) {
         Column(
-            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(32.dp),
+            Modifier.fillMaxSize().padding(32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -74,19 +80,18 @@ fun GstApp(model: AppModel, route: Route = Route.Home, machine: String? = null, 
     ) { shown ->
         when (shown) {
             Route.Home -> HomeScreen(
-                model, state,
+                model, state, homeScroll,
                 openAdd = { current = Route.Add },
                 openSettings = { current = Route.Settings },
-                openMachine = { open = it },
+                openMachine = {
+                    open = it
+                    current = Route.Machine
+                },
             )
+            Route.Machine -> MachineScreen(model, open ?: "", state == gst.app.Tunnel.State.On, pings) { current = Route.Home }
             Route.Add -> AddMachineScreen(model, close = { current = Route.Home }, initialStep = addStep)
             Route.Settings -> SettingsScreen(model, close = { current = Route.Home }, openLog = { current = Route.Log })
             Route.Log -> LogScreen(model, close = { current = Route.Settings })
         }
-    }
-    open?.let { id ->
-        // Half the screen first, as a glance; a demo shows it all.
-        val values = if (machine != null) setOf(SheetValue.Hidden, SheetValue.Expanded) else SheetValue.entries.toSet()
-        MachineSheet(model, id, state == gst.app.Tunnel.State.On, rememberBottomSheetState(SheetValue.Hidden, values), pings) { open = null }
     }
 }

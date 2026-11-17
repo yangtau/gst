@@ -18,7 +18,6 @@
     <string name="state_turning_on">正在开启…</string>
     <string name="state_turning_off">正在关闭…</string>
     <string name="turn_on">开启</string>
-    <string name="machines_online">%1$d / %2$d 台机器在线</string>
     <string name="problem_removed">%1$s 在%2$s把本机移出了网络。</string>
     <string name="problem_removed_detail">添加一台机器即可重新加入网络。</string>
     <string name="problem_link">到 %1$s 的 link 已断开。</string>
@@ -105,4 +104,7 @@
     <string name="unlink">删除 link</string>
     <string name="log">日志</string>
     <string name="log_empty">日志为空。</string>
+    <string name="exposed_ports">暴露的端口</string>
+    <string name="unlink_question">删除到 %1$s 的 link？</string>
+    <string name="unlink_text">对应的机器仍在网络中。</string>
 </resources>

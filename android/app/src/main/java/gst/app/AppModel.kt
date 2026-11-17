@@ -109,6 +109,9 @@ class AppModel private constructor(
             ?.let { runCatching { GstJson.decodeFromString<Topology>(it) }.getOrNull() }
         try {
             withContext(Dispatchers.IO) { Tunnel.open(context) }
+            // The system may not have told BootReceiver of an update, as
+            // some phones do not until the app opens.
+            GstVpnService.resume(context)
             info = gst.call("app.info")
         } catch (e: Throwable) {
             failure = e.message ?: e.toString()
@@ -229,6 +232,13 @@ class AppModel private constructor(
 
     /** `gst ping <machine>`, once. */
     suspend fun ping(machine: Machine): PingReply = if (isDemo) Demo.ping else gst.call("net.ping", params(NodeParams(machine.id)))
+
+    /** The ports that [machine] exposes, which `gst status <machine>` lists; its daemon says. */
+    suspend fun exposes(machine: Machine): List<DaemonStatus.Expose> = when {
+        machine.isHere -> status?.exposes ?: emptyList()
+        isDemo -> Demo.exposes(machine.id)
+        else -> gst.call<DaemonStatus>("mesh.status", params(NodeParams(machine.id))).exposes
+    }
 
     /** `gst remove <machine>`. */
     suspend fun remove(machine: Machine): Removal {

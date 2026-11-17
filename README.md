@@ -291,13 +291,13 @@ To join a network:
 3. The app then shows a command that adds the phone's public key to `~/.ssh/authorized_keys`. Run it on that machine, logged in as that user, and tap **Try Again**. **Settings** shows the key at any time, and **New Key** there replaces it; the machines that authorized the old key then need the new one.
 4. The app adds the link and turns gst on. iOS asks once whether gst may add a VPN configuration.
 
-The first screen lists the machines with `Direct`, `Relay`, or `Offline`, as `gst status` does, with problems above them. The button beside **Machines** shows the map of the links between the machines that `gst ui` draws, with this machine at the top, and hides it again; the app remembers the choice. Tap a machine, in the list or in the map, and the app pings it once a second while its sheet is open: the sheet shows the way and the time of the latest ping and a chart of the last ones, and below them the machine's gst IP and name, and removing it from the network. The switch at the bottom turns gst on and off; while it is on, iOS keeps it running, and starts it again after a restart. **Settings** renames the phone, lists its links (swipe one to remove it, as `gst unlink` does), and shows the log.
+The first screen lists the machines, this one first and marked **This machine**, each with whether packets reach it, as `gst status` does, with problems above them. The map button at the top shows the map of the links between the machines that `gst ui` draws, with this machine at the top, and hides it again; the app remembers the choice. Tap a machine, in the list or in the map, to open its page, and the app pings it once a second while the page is open: the page shows the way and the time of the latest ping and a chart of the last ones, and below them the machine's gst IP and name, the ports it exposes with `gst expose` (tap to copy `name.gst:port`), and removing it from the network. The button at the bottom turns gst on and off; while it is on, iOS keeps it running, and starts it again after a restart. **Settings** renames the phone, lists its links (swipe one and confirm to remove it, as `gst unlink` does), and shows the log.
 
 What differs from the other machines:
 
 - Nothing can link to a phone, as it accepts no SSH logins. Other machines reach it through its own links, so add at least one machine that stays on.
 - A link's destination is `user@host` or `ssh://user@host:port`, and the phone uses its own key and the host keys that you trusted in the app. There are no ssh options.
-- `gst expose`, `gst subnet`, and `gst ui` have no counterpart in the app; run them on another machine. A page that `gst ui` serves there opens in the phone's browser.
+- `gst expose`, `gst subnet`, and `gst ui` have no counterpart in the app; run them on another machine. A machine's page lists the ports it exposes, and a page that `gst ui` serves there opens in the phone's browser.
 - `gst ping` from another machine to the phone works for packets up to the interface's MTU.
 - iOS shows the VPN as connected while gst runs, whether or not a link is up. The app shows what the links do.
 

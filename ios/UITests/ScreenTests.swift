@@ -19,7 +19,7 @@ final class ScreenTests: XCTestCase {
         Screen(name: "home", shows: "homelab"),
         Screen(name: "map", shows: "homelab"),
         Screen(name: "problems", shows: "192.0.2.20"),
-        Screen(name: "welcome", shows: "iphone"),
+        Screen(name: "welcome", shows: "devbox.gst"),
         Screen(name: "off", shows: "attic"),
         Screen(name: "host-key", shows: "SHA256:"),
         Screen(name: "authorize", shows: "authorized_keys"),

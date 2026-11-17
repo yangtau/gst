@@ -1,52 +1,32 @@
 package gst.app.ui
 
+import android.content.ClipData
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.Autorenew
+import androidx.compose.material.icons.outlined.Autorenew
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeFlexibleTopAppBar
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,9 +36,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -68,10 +50,10 @@ import androidx.compose.ui.unit.dp
 import gst.app.AppModel
 import gst.app.DaemonStatus
 import gst.app.R
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** This machine: its name, the key that servers authorize, its links, and what helps when something does not work. */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SettingsScreen(model: AppModel, close: () -> Unit, openLog: () -> Unit) {
     val context = LocalContext.current
@@ -82,137 +64,77 @@ fun SettingsScreen(model: AppModel, close: () -> Unit, openLog: () -> Unit) {
     var isRenaming by remember { mutableStateOf(false) }
     var isConfirmingNewKey by remember { mutableStateOf(false) }
     val info = model.info
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val nameRule = stringResource(R.string.name_rule)
 
     BackHandler { close() }
 
-    Scaffold(
-        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
-        topBar = {
-            LargeFlexibleTopAppBar(
-                title = { Text(stringResource(R.string.settings)) },
-                navigationIcon = {
-                    IconButton(onClick = close) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
-                    }
-                },
-                scrollBehavior = scroll,
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.page,
-                    scrolledContainerColor = MaterialTheme.colorScheme.page,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.page,
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()), contentAlignment = Alignment.TopCenter) {
-            Column(
-                Modifier.widthIn(max = 640.dp).padding(horizontal = 16.dp).padding(bottom = 24.dp).navigationBarsPadding(),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+    Page(
+        title = stringResource(R.string.settings),
+        navigation = { CircleButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back), close) },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // This machine.
+            Group(
+                header = stringResource(R.string.this_machine),
+                footer = nameFailure ?: stringResource(R.string.reach_as, info?.node?.name ?: ""),
+                isError = nameFailure != null,
             ) {
-                // This machine.
+                row { ValueRow(stringResource(R.string.name), info?.node?.name ?: "", onClick = { isRenaming = true }) }
+                info?.node?.id?.let { id -> row { ValueRow(stringResource(R.string.id), id.take(8), mono = true) } }
+                model.topology?.subnet?.takeIf { it.isNotEmpty() }?.let { subnet ->
+                    row { ValueRow(stringResource(R.string.subnet), subnet, mono = true) }
+                }
+            }
+
+            // The key that servers authorize.
+            info?.publicKey?.let { key ->
                 Column {
-                    SectionTitle(stringResource(R.string.this_machine))
-                    val rows = buildList<@Composable (Int, Int) -> Unit> {
-                        add { i, n ->
-                            SegmentedListItem(
-                                onClick = { isRenaming = true },
-                                shapes = ListItemDefaults.segmentedShapes(i, n),
-                                colors = itemColors(),
-                                overlineContent = { Text(stringResource(R.string.name)) },
-                                trailingContent = { Icon(Icons.Rounded.Edit, contentDescription = stringResource(R.string.rename)) },
-                            ) { Text(info?.node?.name ?: "") }
+                    SectionHeader(stringResource(R.string.ssh_key))
+                    CodeBlock(key, Modifier.padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 4.dp), maxLines = 3)
+                    Group(inset = RowInset, footer = keyFailure ?: stringResource(R.string.key_footer), isError = keyFailure != null) {
+                        row { CopyKeyRow(key) }
+                        row {
+                            ListRow(Icons.Outlined.Share, onClick = { context.share(key) }) { Text(stringResource(R.string.share)) }
                         }
-                        info?.node?.id?.let { id -> add { i, n -> Row(i, n, stringResource(R.string.id), id.take(8), mono = true) } }
-                        model.topology?.subnet?.takeIf { it.isNotEmpty() }?.let { subnet ->
-                            add { i, n -> Row(i, n, stringResource(R.string.subnet), subnet, mono = true) }
-                        }
-                    }
-                    Segmented { rows.forEachIndexed { i, row -> row(i, rows.size) } }
-                    Footer(nameFailure ?: stringResource(R.string.reach_as, info?.node?.name ?: ""), error = nameFailure != null)
-                }
-
-                // The key that servers authorize.
-                info?.publicKey?.let { key ->
-                    Column {
-                        SectionTitle(stringResource(R.string.ssh_key))
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(MaterialTheme.shapes.large)
-                                .background(MaterialTheme.colorScheme.item)
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    key,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.MiddleEllipsis,
-                                )
-                            }
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                CopyKeyButton(key)
-                                OutlinedButton(onClick = { context.share(key) }) {
-                                    Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.size(8.dp))
-                                    Text(stringResource(R.string.share))
-                                }
-                                TextButton(
-                                    onClick = { isConfirmingNewKey = true },
-                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                ) {
-                                    Icon(Icons.Rounded.Autorenew, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.size(8.dp))
-                                    Text(stringResource(R.string.new_key))
-                                }
+                        row {
+                            ListRow(Icons.Outlined.Autorenew, onClick = { isConfirmingNewKey = true }, tint = MaterialTheme.colorScheme.error) {
+                                Text(stringResource(R.string.new_key))
                             }
                         }
-                        Footer(keyFailure ?: stringResource(R.string.key_footer), error = keyFailure != null)
                     }
                 }
+            }
 
-                // The links.
-                Column {
-                    SectionTitle(stringResource(R.string.links))
-                    val links = info?.links ?: emptyList()
-                    Segmented {
-                        links.forEachIndexed { i, link ->
-                            LinkRow(
-                                i, links.size, link.destination,
-                                model.status?.links?.firstOrNull { it.destination == link.destination },
-                            ) {
-                                scope.launch {
-                                    try {
-                                        model.unlink(link.destination)
-                                        linkFailure = null
-                                    } catch (e: Exception) {
-                                        linkFailure = e.message
-                                    }
+            // The links.
+            val links = info?.links ?: emptyList()
+            Group(
+                inset = DotRowInset,
+                header = stringResource(R.string.links),
+                footer = linkFailure ?: stringResource(if (links.isEmpty()) R.string.links_none else R.string.links_footer),
+                isError = linkFailure != null,
+            ) {
+                for (link in links) {
+                    row {
+                        LinkRow(link.destination, model.status?.links?.firstOrNull { it.destination == link.destination }) {
+                            scope.launch {
+                                try {
+                                    model.unlink(link.destination)
+                                    linkFailure = null
+                                } catch (e: Exception) {
+                                    linkFailure = e.message
                                 }
                             }
                         }
                     }
-                    Footer(
-                        linkFailure ?: stringResource(if (links.isEmpty()) R.string.links_none else R.string.links_footer),
-                        error = linkFailure != null,
-                    )
                 }
+            }
 
-                // What helps when something does not work.
-                Segmented {
-                    val count = if (info?.node?.software != null) 2 else 1
-                    SegmentedListItem(
-                        onClick = openLog,
-                        shapes = ListItemDefaults.segmentedShapes(0, count),
-                        colors = itemColors(),
-                        trailingContent = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null) },
-                    ) { Text(stringResource(R.string.log)) }
-                    info?.node?.software?.let { Row(1, count, stringResource(R.string.version), it) }
+            // What helps when something does not work.
+            Group {
+                row {
+                    ListRow(null, onClick = openLog, trailing = { Chevron() }) { Text(stringResource(R.string.log)) }
                 }
+                info?.node?.software?.let { row { ValueRow(stringResource(R.string.version), it) } }
             }
         }
     }
@@ -284,47 +206,55 @@ fun SettingsScreen(model: AppModel, close: () -> Unit, openLog: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+/** The row that copies the key, and says for a moment that it did. */
 @Composable
-private fun Row(index: Int, count: Int, title: String, value: String, mono: Boolean = false) {
-    SegmentedListItem(
-        shapes = ListItemDefaults.segmentedShapes(index, count),
-        colors = itemColors(),
-        overlineContent = { Text(title) },
-    ) {
-        SelectionContainer { Text(value, fontFamily = if (mono) FontFamily.Monospace else null) }
-    }
-}
-
-@Composable
-private fun CopyKeyButton(key: String) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboard.current
+private fun CopyKeyRow(key: String) {
+    val clipboard = LocalClipboard.current
+    val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var isCopied by remember { mutableStateOf(false) }
-    FilledTonalButton(onClick = {
-        scope.launch {
-            clipboard.setClipEntry(androidx.compose.ui.platform.ClipEntry(android.content.ClipData.newPlainText("gst", key)))
-            isCopied = true
-            kotlinx.coroutines.delay(1500)
-            isCopied = false
-        }
-    }) {
-        Icon(
-            if (isCopied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.size(8.dp))
-        Text(stringResource(R.string.copy_key))
-    }
+    ListRow(
+        if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
+        onClick = {
+            scope.launch {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("gst", key)))
+                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                isCopied = true
+                delay(1500)
+                isCopied = false
+            }
+        },
+    ) { Text(stringResource(R.string.copy_key)) }
 }
 
-/** A link, named by its destination, and how it goes; swiped away, it is removed. */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+/** A link, named by its destination, and how it goes; swiped away, it is removed once the person says so. */
 @Composable
-private fun LinkRow(index: Int, count: Int, destination: String, state: DaemonStatus.Link?, unlink: () -> Unit) {
+private fun LinkRow(destination: String, state: DaemonStatus.Link?, unlink: () -> Unit) {
     val swipe = rememberSwipeToDismissBoxState()
-    val shapes = ListItemDefaults.segmentedShapes(index, count)
+    val scope = rememberCoroutineScope()
+    var isConfirming by remember { mutableStateOf(false) }
+    if (isConfirming) {
+        fun cancel() {
+            isConfirming = false
+            scope.launch { swipe.reset() }
+        }
+        AlertDialog(
+            onDismissRequest = ::cancel,
+            title = { Text(stringResource(R.string.unlink_question, destination)) },
+            text = { Text(stringResource(R.string.unlink_text)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isConfirming = false
+                        unlink()
+                        scope.launch { swipe.reset() }
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(R.string.unlink)) }
+            },
+            dismissButton = { TextButton(onClick = ::cancel) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
     val colors = statusColors
     val (color, summary) = when (state?.state) {
         DaemonStatus.Link.State.Running ->
@@ -336,36 +266,26 @@ private fun LinkRow(index: Int, count: Int, destination: String, state: DaemonSt
     SwipeToDismissBox(
         state = swipe,
         enableDismissFromStartToEnd = false,
-        onDismiss = { if (it == SwipeToDismissBoxValue.EndToStart) unlink() },
+        onDismiss = { if (it == SwipeToDismissBoxValue.EndToStart) isConfirming = true },
         backgroundContent = {
             Box(
-                Modifier.fillMaxSize().clip(shapes.shape).background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 24.dp),
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.error).padding(horizontal = PageMargin),
                 contentAlignment = Alignment.CenterEnd,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.unlink), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.labelLarge)
-                    Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                    Text(stringResource(R.string.unlink), color = MaterialTheme.colorScheme.onError, style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onError)
                 }
             }
         },
     ) {
-        SegmentedListItem(
-            shapes = shapes,
-            colors = itemColors(),
-            supportingContent = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        StatusDot(color, size = 8)
-                        Text(summary)
-                    }
-                    val error = state?.error
-                    if (state?.state == DaemonStatus.Link.State.Down && !error.isNullOrEmpty()) {
-                        Text(code(error.sentence), color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-        ) {
+        ListRow(null, dot = color, modifier = Modifier.background(MaterialTheme.colorScheme.background)) {
             Text(destination, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+            Subtitle(summary)
+            val error = state?.error
+            if (state?.state == DaemonStatus.Link.State.Down && !error.isNullOrEmpty()) {
+                Text(code(error.sentence), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }

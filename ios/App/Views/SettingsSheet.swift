@@ -10,6 +10,9 @@ struct SettingsSheet: View {
     @State private var failure: String?
     @State private var keyFailure: String?
     @State private var isConfirmingNewKey = false
+    /// The destination of the link that someone asked to remove, until
+    /// they confirm it.
+    @State private var unlinking: String?
 
     var body: some View {
         NavigationStack {
@@ -80,7 +83,8 @@ struct SettingsSheet: View {
                     ForEach(model.info?.links ?? [], id: \.destination) { link in
                         LinkRow(destination: link.destination, state: model.status?.links.first { $0.destination == link.destination })
                             .swipeActions {
-                                Button("Unlink", role: .destructive) { unlink(link.destination) }
+                                Button("Unlink") { unlinking = link.destination }
+                                    .tint(.red)
                             }
                     }
                 } header: {
@@ -103,6 +107,16 @@ struct SettingsSheet: View {
                         LabeledContent("Version", value: software)
                     }
                 }
+            }
+            .confirmationDialog(
+                "Unlink \(unlinking ?? "")?",
+                isPresented: Binding(get: { unlinking != nil }, set: { if !$0 { unlinking = nil } }),
+                titleVisibility: .visible,
+                presenting: unlinking
+            ) { destination in
+                Button("Unlink", role: .destructive) { unlink(destination) }
+            } message: { _ in
+                Text("Its machine stays in the network.")
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

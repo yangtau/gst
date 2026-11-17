@@ -45,13 +45,25 @@ enum Demo: String, CaseIterable {
     var sheet: HomeView.Sheet? {
         switch self {
         case .hostKey, .authorize: .add
-        case .machine: .machine(Self.id("b1"))
         case .settings: .settings
         default: nil
         }
     }
 
-    /// The pings that the machine's sheet starts with: the first ones
+    /// The machine whose page the network opens on.
+    var machine: String? {
+        self == .machine ? Self.id("b1") : nil
+    }
+
+    /// The ports that the other machines expose, by id.
+    static let exposes = [
+        id("b1"): [
+            Expose(proto: "tcp", port: 5999, target: "127.0.0.1:8080", address: "10.87.61.7", state: "running"),
+            Expose(proto: "udp", port: 5353, target: "127.0.0.1:5353", address: "10.87.61.7", state: "running"),
+        ],
+    ]
+
+    /// The pings that the machine's page starts with: the first ones
     /// along the links, and the rest direct, once the UDP path was up.
     var pings: Pings {
         var pings = Pings()
@@ -128,6 +140,7 @@ enum Demo: String, CaseIterable {
                     ? .init(destination: "ssh://deploy@192.0.2.20:2222", state: .down, since: .now.addingTimeInterval(-90), error: "TCP connection failed", reconnects: 4)
                     : .init(destination: "ssh://deploy@192.0.2.20:2222", state: .running, since: .now.addingTimeInterval(-600), reconnects: 1, peer: .init(id: id("c2"), name: "homelab")),
             ],
+            exposes: [Expose(proto: "tcp", port: 8080, target: "127.0.0.1:8080", address: "10.87.26.14", state: "running")],
             net: .init(
                 subnet: "10.87.0.0/16", address: "10.87.26.14", interface: "utun4",
                 error: broken ? "the subnet 10.87.0.0/16 overlaps 10.87.3.0/24 on this machine" : nil,

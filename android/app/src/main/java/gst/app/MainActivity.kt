@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
             CompletableDeferred<Boolean>().also { consent = it; askConsent.launch(request) }.await()
         }
         setContent {
-            GstTheme(dark = demoDark ?: androidx.compose.foundation.isSystemInDarkTheme(), brandColors = demo != null) {
+            GstTheme(dark = demoDark ?: androidx.compose.foundation.isSystemInDarkTheme()) {
                 val state by model.tunnel.collectAsStateWithLifecycle()
                 var isStarted by remember { mutableStateOf(false) }
                 LaunchedEffect(Unit) {

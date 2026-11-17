@@ -1,22 +1,14 @@
 package gst.app.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,7 +25,6 @@ import gst.app.R
 import kotlinx.coroutines.delay
 
 /** The end of gst's log: what the links did, without the names of servers, which gst keeps out of it. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LogScreen(model: AppModel, close: () -> Unit) {
     val context = LocalContext.current
@@ -47,27 +38,20 @@ fun LogScreen(model: AppModel, close: () -> Unit) {
         }
     }
     LaunchedEffect(text) { scroll.scrollTo(scroll.maxValue) }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.log)) },
-                navigationIcon = {
-                    IconButton(onClick = close) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back)) }
-                },
-                actions = {
-                    IconButton(onClick = { context.share(text) }, enabled = text.isNotEmpty()) {
-                        Icon(Icons.Rounded.Share, contentDescription = stringResource(R.string.share))
-                    }
-                },
-            )
+    Page(
+        title = stringResource(R.string.log),
+        navigation = { CircleButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back), close) },
+        actions = {
+            CircleButton(Icons.Outlined.Share, stringResource(R.string.share), { context.share(text) }, enabled = text.isNotEmpty())
         },
-    ) { padding ->
-        SelectionContainer(Modifier.fillMaxSize().padding(padding).verticalScroll(scroll)) {
+        scroll = scroll,
+    ) {
+        SelectionContainer {
             Text(
                 text.ifEmpty { stringResource(R.string.log_empty) },
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(16.dp).navigationBarsPadding(),
+                modifier = Modifier.padding(horizontal = PageMargin),
             )
         }
     }

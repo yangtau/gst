@@ -33,7 +33,7 @@ struct RootView: View {
                 ContentUnavailableView("gst cannot start", systemImage: "exclamationmark.triangle", description: Text(failure))
             } else {
                 #if DEBUG
-                HomeView(sheet: Demo.current?.sheet, addStep: Demo.current?.addStep ?? .form, pings: Demo.current?.pings ?? Pings())
+                HomeView(sheet: Demo.current?.sheet, machine: Demo.current?.machine, addStep: Demo.current?.addStep ?? .form, pings: Demo.current?.pings ?? Pings())
                     .preferredColorScheme(Demo.isDark ? .dark : nil)
                 #else
                 HomeView()

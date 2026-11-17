@@ -28,7 +28,7 @@ import SwiftUI
 }
 
 #Preview("Machine") {
-    HomeView(sheet: Demo.machine.sheet, pings: Demo.machine.pings).environment(Demo.machine.model)
+    HomeView(machine: Demo.machine.machine, pings: Demo.machine.pings).environment(Demo.machine.model)
 }
 
 #Preview("Settings") {

@@ -98,8 +98,32 @@ struct DaemonStatus: Decodable, Equatable {
     var software: String
     var node: NodeInfo
     var links: [Link]
+    var exposes: [Expose]? = nil
     var net: Network?
     var removed: Removed?
+}
+
+/// A port that a machine exposes on its gst IP (`gst expose`), and
+/// whether it listens.
+struct Expose: Decodable, Hashable {
+    enum CodingKeys: String, CodingKey {
+        case proto = "protocol", port, target, address, state, error
+    }
+
+    /// "tcp" or "udp".
+    var proto: String
+    var port: Int
+    var target: String
+    var address: String?
+    /// "running" while it listens.
+    var state: String
+    var error: String?
+}
+
+/// What another machine's daemon says of itself ("mesh.status"), of
+/// which the app reads only the exposed ports.
+struct NodeStatus: Decodable {
+    var exposes: [Expose]?
 }
 
 /// The network as this machine knows it ("mesh.topology").
