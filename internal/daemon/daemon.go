@@ -92,6 +92,11 @@ type Daemon struct {
 	stopped bool                   // Serve ended, and no link starts again; guarded by ops
 	mu      sync.Mutex             // guards links
 	links   map[string]*supervisor // by destination
+
+	// background is the work that start's stop waits for besides the
+	// links: what writes the configuration and reloads it must be done
+	// before the daemon is, as a phone's app may remove its directory.
+	background sync.WaitGroup
 }
 
 // New returns a daemon for cfg.
@@ -256,8 +261,8 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		// fixed, can still start the links.
 		d.cfg.Log.Print(err)
 	}
-	go d.dropRemovedLinks(meshCtx)
-	go d.followNetwork(meshCtx)
+	d.background.Go(func() { d.dropRemovedLinks(meshCtx) })
+	d.background.Go(func() { d.followNetwork(meshCtx) })
 	netDone := make(chan struct{})
 	go func() {
 		defer close(netDone)
@@ -269,6 +274,7 @@ func (d *Daemon) start(ctx context.Context) (stop func()) {
 		<-netDone
 		d.stopAll()
 		<-meshDone
+		d.background.Wait()
 	}
 }
 
@@ -483,14 +489,20 @@ func (d *Daemon) linkUp(destination string, peer wire.NodeInfo) {
 	}
 }
 
-// saveGeneration keeps the generation of this node in the configuration.
-func (d *Daemon) saveGeneration(gen int64) error {
-	self := d.mesh.Self().ID
-	return config.Update(d.cfg.ConfigPath, func(f *config.File) error {
-		if f.Node != nil && f.Node.ID == self {
-			f.Node.Generation = max(f.Node.Generation, gen)
+// saveGeneration keeps the generation of this node in the configuration,
+// in the background: the mesh calls it under its lock.
+func (d *Daemon) saveGeneration(gen int64) {
+	d.background.Go(func() {
+		self := d.mesh.Self().ID
+		err := config.Update(d.cfg.ConfigPath, func(f *config.File) error {
+			if f.Node != nil && f.Node.ID == self {
+				f.Node.Generation = max(f.Node.Generation, gen)
+			}
+			return nil
+		})
+		if err != nil {
+			d.cfg.Log.Printf("save the generation: %v", err)
 		}
-		return nil
 	})
 }
 
@@ -572,11 +584,11 @@ func (d *Daemon) restartLinks(why string, running bool) {
 // reloadLater reloads the configuration in the background, after the
 // daemon changed it.
 func (d *Daemon) reloadLater() {
-	go func() {
+	d.background.Go(func() {
 		if err := d.Reload(context.Background()); err != nil {
 			d.cfg.Log.Print(err)
 		}
-	}()
+	})
 }
 
 // stopAll stops every link for good: a reload in the background, such

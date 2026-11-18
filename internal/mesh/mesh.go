@@ -51,8 +51,9 @@ type Config struct {
 	// Status reports the daemon to the other nodes; nil answers nothing.
 	Status func() wire.Status
 	// SaveGeneration keeps this node's generation, which a person's gst
-	// add raises after a removal, in the configuration file.
-	SaveGeneration func(int64) error
+	// add raises after a removal, in the configuration file. The node
+	// calls it under its lock: it must not wait, as for the file.
+	SaveGeneration func(int64)
 	// Timing is the links'; link.DefaultTiming when zero.
 	Timing link.Timing
 }
@@ -341,12 +342,7 @@ func (n *Node) raiseGeneration(gen int64) {
 	}
 	n.generation = gen
 	if save := n.cfg.SaveGeneration; save != nil {
-		// Not under n.mu: saving may wait for the configuration file.
-		go func() {
-			if err := save(gen); err != nil {
-				n.log.Printf("save the generation: %v", err)
-			}
-		}()
+		save(gen)
 	}
 	n.Update()
 }
@@ -600,6 +596,9 @@ func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) 
 		}
 	}
 	n.links[l] = struct{}{}
+	// Under n.mu, as Configure and becomeRemoved close every link before
+	// they reset the table: what a closing link still delivers is dropped.
+	epoch := n.table.Epoch()
 	n.offerSeen()
 	n.mu.Unlock()
 	removeFlood := n.flood.Add(peer, func(body []byte) bool { return l.Send(link.Sync, body, true) })
@@ -614,7 +613,7 @@ func (n *Node) run(ctx context.Context, l *link.Link, onUp func(wire.NodeInfo)) 
 	err := l.Run(func(t link.Type, body []byte) {
 		switch t {
 		case link.Sync:
-			n.flood.Receive(peer, body)
+			n.flood.Receive(peer, epoch, body)
 		case link.Msg:
 			n.router.Receive(body)
 		}

@@ -149,6 +149,7 @@ type Table struct {
 
 	mu      sync.Mutex
 	owner   string // the node whose table it is
+	epoch   uint64 // the resets so far
 	entries map[string]wire.Entry
 	counts  map[string]int // entries by kind
 	changed chan struct{}  // closed and replaced at every change
@@ -195,10 +196,20 @@ func (t *Table) Reset(owner string, keep ...wire.Entry) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.owner = owner
+	t.epoch++
 	clear(t.entries)
 	clear(t.counts)
 	t.merge(keep)
 	t.touch()
+}
+
+// Epoch counts the resets. Entries from before a reset, such as those a
+// link that came up before it still delivers while it closes, belong to
+// the table that was emptied: MergeAt drops them.
+func (t *Table) Epoch() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.epoch
 }
 
 // Get returns the entry with key.
@@ -241,6 +252,22 @@ func (t *Table) Changed() <-chan struct{} {
 func (t *Table) Merge(entries []wire.Entry) []wire.Entry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.mergeAndTouch(entries)
+}
+
+// MergeAt is Merge, unless the table was reset since epoch: then it
+// keeps nothing.
+func (t *Table) MergeAt(epoch uint64, entries []wire.Entry) []wire.Entry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if epoch != t.epoch {
+		return nil
+	}
+	return t.mergeAndTouch(entries)
+}
+
+// mergeAndTouch merges entries and tells of a change; t.mu is held.
+func (t *Table) mergeAndTouch(entries []wire.Entry) []wire.Entry {
 	accepted := t.merge(entries)
 	if len(accepted) > 0 {
 		t.touch()

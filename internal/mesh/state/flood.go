@@ -59,14 +59,15 @@ func (f *Flood) Add(peer string, send func(body []byte) bool) (remove func()) {
 	}
 }
 
-// Receive merges the body of a sync frame from the neighbour peer, and
-// passes on what was new.
-func (f *Flood) Receive(peer string, body []byte) error {
+// Receive merges the body of a sync frame from the neighbour peer, over
+// a link that came up at the table's epoch (Table.Epoch), and passes on
+// what was new. After a reset, what such a link delivers is dropped.
+func (f *Flood) Receive(peer string, epoch uint64, body []byte) error {
 	var batch wire.Entries
 	if err := json.Unmarshal(body, &batch); err != nil {
 		return errors.New("invalid sync frame")
 	}
-	f.pass(f.table.Merge(batch.Entries), peer)
+	f.pass(f.table.MergeAt(epoch, batch.Entries), peer)
 	return nil
 }
 

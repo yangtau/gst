@@ -381,7 +381,7 @@ func TestRemoveSelf(t *testing.T) {
 // gst add brings a removed node back, from either end of the link.
 func TestAddBringsBack(t *testing.T) {
 	saved := make(chan int64, 4)
-	a, b := newNode(t, "a"), newNodeConfig(t, "b", Config{SaveGeneration: func(g int64) error { saved <- g; return nil }})
+	a, b := newNode(t, "a"), newNodeConfig(t, "b", Config{SaveGeneration: func(g int64) { saved <- g }})
 	l := linkUp(t, a, b)
 	waitFor(t, "a reaches b", func() bool { return reaches(a, "b") })
 	if _, err := a.Remove("b"); err != nil {
@@ -429,7 +429,7 @@ func TestAddBringsBackFromTheOtherEnd(t *testing.T) {
 // generation takes it on.
 func TestOwnEntryOfAnEarlierRun(t *testing.T) {
 	saved := make(chan int64, 1)
-	a := newNodeConfig(t, "a", Config{SaveGeneration: func(g int64) error { saved <- g; return nil }})
+	a := newNodeConfig(t, "a", Config{SaveGeneration: func(g int64) { saved <- g }})
 	waitFor(t, "a publishes", func() bool { _, ok := a.table.Get(state.NodeKey(nid("a"))); return ok })
 	a.flood.Put(wire.Entry{Key: state.NodeKey(nid("a")), Version: []int64{3, time.Now().Add(time.Hour).UnixNano()}, Value: []byte(`{"name":"a"}`)})
 	if g := <-saved; g != 3 {
@@ -485,6 +485,20 @@ func TestConfigure(t *testing.T) {
 	}
 	if err := openLink(t, a, b, false).wait(t); err == nil {
 		t.Fatal("linked without identity")
+	}
+}
+
+// What a link still delivers as it closes, after a new identity emptied the
+// table, stays out of it.
+func TestConfigureWhileThePeerPublishes(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	l := linkUp(t, a, b)
+	waitFor(t, "a knows b", func() bool { return inNetwork(a, "b") })
+	a.Configure(&config.Node{ID: nid("n"), Name: "a"})
+	b.flood.Put(wire.Entry{Key: state.NodeKey(nid("b")), Version: []int64{0, time.Now().Add(time.Hour).UnixNano()}, Value: []byte(`{"name":"b"}`)})
+	l.wait(t)
+	if inNetwork(a, "b") {
+		t.Fatal("the new identity took b's entry from the old link")
 	}
 }
 

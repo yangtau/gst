@@ -221,7 +221,7 @@ func (m *mesh) connect(a, b string) (cut func()) {
 			dest := m.nodes[to]
 			m.mu.Unlock()
 			// Deliver in the background, as a link does.
-			go dest.Receive(from, body)
+			go dest.Receive(from, 0, body)
 			return true
 		}
 	}
@@ -297,4 +297,21 @@ func TestSecondLinkToAPeer(t *testing.T) {
 	e := node('a', 0, 7, "laptop")
 	m.nodes["a"].Put(e)
 	waitFor(t, "over the other link", func() bool { return has(m.nodes["b"], e) })
+}
+
+// A link that came up before a reset still delivers while it closes; none
+// of it goes into the table that the reset emptied.
+func TestNothingFromBeforeAReset(t *testing.T) {
+	f := NewFlood(Open("", quiet))
+	before := f.table.Epoch()
+	f.table.Reset(id('n'))
+	body := batches([]wire.Entry{node('b', 0, 1, "devbox")})[0]
+	f.Receive("b", before, body)
+	if len(f.table.Entries()) != 0 {
+		t.Fatalf("kept %v", keys(f.table))
+	}
+	f.Receive("b", f.table.Epoch(), body)
+	if len(f.table.Entries()) != 1 {
+		t.Fatal("dropped what a link from after the reset brought")
+	}
 }
