@@ -9,6 +9,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,19 +32,25 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,7 +64,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -71,9 +77,14 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import gst.app.Machine
 import gst.app.R
 import java.time.Instant
+import kotlin.time.Duration
+import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -84,14 +95,6 @@ fun Machine.Way.text(): String = when (this) {
     is Machine.Way.Direct -> stringResource(R.string.way_direct)
     is Machine.Way.Relay -> if (via.isEmpty()) stringResource(R.string.way_relay) else stringResource(R.string.way_relay_via, via.joinToString(", "))
     is Machine.Way.Offline -> stringResource(R.string.way_offline)
-}
-
-/** The color of the way, as the ping chart draws it. */
-@Composable
-fun Machine.Way.color(): Color = when (this) {
-    Machine.Way.Here, is Machine.Way.Direct -> statusColors.good
-    is Machine.Way.Relay -> MaterialTheme.colorScheme.primary
-    is Machine.Way.Offline -> MaterialTheme.colorScheme.outline
 }
 
 /**
@@ -175,43 +178,21 @@ val RowInset = PageMargin + RowIcon + 16.dp
 /** Where the text of a row with only a dot starts, and the line beneath it. */
 val DotRowInset = PageMargin + RowDot + 14.dp
 
-/**
- * A round button, in the bar at the top of a page: an icon on gray, which
- * [selected] fills with ink, as a switch that is on.
- */
+/** A round button, in the bar at the top of a page: an icon on gray. */
 @Composable
-fun CircleButton(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    selected: Boolean = false,
-) {
+fun CircleButton(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val colors = MaterialTheme.colorScheme
     Box(
         modifier
             .size(44.dp)
             .clip(CircleShape)
-            .background(if (selected) colors.primary else colors.fill)
+            .background(colors.fill)
             .border(0.5.dp, colors.hairline, CircleShape)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics {
-                contentDescription = label
-                this.selected = selected
-            },
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = when {
-                selected -> colors.onPrimary
-                enabled -> colors.onSurface
-                else -> colors.outline
-            },
-            modifier = Modifier.size(22.dp),
-        )
+        Icon(icon, contentDescription = null, tint = if (enabled) colors.onSurface else colors.outline, modifier = Modifier.size(22.dp))
     }
 }
 
@@ -288,13 +269,14 @@ fun Footer(text: String, isError: Boolean = false) {
  * A row of a group: at its start a line [icon], or a [dot] of a color, or
  * neither, then the [content] (a title, and a [Subtitle] beneath it) in
  * [tint], and [trailing] at its end. With [onClick], the whole row is a
- * button.
+ * button, which [onLongClick] makes answer to a touch that holds, too.
  */
 @Composable
 fun ListRow(
     icon: ImageVector?,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     tint: Color = MaterialTheme.colorScheme.onSurface,
     dot: Color? = null,
     trailing: @Composable RowScope.() -> Unit = {},
@@ -303,7 +285,7 @@ fun ListRow(
     Row(
         modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.combinedClickable(onLongClick = onLongClick, onClick = onClick) else Modifier)
             .heightIn(min = 56.dp)
             .padding(horizontal = PageMargin, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -336,11 +318,19 @@ fun Chevron() {
 
 /**
  * A row that says one thing: [label], and its [value] in gray at the end,
- * which a button copies with [copy]. With [onClick], the row is a button
- * that opens something about the value.
+ * after a [dot] of a color when it has one, which a button copies with
+ * [copy]. With [onClick], the row is a button that opens something about
+ * the value.
  */
 @Composable
-fun ValueRow(label: String, value: String, mono: Boolean = false, copy: Boolean = false, onClick: (() -> Unit)? = null) {
+fun ValueRow(
+    label: String,
+    value: String,
+    mono: Boolean = false,
+    copy: Boolean = false,
+    dot: Color? = null,
+    onClick: (() -> Unit)? = null,
+) {
     ListRow(
         null,
         onClick = onClick,
@@ -364,11 +354,17 @@ fun ValueRow(label: String, value: String, mono: Boolean = false, copy: Boolean 
                     textAlign = TextAlign.End,
                     maxLines = 1,
                     overflow = TextOverflow.MiddleEllipsis,
-                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            Box(Modifier.weight(1f)) {
-                if (onClick == null) SelectionContainer { text() } else text()
+            Row(
+                Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                if (dot != null) StatusDot(dot)
+                Box(Modifier.weight(1f, fill = false)) {
+                    if (onClick == null) SelectionContainer { text() } else text()
+                }
             }
         }
     }
@@ -407,6 +403,79 @@ fun PillButton(
             Spacer(Modifier.size(8.dp))
         }
         Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * What a screen says in its middle when it has nothing else to show: an
+ * [icon], a [title], [text] that says more, and beneath them [action], the
+ * one thing to do about it.
+ */
+@Composable
+fun Notice(icon: ImageVector, title: String, text: String? = null, modifier: Modifier = Modifier, action: (@Composable () -> Unit)? = null) {
+    Column(modifier.padding(horizontal = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(56.dp))
+        Spacer(Modifier.size(16.dp))
+        Text(title, style = TitleStyle, textAlign = TextAlign.Center)
+        if (text != null) {
+            Spacer(Modifier.size(6.dp))
+            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+        if (action != null) {
+            Spacer(Modifier.size(24.dp))
+            action()
+        }
+    }
+}
+
+/**
+ * A sheet that comes up from the bottom of the screen over what is there,
+ * under its [title], and goes when someone drags it down, taps beside it,
+ * or goes back, which calls [close].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun Sheet(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = close,
+        // Open in full or gone: its content is short, and has no half to stop at.
+        sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = PageMargin).padding(bottom = 16.dp),
+            )
+            content()
+        }
+    }
+}
+
+/**
+ * Does [work] every [period], counted from when each round starts, while
+ * the app is on the screen and what shows [key] is.
+ */
+@Composable
+fun RepeatWhileShown(key: Any, period: Duration, work: suspend () -> Unit) {
+    val current by rememberUpdatedState(work)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(key, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val started = TimeSource.Monotonic.markNow()
+                current()
+                delay(period - started.elapsedNow())
+            }
+        }
     }
 }
 

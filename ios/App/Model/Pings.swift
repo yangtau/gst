@@ -1,7 +1,7 @@
 import Foundation
 
-/// The pings of one machine, sent a second apart while its sheet is
-/// open: what the chart of their times draws.
+/// The pings of one machine, sent a second apart while the sheet that
+/// shows them is open: what the chart of their times draws.
 struct Pings: Equatable {
     /// A packet to the machine and back.
     struct Ping: Equatable, Identifiable {
@@ -14,19 +14,12 @@ struct Pings: Equatable {
         let way: Machine.Way?
         /// Why no answer came, in gst's words.
         let error: String?
-
-        var isDirect: Bool {
-            if case .direct = way { return true }
-            return false
-        }
     }
 
-    /// A line of the chart: pings that came back one after another by
-    /// the same kind of way, direct or relay.
+    /// A line of the chart: pings that came back one after another.
     struct Line: Equatable, Identifiable {
-        /// The first ping that took this way.
+        /// Its first ping.
         let id: Int
-        let isDirect: Bool
         var points: [Point]
     }
 
@@ -36,8 +29,9 @@ struct Pings: Equatable {
         let time: Double
     }
 
-    /// How many pings the chart shows: the latest.
-    static let shown = 30
+    /// How many pings stay, the latest: about as many as the chart's
+    /// width tells apart.
+    static let most = 300
 
     /// The latest pings, oldest first.
     private(set) var latest: [Ping] = []
@@ -56,34 +50,33 @@ struct Pings: Equatable {
     private mutating func add(_ ping: Ping) {
         sent += 1
         latest.append(ping)
-        latest.removeFirst(max(0, latest.count - Self.shown))
+        latest.removeFirst(max(0, latest.count - Self.most))
     }
 
-    /// The pings that the chart has room for, by their ids.
+    /// The pings across the chart, by their ids: the ones that stay, from
+    /// edge to edge, so the first few stand far apart and move closer as
+    /// more come.
     var span: ClosedRange<Int> {
-        let last = max(latest.last?.id ?? 0, Self.shown - 1)
-        return (last - Self.shown + 1)...last
+        let first = latest.first?.id ?? 0
+        return first...max(latest.last?.id ?? 0, first + 1)
     }
 
-    /// The chart's lines. Where the way changes, the next line starts at
-    /// the last ping of the one before, so that the two meet; a ping
-    /// without an answer leaves a gap.
+    /// The chart's lines; a ping without an answer leaves a gap.
     var lines: [Line] {
         var lines: [Line] = []
-        var before: Ping?
+        var isOpen = false
         for ping in latest {
-            defer { before = ping }
-            guard let time = ping.time else { continue }
-            let point = Point(id: ping.id, time: time)
-            if let time = before?.time, let previous = before {
-                if previous.isDirect == ping.isDirect {
-                    lines[lines.count - 1].points.append(point)
-                } else {
-                    lines.append(Line(id: ping.id, isDirect: ping.isDirect, points: [Point(id: previous.id, time: time), point]))
-                }
-            } else {
-                lines.append(Line(id: ping.id, isDirect: ping.isDirect, points: [point]))
+            guard let time = ping.time else {
+                isOpen = false
+                continue
             }
+            let point = Point(id: ping.id, time: time)
+            if isOpen {
+                lines[lines.count - 1].points.append(point)
+            } else {
+                lines.append(Line(id: ping.id, points: [point]))
+            }
+            isOpen = true
         }
         return lines
     }

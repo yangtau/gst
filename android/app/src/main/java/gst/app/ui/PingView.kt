@@ -10,10 +10,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -21,24 +27,59 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import gst.app.AppModel
 import gst.app.Machine
 import gst.app.Pings
 import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
+
+/** The icon of what pings a machine. */
+val PingIcon: ImageVector = Icons.Rounded.Sensors
 
 /**
- * The pings of a machine while its sheet is open: the way that the latest
- * took and its time, and a chart of the times of the latest ones, each
- * line in the color of its way. Until a ping comes back, the way is
- * [way], the one that gst reports to the machine.
+ * The pings of a machine, in a sheet over what showed it: the app pings
+ * the machine once a second for as long as the sheet is open, the app is
+ * on the screen, and packets may reach the machine, and closing the sheet
+ * ends them. The VPN keeps the process when the app leaves the screen,
+ * and the pings stop then. [initial] are the pings that the sheet starts
+ * with, which a demo gives it.
+ */
+@Composable
+fun PingSheet(model: AppModel, machineID: String, isOn: Boolean, initial: Pings = Pings(), close: () -> Unit) {
+    val machine = model.machines(isOn).firstOrNull { it.id == machineID }
+    var pings by remember { mutableStateOf(initial) }
+    if (machine != null && model.canPing(machine, isOn)) {
+        RepeatWhileShown(machine.id, 1.seconds) {
+            pings = try {
+                val reply = model.ping(machine)
+                pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pings.failed(e.message ?: "")
+            }
+        }
+    }
+    Sheet(machine?.name ?: "", close) {
+        PingView(pings, machine?.way ?: Machine.Way.Offline(null), Modifier.padding(horizontal = 16.dp))
+    }
+}
+
+/**
+ * The way that the latest ping took and its time, and a chart of the
+ * times of the latest ones. Until a ping comes back, the way is [way],
+ * the one that gst reports to the machine.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun PingView(pings: Pings, way: Machine.Way, modifier: Modifier = Modifier) {
+private fun PingView(pings: Pings, way: Machine.Way, modifier: Modifier = Modifier) {
     val last = pings.latest.lastOrNull()
     val shown = last?.way ?: way
     Column(
@@ -79,11 +120,10 @@ fun PingView(pings: Pings, way: Machine.Way, modifier: Modifier = Modifier) {
     }
 }
 
-/** The chart: time upwards, the latest ping at the right. */
+/** The chart: time upwards, the first ping at the left and the latest at the right. */
 @Composable
 private fun PingChart(pings: Pings, modifier: Modifier = Modifier) {
-    val direct = Machine.Way.Direct(null).color()
-    val relay = Machine.Way.Relay(emptyList()).color()
+    val color = statusColors.good
     val lost = MaterialTheme.colorScheme.error
     val grid = MaterialTheme.colorScheme.outlineVariant
     val label = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -109,7 +149,6 @@ private fun PingChart(pings: Pings, modifier: Modifier = Modifier) {
 
         val stroke = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         for (line in pings.lines) {
-            val color = if (line.isDirect) direct else relay
             val points = line.points.filter { it.id >= span.first }.map { Offset(x(it.id), y(it.time)) }
             when (points.size) {
                 0 -> {}
@@ -128,7 +167,7 @@ private fun PingChart(pings: Pings, modifier: Modifier = Modifier) {
         val last = pings.latest.lastOrNull()
         val answered = last?.time
         if (last != null && answered != null) {
-            drawCircle(if (last.isDirect) direct else relay, 4.5.dp.toPx(), Offset(x(last.id), y(answered)))
+            drawCircle(color, 4.5.dp.toPx(), Offset(x(last.id), y(answered)))
         }
     }
 }

@@ -30,14 +30,15 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
             Demo.Map to "homelab",
             Demo.Problems to "192.0.2.20",
             Demo.Welcome to "devbox.gst",
-            Demo.Off to "attic",
+            Demo.Off to "gst",
             Demo.HostKey to "SHA256:",
             Demo.Authorize to "authorized_keys",
             Demo.Machine to "devbox.gst:5999",
+            Demo.Ping to "203.0.113.7",
             Demo.Settings to "admin@ssh.example.com",
         )
 
-        private val darkScreens = setOf(Demo.Home, Demo.Map, Demo.Problems, Demo.Welcome, Demo.Machine, Demo.HostKey, Demo.Settings)
+        private val darkScreens = setOf(Demo.Home, Demo.Map, Demo.Problems, Demo.Welcome, Demo.Machine, Demo.Ping, Demo.HostKey, Demo.Settings)
 
         @JvmStatic
         @ParameterizedRobolectricTestRunner.Parameters(name = "{1}-{2}-{0}")
@@ -59,7 +60,7 @@ class ScreenTest(private val demo: Demo, private val language: String, private v
         val model = demo.model()
         compose.setContent {
             GstTheme(dark = dark) {
-                GstApp(model, demo.route, demo.addStep, demo.pings)
+                GstApp(model, demo)
             }
         }
         compose.waitForIdle()

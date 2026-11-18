@@ -8,9 +8,9 @@ import kotlin.math.max
 import kotlin.math.pow
 
 /**
- * The pings of one machine, sent a second apart while its sheet is open:
- * what the chart of their times draws. [latest] are the latest, oldest
- * first.
+ * The pings of one machine, sent a second apart while the sheet of its
+ * pings is open: what the chart of their times draws. [latest] are the
+ * latest, oldest first.
  */
 data class Pings(val latest: List<Ping> = emptyList(), private val sent: Int = 0) {
     /** A packet to the machine and back. */
@@ -23,15 +23,10 @@ data class Pings(val latest: List<Ping> = emptyList(), private val sent: Int = 0
         val way: Machine.Way?,
         /** Why no answer came, in gst's words. */
         val error: String?,
-    ) {
-        val isDirect: Boolean get() = way is Machine.Way.Direct
-    }
+    )
 
-    /**
-     * A line of the chart: pings that came back one after another by the
-     * same kind of way, direct or relay. [id] is the first that took it.
-     */
-    data class Line(val id: Int, val isDirect: Boolean, val points: List<Point>)
+    /** A line of the chart: pings that came back one after another. [id] is the first. */
+    data class Line(val id: Int, val points: List<Point>)
 
     /** An answered ping on a line. */
     data class Point(val id: Int, val time: Double)
@@ -45,36 +40,36 @@ data class Pings(val latest: List<Ping> = emptyList(), private val sent: Int = 0
     /** A ping got no answer, for the reason that gst gives. */
     fun failed(error: String): Pings = add(Ping(sent, null, null, error))
 
-    private fun add(ping: Ping) = Pings((latest + ping).takeLast(SHOWN), sent + 1)
-
-    /** The pings that the chart has room for, by their ids. */
-    val span: IntRange
-        get() {
-            val last = max(latest.lastOrNull()?.id ?: 0, SHOWN - 1)
-            return (last - SHOWN + 1)..last
-        }
+    private fun add(ping: Ping) = Pings((latest + ping).takeLast(MOST), sent + 1)
 
     /**
-     * The chart's lines. Where the way changes, the next line starts at the
-     * last ping of the one before, so that the two meet; a ping without an
-     * answer leaves a gap.
+     * The pings that the chart shows, by their ids, from one side of it to
+     * the other: far apart while they are few, and closer as more come.
      */
+    val span: IntRange
+        get() {
+            val first = latest.firstOrNull()?.id ?: 0
+            return first..max(latest.lastOrNull()?.id ?: 0, first + 1)
+        }
+
+    /** The chart's lines: a ping without an answer leaves a gap. */
     val lines: List<Line>
         get() {
             val lines = mutableListOf<Line>()
-            var before: Ping? = null
+            var isOpen = false
             for (ping in latest) {
                 val time = ping.time
-                val previous = before
-                before = ping
-                if (time == null) continue
-                val point = Point(ping.id, time)
-                val earlier = previous?.time
-                when {
-                    previous == null || earlier == null -> lines += Line(ping.id, ping.isDirect, listOf(point))
-                    previous.isDirect == ping.isDirect -> lines[lines.lastIndex] = lines.last().let { it.copy(points = it.points + point) }
-                    else -> lines += Line(ping.id, ping.isDirect, listOf(Point(previous.id, earlier), point))
+                if (time == null) {
+                    isOpen = false
+                    continue
                 }
+                val point = Point(ping.id, time)
+                if (isOpen) {
+                    lines[lines.lastIndex] = lines.last().let { it.copy(points = it.points + point) }
+                } else {
+                    lines += Line(ping.id, listOf(point))
+                }
+                isOpen = true
             }
             return lines
         }
@@ -93,8 +88,8 @@ data class Pings(val latest: List<Ping> = emptyList(), private val sent: Int = 0
         }
 
     companion object {
-        /** How many pings the chart shows: the latest. */
-        const val SHOWN = 30
+        /** How many pings the chart shows at most: the latest, five minutes of them. */
+        const val MOST = 300
 
         /** A time as the app writes it: "23 ms", and "1.4 ms" under ten. */
         fun text(time: Double): String = String.format(Locale.ROOT, if (time < 9.95) "%.1f ms" else "%.0f ms", time)

@@ -1,10 +1,77 @@
 import Charts
 import SwiftUI
 
-/// The pings of a machine while its sheet is open: the way that the
-/// latest took and its time, and a chart of the times of the latest
-/// ones, each line in the color of its way.
-struct PingView: View {
+/// The pings of a machine, over the screen where someone asked for
+/// them: the app pings the machine once a second for as long as the
+/// sheet is open, and closing it is what stops them.
+struct PingSheet: View {
+    /// The symbol of a ping, wherever the app offers one.
+    static let symbol = "dot.radiowaves.left.and.right"
+
+    let machineID: String
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var pings: Pings
+
+    /// The pings of a machine; `pings` are those that the sheet starts
+    /// with, which a demo gives it.
+    init(machineID: String, pings: Pings = Pings()) {
+        self.machineID = machineID
+        _pings = State(initialValue: pings)
+    }
+
+    private var machine: Machine? {
+        model.machines.first { $0.id == machineID }
+    }
+
+    /// The machine while packets may reach it, which is when the app
+    /// pings it.
+    private var pinged: Machine? {
+        guard let machine, model.canPing(machine) else { return nil }
+        return machine
+    }
+
+    var body: some View {
+        NavigationStack {
+            PingView(pings: pings, way: machine?.way ?? .offline(seen: nil))
+                .padding(.horizontal, 20)
+                .padding(.bottom, 24)
+                .navigationTitle(machine?.name ?? "")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done", systemImage: "xmark") { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium])
+        .task(id: pinged?.id) {
+            if let pinged {
+                await ping(pinged)
+            }
+        }
+    }
+
+    private func ping(_ machine: Machine) async {
+        while !Task.isCancelled {
+            let next = ContinuousClock.now + .seconds(1)
+            do {
+                let reply = try await model.ping(machine)
+                pings.answered(in: reply.timeMs, way: reply.way == "direct" ? .direct(endpoint: reply.endpoint) : .relay(via: reply.via.map(\.name)))
+            } catch {
+                guard !Task.isCancelled else { return }
+                pings.failed(error.localizedDescription)
+            }
+            try? await Task.sleep(until: next)
+        }
+    }
+}
+
+/// The pings of a machine: the way that the latest took and its time,
+/// and a chart of the times of them all, which fills its width whether
+/// they are few or many, and the height that it is given.
+private struct PingView: View {
     let pings: Pings
     /// The way that gst reports to the machine, which the view shows
     /// until a ping comes back.
@@ -45,7 +112,7 @@ struct PingView: View {
             // mark of its last point move at different paces, and the mark
             // runs ahead.
             chart
-                .frame(height: 148)
+                .frame(minHeight: 148, maxHeight: .infinity)
         }
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
@@ -59,13 +126,13 @@ struct PingView: View {
                 if line.points.count == 1 {
                     PointMark(x: .value(Text(verbatim: "Ping"), line.points[0].id), y: .value(Text(verbatim: "Time"), line.points[0].time))
                         .symbolSize(18)
-                        .foregroundStyle(color(isDirect: line.isDirect))
+                        .foregroundStyle(.green)
                 }
                 ForEach(line.points) { point in
                     LineMark(x: .value(Text(verbatim: "Ping"), point.id), y: .value(Text(verbatim: "Time"), point.time), series: .value(Text(verbatim: "Line"), line.id))
                         .interpolationMethod(.monotone)
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(color(isDirect: line.isDirect))
+                        .foregroundStyle(.green)
                 }
             }
             // A ping without an answer leaves its mark on the ground.
@@ -78,10 +145,11 @@ struct PingView: View {
             if let last, let time = last.time {
                 PointMark(x: .value(Text(verbatim: "Ping"), last.id), y: .value(Text(verbatim: "Time"), time))
                     .symbolSize(54)
-                    .foregroundStyle(color(isDirect: last.isDirect))
+                    .foregroundStyle(.green)
             }
         }
-        .chartXScale(domain: pings.span.lowerBound...pings.span.upperBound)
+        // The marks at the edges keep their whole shape.
+        .chartXScale(domain: pings.span.lowerBound...pings.span.upperBound, range: .plotDimension(padding: 6))
         .chartYScale(domain: 0...scale.top)
         .chartXAxis(.hidden)
         .chartYAxis {
@@ -99,9 +167,5 @@ struct PingView: View {
         }
         .chartLegend(.hidden)
         .accessibilityHidden(true)
-    }
-
-    private func color(isDirect: Bool) -> Color {
-        (isDirect ? Machine.Way.direct(endpoint: nil) : .relay(via: [])).color
     }
 }

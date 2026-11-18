@@ -251,16 +251,6 @@
         }
       }
     },
-    "Hide the Map": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "隐藏 link 关系图"
-          }
-        }
-      }
-    },
     "ID": {
       "localizations": {
         "zh-Hans": {
@@ -421,6 +411,16 @@
         }
       }
     },
+    "Map": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Link 关系图"
+          }
+        }
+      }
+    },
     "Map of the links between the machines": {
       "localizations": {
         "zh-Hans": {
@@ -481,22 +481,22 @@
         }
       }
     },
-    "On": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已开启"
-          }
-        }
-      }
-    },
     "Other machines reach this machine as %@.gst.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "其他机器用 %@.gst 访问本机。"
+          }
+        }
+      }
+    },
+    "Ping": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ping"
           }
         }
       }
@@ -891,12 +891,32 @@
         }
       }
     },
+    "Turn Off": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
     "Turn On": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "开启"
+          }
+        }
+      }
+    },
+    "Turn it on to reach the machines of the network.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启后即可访问网络里的机器。"
           }
         }
       }
@@ -1007,6 +1027,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "gst 没有应答。"
+          }
+        }
+      }
+    },
+    "gst is off": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "gst 已关闭"
           }
         }
       }

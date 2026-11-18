@@ -2,6 +2,7 @@ package gst.app
 
 import android.content.Intent
 import gst.app.ui.AddStep
+import gst.app.ui.HomeSheet
 import gst.app.ui.Route
 import java.time.Instant
 
@@ -15,7 +16,7 @@ enum class Demo(val screen: String) {
     /** The first screen of a phone in a network of five. */
     Home("home"),
 
-    /** The same, once someone asked for the map of the links. */
+    /** The same, with the map of the links over it. */
     Map("map"),
 
     /** The same, with what `Problems:` in `gst status` would list. */
@@ -35,6 +36,9 @@ enum class Demo(val screen: String) {
 
     /** One machine, which exposes a port. */
     Machine("machine"),
+
+    /** The pings of one machine, over the first screen. */
+    Ping("ping"),
     Settings("settings"),
     ;
 
@@ -42,7 +46,7 @@ enum class Demo(val screen: String) {
         Welcome -> AppModel.demo(AppInfo(phone, publicKey, emptyList()), null, null)
         Off -> AppModel.demo(info, topology(now, broken = false), null)
         Problems -> AppModel.demo(info, topology(now, broken = true), status(now, broken = true))
-        else -> AppModel.demo(info, topology(now, broken = false), status(now, broken = false)).apply { showMap(this@Demo == Map) }
+        else -> AppModel.demo(info, topology(now, broken = false), status(now, broken = false))
     }
 
     val route: Route
@@ -53,12 +57,20 @@ enum class Demo(val screen: String) {
             else -> Route.Home
         }
 
+    /** What shows over the first screen. */
+    val sheet: HomeSheet?
+        get() = when (this) {
+            Map -> HomeSheet.Map
+            Ping -> HomeSheet.Ping(id("b1"))
+            else -> null
+        }
+
     /**
-     * The pings that the machine's sheet starts with: the first ones along
-     * the links, and the rest direct, once the UDP path was up.
+     * The pings that the sheet of a machine's pings starts with: the first
+     * ones along the links, and the rest direct, once the UDP path was up.
      */
     val pings: Pings
-        get() = listOf(58.2, 61.7, 55.9, 63.4, 24.8, 22.1, 23.6, 21.9, 26.3, 22.7, 21.4, 34.9, 23.2, 22.0, 24.4, 21.7, 22.9, 23.8)
+        get() = if (this != Ping) Pings() else listOf(58.2, 61.7, 55.9, 63.4, 24.8, 22.1, 23.6, 21.9, 26.3, 22.7, 21.4, 34.9, 23.2, 22.0, 24.4, 21.7, 22.9, 23.8)
             .foldIndexed(Pings()) { i, pings, time ->
                 pings.answered(time, if (i < 4) gst.app.Machine.Way.Relay(emptyList()) else gst.app.Machine.Way.Direct(ENDPOINT))
             }

@@ -19,7 +19,8 @@ final class AppModel {
     /// What the daemon reports; nil while gst is off.
     private(set) var status: DaemonStatus?
     /// The network as the daemon last reported it, kept while gst is off
-    /// and between launches, so that the machines stay on the screen.
+    /// and between launches, so that the machines show as soon as gst
+    /// turns on or the app opens.
     private(set) var topology: Topology?
     /// Why gst could not be opened, which nothing in the app gets past.
     private(set) var failure: String?
@@ -42,6 +43,12 @@ final class AppModel {
             renamed.name = me.name
             return renamed
         }
+    }
+
+    /// Whether the app can ping the machine: another one, while packets
+    /// may reach it.
+    func canPing(_ machine: Machine) -> Bool {
+        isOn && !machine.isHere && machine.isOnline
     }
 
     /// What keeps this machine from the network, or from part of it, in
@@ -197,7 +204,7 @@ final class AppModel {
     func ping(_ machine: Machine) async throws -> PingReply {
         #if DEBUG
         if isDemo {
-            return Demo.ping
+            return Demo.pingReply
         }
         #endif
         return try await daemon.call("net.ping", NodeParams(node: machine.id))

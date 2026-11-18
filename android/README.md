@@ -32,7 +32,7 @@ The app's identifier is `gst.app`; `-PgstApplicationId=…`, or `gstApplicationI
 | --- | --- |
 | `../gstkit/` | gst's Go code as a C library, which the iOS app uses too; `jni.c` makes it the native methods of `Core` |
 | `app/src/main/java/gst/app/` | the app: `Core` (JNI), `Gst` and `Wire` (the calls of gst's methods and what they return), `Machine`, `Ring`, and `AppModel` (what the screens show), `Tunnel` and `GstVpnService` (the VPN, in which gst's daemon runs), `BootReceiver`, and `Demo` (a made-up network) |
-| `app/src/main/java/gst/app/ui/` | the screens, in Jetpack Compose: pages with large titles, groups of rows, and bars of frosted glass ([Haze](https://github.com/chrisbanes/haze)) over what scrolls, in gst's own colors, on white or black |
+| `app/src/main/java/gst/app/ui/` | the screens, in Jetpack Compose: pages with large titles (the first screen has none, and its buttons in a bar at the bottom), groups of rows, bars of frosted glass ([Haze](https://github.com/chrisbanes/haze)) over what scrolls, and sheets that come up from the bottom, in gst's own colors, on white or black |
 | `app/src/main/res/` | the texts (`values`, and `values-b+zh+Hans` in Simplified Chinese), and the icon |
 | `app/src/test/` | the tests, below |
 | `screenshots/` | pictures of the screens, which the tests take |

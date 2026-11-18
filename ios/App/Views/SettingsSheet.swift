@@ -86,6 +86,16 @@ struct SettingsSheet: View {
                                 Button("Unlink") { unlinking = link.destination }
                                     .tint(.red)
                             }
+                            // On the row, which is where the question shows.
+                            .confirmationDialog(
+                                "Unlink \(link.destination)?",
+                                isPresented: Binding(get: { unlinking == link.destination }, set: { if !$0 { unlinking = nil } }),
+                                titleVisibility: .visible
+                            ) {
+                                Button("Unlink", role: .destructive) { unlink(link.destination) }
+                            } message: {
+                                Text("Its machine stays in the network.")
+                            }
                     }
                 } header: {
                     Text("Links")
@@ -107,16 +117,6 @@ struct SettingsSheet: View {
                         LabeledContent("Version", value: software)
                     }
                 }
-            }
-            .confirmationDialog(
-                "Unlink \(unlinking ?? "")?",
-                isPresented: Binding(get: { unlinking != nil }, set: { if !$0 { unlinking = nil } }),
-                titleVisibility: .visible,
-                presenting: unlinking
-            ) { destination in
-                Button("Unlink", role: .destructive) { unlink(destination) }
-            } message: { _ in
-                Text("Its machine stays in the network.")
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

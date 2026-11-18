@@ -10,14 +10,17 @@ import gst.app.Demo
 @Composable
 private fun Show(demo: Demo, dark: Boolean = false) {
     val model = remember { demo.model() }
-    GstTheme(dark = dark) { GstApp(model, demo.route, demo.addStep, demo.pings) }
+    GstTheme(dark = dark) { GstApp(model, demo) }
 }
 
 @Preview(device = "id:pixel_9") @Composable private fun Home() = Show(Demo.Home)
 @Preview(device = "id:pixel_9") @Composable private fun HomeDark() = Show(Demo.Home, dark = true)
+@Preview(device = "id:pixel_9") @Composable private fun Map() = Show(Demo.Map)
 @Preview(device = "id:pixel_9") @Composable private fun Problems() = Show(Demo.Problems)
 @Preview(device = "id:pixel_9") @Composable private fun Welcome() = Show(Demo.Welcome)
 @Preview(device = "id:pixel_9") @Composable private fun Off() = Show(Demo.Off)
 @Preview(device = "id:pixel_9") @Composable private fun HostKey() = Show(Demo.HostKey)
 @Preview(device = "id:pixel_9") @Composable private fun Authorize() = Show(Demo.Authorize)
+@Preview(device = "id:pixel_9") @Composable private fun Machine() = Show(Demo.Machine)
+@Preview(device = "id:pixel_9") @Composable private fun Ping() = Show(Demo.Ping)
 @Preview(device = "id:pixel_9") @Composable private fun Settings() = Show(Demo.Settings)

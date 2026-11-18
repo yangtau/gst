@@ -57,18 +57,6 @@ class AppModel private constructor(
      */
     var askConsent: (suspend (Intent) -> Boolean)? = null
 
-    /**
-     * Whether the first screen shows the map of the links, which someone
-     * asks for there; the app remembers it.
-     */
-    var showsMap by mutableStateOf(context?.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)?.getBoolean(MAP, false) ?: false)
-        private set
-
-    fun showMap(shows: Boolean) {
-        showsMap = shows
-        context?.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)?.edit()?.putBoolean(MAP, shows)?.apply()
-    }
-
     /** The model shows a made-up network, and asks gst nothing; see Demo. */
     private var isDemo = false
 
@@ -83,6 +71,9 @@ class AppModel private constructor(
         val me = info?.node
         return Machine.list(topology, if (isOn) status else null).map { if (it.id == me?.id) it.copy(name = me.name) else it }
     }
+
+    /** Whether a ping may reach the machine: gst is on, and the machine is another one that packets reach. */
+    fun canPing(machine: Machine, isOn: Boolean = this.isOn): Boolean = isOn && !machine.isHere && machine.isOnline
 
     /** What keeps this machine from the network, or from part of it: as `Problems:` in `gst status`. */
     sealed interface Problem {
@@ -265,7 +256,6 @@ class AppModel private constructor(
     companion object {
         private const val PREFERENCES = "network"
         private const val TOPOLOGY = "topology"
-        private const val MAP = "map"
 
         /** A model that shows what it is given and asks gst nothing, for previews and screenshots; see Demo. */
         fun demo(info: AppInfo, topology: Topology?, status: DaemonStatus?): AppModel =

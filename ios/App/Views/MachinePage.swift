@@ -1,34 +1,19 @@
 import SwiftUI
 
-/// One machine: the pings that the app sends it while its page is
-/// open, how to reach it, the ports it exposes, and its removal from the
-/// network.
+/// One machine: how packets reach it, where to reach it, the ports it
+/// exposes, and its removal from the network. Its pings open over it.
 struct MachinePage: View {
     let machineID: String
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var pings: Pings
+    @State private var isPinging = false
     @State private var isConfirmingRemoval = false
     @State private var failure: String?
     @State private var exposes: [Expose] = []
 
-    /// The machine's page; `pings` are those that it starts with, which
-    /// a demo gives it.
-    init(machineID: String, pings: Pings = Pings()) {
-        self.machineID = machineID
-        _pings = State(initialValue: pings)
-    }
-
     private var machine: Machine? {
         model.machines.first { $0.id == machineID }
-    }
-
-    /// The machine while packets may reach it, which is when the app
-    /// pings it.
-    private var pinged: Machine? {
-        guard model.isOn, let machine, !machine.isHere, machine.isOnline else { return nil }
-        return machine
     }
 
     var body: some View {
@@ -42,18 +27,17 @@ struct MachinePage: View {
     private func details(_ machine: Machine) -> some View {
         Form {
             Section {
-                if pinged != nil {
-                    PingView(pings: pings, way: machine.way)
-                } else {
-                    LabeledContent("Connection") {
-                        HStack(spacing: 8) {
-                            StatusDot(way: machine.way)
-                            Text(machine.way.text)
-                        }
+                LabeledContent("Connection") {
+                    HStack(spacing: 8) {
+                        StatusDot(way: machine.way)
+                        Text(machine.way.text)
                     }
-                    if case .offline(let seen?) = machine.way {
-                        LabeledContent("Last seen", value: seen.ago)
-                    }
+                }
+                if case .offline(let seen?) = machine.way {
+                    LabeledContent("Last seen", value: seen.ago)
+                }
+                if model.canPing(machine) {
+                    Button("Ping", systemImage: PingSheet.symbol) { isPinging = true }
                 }
             }
 
@@ -100,6 +84,22 @@ struct MachinePage: View {
                     Button(machine.isHere ? "Leave the Network" : "Remove from the Network", role: .destructive) {
                         isConfirmingRemoval = true
                     }
+                    // On the button, which is where the question shows.
+                    .confirmationDialog(
+                        machine.isHere ? "Leave the network?" : "Remove \(machine.name) from the network?",
+                        isPresented: $isConfirmingRemoval,
+                        titleVisibility: .visible
+                    ) {
+                        Button(machine.isHere ? "Leave" : "Remove", role: .destructive) {
+                            Task { await remove(machine) }
+                        }
+                    } message: {
+                        if machine.isHere {
+                            Text("This machine drops its links and forgets the other machines. It joins a network again when you add a machine.")
+                        } else {
+                            Text("Every machine drops its links to it and forgets it. It comes back only when someone adds it again.")
+                        }
+                    }
                 } footer: {
                     if let failure {
                         Text(failure).foregroundStyle(.red)
@@ -107,30 +107,14 @@ struct MachinePage: View {
                 }
             }
         }
-        .task(id: pinged?.id) {
-            if let pinged {
-                await ping(pinged)
-            }
+        .sheet(isPresented: $isPinging) {
+            PingSheet(machineID: machineID)
         }
         .task(id: model.isOn) {
             await loadExposes(machine)
         }
         .navigationTitle(machine.name)
-        .confirmationDialog(
-            machine.isHere ? "Leave the network?" : "Remove \(machine.name) from the network?",
-            isPresented: $isConfirmingRemoval,
-            titleVisibility: .visible
-        ) {
-            Button(machine.isHere ? "Leave" : "Remove", role: .destructive) {
-                Task { await remove(machine) }
-            }
-        } message: {
-            if machine.isHere {
-                Text("This machine drops its links and forgets the other machines. It joins a network again when you add a machine.")
-            } else {
-                Text("Every machine drops its links to it and forgets it. It comes back only when someone adds it again.")
-            }
-        }
+        .toolbarTitleDisplayMode(.inline)
     }
 
     /// The ports that the machine exposes: this machine's from its
@@ -154,22 +138,6 @@ struct MachinePage: View {
                 exposes = found
             }
             try? await Task.sleep(for: .seconds(30))
-        }
-    }
-
-    /// Pings the machine once a second, for as long as the page shows it
-    /// and packets may reach it.
-    private func ping(_ machine: Machine) async {
-        while !Task.isCancelled {
-            let next = ContinuousClock.now + .seconds(1)
-            do {
-                let reply = try await model.ping(machine)
-                pings.answered(in: reply.timeMs, way: reply.way == "direct" ? .direct(endpoint: reply.endpoint) : .relay(via: reply.via.map(\.name)))
-            } catch {
-                guard !Task.isCancelled else { return }
-                pings.failed(error.localizedDescription)
-            }
-            try? await Task.sleep(until: next)
         }
     }
 

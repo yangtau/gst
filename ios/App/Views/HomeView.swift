@@ -1,22 +1,24 @@
 import SwiftUI
 
 /// The network: every machine, this one first, with whether packets
-/// reach it; above them, for someone who asks for it, the map of the
-/// links; and floating over them the button that turns gst on.
+/// reach it. A bar at the bottom holds the switch that turns gst on and
+/// off, and what opens over the machines: the map of the links, adding
+/// a machine, and the settings. Touching and holding a machine offers
+/// its pings, which open over the machines too. While gst is off, the
+/// screen is the way to turn it on.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var sheet: Sheet?
     @State private var path: [String]
     @State private var failure: String?
     @State private var isSwitching = false
-    @AppStorage("map") private var showsMap = false
     private let addStep: AddMachineSheet.Step
     private let pings: Pings
 
     /// The network; `sheet`, `machine`, `addStep`, and `pings` open it on
     /// a sheet, on the page of a machine, on a step of adding a machine,
-    /// and with pings that a machine's page starts with, which a demo
-    /// does.
+    /// and with pings that the sheet of a machine's pings starts with,
+    /// which a demo does.
     init(sheet: Sheet? = nil, machine: String? = nil, addStep: AddMachineSheet.Step = .form, pings: Pings = Pings()) {
         _sheet = State(initialValue: sheet)
         _path = State(initialValue: machine.map { [$0] } ?? [])
@@ -24,8 +26,10 @@ struct HomeView: View {
         self.pings = pings
     }
 
-    enum Sheet: Identifiable {
-        case add, settings
+    enum Sheet: Hashable, Identifiable {
+        case map, add, settings
+        /// The pings of the machine with this id.
+        case ping(String)
 
         var id: Self { self }
     }
@@ -41,62 +45,74 @@ struct HomeView: View {
         let others = machines.filter { $0.id != me }
         // The map, when the network has one to show: a network of one has
         // nothing to map.
-        let topology = others.isEmpty ? nil : model.topology
+        let isWelcome = others.isEmpty && !hasLinks
+        // A machine in a network, with gst off: nothing reaches the other
+        // machines, so the screen offers the one thing to do. While gst
+        // turns on, and while a network that changed takes it down for a
+        // moment, the machines stay.
+        let state = model.tunnel.state
+        let isOff = !isWelcome && state == .off
+        let topology = others.isEmpty || isOff ? nil : model.topology
         NavigationStack(path: $path) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if !model.problems.isEmpty {
-                        ProblemList(problems: model.problems)
-                    }
-                    if others.isEmpty && !hasLinks {
-                        Welcome { sheet = .add }
-                    } else {
-                        if showsMap, let topology {
-                            NetworkMap(topology: topology, machines: machines, isOn: model.isOn) { path.append($0.id) }
-                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
-                                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            Group {
+                if isOff {
+                    Off(isBusy: isBusy, turnOn: toggle)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            if !model.problems.isEmpty {
+                                ProblemList(problems: model.problems)
+                            }
+                            if isWelcome {
+                                Welcome { sheet = .add }
+                            } else {
+                                MachineList(machines: machines, me: me, isOn: model.isOn, canPing: model.canPing) {
+                                    path.append($0.id)
+                                } ping: {
+                                    sheet = .ping($0.id)
+                                }
+                            }
                         }
-                        MachineList(machines: machines, me: me, isOn: model.isOn) {
-                            path.append($0.id)
-                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 32)
+                        .frame(maxWidth: 640)
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 32)
-                .frame(maxWidth: 640)
-                .frame(maxWidth: .infinity)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Machines")
+            // The first screen has nothing at its top: all it offers is
+            // in the bar at the bottom, where a thumb reaches.
+            .toolbar(.hidden, for: .navigationBar)
             .toolbar {
-                if topology != nil {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(showsMap ? "Hide the Map" : "Show the Map", systemImage: "point.3.connected.trianglepath.dotted") {
-                            withAnimation(.smooth) { showsMap.toggle() }
-                        }
-                        .symbolVariant(showsMap ? .fill : .none)
-                        .foregroundStyle(showsMap ? Color.accentColor : Color.primary)
-                        .accessibilityAddTraits(showsMap ? .isSelected : [])
-                    }
+                ToolbarItem(placement: .bottomBar) {
+                    Switch(isOn: state == .on, isBusy: isBusy, toggle: toggle)
                 }
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarSpacer(.flexible, placement: .bottomBar)
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if topology != nil {
+                        Button("Show the Map", systemImage: "point.3.connected.trianglepath.dotted") { sheet = .map }
+                    }
                     Button("Add a Machine", systemImage: "plus") { sheet = .add }
                     Button("Settings", systemImage: "gearshape") { sheet = .settings }
                 }
             }
             .navigationDestination(for: String.self) { id in
-                MachinePage(machineID: id, pings: id == path.first ? pings : Pings())
-            }
-            .safeAreaInset(edge: .bottom) {
-                ControlBar(state: model.tunnel.state, isSwitching: isSwitching, toggle: toggle)
+                MachinePage(machineID: id)
             }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
+            case .map:
+                MapSheet(topology: topology, machines: machines, isOn: model.isOn) { machine in
+                    self.sheet = nil
+                    path.append(machine.id)
+                }
             case .add: AddMachineSheet(step: addStep)
             case .settings: SettingsSheet()
+            case .ping(let id): PingSheet(machineID: id, pings: pings)
             }
         }
         .alert("gst could not turn on", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
@@ -105,6 +121,12 @@ struct HomeView: View {
             Text(failure ?? "")
         }
         .sensoryFeedback(.impact, trigger: model.isOn)
+    }
+
+    /// Whether gst is turning on or off, or the system has not said
+    /// which it is, when the switch waits.
+    private var isBusy: Bool {
+        isSwitching || ![.on, .off].contains(model.tunnel.state)
     }
 
     private func toggle() {
@@ -122,6 +144,36 @@ struct HomeView: View {
                 await model.turnOff()
             }
         }
+    }
+}
+
+/// The map of the links, over the machines; tapping a machine in it
+/// closes it and opens the machine's page.
+private struct MapSheet: View {
+    /// The network, while there is one to map.
+    let topology: Topology?
+    let machines: [Machine]
+    let isOn: Bool
+    let open: (Machine) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let topology {
+                    NetworkMap(topology: topology, machines: machines, isOn: isOn, open: open)
+                        .padding(.horizontal, 20)
+                }
+            }
+            .navigationTitle("Map")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -182,7 +234,9 @@ private struct MachineList: View {
     /// This machine's id.
     let me: String?
     let isOn: Bool
+    let canPing: (Machine) -> Bool
     let open: (Machine) -> Void
+    let ping: (Machine) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -194,6 +248,11 @@ private struct MachineList: View {
                         MachineRow(machine: machine, isMe: machine.id == me, isOn: isOn)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        if canPing(machine) {
+                            Button("Ping", systemImage: PingSheet.symbol) { ping(machine) }
+                        }
+                    }
                     if machine.id != machines.last?.id {
                         Divider().padding(.leading, 39)
                     }
@@ -300,48 +359,55 @@ private struct Welcome: View {
     }
 }
 
-/// The button that floats over the network and turns gst on and off,
-/// green while it is on.
-private struct ControlBar: View {
-    let state: Tunnel.State
-    let isSwitching: Bool
+/// The switch that turns gst on and off, green while it is on.
+private struct Switch: View {
+    let isOn: Bool
+    let isBusy: Bool
     let toggle: () -> Void
-
-    private var isOn: Bool { state == .on }
-    private var isBusy: Bool { isSwitching || state == .connecting || state == .disconnecting }
 
     var body: some View {
         Button(action: toggle) {
-            HStack(spacing: 10) {
-                if isBusy {
-                    ProgressView()
-                } else {
-                    Image(systemName: "power")
-                        .font(.body.weight(.bold))
-                        .foregroundStyle(isOn ? Color.green : Color.primary)
-                }
-                Text(title)
-                    .font(.headline)
-                    .contentTransition(.opacity)
+            if isBusy {
+                ProgressView()
+            } else {
+                Label(isOn ? "Turn Off" : "Turn On", systemImage: "power")
+                    .fontWeight(.semibold)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .contentShape(.capsule)
         }
-        .buttonStyle(.plain)
-        .glassEffect(isOn ? .regular.tint(.green.opacity(0.18)).interactive() : .regular.interactive(), in: .capsule)
+        .accessibilityLabel(isOn ? "Turn Off" : "Turn On")
+        .tint(isOn ? Color.green : Color.primary)
         .disabled(isBusy)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 8)
-        .animation(.smooth, value: state)
     }
+}
 
-    private var title: LocalizedStringKey {
-        switch state {
-        case .off: "Turn On"
-        case .connecting: "Turning on…"
-        case .on: "On"
-        case .disconnecting: "Turning off…"
+/// What a machine in a network shows while gst is off: that it is, and
+/// the button that turns it on.
+private struct Off: View {
+    let isBusy: Bool
+    let turnOn: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("gst is off", systemImage: "power")
+        } description: {
+            Text("Turn it on to reach the machines of the network.")
+        } actions: {
+            Button(action: turnOn) {
+                Group {
+                    if isBusy {
+                        ProgressView()
+                    } else {
+                        Text("Turn On")
+                            .onAccent()
+                    }
+                }
+                .font(.headline)
+                .frame(width: 180)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(isBusy)
         }
     }
 }

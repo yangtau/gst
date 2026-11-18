@@ -10,10 +10,12 @@ import Observation
 @Observable
 final class Tunnel: GstTransport {
     enum State {
+        /// What the system has not said yet, as the app opens.
+        case unknown
         case off, connecting, on, disconnecting
     }
 
-    private(set) var state: State = .off
+    private(set) var state: State = .unknown
 
     private var manager: NETunnelProviderManager?
     private var observer: NSObjectProtocol?

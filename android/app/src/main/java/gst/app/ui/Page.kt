@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -91,17 +92,17 @@ fun Modifier.glass(shape: Shape, outline: Boolean = true): Modifier {
  * A page: a large [title], the content beneath it, which scrolls, and a bar
  * at the top with [navigation] at its start and [actions] at its end, which
  * turns to glass and shows the title small once the large one scrolls away.
- * [subtitle] goes beneath the title, and [floating] floats over the bottom
- * of the page, in glass, with [bottomSpace] kept free beneath the content
- * so that its end can scroll out from under it.
+ * A page without a title has no bar: its content starts beneath the status
+ * bar, which turns to glass as the bar does. [floating] stays over the
+ * page, as a bar of glass at its bottom does, with [bottomSpace] kept free
+ * beneath the content so that its end can scroll out from under it.
  */
 @Composable
 fun Page(
-    title: String,
+    title: String?,
     modifier: Modifier = Modifier,
     navigation: (@Composable () -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
-    subtitle: (@Composable () -> Unit)? = null,
     scroll: ScrollState = rememberScrollState(),
     bottomSpace: Dp = 0.dp,
     floating: (@Composable BoxScope.() -> Unit)? = null,
@@ -117,14 +118,13 @@ fun Page(
                     .fillMaxSize()
                     .hazeSource(glass)
                     .verticalScroll(scroll)
-                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + BarHeight)
+                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + if (title != null) BarHeight else 12.dp)
                     .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + bottomSpace + 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Column(Modifier.widthIn(max = 640.dp).fillMaxWidth()) {
-                    Column(Modifier.padding(horizontal = PageMargin).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        LargeTitle(title)
-                        subtitle?.invoke()
+                    if (title != null) {
+                        LargeTitle(title, Modifier.padding(horizontal = PageMargin).padding(bottom = 16.dp))
                     }
                     content()
                 }
@@ -140,27 +140,31 @@ fun Page(
                         .glass(RectangleShape, outline = false)
                         .drawBehind { drawLine(hairline, Offset(0f, size.height), Offset(size.width, size.height), 0.5.dp.toPx()) },
                 )
-                Row(
-                    Modifier.statusBarsPadding().height(BarHeight).fillMaxWidth().padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    navigation?.invoke()
-                    // The title, small, in the room the buttons leave.
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .weight(1f)
-                            .graphicsLayer {
-                                alpha = ((scroll.value - with(density) { 32.dp.toPx() }) / with(density) { 16.dp.toPx() }).coerceIn(0f, 1f)
-                            },
-                    )
-                    actions()
+                if (title == null) {
+                    Spacer(Modifier.statusBarsPadding())
+                } else {
+                    Row(
+                        Modifier.statusBarsPadding().height(BarHeight).fillMaxWidth().padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        navigation?.invoke()
+                        // The title, small, in the room the buttons leave.
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .graphicsLayer {
+                                    alpha = ((scroll.value - with(density) { 32.dp.toPx() }) / with(density) { 16.dp.toPx() }).coerceIn(0f, 1f)
+                                },
+                        )
+                        actions()
+                    }
                 }
             }
             floating?.invoke(this)
@@ -170,9 +174,10 @@ fun Page(
 
 /** The title of a page, large and bold. */
 @Composable
-private fun LargeTitle(text: String) {
+private fun LargeTitle(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
+        modifier = modifier,
         fontSize = 34.sp,
         lineHeight = 41.sp,
         fontWeight = FontWeight.Bold,

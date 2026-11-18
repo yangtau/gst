@@ -56,7 +56,7 @@ fun NetworkMap(topology: Topology, machines: List<Machine>, isOn: Boolean, open:
     val myName = name.copy(color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold)
     val measurer = rememberTextMeasurer()
     val linksAlpha by animateFloatAsState(if (isOn) 1f else 0.45f, label = "links")
-    val description = stringResource(R.string.map)
+    val description = stringResource(R.string.map_description)
     val tapped by rememberUpdatedState(open)
 
     BoxWithConstraints(modifier.fillMaxWidth()) {

@@ -149,13 +149,12 @@ final class GstTests: XCTestCase {
         XCTAssertTrue(Machine.list(topology: topology, status: nil).allSatisfy { !$0.isOnline })
     }
 
-    /// The chart of the pings draws a line for each way that they took,
-    /// leaves a gap where no answer came, and keeps the longest below
-    /// its top.
+    /// The chart of the pings draws them from edge to edge, leaves a gap
+    /// where no answer came, and keeps the longest below its top.
     func testPings() {
         var pings = Pings()
         XCTAssertEqual(pings.lines, [])
-        XCTAssertEqual(pings.span, 0...29)
+        XCTAssertEqual(pings.span, 0...1)
         XCTAssertEqual(pings.scale.top, 100)
 
         let direct = Machine.Way.direct(endpoint: "203.0.113.7:41642")
@@ -164,9 +163,10 @@ final class GstTests: XCTestCase {
         pings.answered(in: 24, way: direct)
         pings.failed("no answer")
         pings.answered(in: 22, way: direct)
-        // The direct line starts where the relayed one ends.
-        XCTAssertEqual(pings.lines.map(\.isDirect), [false, true, true])
-        XCTAssertEqual(pings.lines.map { $0.points.map(\.id) }, [[0, 1], [1, 2], [4]])
+        // The way changes nothing of the line; the ping without an answer
+        // ends it.
+        XCTAssertEqual(pings.lines.map { $0.points.map(\.id) }, [[0, 1, 2], [4]])
+        XCTAssertEqual(pings.span, 0...4)
         XCTAssertEqual(pings.latest.last?.way, direct)
         XCTAssertEqual(pings.latest[3].error, "no answer")
 
@@ -178,11 +178,11 @@ final class GstTests: XCTestCase {
         }
 
         // Only the latest stay, and the chart moves along with them.
-        for _ in 0..<40 {
+        for _ in 0..<Pings.most + 10 {
             pings.answered(in: 20, way: direct)
         }
-        XCTAssertEqual(pings.latest.count, Pings.shown)
-        XCTAssertEqual(pings.span, 15...44)
+        XCTAssertEqual(pings.latest.count, Pings.most)
+        XCTAssertEqual(pings.span, 15...(Pings.most + 14))
         XCTAssertEqual(pings.latest.first?.id, 15)
 
         XCTAssertEqual(Pings.text(1.44), "1.4 ms")

@@ -6,13 +6,11 @@ import XCTest
 /// (`TEST_RUNNER_GST_SCREENSHOTS` for xcodebuild), called
 /// LANGUAGE-APPEARANCE-SCREEN.png.
 final class ScreenTests: XCTestCase {
-    /// A screen of Demo, and a text of the made-up network that it shows
-    /// in every language. `map` is the first screen once someone asked
-    /// for the map of the links, a choice that the app remembers.
+    /// A screen of Demo, and a text that it shows in every language, of
+    /// the made-up network where the screen shows it.
     private struct Screen {
         let name: String
         let shows: String
-        var demo: String { name == "map" ? "home" : name }
     }
 
     private let screens = [
@@ -20,10 +18,11 @@ final class ScreenTests: XCTestCase {
         Screen(name: "map", shows: "homelab"),
         Screen(name: "problems", shows: "192.0.2.20"),
         Screen(name: "welcome", shows: "devbox.gst"),
-        Screen(name: "off", shows: "attic"),
+        Screen(name: "off", shows: "gst"),
         Screen(name: "host-key", shows: "SHA256:"),
         Screen(name: "authorize", shows: "authorized_keys"),
         Screen(name: "machine", shows: "devbox.gst"),
+        Screen(name: "ping", shows: "203.0.113.7"),
         Screen(name: "settings", shows: "admin@ssh.example.com"),
     ]
 
@@ -40,7 +39,7 @@ final class ScreenTests: XCTestCase {
     }
 
     func testDark() {
-        let dark = screens.filter { ["home", "map", "problems", "welcome", "machine", "host-key", "settings"].contains($0.name) }
+        let dark = screens.filter { ["home", "map", "problems", "welcome", "machine", "ping", "host-key", "settings"].contains($0.name) }
         show(dark, language: "zh-Hans", locale: "zh_CN", appearance: "dark")
     }
 
@@ -48,7 +47,7 @@ final class ScreenTests: XCTestCase {
         for screen in screens {
             let app = XCUIApplication()
             app.launchArguments = [
-                "-GstDemo", screen.demo, "-GstDemoAppearance", appearance, "-map", screen.name == "map" ? "YES" : "NO",
+                "-GstDemo", screen.name, "-GstDemoAppearance", appearance,
                 "-AppleLanguages", "(\(language))", "-AppleLocale", locale,
             ]
             app.launch()

@@ -7,6 +7,8 @@ import Foundation
 enum Demo: String, CaseIterable {
     /// The first screen of a phone in a network of five.
     case home
+    /// The same, with the map of the links over it.
+    case map
     /// The same, with what `Problems:` in `gst status` would list.
     case problems
     /// A phone that has joined no network yet.
@@ -19,6 +21,8 @@ enum Demo: String, CaseIterable {
     case authorize
     /// One machine.
     case machine
+    /// The pings of one machine, over the first screen.
+    case ping
     case settings
 
     /// The screen that the command line asks for.
@@ -44,6 +48,8 @@ enum Demo: String, CaseIterable {
 
     var sheet: HomeView.Sheet? {
         switch self {
+        case .map: .map
+        case .ping: .ping(Self.id("b1"))
         case .hostKey, .authorize: .add
         case .settings: .settings
         default: nil
@@ -63,10 +69,12 @@ enum Demo: String, CaseIterable {
         ],
     ]
 
-    /// The pings that the machine's page starts with: the first ones
-    /// along the links, and the rest direct, once the UDP path was up.
+    /// The pings that the sheet of a machine's pings starts with: the
+    /// first ones along the links, and the rest direct, once the UDP
+    /// path was up.
     var pings: Pings {
         var pings = Pings()
+        guard self == .ping else { return pings }
         for time in [58.2, 61.7, 55.9, 63.4, 24.8, 22.1, 23.6, 21.9, 26.3, 22.7, 21.4, 34.9, 23.2, 22.0, 24.4, 21.7, 22.9, 23.8] {
             pings.answered(in: time, way: pings.latest.count < 4 ? .relay(via: []) : .direct(endpoint: "203.0.113.7:41642"))
         }
@@ -74,7 +82,7 @@ enum Demo: String, CaseIterable {
     }
 
     /// What a ping of the made-up network comes back with.
-    static let ping = PingReply(node: NodeInfo(id: id("b1"), name: "devbox", software: software), address: "10.87.61.7", way: "direct", endpoint: "203.0.113.7:41642", via: [], timeMs: 22.4)
+    static let pingReply = PingReply(node: NodeInfo(id: id("b1"), name: "devbox", software: software), address: "10.87.61.7", way: "direct", endpoint: "203.0.113.7:41642", via: [], timeMs: 22.4)
 
     var addStep: AddMachineSheet.Step {
         switch self {
