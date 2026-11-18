@@ -3,6 +3,9 @@
 # built to the Cachix cache that flake.nix names, so that installing the
 # flake fetches gst instead of building it. Pushing needs the repository
 # secret CACHIX_AUTH_TOKEN; without it the build only reads the cache.
+# Only main and the tags push; other branches only read. The cache is a
+# shortcut, never a reason to fail: a cache that does not answer is built
+# around (fallback), and a push that fails leaves the build green.
 name: Nix
 
 on:
@@ -34,10 +37,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            fallback = true
+            connect-timeout = 10
+            download-attempts = 3
       - uses: cachix/cachix-action@v16
+        # Also its post step, which pushes.
+        continue-on-error: true
         with:
           name: tau
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
       - name: Build
         run: nix build --print-build-logs .#packages.${{ matrix.system }}.gst
       - name: Run

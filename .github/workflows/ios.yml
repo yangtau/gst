@@ -33,7 +33,8 @@ jobs:
       - name: Generate the project
         run: |
           xcodebuild -version
-          brew install xcodegen
+          # Homebrew's downloads fail now and then.
+          for i in 1 2 3; do brew install xcodegen && break; [ $i = 3 ] && exit 1; sleep 15; done
           make ios
       - name: Build for a device
         run: |

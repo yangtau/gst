@@ -10,7 +10,8 @@ gst links a user's machines into a private network over SSH: one background daem
 - `nix develop` provides Go, gopls, Make, OpenSSH, and on a Mac XcodeGen for `make ios`; `nix develop .#android` adds the JDK and the Android SDK and NDK for `make android` and `make android-install` (macOS and x86_64 Linux). `nix build` builds gst;
   `nix flake check` runs the unit tests and both vet checks as part of the build.
   On every push, `.github/workflows/nix.yml` builds the package on each system
-  of the flake and pushes it to the Cachix cache `tau` (secret `CACHIX_AUTH_TOKEN`).
+  of the flake, and on main and the tags pushes it to the Cachix cache `tau`
+  (secret `CACHIX_AUTH_TOKEN`); a cache that fails never fails the build.
 - After changing Go dependencies, update `vendorHash` in `flake.nix` using the
   hash reported by a build with `vendorHash = pkgs.lib.fakeHash;`.
 - `go vet ./... && go vet -tags integration ./integration` before finishing; integration files only compile with the tag.
