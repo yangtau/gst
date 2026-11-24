@@ -128,7 +128,7 @@ func TestStatusOfANodeWithOnlyAUDPPath(t *testing.T) {
 		t.Fatal("a machine with a direct path shows as offline")
 	}
 	// The network's changes travel along the links only.
-	contains(t, out, "no link leads to b, reached only directly")
+	contains(t, out, "no link leads to b, reached only over UDP")
 }
 
 func TestInstallNeedsRoot(t *testing.T) {

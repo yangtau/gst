@@ -35,6 +35,11 @@
 // two directions may differ. The path then carries the packets of the
 // virtual network, which WireGuard encrypts and authenticates. Nothing
 // here protects them: the token only keeps stray packets out.
+//
+// A path also carries the packets of two nodes that have none between
+// them, when the node at one of its ends relays for them: such a packet
+// names the node that it goes to, or the one that it came from (Relay).
+// What to do with it is the caller's.
 package direct
 
 import (
@@ -63,7 +68,7 @@ const Port = 15355
 const (
 	socketBuffer = 4 << 20 // in bytes; a frame of video arrives as a burst of hundreds of packets
 	maxPacket    = 1 << 16
-	maxPublic    = 4                      // addresses that others saw this machine at, kept for offers
+	maxPublic    = 16                     // addresses that others saw this machine at, kept for offers; see sawPublic
 	maxSeen      = 4                      // addresses that the SSH links show this machine at, kept for offers
 	publicLife   = 10 * time.Minute       // for how long such an address counts
 	maxRTT       = 10 * time.Second       // an answer that took longer is no measure
@@ -72,7 +77,10 @@ const (
 
 	tokenLen = 16
 	idLen    = 8
-	addrLen  = 18 // an IP address as 16 bytes and a port
+	// NodeLen is the length of the id of a node, as a packet that a relay
+	// carries names it.
+	NodeLen = 16
+	addrLen = 18 // an IP address as 16 bytes and a port
 )
 
 // The first byte of the packets of this package, then the token. WireGuard
@@ -81,6 +89,18 @@ const (
 	kindProbe  = 0x11 // token, sender's id, time, address it goes to, flags; asks for an answer
 	kindAnswer = 0x12 // token, the probe's time, address, and flags, where the probe came from
 	kindBye    = 0x13 // token; the path ends now
+)
+
+// Relay is the first byte of a packet that a relay carries between two
+// nodes: then the id of a node, and a WireGuard packet. It has no token,
+// which would make it larger than the smallest MTU of IPv6 lets through:
+// like WireGuard's, it belongs to the path that its source proved itself
+// on.
+type Relay byte
+
+const (
+	RelayTo   Relay = 0x14 // names the node that the packet goes to, for the relay to send on
+	RelayFrom Relay = 0x15 // names the node that the packet came from, as the relay sends it on
 )
 
 // flagWorks, in a probe, says that the pair of addresses that it goes
@@ -587,7 +607,11 @@ func (t *Transport) SetSeen(addrs []netip.Addr) {
 }
 
 // sawPublic notes that another machine saw this one at addr. Behind a NAT
-// that keeps one public port per socket, that address serves for all. An
+// that keeps one public port per socket, that address serves for all. A NAT
+// that keeps the port but takes another address of a small pool for each
+// destination shows a different one to each machine: none is known to be
+// the one that the next machine will see, but the more of them an offer
+// names, the likelier that machine opens its firewall for the right one. An
 // address of this machine's own says nothing new: the offers name it, and
 // the probes that leave from each would fill the few that are kept.
 func (t *Transport) sawPublic(addr netip.AddrPort) {
@@ -648,7 +672,7 @@ func (t *Transport) read(s *socket) {
 			continue // Such as the ICMP error of a port that nobody listens on.
 		}
 		var local netip.Addr
-		if !wireGuard(buf[:n]) {
+		if !wireGuard(buf[:n]) && !relayed(buf[:n]) {
 			local = s.arrivedAt(oob[:oobn])
 		}
 		t.receive(s, buf[:n], netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), local)
@@ -661,14 +685,28 @@ func wireGuard(packet []byte) bool {
 	return len(packet) > 0 && packet[0] >= 1 && packet[0] <= 4
 }
 
+// relayed reports whether packet is one that a relay carries.
+func relayed(packet []byte) bool {
+	return len(packet) > 0 && (Relay(packet[0]) == RelayTo || Relay(packet[0]) == RelayFrom)
+}
+
 // receive handles a packet that came from source to local, the address of
 // this machine, which is not valid when the system did not say; it is not
-// read for WireGuard's packets. Those belong to the path that their source
-// proved itself on, and the others carry the token of their path.
+// read for WireGuard's packets and those that a relay carries. Those belong
+// to the path that their source proved itself on, and the others carry the
+// token of their path.
 func (t *Transport) receive(s *socket, packet []byte, source netip.AddrPort, local netip.Addr) {
 	if wireGuard(packet) {
 		if p := (*t.sources.Load())[source]; p != nil {
 			p.packet(packet)
+		} else {
+			t.strays.Add(1)
+		}
+		return
+	}
+	if relayed(packet) {
+		if p := (*t.sources.Load())[source]; p != nil && len(packet) > 1+NodeLen {
+			p.relayed(Relay(packet[0]), [NodeLen]byte(packet[1:1+NodeLen]), packet[1+NodeLen:])
 		} else {
 			t.strays.Add(1)
 		}

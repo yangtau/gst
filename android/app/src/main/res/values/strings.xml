@@ -37,6 +37,7 @@
     <string name="way_direct">Direct</string>
     <string name="way_relay">Relay</string>
     <string name="way_relay_via">Relay via %1$s</string>
+    <string name="way_relay_udp">Relay via %1$s over UDP</string>
     <string name="way_offline">Offline</string>
     <string name="connecting_server">Connecting to the server…</string>
     <string name="joining">Joining the network…</string>

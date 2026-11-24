@@ -24,8 +24,8 @@ data class Machine(
         /** Over UDP, to the address given. */
         data class Direct(val endpoint: String?) : Way
 
-        /** Along the SSH links, through the machines named. */
-        data class Relay(val via: List<String>) : Way
+        /** Through the machines named: along the SSH links, or over the UDP paths of a relay. */
+        data class Relay(val via: List<String>, val udp: Boolean = false) : Way
 
         /** No way leads to it now; it was last known online then. */
         data class Offline(val seen: Instant?) : Way
@@ -60,6 +60,7 @@ data class Machine(
                     node.id == topology.self -> if (status == null) Way.Offline(null) else Way.Here
                     status == null -> Way.Offline(node.seen)
                     node.direct == true || peer?.way == "direct" -> Way.Direct(peer?.endpoint)
+                    node.via != null -> Way.Relay(listOf(names[node.via] ?: node.via.take(8)), udp = true)
                     // The route runs from this machine to the machine; what
                     // lies between is what the packets pass.
                     node.reachable -> Way.Relay((node.route ?: emptyList()).drop(1).dropLast(1).map { names[it] ?: it.take(8) })

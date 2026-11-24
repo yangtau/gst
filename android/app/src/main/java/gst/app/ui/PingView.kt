@@ -59,7 +59,7 @@ fun PingSheet(model: AppModel, machineID: String, isOn: Boolean, initial: Pings 
         RepeatWhileShown(machine.id, 1.seconds) {
             pings = try {
                 val reply = model.ping(machine)
-                pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }))
+                pings.answered(reply.timeMs, if (reply.way == "direct") Machine.Way.Direct(reply.endpoint) else Machine.Way.Relay(reply.via.map { it.name }, reply.way == "udp-relay"))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

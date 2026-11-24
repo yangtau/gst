@@ -42,6 +42,24 @@ func meshTopology() wire.Topology {
 
 // --- name ---
 
+func TestRelay(t *testing.T) {
+	e := newEnv(t)
+	if out := e.mustGst("relay"); !strings.HasPrefix(out, "This machine is no relay.") {
+		t.Fatalf("output %q", out)
+	}
+	if out := e.mustGst("relay", "on"); !strings.HasPrefix(out, "This machine is a relay:") {
+		t.Fatalf("output %q", out)
+	}
+	if !e.load().Node.Relay || !slices.Equal(e.back.calls, []string{"sync"}) {
+		t.Fatalf("node %+v, calls %v", e.load().Node, e.back.calls)
+	}
+	e.mustGst("relay", "off")
+	if e.load().Node.Relay {
+		t.Fatal("still a relay")
+	}
+	e.expectCode(exitUsage, "relay", "yes")
+}
+
 func TestName(t *testing.T) {
 	e := newEnv(t)
 	idPattern := regexp.MustCompile(`^This machine is ([a-z0-9-]+) \(([0-9a-f]{32})\)\.\n$`)

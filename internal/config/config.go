@@ -47,6 +47,8 @@ type Node struct {
 	// Generation counts the times that a person added this machine back
 	// after a removal from the network.
 	Generation int64 `json:"generation,omitempty"`
+	// Relay says that this machine relays for the others; see gst relay.
+	Relay bool `json:"relay,omitempty"`
 }
 
 // Link is an SSH connection to another machine's gst. Destination, with

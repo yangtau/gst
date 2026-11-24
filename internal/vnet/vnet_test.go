@@ -365,6 +365,7 @@ func (m *fakeMesh) HandlePackets(handle func(string, []byte)) {
 	m.handle = handle
 }
 func (m *fakeMesh) PacketWay(string) string      { return wire.WayRelay }
+func (m *fakeMesh) PacketRelay(string) string    { return "" }
 func (m *fakeMesh) PacketEndpoint(string) string { return "" }
 func (m *fakeMesh) Call(_ context.Context, ref, method string, _, result any) error {
 	if method != wire.MethodNetPrefixes {

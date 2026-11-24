@@ -142,6 +142,10 @@ final class GstTests: XCTestCase {
         XCTAssertEqual(machines[1].handshake, seen)
         XCTAssertEqual(machines[2].way, .relay(via: ["devbox"]))
         XCTAssertEqual(machines[2].address, "10.87.0.3")
+        // Through a relay, over UDP.
+        var relayed = topology
+        relayed.nodes[1].via = "bb"
+        XCTAssertEqual(Machine.list(topology: relayed, status: status)[2].way, .relay(via: ["devbox"], udp: true))
         // An address of another subnet is one that nothing reaches.
         XCTAssertEqual(machines[3].way, .offline(seen: seen))
         XCTAssertNil(machines[3].address)

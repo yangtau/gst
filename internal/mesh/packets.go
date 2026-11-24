@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"encoding/hex"
 	"sync/atomic"
 	"time"
 
@@ -13,7 +14,8 @@ const directInterval = 5 * time.Second
 
 // The virtual network sends packets between nodes that may have no link
 // between them. A node's own packets take the UDP path to the other node
-// when there is one, and otherwise go as routed messages along the SSH
+// when there is one, else the UDP paths of a relay that the two nodes
+// agreed on (relay.go), and otherwise go as routed messages along the SSH
 // links, which works wherever the mesh does. They need no protection from
 // the mesh: WireGuard encrypts them end to end, so the nodes on the way
 // see only ciphertext, and packets lost here count as lost on a network.
@@ -22,8 +24,16 @@ const directInterval = 5 * time.Second
 
 // packetPeer is what this node keeps for sending packets to one node.
 type packetPeer struct {
+	key    [direct.NodeLen]byte        // the node's id, as the packets that a relay carries name it
 	direct atomic.Pointer[direct.Path] // the UDP path; nil while there is none
 	asked  atomic.Int64                // when traffic last asked for a UDP path, in Unix nanoseconds
+
+	// The relay that packets go through while there is no UDP path; see
+	// relay.go. Times are in Unix nanoseconds.
+	relay      atomic.Pointer[string] // its id; nil while there is none
+	relayHeard atomic.Int64           // when a packet last came back through it, or the nodes agreed on it
+	relayAsked atomic.Int64           // when the latest try at one started
+	relayFails atomic.Int32           // tries that failed in a row
 
 	writeErrors atomic.Uint64 // packets that UDP could not send
 	queueDrops  atomic.Uint64 // packets lost as the links' queue was full
@@ -33,7 +43,9 @@ func (n *Node) packetPeer(id string) *packetPeer {
 	if p, ok := n.packets.Load(id); ok {
 		return p.(*packetPeer)
 	}
-	p, _ := n.packets.LoadOrStore(id, &packetPeer{})
+	fresh := &packetPeer{}
+	hex.Decode(fresh.key[:], []byte(id))
+	p, _ := n.packets.LoadOrStore(id, fresh)
 	return p.(*packetPeer)
 }
 
@@ -65,21 +77,24 @@ func (n *Node) SendPacket(id string, packet []byte) {
 		}
 		p.writeErrors.Add(1) // Such as a network gone: the links may still lead there.
 	}
-	if !n.router.SendPacket(id, packet) {
+	if !n.relayPacket(p, packet) && !n.router.SendPacket(id, packet) {
 		p.queueDrops.Add(1)
 	}
 	now := time.Now().UnixNano()
 	if last := p.asked.Load(); now-last >= int64(directInterval) && p.asked.CompareAndSwap(last, now) {
 		n.tryDirect(id)
+		n.tryRelay(id)
 	}
 }
 
 // PacketWay tells how packets go to node id now: wire.WayDirect,
-// wire.WayRelay, or empty when neither leads there.
+// wire.WayUDPRelay, wire.WayRelay, or empty when none leads there.
 func (n *Node) PacketWay(id string) string {
 	switch {
 	case n.packetPeer(id).direct.Load() != nil:
 		return wire.WayDirect
+	case n.PacketRelay(id) != "":
+		return wire.WayUDPRelay
 	case n.router.Reaches(id):
 		return wire.WayRelay
 	}
@@ -99,7 +114,11 @@ func (n *Node) PacketEndpoint(id string) string {
 // or the path that came of it. The path lets packets through once this
 // node knows that it works, when the other node may send on it already.
 func (n *Node) receiveOn(id string, path *direct.Path) {
+	key := n.packetPeer(id).key
 	path.HandlePackets(func(packet []byte) { n.deliver(id, packet) })
+	path.HandleRelay(func(kind direct.Relay, node [direct.NodeLen]byte, packet []byte) {
+		n.carry(id, key, kind, node, packet)
+	})
 }
 
 // attachPackets makes packets to node id take path.

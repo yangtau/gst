@@ -9,9 +9,11 @@ extension Machine.Way {
             String(localized: "This machine")
         case .direct:
             String(localized: "Direct")
-        case .relay(let via) where via.isEmpty:
+        case .relay(let via, _) where via.isEmpty:
             String(localized: "Relay")
-        case .relay(let via):
+        case .relay(let via, true):
+            String(localized: "Relay via \(via.joined(separator: ", ")) over UDP")
+        case .relay(let via, false):
             String(localized: "Relay via \(via.joined(separator: ", "))")
         case .offline:
             String(localized: "Offline")

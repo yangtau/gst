@@ -110,6 +110,7 @@ function via(n, names) {
 // way says how packets go to another machine, as gst status does.
 function way(n, names) {
   if (n.direct) return "direct";
+  if (n.via) return "relay via " + (names[n.via] || shortID(n.via)) + " over UDP";
   if (!n.reachable) return n.seen ? "offline, seen " + seenText(n.seen) : "offline";
   const route = via(n, names);
   return route ? "relay via " + route : "relay";
@@ -252,8 +253,8 @@ function machineBody(n, names) {
   } else if (!st) {
     const answer = answers.get(n.id);
     if (!n.reachable) {
-      parts.push(n.direct
-        ? note("No link leads to it now,", "so gst ui cannot ask it. Packets still reach it directly.")
+      parts.push(n.direct || n.via
+        ? note("No link leads to it now,", "so gst ui cannot ask it. Packets still reach it over UDP.")
         : note("Offline.", "No link leads to it now."));
     } else if (answer && answer.error) {
       parts.push(note("It did not answer:", answer.error));
@@ -272,7 +273,7 @@ function machineBody(n, names) {
 
 function nodeMark(n) {
   if (n.id === selfID()) return state.status ? mark("ok", "running") : mark("off", "not running");
-  return n.reachable || n.direct ? mark("ok", "reachable") : mark("off", "offline");
+  return n.reachable || n.direct || n.via ? mark("ok", "reachable") : mark("off", "offline");
 }
 
 const chevron = () => svg("svg", { class: "chevron", viewBox: "0 0 12 12", "aria-hidden": "true" }, svg("path", { d: "M4.5 2.5L8 6l-3.5 3.5" }));
@@ -384,7 +385,7 @@ function drawRing(nodes, names) {
     const dx = side === "start" ? 12 : side === "end" ? -12 : 0;
     const dy = side === "middle" ? (p.sin < 0 ? -12 : 20) : 4;
     const name = names[n.id].length > 12 ? names[n.id].slice(0, 11) + "…" : names[n.id];
-    const live = n.id === selfID() ? !!state.status : n.reachable || n.direct;
+    const live = n.id === selfID() ? !!state.status : n.reachable || n.direct || n.via;
     const g = svg("g", { class: `ring-node${live ? "" : " off"}${open.has(n.id) ? " picked" : ""}` },
       svg("title", null, names[n.id]),
       svg("circle", { class: "hit", cx: p.x, cy: p.y, r: 14 }),

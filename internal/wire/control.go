@@ -98,8 +98,9 @@ type NetState struct {
 
 // Ways that packets take to another node.
 const (
-	WayDirect = "direct" // over UDP
-	WayRelay  = "relay"  // along the SSH links of the mesh
+	WayDirect   = "direct"    // over the UDP path to it
+	WayUDPRelay = "udp-relay" // over the UDP paths of a relay
+	WayRelay    = "relay"     // along the SSH links of the mesh
 )
 
 // NetPeer is another node of the virtual network.
@@ -107,7 +108,8 @@ type NetPeer struct {
 	Node      string    `json:"node"` // its id
 	Name      string    `json:"name"`
 	Address   string    `json:"address"`
-	Way       string    `json:"way"`                // WayDirect or WayRelay, or empty while it is offline
+	Way       string    `json:"way"`                // one of the ways, or empty while it is offline
+	Via       string    `json:"via,omitempty"`      // the name of the relay, with WayUDPRelay
 	Endpoint  string    `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
 	Handshake time.Time `json:"handshake,omitzero"` // the latest WireGuard handshake
 	Received  uint64    `json:"received"`           // bytes
@@ -152,10 +154,10 @@ type NetPingParams struct {
 type NetPing struct {
 	Node    NodeInfo `json:"node"`
 	Address string   `json:"address"`
-	// Way is WayDirect or WayRelay, and empty for this node.
+	// Way is one of the ways, and empty for this node.
 	Way      string     `json:"way,omitempty"`
 	Endpoint string     `json:"endpoint,omitempty"` // the IP:port of the other end of a UDP path
-	Via      []NodeInfo `json:"via"`                // the nodes on the way, over SSH
+	Via      []NodeInfo `json:"via"`                // the nodes on the way: along the SSH links, or the relay
 	TimeMS   float64    `json:"time_ms"`
 }
 
@@ -217,12 +219,18 @@ type TopoNode struct {
 	Reachable bool      `json:"reachable"`        // the SSH links lead to it now
 	Route     []string  `json:"route,omitempty"`  // node ids from this node, for reachable nodes
 	Direct    bool      `json:"direct,omitempty"` // this node has a UDP path to it
+	Via       string    `json:"via,omitempty"`    // the id of the relay that this node's packets to it go through
+	Relay     bool      `json:"relay,omitempty"`  // it relays
 	Seen      time.Time `json:"seen,omitzero"`    // when it was last known online; zero for this node
 	Net       *NodeNet  `json:"net,omitempty"`    // its part in the virtual network
 }
 
 // Online reports whether packets reach the node now.
-func (n TopoNode) Online() bool { return n.Reachable || n.Direct }
+func (n TopoNode) Online() bool { return n.Reachable || n.OverUDP() }
+
+// OverUDP reports whether packets reach the node over UDP now: over the
+// UDP path to it, or through a relay. Neither needs the links once it runs.
+func (n TopoNode) OverUDP() bool { return n.Direct || n.Via != "" }
 
 // Info is who the node is.
 func (n TopoNode) Info() NodeInfo { return NodeInfo{ID: n.ID, Name: n.Name, Software: n.Software} }

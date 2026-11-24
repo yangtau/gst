@@ -9,8 +9,9 @@ struct Machine: Identifiable, Hashable {
         case here
         /// Over UDP, to the address given.
         case direct(endpoint: String?)
-        /// Along the SSH links, through the machines named.
-        case relay(via: [String])
+        /// Through the machines named: along the SSH links, or over the
+        /// UDP paths of a relay.
+        case relay(via: [String], udp: Bool = false)
         /// No way leads to it now; it was last known online then.
         case offline(seen: Date?)
     }
@@ -66,6 +67,8 @@ struct Machine: Identifiable, Hashable {
                 machine.way = .offline(seen: node.seen)
             } else if node.direct == true || peer?.way == "direct" {
                 machine.way = .direct(endpoint: peer?.endpoint)
+            } else if let relay = node.via {
+                machine.way = .relay(via: [names[relay] ?? String(relay.prefix(8))], udp: true)
             } else if node.reachable {
                 // The route runs from this machine to the machine; what
                 // lies between is what the packets pass.

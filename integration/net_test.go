@@ -272,6 +272,80 @@ func TestNet(t *testing.T) {
 	})
 }
 
+// Two machines that find no UDP path between them send through a machine
+// that relays and that both have a UDP path to.
+func TestNetRelay(t *testing.T) {
+	t.Parallel()
+	a, b, c := startNode(t), startNode(t), startNode(t)
+	a.direct, b.direct, c.direct = true, true, true
+	link3(t, a, b, c)
+	if out := b.mustGst("relay", "on"); !strings.HasPrefix(out, "This machine is a relay") {
+		t.Fatalf("gst relay on: %q", out)
+	}
+	for _, n := range []*node{a, b, c} {
+		n.installHelper()
+	}
+	a.waitNet(2)
+	b.waitNet(2)
+	address := c.waitNet(2).Address
+	// No UDP between a and c, as between two NATs that let none through;
+	// IPv6 only leads between them too once the relay is the way.
+	for _, rule := range [][]string{
+		{"iptables", "-A", "OUTPUT", "-p", "udp", "-d", c.ip, "-j", "DROP"},
+		{"iptables", "-A", "INPUT", "-p", "udp", "-s", c.ip, "-j", "DROP"},
+		{"ip6tables", "-A", "OUTPUT", "-p", "udp", "-j", "DROP"},
+		{"ip6tables", "-A", "INPUT", "-p", "udp", "-j", "DROP"},
+	} {
+		if out, err := a.exec("root", rule...); err != nil {
+			t.Fatalf("%v: %v: %s", rule, err, out)
+		}
+	}
+	a.waitPing(address)
+	start := time.Now()
+	// The try at a UDP path fails first, and traffic then asks for a relay.
+	eventually(t, 90*time.Second, "a and c do not send through the relay", func() bool {
+		a.pingable(address)
+		way := func(n *node, peer string) string {
+			for _, p := range n.net().Peers {
+				if p.Name == peer {
+					return p.Way + " " + p.Via
+				}
+			}
+			return ""
+		}
+		return way(a, "c") == wire.WayUDPRelay+" b" && way(c, "a") == wire.WayUDPRelay+" b"
+	})
+	t.Logf("through the relay after %s", time.Since(start).Round(time.Millisecond))
+	a.waitPing(address)
+	if out := a.mustGst("ping", "c", "-c", "3"); strings.Count(out, "): relay via b over UDP, ") != 3 {
+		t.Fatalf("gst ping: %s", out)
+	}
+	if out := a.mustGst("status"); !strings.Contains(out, "relay via b over UDP") || !strings.Contains(out, "Relays: b") {
+		t.Fatalf("gst status: %s", out)
+	}
+	c.mustSh(`setsid gst-it sink 0.0.0.0:7002 </dev/null >/dev/null 2>&1 &`)
+	out, err := a.helper("blast", address+":7002", "5")
+	if err != nil {
+		t.Fatalf("blast through the relay: %v", err)
+	}
+	mbps, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("TCP through the network over the relay: %.1f Mbit/s", mbps)
+	if mbps < 10 {
+		t.Fatal("the relay is too slow")
+	}
+	if got := b.net(); len(got.Peers) != 2 {
+		t.Fatalf("the relay's network: %+v", got)
+	}
+
+	// A relay that stops sends the two back to the links.
+	b.mustGst("relay", "off")
+	a.waitPath("c", wire.WayRelay, 10*time.Second)
+	a.waitPing(address)
+}
+
 // Packets take UDP when a UDP path comes up, fall back to SSH within
 // seconds when UDP stops working, and return when it works again.
 func TestNetDirect(t *testing.T) {

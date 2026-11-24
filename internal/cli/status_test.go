@@ -187,6 +187,28 @@ func TestStatusShowsUDPPaths(t *testing.T) {
 	}
 }
 
+func TestStatusShowsRelays(t *testing.T) {
+	e := newEnv(t)
+	e.mustGst("up")
+	a, b, c := nodeID("aaaa1111"), nodeID("bbbb2222"), nodeID("cccc3333")
+	e.back.topology = wire.Topology{Self: a, Nodes: []wire.TopoNode{
+		{ID: a, Name: "a", Reachable: true, Route: []string{a}},
+		{ID: b, Name: "b", Reachable: true, Direct: true, Relay: true, Route: []string{a, b}},
+		{ID: c, Name: "c", Reachable: true, Via: b, Route: []string{a, b, c}},
+	}}
+	want := []string{"aaaa1111 a - -", "bbbb2222 b - direct", "cccc3333 c - relay via b over UDP", "", "Relays: b"}
+	if got := lines(e.mustGst("status")); !slices.Equal(got, want) {
+		t.Fatalf("status\n got %q\nwant %q", got, want)
+	}
+	// A relay needs no link once the two machines agreed on it.
+	e.back.topology.Nodes[2].Reachable, e.back.topology.Nodes[2].Route = false, nil
+	out := e.mustGst("status")
+	contains(t, out, "relay via b over UDP", "no link leads to c, reached only over UDP")
+	if strings.Contains(out, "offline") {
+		t.Fatal("a machine reached through a relay shows as offline")
+	}
+}
+
 func TestStatusWithoutLinks(t *testing.T) {
 	e := newEnv(t)
 	e.mustGst("up")
@@ -263,6 +285,15 @@ func TestPing(t *testing.T) {
 	}
 	out = e.mustGst("ping", "far", "--count", "1")
 	if want := "reply from far (10.99.5.6): relay via a, b, 12.3 ms\n"; out != want {
+		t.Fatalf("output %q, want %q", out, want)
+	}
+
+	// A relay carries the packets over UDP.
+	e.back.ping = func(node string) (wire.NetPing, error) {
+		return wire.NetPing{Node: peerOf(node), Address: "10.99.5.6", Way: wire.WayUDPRelay, Via: []wire.NodeInfo{peerOf("a")}, TimeMS: 12.345}, nil
+	}
+	out = e.mustGst("ping", "far", "--count", "1")
+	if want := "reply from far (10.99.5.6): relay via a over UDP, 12.3 ms\n"; out != want {
 		t.Fatalf("output %q, want %q", out, want)
 	}
 

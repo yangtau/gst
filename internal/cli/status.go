@@ -81,12 +81,15 @@ func noDaemon(err error) error {
 	return withHint(fmt.Errorf("%w: %w", errNoDaemon, err), "start it with `gst up`")
 }
 
-// wayText says how packets go to a machine: direct, or relayed along the
-// SSH links through the machines named.
-func wayText(direct bool, via []string) string {
+// wayText says how packets go to a machine: direct, or relayed through
+// the machines named, over the UDP paths of a relay or along the SSH
+// links.
+func wayText(way string, via []string) string {
 	switch {
-	case direct:
+	case way == wire.WayDirect:
 		return "direct"
+	case way == wire.WayUDPRelay:
+		return "relay via " + strings.Join(via, ", ") + " over UDP"
 	case len(via) > 0:
 		return "relay via " + strings.Join(via, ", ")
 	}
@@ -110,6 +113,10 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 			if !n.Seen.IsZero() {
 				way += ", seen " + agoText(time.Since(n.Seen))
 			}
+		case n.Direct:
+			way = wayText(wire.WayDirect, nil)
+		case n.Via != "":
+			way = wayText(wire.WayUDPRelay, []string{names[n.Via]})
 		default:
 			var via []string
 			if len(n.Route) > 2 {
@@ -117,7 +124,7 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 					via = append(via, names[id])
 				}
 			}
-			way = wayText(n.Direct, via)
+			way = wayText(wire.WayRelay, via)
 		}
 		line := []string{shortID(n.ID), names[n.ID], cmp.Or(n.Software, "-")}
 		if onNet {
@@ -131,6 +138,15 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+	var relays []string
+	for _, n := range topo.Nodes {
+		if n.Relay {
+			relays = append(relays, names[n.ID])
+		}
+	}
+	if len(relays) > 0 {
+		fmt.Fprintf(out, "\nRelays: %s\n", strings.Join(relays, ", "))
 	}
 	if r := st.Removed; r != nil {
 		if r.By.ID == st.Node.ID {
@@ -164,15 +180,15 @@ func writeNodes(out io.Writer, st wire.Status, topo wire.Topology, verbose bool)
 			problems = append(problems, "link to "+destinationText(l)+": "+linkStateText(l))
 		}
 	}
-	// The network's changes travel along the links only, not directly.
+	// The network's changes travel along the links only, not over UDP.
 	var cut []string
 	for _, n := range topo.Nodes {
-		if n.ID != topo.Self && n.Direct && !n.Reachable {
+		if n.ID != topo.Self && n.OverUDP() && !n.Reachable {
 			cut = append(cut, names[n.ID])
 		}
 	}
 	if len(cut) > 0 {
-		problems = append(problems, "no link leads to "+strings.Join(cut, ", ")+", reached only directly: removals and new names do not travel between them and this machine; link to them with `gst add`")
+		problems = append(problems, "no link leads to "+strings.Join(cut, ", ")+", reached only over UDP: removals and new names do not travel between them and this machine; link to them with `gst add`")
 	}
 	// A removed machine is in no network, which the removal says already.
 	if st.Net != nil && st.Net.Error != "" && st.Removed == nil {
@@ -438,13 +454,13 @@ func writePing(out io.Writer, p wire.NetPing) {
 	way := ""
 	switch p.Way {
 	case wire.WayDirect:
-		way = wayText(true, nil)
+		way = wayText(p.Way, nil)
 		if p.Endpoint != "" { // The path may have just ended.
 			way += " " + p.Endpoint
 		}
 		way += ", "
-	case wire.WayRelay:
-		way = wayText(false, nodeNames(p.Via)) + ", "
+	case wire.WayUDPRelay, wire.WayRelay:
+		way = wayText(p.Way, nodeNames(p.Via)) + ", "
 	}
 	fmt.Fprintf(out, "reply from %s (%s): %s%.1f ms\n", p.Node.Name, p.Address, way, p.TimeMS)
 }

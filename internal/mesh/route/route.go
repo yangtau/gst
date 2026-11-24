@@ -186,7 +186,14 @@ func (r *Router) SendPacket(to string, packet []byte) bool {
 	r.mu.RLock()
 	self := r.self
 	r.mu.RUnlock()
-	msg, ok := encode(to, self, InitialTTL, Packet, 0, packet)
+	return r.Forward(self, to, packet)
+}
+
+// Forward sends a packet of the virtual network that node from sent on to
+// node to, and reports whether a link took it: a relay hands the links
+// what it has no UDP path for.
+func (r *Router) Forward(from, to string, packet []byte) bool {
+	msg, ok := encode(to, from, InitialTTL, Packet, 0, packet)
 	return ok && r.send(to, msg, false)
 }
 

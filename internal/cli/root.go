@@ -51,7 +51,7 @@ Errors go to stderr, usually with a hint. Exit status is 0 on success,
 	root.AddCommand(
 		a.upCommand(), a.addCommand(), a.statusCommand(), a.pingCommand(), a.logCommand(),
 		a.exposeCommand(), a.unexposeCommand(), a.unlinkCommand(), a.removeCommand(),
-		a.nameCommand(), a.subnetCommand(), a.uiCommand(), a.downCommand(), a.versionCommand(),
+		a.nameCommand(), a.subnetCommand(), a.relayCommand(), a.uiCommand(), a.downCommand(), a.versionCommand(),
 	)
 	root.AddCommand(a.daemonRunCommand(), a.peerBridgeCommand(), a.installCommand(), a.uninstallCommand(), a.netHelperCommand(), a.helperVersionCommand())
 	setHelpColors(root)

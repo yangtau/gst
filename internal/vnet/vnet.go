@@ -60,6 +60,7 @@ type Mesh interface {
 	SendPacket(node string, packet []byte)
 	HandlePackets(func(node string, packet []byte))
 	PacketWay(node string) string
+	PacketRelay(node string) string
 	PacketEndpoint(node string) string
 	Call(ctx context.Context, ref, method string, params, result any) error
 }
@@ -678,6 +679,11 @@ func (m *Manager) peerStates(live *wireguard) []wire.NetPeer {
 			continue
 		}
 		out := wire.NetPeer{Node: p.node, Name: topo.Nodes[i].Name, Address: p.address, Way: m.cfg.Mesh.PacketWay(p.node), Endpoint: m.cfg.Mesh.PacketEndpoint(p.node)}
+		if relay := m.cfg.Mesh.PacketRelay(p.node); out.Way == wire.WayUDPRelay {
+			if r := slices.IndexFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == relay }); r >= 0 {
+				out.Via = topo.Nodes[r].Name
+			}
+		}
 		if c := seen[key]; c != nil {
 			out.Handshake, out.Received, out.Sent = c.handshake, c.rx, c.tx
 		}

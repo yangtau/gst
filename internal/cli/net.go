@@ -129,6 +129,9 @@ func writePeers(out io.Writer, st *wire.NetState) error {
 			handshake = time.Since(p.Handshake).Round(time.Second).String() + " ago"
 		}
 		path := strings.TrimSpace(p.Way + " " + p.Endpoint)
+		if p.Way == wire.WayUDPRelay {
+			path = wayText(p.Way, []string{p.Via})
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, path, handshake, byteCount(p.Received), byteCount(p.Sent))
 	}
 	return w.Flush()

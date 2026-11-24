@@ -139,6 +139,8 @@ struct Topology: Codable, Equatable {
         var reachable: Bool
         var route: [String]?
         var direct: Bool?
+        /// The relay that packets to it go through, over UDP.
+        var via: String?
         var seen: Date?
         var net: Net?
     }

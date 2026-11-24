@@ -164,6 +164,8 @@ data class Topology(
         val reachable: Boolean = false,
         val route: List<String>? = null,
         val direct: Boolean? = null,
+        /** The relay that packets to it go through, over UDP. */
+        val via: String? = null,
         val seen: Time? = null,
         val net: Net? = null,
     ) {

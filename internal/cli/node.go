@@ -47,6 +47,44 @@ need not be unique; ids are, and tell apart machines with the same name.`,
 	}
 }
 
+func (a *app) relayCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "relay [on|off]",
+		Short: "Show or change whether this machine relays for the others",
+		Long: `Show whether this machine is a relay, or make it one, or stop it being
+one. Two machines that find no direct path to each other send through a
+relay that both reach directly, over UDP, which is faster and steadier
+than along the SSH links. The relay sees only what WireGuard encrypted.
+
+A relay carries the traffic of other machines, so gst makes none by
+itself. Pick machines that are always on and that the others reach from
+anywhere: with a public address, or with gst's UDP port, 15355, open in
+the firewall. Several machines can be relays; two machines use the one
+with the shortest way through it.`,
+		Example: "  gst relay\n  gst relay on",
+		Args:    a.args(0, 1),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && args[0] != "on" && args[0] != "off" {
+				return usage("%q is neither on nor off", args[0])
+			}
+			node, err := a.updateNode(cmd.Context(), func(n *config.Node) {
+				if len(args) == 1 {
+					n.Relay = args[0] == "on"
+				}
+			})
+			if err != nil {
+				return err
+			}
+			if node.Relay {
+				fmt.Fprintln(a.stdout, "This machine is a relay: machines with no direct path to each other send through it.")
+			} else {
+				fmt.Fprintln(a.stdout, "This machine is no relay. Make it one with `gst relay on`.")
+			}
+			return nil
+		}),
+	}
+}
+
 // updateNode changes this machine's node with fn, applies a change, and
 // returns the node.
 func (a *app) updateNode(ctx context.Context, fn func(*config.Node)) (config.Node, error) {

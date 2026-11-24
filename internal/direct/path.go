@@ -85,6 +85,7 @@ type Path struct {
 	token  [tokenLen]byte
 	trace  func(string)
 	handle atomic.Pointer[func(packet []byte)]
+	relay  atomic.Pointer[func(kind Relay, node [NodeLen]byte, packet []byte)]
 	best   atomic.Pointer[pair]
 	heard  atomic.Int64 // when anything last arrived, in Unix nanoseconds
 	sent   atomic.Int64 // when this side last sent a packet, in Unix nanoseconds
@@ -700,6 +701,19 @@ func (p *Path) Remote() string {
 	return ""
 }
 
+// RTT returns the round trip between the pair of addresses in use, smoothed;
+// false while there is no pair, or nothing measured it yet, as when the
+// other side's probes confirmed it.
+func (p *Path) RTT() (time.Duration, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t := p.targets[bestRemote(p.best.Load())]
+	if t == nil || t.samples == 0 {
+		return 0, false
+	}
+	return t.rtt, true
+}
+
 // Done is closed when the path ends.
 func (p *Path) Done() <-chan struct{} { return p.done }
 
@@ -711,6 +725,15 @@ func (p *Path) FellSilent() bool { return p.silent.Load() }
 // since the path started. Probes do not count.
 func (p *Path) Idle() time.Duration {
 	return time.Since(time.Unix(0, p.sent.Load()))
+}
+
+// WriteRelay sends a WireGuard packet that a relay carries to the other
+// side, as WritePacket does: with RelayTo, to the relay there, for node,
+// and with RelayFrom, from the relay here, as node sent it.
+func (p *Path) WriteRelay(kind Relay, node [NodeLen]byte, packet []byte) error {
+	relayed := make([]byte, 0, 1+NodeLen+len(packet))
+	relayed = append(append(append(relayed, byte(kind)), node[:]...), packet...)
+	return p.WritePacket(relayed)
 }
 
 // WritePacket sends a WireGuard packet to the other side, between the pair
@@ -748,6 +771,22 @@ func (p *Path) packet(packet []byte) {
 	p.heard.Store(time.Now().UnixNano())
 	if handle := p.handle.Load(); handle != nil {
 		(*handle)(packet)
+	}
+}
+
+// HandleRelay makes handle receive the packets that a relay carries, with
+// their kind and the node that they name, as HandlePackets does WireGuard's.
+func (p *Path) HandleRelay(handle func(kind Relay, node [NodeLen]byte, packet []byte)) {
+	p.relay.Store(&handle)
+}
+
+func (p *Path) relayed(kind Relay, node [NodeLen]byte, packet []byte) {
+	if !p.works.Load() {
+		return
+	}
+	p.heard.Store(time.Now().UnixNano())
+	if handle := p.relay.Load(); handle != nil {
+		(*handle)(kind, node, packet)
 	}
 }
 

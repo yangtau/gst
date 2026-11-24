@@ -156,7 +156,7 @@ func (n *Node) Topology() wire.Topology {
 	if v, ok := n.Subnet(); ok {
 		topo.Subnet = v.Subnet
 	}
-	nodes := map[string]*wire.TopoNode{self.ID: {ID: self.ID, Name: self.Name, Software: self.Software, Net: n.net}}
+	nodes := map[string]*wire.TopoNode{self.ID: {ID: self.ID, Name: self.Name, Software: self.Software, Net: n.net, Relay: n.relaying.Load()}}
 	if n.removed == nil {
 		all := nodeEntries(n.table.Entries())
 		for id, m := range all {
@@ -167,7 +167,7 @@ func (n *Node) Topology() wire.Topology {
 				if lost := n.lost[id]; lost.After(seen) {
 					seen = lost
 				}
-				nodes[id] = &wire.TopoNode{ID: id, Name: m.value.Name, Software: m.value.Software, Seen: seen, Net: m.value.Net}
+				nodes[id] = &wire.TopoNode{ID: id, Name: m.value.Name, Software: m.value.Software, Seen: seen, Net: m.value.Net, Relay: m.value.Relay}
 			}
 		}
 		for l := range n.links {
@@ -205,6 +205,7 @@ func (n *Node) Topology() wire.Topology {
 	for _, node := range nodes {
 		if node.ID != self.ID {
 			node.Direct = n.packetPeer(node.ID).direct.Load() != nil
+			node.Via = n.PacketRelay(node.ID)
 		}
 		topo.Nodes = append(topo.Nodes, *node)
 	}
@@ -282,11 +283,11 @@ func (n *Node) Call(ctx context.Context, ref, method string, params, result any)
 }
 
 // unreachable is the error for a call to dest, which no route leads to.
-// A UDP path carries only packets of the virtual network, so a node that
-// has one is online still.
+// UDP paths carry only packets of the virtual network, so a node that
+// those reach, over its own or a relay's, is online still.
 func unreachable(dest wire.TopoNode) error {
-	if dest.Direct {
-		return wire.Errorf(wire.CodeUnreachable, "no link leads to %s, which is online only directly", dest.Name)
+	if dest.OverUDP() {
+		return wire.Errorf(wire.CodeUnreachable, "no link leads to %s, which packets reach only over UDP", dest.Name)
 	}
 	return wire.Errorf(wire.CodeUnreachable, "%s is offline", dest.Name)
 }

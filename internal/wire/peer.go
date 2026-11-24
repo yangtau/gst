@@ -25,6 +25,10 @@ const (
 	// DirectTrace: what the callee did in its latest tries at a UDP path
 	// with the caller.
 	MethodDirectTrace = "direct.trace"
+	// MethodRelayOffer ("relay.offer") takes a RelayOffer and returns a
+	// RelayChoice: the two nodes, which found no UDP path between them,
+	// send each other's packets through the relay that the callee picks.
+	MethodRelayOffer = "relay.offer"
 	// MethodNetPrefixes ("net.prefixes") takes no params and returns
 	// UsedPrefixes: what the subnet of the virtual network must not overlap
 	// on the callee's machine.
@@ -84,6 +88,10 @@ type NodeValue struct {
 	// Net is the node's part in the virtual network; nil while it takes
 	// no part.
 	Net *NodeNet `json:"net,omitempty"`
+	// Relay says that the node relays: it carries the packets of two
+	// nodes that have no UDP path between them from its UDP path to the
+	// one to its UDP path to the other.
+	Relay bool `json:"relay,omitempty"`
 }
 
 // NodeLink is one of a node's running links.
@@ -134,6 +142,25 @@ type DirectTrace struct {
 type DirectEvent struct {
 	Time time.Time `json:"time"`
 	Text string    `json:"text"`
+}
+
+// RelayOffer names the relays that the caller has a UDP path to.
+type RelayOffer struct {
+	Relays []RelayLeg `json:"relays"`
+}
+
+// RelayLeg is a relay, and the round trip of a node's UDP path to it, in
+// milliseconds.
+type RelayLeg struct {
+	Node  string  `json:"node"` // its id
+	RTTMS float64 `json:"rtt_ms"`
+}
+
+// RelayChoice is the relay that the callee of relay.offer picked: of those
+// that both nodes have a UDP path to, the one with the shortest way
+// through it.
+type RelayChoice struct {
+	Node string `json:"node"`
 }
 
 // DirectOffer is one node's side of a try at a UDP path: in the params of

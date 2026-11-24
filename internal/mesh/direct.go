@@ -32,9 +32,9 @@ const (
 // one that knows of it first is ready for the other's packets, so a try
 // hands on what its path lets through from the start (receiveOn).
 //
-// A path is no link: it carries only the packets of its two nodes, no
-// calls, no table, and nobody else's packets, and the table says nothing
-// of it. It is a shortcut for packets between nodes of the network, so it outlives
+// A path is no link: it carries only packets, those of its two nodes and,
+// when one of them relays, those between the other and a third (relay.go),
+// no calls and no table, and the table says nothing of it. It is a shortcut for packets between nodes of the network, so it outlives
 // the links, as when the machine between its two nodes sleeps, and ends
 // when the other node is removed from the network.
 

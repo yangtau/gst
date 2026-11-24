@@ -551,6 +551,16 @@
         }
       }
     },
+    "Relay via %@ over UDP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经 %@ 中转（UDP）"
+          }
+        }
+      }
+    },
     "Remove": {
       "localizations": {
         "zh-Hans": {

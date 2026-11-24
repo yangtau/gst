@@ -7,7 +7,8 @@
 // from the links in its table. On top, this package keeps the node's own
 // entry, decides who may link and who is in the network, and carries the
 // packets of the virtual network: over a UDP path where the network allows
-// one (direct.go), and as routed messages where not (packets.go).
+// one (direct.go), else through a node that relays between two UDP paths
+// (relay.go), and as routed messages where not (packets.go).
 //
 // A node stays in the network while it is offline. Only a removal record,
 // which any node can write (gst remove), takes a node out, for good: it covers
@@ -90,7 +91,9 @@ type Node struct {
 	directTrace map[string][]wire.DirectEvent // the latest try with each node
 	directPrev  map[string][]wire.DirectEvent // the one before it
 	directIdle  time.Duration                 // see runDirect
+	relayTries  map[string]bool               // the nodes that a try at a relay to runs; see relay.go
 
+	relaying     atomic.Bool                  // this node relays
 	subnetPrefix atomic.Pointer[netip.Prefix] // of the virtual network; nil off it
 	onPacket     atomic.Pointer[func(node string, packet []byte)]
 	packets      sync.Map // node id -> *packetPeer
@@ -119,11 +122,13 @@ func New(cfg Config) *Node {
 		directTrace: map[string][]wire.DirectEvent{},
 		directPrev:  map[string][]wire.DirectEvent{},
 		directIdle:  directIdle,
+		relayTries:  map[string]bool{},
 	}
 	route.Handle(n.router, wire.MethodPeerPing, func(context.Context, string, struct{}) (any, error) { return n.Self(), nil })
 	route.Handle(n.router, wire.MethodDirectOffer, n.serveOffer)
 	route.Handle(n.router, wire.MethodDirectUpdate, n.serveUpdate)
 	route.Handle(n.router, wire.MethodDirectTrace, n.serveTrace)
+	route.Handle(n.router, wire.MethodRelayOffer, n.serveRelay)
 	if cfg.Status != nil {
 		Handle(n, wire.MethodPeerStatus, func(context.Context, struct{}) (any, error) { return cfg.Status(), nil })
 	}
@@ -163,6 +168,7 @@ func (n *Node) Configure(c *config.Node) {
 	}
 	n.generation = max(n.generation, gen)
 	n.info = info
+	n.relaying.Store(c != nil && c.Relay)
 	n.notify()
 }
 
@@ -198,12 +204,15 @@ func (n *Node) Changed() <-chan struct{} {
 }
 
 // notifyChanges wakes the watchers if what they see changed: the table,
-// or the UDP paths; n.mu is held.
+// the UDP paths, or the relays in use; n.mu is held.
 func (n *Node) notifyChanges() {
 	var direct []string
 	n.packets.Range(func(id, peer any) bool {
-		if peer.(*packetPeer).direct.Load() != nil {
+		p := peer.(*packetPeer)
+		if p.direct.Load() != nil {
 			direct = append(direct, id.(string))
+		} else if relay := p.relay.Load(); relay != nil {
+			direct = append(direct, id.(string)+">"+*relay)
 		}
 		return true
 	})
@@ -273,7 +282,7 @@ func (n *Node) reconcile(force bool) {
 		// An earlier run of this node published it.
 		n.raiseGeneration(cur.Version[0])
 	}
-	value, _ := json.Marshal(wire.NodeValue{Name: self.Name, Software: self.Software, Links: n.nodeLinks(), Net: n.net})
+	value, _ := json.Marshal(wire.NodeValue{Name: self.Name, Software: self.Software, Links: n.nodeLinks(), Net: n.net, Relay: n.relaying.Load()})
 	if force || !ok || cur.Version[0] != n.generation || string(cur.Value) != string(value) {
 		seq := max(n.lastSeq+1, time.Now().UnixNano())
 		if ok {
@@ -290,6 +299,8 @@ func (n *Node) reconcile(force bool) {
 	entries := n.table.Entries()
 	n.promoteSubnet(entries)
 	n.closeDirect(n.isRemoved)
+	relays := n.relayNodes("")
+	n.dropRelays(func(relay string) bool { return slices.Contains(relays, relay) })
 	n.setRoutes(entries)
 }
 

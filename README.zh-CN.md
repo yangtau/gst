@@ -111,7 +111,7 @@ psql -h devbox.gst
 curl http://homelab.gst:8080/
 ```
 
-link 在后台连接，连上后机器出现在列表里。没有 link 再能到达的机器留在列表里，显示为 `offline, seen 3h ago`。列表下方的 `Problems:` 部分列出本机未运行的 link，没有 link 通向、只能直接到达的机器（移除和改名不会在它们和本机之间传递；用 `gst add` 加一条通向它们的 link），以及本机不能加入网络的原因。`gst ping devbox` 检查到一台机器的路，打印 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`。
+link 在后台连接，连上后机器出现在列表里。没有 link 再能到达的机器留在列表里，显示为 `offline, seen 3h ago`。列表下方的 `Problems:` 部分列出本机未运行的 link，没有 link 通向、只能经 UDP（直连或经 relay 机器）到达的机器（移除和改名不会在它们和本机之间传递；用 `gst add` 加一条通向它们的 link），以及本机不能加入网络的原因。`gst ping devbox` 检查到一台机器的路，打印 `reply from devbox (10.87.61.7): direct 203.0.113.7:41642, 12.3 ms`。
 
 现在 `homelab` 能看到同一个网络：在 `homelab` 上，`gst status` 列出 `laptop` 和 `devbox`，`ping devbox.gst` 不需要到 `devbox` 的 link 也能通。
 
@@ -124,7 +124,8 @@ link 在后台连接，连上后机器出现在列表里。没有 link 再能到
 | **machine** | 一台运行 gst 的电脑，有一个名字（默认是主机名）和一个随机 id | `gst name`、`gst status` |
 | **link** | 从本机到另一台机器的 SSH 连接，在后台保持 | `gst add`、`gst unlink` |
 | **network** | 加进来的所有机器，每台都有 gst IP 和名字 `<machine>.gst` | `gst add`、`gst remove`、`gst subnet` |
-| **direct** / **relay** / **offline** | 到一台机器的包怎么走：经 UDP 直连，经 SSH link 中转，或者暂时没有路 | `gst status`、`gst ping` |
+| **direct** / **relay** / **offline** | 到一台机器的包怎么走：经 UDP 直连，经别的机器中转（经 relay 机器走 UDP，或者经 SSH link），或者暂时没有路 | `gst status`、`gst ping` |
+| **relay**（机器） | 你允许它经 UDP 替别的机器转发包的机器，供找不到直连的两台机器使用 | `gst relay` |
 
 ### 机器和 link
 
@@ -157,6 +158,7 @@ link 在后台连接，连上后机器出现在列表里。没有 link 再能到
 - **gst IP。** 机器重启后 gst IP 不变。只承载 IPv4。
 - **名字。** `<machine>.gst` 对所有程序生效，可以用机器的名字或 id 前缀。在 macOS 和使用 systemd-resolved 的 Linux 上，只有 `.gst` 交给 gst 解析。其他 Linux 上，这些名字在网络运行期间写在 `/etc/hosts` 中。
 - **direct 和 relay。** WireGuard 对每个包做端到端加密，途中的机器只能看到密文。包一开始经 SSH link 中转，这些流量让两台机器经 link 寻找 UDP 直连：不需要任何配置，也不依赖外部服务器。前提是 UDP 能通，并且一台机器的某个地址（例如公网 IPv6 地址或共同网络上的地址）能被另一台访问；两台都在 NAT 后又没有这种地址的机器可能继续 relay，不过每台机器能从任何已经 direct 的机器得知自己的公网地址，常常因此打通；在那之前，SSH link 另一端的机器看得到 SSH 连接从哪里来、连到哪里，也会告诉它：公网地址只属于这一台机器（比如云服务器）而且防火墙放行 UDP 时，或者 NAT 不改 UDP 端口时，这就够了。所有直连共用一个 UDP 端口，默认 15355，被占用时换一个；包按系统路由走，路由指向别的 VPN 就走 VPN。在 macOS 和 Linux 上，如果 VPN 或代理接管了路由，包改走它下面的网卡，因为代理会换一个端口重新发包，规则是直连也一样，防火墙随后就会丢掉这些包；只有那个 VPN 才能到达的地址因此继续 relay，只有本机另一块网卡（比如第二块网卡或通往容器的网桥）才能到达的地址也是，VPN 自己网卡上的地址也不提供给对方。gst 持续测量到对方各地址的延迟，有明显更快的地址时切过去，不打断任何连接；私网地址（比如同一个局域网里的）和别的地址差不多快时优先，因为这些包不经过公网。`gst status` 在每台机器后面显示 `direct` 或 `relay`，`gst status -v` 显示每条直连的地址。直连 45 秒没有流量就关闭，空闲的机器不再发探测包；之后的包先 relay，同时两台机器像第一次那样重新找直连。UDP 失效时，包在几秒内改为 relay，程序的连接不断。机器换到另一个网络时（比如手机从 Wi-Fi 换到蜂窝网络），gst 立刻让 link 和直连像重启一样重新开始，不用等之前失败的等待时间结束，程序的连接不断。同一网络里只是地址变了时，运行中的直连只会得知新地址。直连建立后不再依赖 link，所以 SSH 断开或两台机器之间的机器休眠时，它继续运行，只在不通或两台机器之一被移出网络时关闭。relay 时，TCP 跑在 TCP 里，能用，但在丢包的网络上会变慢。
+- **relay 机器。** 两台找不到直连的机器（比如各自的 NAT 对每个目的地换一个端口），仍然可以不走 SSH link：在一台机器上执行 `gst relay on`，它就成为 relay 机器；这样的两台机器会经一台双方都能直连的 relay 机器发包，全程是 UDP（`relay via devbox over UDP`）。gst 不会自己把哪台机器变成 relay 机器，因为它要承载别的机器的流量；它只看得到 WireGuard 加密后的密文。选一直开机、容易访问的机器：有公网地址的，或者防火墙放行了 gst 的 UDP 端口的。有多台 relay 机器时，两台机器用经它来回最短的那台。一次直连尝试失败（约 15 秒）后，它们才找 relay 机器，同时继续尝试直连，直连建立后就换过去；relay 机器不在了，包重新走 SSH link。relay 机器还会把公网地址告诉能直连它的机器，这有助于它们之间打通直连。`gst status` 在机器列表下面列出 relay 机器。
 - **MTU。** 网卡的 MTU 是 1168 字节，适合每条直连。自己选择包大小的程序应该低于这个值，否则包会被分片。
 - `gst down` 撤销 `gst up`：停止 gst，删除它的服务、网卡、路由、名字和 network helper。network helper 自己删除自己，所以不需要密码，下次 `gst up` 会重新询问。只留下配置和日志，机器的 gst IP、link 和暴露的端口都保留。gst 只是意外停止时，网卡、路由和名字也会消失，network helper 保留。
 
@@ -194,8 +196,8 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | --- | --- |
 | `gst up [--yes]` | 现在启动 gst，并在登录时启动；network helper 缺失或过期时，说明 `sudo` 要执行什么，询问后安装 |
 | `gst add <destination> [-- <ssh option>...]` | 把一个 SSH destination 上的机器加入网络，并让本机 link 到它，在后台运行 |
-| `gst status` | 列出网络中的每台机器：短 id、名字、gst 版本、gst IP，以及 `direct` 或 `relay`；然后是本机的问题 |
-| `gst status -v` | 再列出所有机器之间的 link（`from -> to`、destination 和状态；本机的 link 断开也会列出，其他机器的只列运行中的），以及与每台机器的流量：怎么走（`direct` 和 `ip:port`，或 `relay`）、最近一次握手和收发字节数 |
+| `gst status` | 列出网络中的每台机器：短 id、名字、gst 版本、gst IP，以及 `direct`、`relay` 或 `offline`；然后是 relay 机器和本机的问题 |
+| `gst status -v` | 再列出所有机器之间的 link（`from -> to`、destination 和状态；本机的 link 断开也会列出，其他机器的只列运行中的），以及与每台机器的流量：怎么走（`direct` 和 `ip:port`、`relay via devbox over UDP`，或 `relay`）、最近一次握手和收发字节数 |
 | `gst status <machine>` | 经网络查询，显示一台机器的 gst IP、暴露的端口，以及从它出发或连到它的所有 link（`from -> to`、destination 和状态） |
 | `gst ping <machine> [-c N] [-s BYTES] [-v]` | 每秒向一台机器发一个包并收回（默认 3 次），打印怎么走的和时间，最后打印丢了多少；`-s` 设置包的大小，超过网卡 MTU 时分片；`-v` 还检查 SSH link，并显示直连或没有直连的原因、双方最近两次尝试的过程（前一次显示上一条直连是怎么结束的），以及本机在哪里丢了包 |
 | `gst log [machine]` | 显示本机 gst 日志的末尾，或经网络查询另一台机器的：link 和直连何时建立、何时结束，link 连上分步用了多久，机器何时睡眠或换到另一个网络。最多显示 128 KiB：macOS 和手机上是日志文件的末尾，也包含 gst 重启之前的内容，以及手机的 VPN 为什么停止；Linux 上是 gst 启动以来记录的，更早的在 journald 里。手机的日志也用它在别的机器上查看 |
@@ -205,6 +207,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `gst remove <machine>` | 为网络中的所有机器把一台机器移出网络；移除本机就是离开网络 |
 | `gst name [name]` | 显示或修改本机名字，并显示 id |
 | `gst subnet [cidr]` | 显示网络的网段，或为所有机器修改它 |
+| `gst relay [on\|off]` | 显示本机是不是 relay 机器（经 UDP 替相互没有直连的机器转发包），或让它成为、不再是 relay 机器 |
 | `gst ui [--port N]` | 在网页中显示网络 |
 | `gst down [--yes]` | 撤销 `gst up`：停止 gst，删除它的服务和 network helper；其他机器不能 link 到本机 |
 | `gst version` | 显示 gst 的发布版本、commit、协议版本和 network helper 版本 |
@@ -221,6 +224,7 @@ unexpose 或停止 gst 会关闭其连接。gst IP 变化时会关闭旧连接�
 | `direct` | 经 UDP 直连 |
 | `relay` | 经两台机器之间的 SSH link 中转 |
 | `relay via devbox` | 经 SSH link 中转，途经列出的机器 |
+| `relay via devbox over UDP` | 经 devbox 走 UDP 中转；devbox 是双方都能直连的 relay 机器 |
 | `offline, seen 3h ago` | 现在没有路通向它；它最后一次报告自己是这么久之前 |
 
 加 `-v` 时，link 显示为两端的机器，例如 `laptop -> gateway`。`Problems:` 部分列出本机未运行的 link，以及本机不能加入网络的原因。link 的状态是 `running`、`connecting` 或 `down`（失败并重试中；显示最近一次错误，包括对方 gst 错误的第一行）。失败的 link 在 5 秒后重试，然后 10 秒，逐次翻倍，最长每 5 分钟一次，运行后重新计时。机器换到另一个网络时，所有 link 立刻重新连接，因为旧网络上建立的连接可能已经悄悄断了。
@@ -297,7 +301,7 @@ app 没有上架 App Store。用 Xcode 从 [`ios/`](ios/README.md) 构建，需�
 
 - 没有机器能 link 到手机，因为它不接受 SSH 登录。其他机器经由手机自己的 link 到达它，所以至少添加一台一直在线的机器。
 - link 的 destination 是 `user@host` 或 `ssh://user@host:port`，手机使用自己的密钥和你在 app 中信任过的主机密钥，没有 ssh 选项。
-- app 中没有 `gst expose`、`gst subnet` 和 `gst ui` 的对应功能，请在其他机器上执行。机器的页面会列出它暴露的端口；在那里运行的 `gst ui` 页面可以用手机的浏览器打开。
+- app 中没有 `gst expose`、`gst subnet`、`gst relay` 和 `gst ui` 的对应功能，请在其他机器上执行。机器的页面会列出它暴露的端口；在那里运行的 `gst ui` 页面可以用手机的浏览器打开。
 - 其他机器对手机执行 `gst ping` 时，包不能超过网卡的 MTU。
 - 只要 gst 在运行，iOS 就显示 VPN 已连接，不管 link 是否连上。link 的状态请看 app。
 

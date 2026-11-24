@@ -58,7 +58,7 @@ struct PingSheet: View {
             let next = ContinuousClock.now + .seconds(1)
             do {
                 let reply = try await model.ping(machine)
-                pings.answered(in: reply.timeMs, way: reply.way == "direct" ? .direct(endpoint: reply.endpoint) : .relay(via: reply.via.map(\.name)))
+                pings.answered(in: reply.timeMs, way: reply.way == "direct" ? .direct(endpoint: reply.endpoint) : .relay(via: reply.via.map(\.name), udp: reply.way == "udp-relay"))
             } catch {
                 guard !Task.isCancelled else { return }
                 pings.failed(error.localizedDescription)

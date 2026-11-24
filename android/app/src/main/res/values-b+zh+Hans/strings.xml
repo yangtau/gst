@@ -35,6 +35,7 @@
     <string name="way_direct">直连</string>
     <string name="way_relay">中转</string>
     <string name="way_relay_via">经 %1$s 中转</string>
+    <string name="way_relay_udp">经 %1$s 中转（UDP）</string>
     <string name="way_offline">离线</string>
     <string name="connecting_server">正在连接服务器…</string>
     <string name="joining">正在加入网络…</string>

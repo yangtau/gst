@@ -93,7 +93,11 @@ import kotlinx.coroutines.launch
 fun Machine.Way.text(): String = when (this) {
     Machine.Way.Here -> stringResource(R.string.way_here)
     is Machine.Way.Direct -> stringResource(R.string.way_direct)
-    is Machine.Way.Relay -> if (via.isEmpty()) stringResource(R.string.way_relay) else stringResource(R.string.way_relay_via, via.joinToString(", "))
+    is Machine.Way.Relay -> when {
+        via.isEmpty() -> stringResource(R.string.way_relay)
+        udp -> stringResource(R.string.way_relay_udp, via.joinToString(", "))
+        else -> stringResource(R.string.way_relay_via, via.joinToString(", "))
+    }
     is Machine.Way.Offline -> stringResource(R.string.way_offline)
 }
 

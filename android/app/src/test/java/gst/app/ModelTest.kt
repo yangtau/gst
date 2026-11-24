@@ -58,6 +58,9 @@ class ModelTest {
         assertEquals(Machine.Way.Here, machines[0].way)
         assertEquals(Machine.Way.Direct("203.0.113.7:41642"), machines[1].way)
         assertEquals(Machine.Way.Relay(listOf("devbox")), machines[2].way)
+        // Through a relay, over UDP.
+        val relayed = topology.copy(nodes = topology.nodes.map { if (it.id == "c") it.copy(via = "b") else it })
+        assertEquals(Machine.Way.Relay(listOf("devbox"), udp = true), Machine.list(relayed, status)[2].way)
         // An address of another subnet is none.
         assertNull(machines[2].address)
         assertEquals(Machine.Way.Offline(Instant.parse("2026-11-11T08:00:00Z")), machines[3].way)

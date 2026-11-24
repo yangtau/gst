@@ -389,8 +389,14 @@ func (d *Daemon) netPing(ctx context.Context, ref string, size int) (wire.NetPin
 	}
 	if dest.ID != topo.Self {
 		// The path now is the one the reply took.
-		if p.Way = d.mesh.PacketWay(dest.ID); p.Way == wire.WayRelay {
+		switch p.Way = d.mesh.PacketWay(dest.ID); p.Way {
+		case wire.WayRelay:
 			p.Via = mesh.Via(topo, dest)
+		case wire.WayUDPRelay:
+			relay := d.mesh.PacketRelay(dest.ID)
+			if i := slices.IndexFunc(topo.Nodes, func(n wire.TopoNode) bool { return n.ID == relay }); i >= 0 {
+				p.Via = []wire.NodeInfo{topo.Nodes[i].Info()}
+			}
 		}
 		p.Endpoint = d.mesh.PacketEndpoint(dest.ID)
 	}

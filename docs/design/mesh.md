@@ -36,6 +36,7 @@ UDP 路径不是链路：它不运帧，只是两台机器之间给 WireGuard �
 | **网络** | 加入了、没有被移除的所有 node。node 在网络里，离线也在 | `gst add`、`gst remove` |
 | **link**（链路） | 本机到另一台 gst 机器的 SSH 连接，以 destination 区分，没有自己的名字 | `gst add`、`gst unlink` |
 | **UDP 路径** | 两个 node 之间打洞得到的一对 `IP:port`，只运送 WireGuard 的包，不是 link | `gst status` |
+| **relay**（中转机器） | 人用 `gst relay on` 标记的 node：两个之间没有 UDP 路径的 node，经各自到它的 UDP 路径互相发包 | `gst relay` |
 | **虚拟网络** | 一个私有网段，每台机器有 IP 地址和 `<machine>.gst` | `gst up`、`gst subnet` |
 
 ```
@@ -45,7 +46,7 @@ laptop ──link──► devbox
 
 homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由把包交给网卡，WireGuard 加密后经 UDP 路径发给 devbox，没有 UDP 路径时经 laptop 转发。homelab 不需要 devbox 的 SSH 凭据。
 
-每个概念只用一个词。用户看到的词和代码里的词一一对应：machine ↔ node、network ↔ network、direct / relay ↔ way（`WayDirect` / `WayRelay`）、relay via X ↔ route（沿 link 经过的 node）、gst IP ↔ address、network helper ↔ helper。mesh、peer、拓扑、表、条目、代数、握手、UDP 路径只出现在代码、日志、`-v` 和本文档中；“路径”只指 UDP 路径，“网络”从不指网段（网段叫 subnet，机器上已占用的网段叫 used prefixes）。完整的术语表见 `AGENTS.md`。
+每个概念只用一个词。用户看到的词和代码里的词一一对应：machine ↔ node、network ↔ network、direct / relay ↔ way（`WayDirect` / `WayUDPRelay` / `WayRelay`）、relay via X ↔ route（沿 link 经过的 node）、relay via X over UDP ↔ 经 relay X 的 UDP 路径、gst IP ↔ address、network helper ↔ helper。mesh、peer、拓扑、表、条目、代数、握手、UDP 路径只出现在代码、日志、`-v` 和本文档中；“路径”只指 UDP 路径，“网络”从不指网段（网段叫 subnet，机器上已占用的网段叫 used prefixes）。完整的术语表见 `AGENTS.md`。
 
 ## 决策
 
@@ -57,6 +58,7 @@ homelab 上 `ssh devbox.gst`：名字解析成 devbox 的虚拟地址，路由�
 - **虚拟网络不可关闭**：有 helper 就在网络上，没有就在 `gst status` 里说明。`gst up` 装好 helper 就是加入，`gst down` 删除 helper 就是离开，所以没有单独的开关。
 - **信任**：control socket 权限 `0600`，只有本机同一用户能连；link 由 SSH 登录建立，登录的就是该用户。网络里的机器都属于同一个用户、彼此完全信任，WireGuard 公钥经 link 传递，所以它们信任 link 所信任的。网络里任何 node 都能移除任何 node。一台机器在所有地址上打开的端口对其他机器开放，只监听 loopback 或 Unix socket 的服务需要显式用 `gst expose` 暴露。
 - **只有一条数据通路**：应用的数据只走 WireGuard，没有按连接中转字节流的第二条路。路由层只运送控制消息和 WireGuard 的包。
+- **relay 要人标记**：UDP 路径不需要配置，谁和谁都自己去试；替别人转发流量则不同，笔记本和用蜂窝网络的手机不该不声不响地承载别的机器的流量，所以只有人执行过 `gst relay on` 的 node 才转发，见[中转](#中转)。
 - **SSH 决定谁在网络里**：SSH 是控制面和兜底。控制消息（表的同步与泛洪、调用、UDP 路径的信令）永远只走 SSH link，不走 UDP 路径或 WireGuard。UDP 路径只是捷径，公钥、信令都来自 mesh，不让本来不相连的机器相连。所以 SSH link 图被切成两半时，两半之间各自收不到对方的变更，直到有 link 把它们连起来；`gst status` 把这种只能直连到达的 node 报为问题。
 - **隐私**：拓扑、路径、地址只出现在交互式输出中（命令输出、`gst ui`）。后台日志（daemon 日志，link 的事件也记在其中）不记录服务器地址、用户、密钥路径、目标地址，也不记录远端 gst 返回的错误原文。
 
@@ -161,7 +163,7 @@ CLI 与 daemon、daemon 与 daemon 使用同一套协议，实现位于 `interna
 | `mesh.ping` | `{"node": <machine>}` | `{"node": NodeInfo, "via": [NodeInfo...], "time_ms": 数字}`：经路由层调用一次 `ping`；`via` 是路由上的中间机器。`gst ping -v` 用它检查 link |
 | `mesh.remove` | `{"node": <machine>}` | `Removal`：`node`、`self`（移除的是本机）、`stranded`（只经它连到本机、移除后会离线的机器），见[移除](#移除gst-remove-machine) |
 | `mesh.subnet` | `{"subnet": cidr}` | 无：写入人选的 `subnet` 条目 |
-| `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回。`gst ping` 每秒调用一次 |
+| `net.ping` | `{"node": <machine>, "size": 字节数}` | `{"node", "address", "way": "direct"、"udp-relay" 或 "relay", "endpoint", "via", "time_ms"}`：经虚拟网络向该机器的 daemon 发一个包并收回；`via` 是途中的机器，`relay` 时是 link 上的，`udp-relay` 时是那台 relay。`gst ping` 每秒调用一次 |
 | `mesh.direct` | `{"node": <machine>}` | `DirectReport`：本机到它的 UDP 路径、尝试的状态、双方最近两次尝试的过程（对方的经 `direct.trace` 取得）和丢包计数。`gst ping -v` 用它 |
 | `daemon.network` | 无 | 无：系统说本机网络变了，daemon 立刻检查，不等下一次。手机 App 用它转告系统的通知 |
 | `daemon.log` | `{"node": <machine>}`，可省 | `{"text": …}`：本机 daemon 日志的末尾，给了机器时经路由层调用它的 `log`。最多 128 KiB 的整行：daemon 有日志文件时（macOS 的 launchd 服务、手机，`Config.LogFile`）读文件的末尾，包括轮转前的那个，所以也包含重启之前的；没有时（Linux 上日志在 journald）是内存里保留的启动以来的部分。手机上 App 停止 daemon 时写下原因（系统给的停止原因、用户关闭、另一个 VPN 接管等）。`gst log` 用它 |
@@ -232,7 +234,8 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
       {"peer": "<devbox 的 id>", "opened": true},
       {"peer": "<tablet 的 id>", "opened": false}
     ],
-    "net": {"address": "10.99.3.7", "public_key": "<64 位十六进制>"}
+    "net": {"address": "10.99.3.7", "public_key": "<64 位十六进制>"},
+    "relay": true
   }
 }
 ```
@@ -240,7 +243,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 - `version` 是 `[generation, seq]`，先比 `generation`，相同再比 `seq`。
 - **`seq`**：内容变化（改名、link 建立或断开、换地址）时加大，取 max(上次 + 1, 当前 Unix 纳秒, 表里自己条目的 seq + 1)。所以 `seq` 也就是这台机器最后一次发布的时间：别的机器用它显示离线的 node `offline, seen 3h ago`。在线的机器每 10 分钟重新发布一次，精度是 10 分钟。这是唯一的定时发布，只用于显示：没有东西会因为它旧而过期。
 - **`generation`**：这台机器第几次加入网络。一直是 0，只有被移除之后又被 `gst add` 加回来时才加 1，存在配置里。只有 `seq` 的话，移除记录只能写成"`seq` 不超过 N 的都作废"，被移除的机器在收到消息之前继续发布更大的 `seq`，又回到网络里；`generation` 只在有人执行 `gst add` 时才变，所以移除压得住这一代的所有条目。
-- `links` 是此刻 running 的 link，`opened` 表示是不是本机发起的。`net` 在本机还没进入虚拟网络时为空。
+- `links` 是此刻 running 的 link，`opened` 表示是不是本机发起的。`net` 在本机还没进入虚拟网络时为空。`relay` 只在这台机器是 relay 时出现（配置里的 `node.relay`，`gst relay on` 写入），见[中转](#中转)。
 - 收到自己的条目、版本比自己发布的大（`state.json` 丢了、或旧进程发布过）时，用更大的 `seq` 重新发布；代数更大时先采用那个代数。
 
 #### `removed/<id>`：一条移除记录
@@ -298,7 +301,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 
 - 每台机器收到 `to` 不是自己的消息，查路由表找到下一跳，从到它的最新 link 发出；没有路由时，对请求回一个 `unreachable` 的应答，对包直接丢弃。
 - 路由表由本机从表里算：图的边是本机此刻 running 的 link，加上两端的 `node` 条目都列出对方的两个其他 node 之间的 link（只有一端列出时不算：失去 link 的一端可能已经无法把新条目传出来）。按跳数做逐层的 BFS，跳数相同时取 id 较小的第一跳，所以结果是确定的。表或 link 变化时重算。
-- 中间的机器只转发，从不改走 UDP 路径：是否用 UDP 路径只由两端决定（见[UDP 路径](#udp-路径)）。
+- 中间的机器只转发，从不改走 UDP 路径：是否用 UDP 路径只由两端决定（见[UDP 路径](#udp-路径)）。relay 是另一回事：它不在路由上，是两端选定的，见[中转](#中转)。
 
 ### 调用
 
@@ -310,6 +313,7 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 | `status` | 无 | 被调方 daemon 的 `Status`（与 `daemon.status` 相同） |
 | `direct.offer` | `DirectOffer` | 被调方的 `DirectOffer`；之后双方寻找 UDP 路径，并相互确认 |
 | `direct.update` | `DirectOffer`（运行中路径的 token 和调用方现在的地址） | 无；被调方加入这些地址，重新测量这条路径 |
+| `relay.offer` | `{"relays": [{"node": id, "rtt_ms": 数字}...]}`：调用方有 UDP 路径的 relay，和各条路径的来回时间 | `{"node": id}`：被调方选中的 relay，之后双方经它发包，见[中转](#中转) |
 | `direct.trace` | 无 | `{"events": [{"time": …, "text": …}...], "previous": [...]}`：被调方与调用方最近一次寻找 UDP 路径的过程，和它之前的一次（显示那次怎么结束）。机器睡眠时，每个过程都记下睡了多久 |
 | `net.prefixes` | 无 | `UsedPrefixes`：`{"interfaces": [...], "routes": [...]}`，被调方网卡的网段和路由的目的网段（IPv4），供选择网段时避开 |
 | `log` | 无 | `{"text": …}`：被调方 daemon 日志的末尾，同 `daemon.log`。日志本来就不含服务器地址、用户和对方报告的内容，所以网络里的机器可以互相读 |
@@ -318,11 +322,11 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 
 `Topology`（`mesh.topology`、`gst status`、`gst ui`）由查看方从表算出：
 
-- `nodes`：网络里所有的 node（id、name、software、`reachable`：有路由、`route`：路由上的 node id、`direct`：有 UDP 路径、`seen`：`seq` 换算的时间，和本机发现它离线的时间取较晚的、`net`），本机排第一。本机 link 的对端还不在表里时，也先列出来。
+- `nodes`：网络里所有的 node（id、name、software、`reachable`：有路由、`route`：路由上的 node id、`direct`：有 UDP 路径、`via`：本机到它的包此刻经哪个 relay、`relay`：它是 relay、`seen`：`seq` 换算的时间，和本机发现它离线的时间取较晚的、`net`），本机排第一。本机 link 的对端还不在表里时，也先列出来。
 - `links`：本机 running 的 link，加上两端都列出对方的其他 link，方向从发起方到接受方。
 - `subnet`：`subnet` 条目的网段。
 
-一个 node `reachable` 或 `direct` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告；`direct` 而不 `reachable` 的 node 也由它报告，因为表只沿 link 泛洪，这样的 node 与本机之间收不到对方的移除和改名。
+一个 node `reachable`、`direct` 或有 `via` 就是在线，否则是离线（`offline, seen …`）。本机的 link 断了，由 `Problems:` 报告；只有 UDP 能到（`direct` 或 `via`）而不 `reachable` 的 node 也由它报告，因为表只沿 link 泛洪，这样的 node 与本机之间收不到对方的移除和改名。
 
 ## 加入与移除
 
@@ -393,15 +397,24 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 
 地址是 16 字节 IP 加 2 字节端口。
 
+经 relay 的包是另外两种，首字节后面没有 token，直接是 16 字节的 node id 和一个 WireGuard 的包（见[中转](#中转)）：
+
+| 首字节 | 名字 | id 是谁 | 含义 |
+| --- | --- | --- | --- |
+| `0x14` | relay to | 包要去的 node | 请收到的 relay 转给它 |
+| `0x15` | relay from | 发出包的 node | relay 转来的包 |
+
+不带 token 是因为放不下：WireGuard 的包最大 1200 字节，IPv6 的最小 MTU 1280 减去 IPv6 和 UDP 头剩 1232，多出的 32 字节装得下 1 + 16，装不下再加 16 字节 token。它们和 WireGuard 的包一样靠来源 `IP:port` 找到路径。
+
 - **socket**：daemon 启动时开 IPv4 和 IPv6 各一个通配 socket（`direct.Transport`），所有路径共用，端口默认 15355，被占用时由系统分配，每次 offer 都带上，所以不用记住。不绑定具体地址：发往哪个网卡听系统路由，走别的 VPN 也可以，只要能通。macOS 和 Linux 例外：代理的 TUN 接管路由时，它用自己的 socket 重新发送每个流，规则是直连也一样（实测 Shadowrocket：本机的端口 15411 发出的包，由它从端口 58259 重新发出），端口变了，对方防火墙为原端口开的洞就对不上。所以每 5 秒看一次发往公网的包（向 `203.0.113.1:15355` 和 `[2001:db8::1]:15355` connect 一个不绑定的 UDP socket，端口和 UDP 路径的一样，代理的规则可能按端口匹配）会不会从点对点网卡的地址发出：不会时不绑定，交给路由，路由知道去另一块网卡、容器网桥后面的地址该走哪里；会时才绑定。分不清代理和路由型 VPN，所以这时 socket 用 `IP_BOUND_IF` 和 `IPV6_BOUND_IF` 绑到有网关、不是点对点的默认路由所在的网卡，优先不带 scope 的默认路由，直接改 socket 选项，端口不变；没有这样的网卡时交给路由。Linux 同理：代理用 `ip rule` 和自己的路由表接管 UDP，或者把指向自己网卡的路由放进 main 表，同样换端口重发。socket 用 `IP_UNICAST_IF` 和 `IPV6_UNICAST_IF`（网卡序号按网络字节序）指定发包的网卡，选 main 表里不经点对点网卡、metric 最小的默认路由所在的网卡（netlink；多路径的默认路由取第一个下一跳，只对部分源地址生效的 IPv6 默认路由不算）；之后路由和规则只在这块网卡上查，代理的表和规则就绕开了。这个选项不需要特权，可以在打开的 socket 上反复修改和清除，也不过滤收到的包；`SO_BINDTODEVICE` 对普通用户只能设一次，还只收这块网卡的包，`SO_MARK` 要 root，都不用。Android 不绑定：VPN 就是 gst 自己的，系统也不给 app 看路由。代价只在路由被接管时才有：经 VPN 才能到的地址走不了 UDP，到另一块网卡所在网络的地址也是。PPPoE 这类点对点的上网网卡也算作隧道，另有一条经以太网的备用默认路由时会绑到备用的那块。绑了网卡的 socket 在 Linux 上发不到回环地址，所以 `direct.Listen` 收一个 `direct.Network`：`direct.System()` 会选网卡，测试只给回环地址、不给网卡。socket 收发缓冲 4 MiB。
 - **源地址**：从哪个本机地址发包由 gst 定，不由系统定。对方的防火墙和 NAT 只认它见过的那个来源，而有多个地址的机器（比如带 IPv6 临时地址的 macOS）可能每个包换一个源地址，换了的包就被丢掉。所以 socket 打开 `IP_PKTINFO` / `IPV6_RECVPKTINFO`（x/net 的 `FlagDst`），收 probe 和 answer 时读出包到达的本机地址，发包时用同样的控制消息指定源地址，只给地址、不给网卡，macOS 上网卡仍由 socket 的绑定决定：answer 从 probe 到达的地址发出；一个对方地址的 answer 到达哪个本机地址，这两个地址就是一对，之后到它的 probe、WireGuard 的包和 bye 都从这个本机地址发。还不成对的对方地址（没有 answer，或 2 秒没有动静），probe 让系统选源地址：系统按路由选，去两台机器共同的 VPN 里的地址也选得对。但系统选的可能是回程不通的地址，比如网络已经换掉的 IPv6 前缀下还没过期的旧地址，而且每次尝试都选同一个，重试多少次都一样。所以路径还没有在用的一对地址、或在用的那一对 2 秒没有动静时，除了系统选的那一个，再从本机每个同地址族的候选地址各发一个 probe（只给地址，不给网卡）。哪个 answer 先回来，它到达的本机地址就和那个对方地址成对，系统选的只是其中一个候选。这也让每个候选地址都在本机一侧的防火墙上留下记录，对方发到这些地址的 probe 才进得来。路径有在用的一对之后，其余的对方地址只由系统选源探测，不再乘以本机地址数。成对之后，到达别的本机地址的 answer 不算数，也不计入来回时间；一对地址仍有动静时不被别的本机地址顶替：系统选源发出的 probe 迟到的 answer 不改它。指定的源地址发不出去（地址没了，macOS 上 IPv4 还要求它在绑定的网卡上）时，这一对作废，probe 当场改由系统选源再发一次，answer 也一样，那个对方地址重新成对、重新确认（从本机各个候选地址试发的 probe 出错时不重发也不记录，系统选源的那个已经同时发出；它们好不好只看有没有 answer）；WireGuard 的包不这样重发，出错就走 SSH，直到有一对地址重新确认。macOS 有时不报错而把这样的包静默丢掉，这时那一对 2 秒没有动静，不再算通，probe 照尝试开始时那样发，路径在这期间也可能因 3 秒沉默结束。系统不告诉包到达的地址时，一切照旧由系统选。
 - **区分对端**：probe、answer、bye 靠 token 找到路径。WireGuard 的包靠来源 `IP:port` 找到路径，只有用 token 证明过的来源才放行，其余丢弃。这个归属不一定准：同一个 NAT 后的两台机器访问本机不同的 IP 时，来源可能相同。所以 WireGuard 关掉了 roaming，endpoint 始终是 node id，包的来源只用于投递；解密靠 WireGuard 自己的索引，回包不会被这种归属带偏。
-- **候选地址**：系统发包用的源地址排在最前（向公网地址 connect 一个 UDP socket，绑定的网卡同上，再读本地地址，不发包），然后是本机所有接口上的地址（跳过回环、点对点网卡和 link-local，每个地址族最多 8 个），加上运行中的 link 的 SSH 连接显示的本机地址（最多 4 个，配上 socket 的端口），再加上最近 10 分钟别的节点看到的本机地址（最多 4 个，本机自己的候选地址不算，它们已经在列）。系统选的源地址必须在列：最初的 probe 从它发出，而对方的防火墙只放行它发过包的地址；它在点对点网卡上也保留，手机的蜂窝网卡就是点对点的，却是出口；socket 绑了网卡而报出的地址不在这块网卡上时（不对 connect 的 socket 应用 `IP_UNICAST_IF` 的内核报出的是代理网卡的地址），换成这块网卡的第一个公网地址，仍排在最前。点对点网卡多是 VPN 和代理的 TUN，socket 绕开它们发包，它们的地址收不到回应，提供了只是白白探测。只排除 gst 网段里的地址，否则包会钻进它自己组成的路径：提供、收到和从来包学到的地址都过滤。
+- **候选地址**：系统发包用的源地址排在最前（向公网地址 connect 一个 UDP socket，绑定的网卡同上，再读本地地址，不发包），然后是本机所有接口上的地址（跳过回环、点对点网卡和 link-local，每个地址族最多 8 个），加上运行中的 link 的 SSH 连接显示的本机地址（最多 4 个，配上 socket 的端口），再加上最近 10 分钟别的节点看到的本机地址（最多 16 个，本机自己的候选地址不算，它们已经在列）。多留是因为有的 NAT 端口不变，却给每个目的地址从一个小地址池里另选一个出口地址：别的节点看到的都不保证是下一个节点会看到的那个，但 offer 里列得越多，对方为正确的那个来源打开防火墙的机会越大（实测一台机器的 NAT66 就是这样，靠它和有状态防火墙后的机器打通）。端口也按目的地换的 NAT 帮不上，那要靠 [relay](#中转)。系统选的源地址必须在列：最初的 probe 从它发出，而对方的防火墙只放行它发过包的地址；它在点对点网卡上也保留，手机的蜂窝网卡就是点对点的，却是出口；socket 绑了网卡而报出的地址不在这块网卡上时（不对 connect 的 socket 应用 `IP_UNICAST_IF` 的内核报出的是代理网卡的地址），换成这块网卡的第一个公网地址，仍排在最前。点对点网卡多是 VPN 和代理的 TUN，socket 绕开它们发包，它们的地址收不到回应，提供了只是白白探测。只排除 gst 网段里的地址，否则包会钻进它自己组成的路径：提供、收到和从来包学到的地址都过滤。
 - **换网络**：每 5 秒检查一次本机地址和绑定的网卡；系统说网络变了时，等 300 毫秒让这次变化的几步（网卡、地址、路由）做完，立刻再检查一次，不等下一个 5 秒。macOS 和 iOS 上听路由 socket（地址、网卡，以及经网关、不是到单台主机的路由；邻居的条目一直在增删，不算），Linux 上听 netlink（网卡、地址和默认路由）；手机 App 也会转告系统的通知（iOS 的 `NWPathMonitor`，Android 的 `ConnectivityManager`，经 `daemon.network`），Android 上 App 不能听 netlink。分两种变化：
   - **搬到另一个网络**（`Transport.Moved`）：包出去用的 IPv4 地址变了，或者 IPv6 地址的 /64 变了，比如手机从 Wi-Fi 换到蜂窝。这时 link 和 UDP 路径都重新开始，就像重启 gst，只有虚拟网络、WireGuard 和上面跑的连接不动：所有 link 结束并立即重连（见链路层的 link 状态），旧的 `Transport` 连同它的路径和 socket 一起关闭，换一个新的，下一个包再找路径。旧网络上打开的东西可能卡在那里：iOS 上切网前创建的 UDP socket 之后发什么都报「无路由」，直到 socket 重建；旧网络上学到的东西（失败的退避、测到的延迟、别人看到的本机地址）也都不再成立。比较时只看两次都有的地址族：换网的路上可能一时没有地址，或者一个族先到，这都不单独算一次搬家，免得一次换网重来好几遍。IPv6 临时地址在同一个 /64 里轮换，不算搬家。
   - **同一网络里地址变了**（`Transport.Changed`）：比如多了一个临时 IPv6 地址，或者绑定的网卡变了。这时清掉退避和别的节点看到的本机地址，所有运行中的路径从头来：哪一对地址都不再算通，probe 照尝试开始时那样发，并经 `direct.update` 把新地址告诉对方，对方也从头来。在用的一对地址保持到双方确认了新的一对为止。没在运行的 link 也立即重连（`Node.Readdressed`，见链路层的 link 状态）。日志记一行，写出变的是 IPv4、IPv6 还是两者（只有绑定的网卡变了时写「through other interfaces」），以及是系统说的还是定时检查发现的。
   - UDP 路径关闭（`GST_DIRECT=off`）时没有这个检查，搬到另一个网络后 link 靠 45 秒的超时发现。
-- **谁用**：只在网络里的 node 之间，只运送两端自己的包。是否走 UDP 路径由 `Node.SendPacket` 决定：有路径就直接发，否则交给路由层；中间的机器只按路由表转发，从不改走自己的 UDP 路径。
+- **谁用**：只在网络里的 node 之间。是否走 UDP 路径由 `Node.SendPacket` 决定：有路径就直接发，否则经 relay（见[中转](#中转)），再否则交给路由层；路由上的中间机器只按路由表转发，从不改走自己的 UDP 路径。路径运送两端自己的包；一端是 relay 时，还运送另一端和第三个 node 之间的包。
 - **触发**：`Node.SendPacket` 发现包只能走 SSH 时，最多每 5 秒请求一次（`gst ping` 的包和 `-v` 也会）。尝试不阻塞包。失败或路径因对方沉默而结束后等 5 秒再试，连续失败时加倍，最长 5 分钟，成功后重置。一方主动关闭的路径（空闲、对方被移除、新 offer 顶替）不算失败，不等待。
 - **信令**：发起方经路由层调用对方的 `direct.offer`。`DirectOffer` 是 `{"token": …, "addresses": ["IP:port", …]}`，调用方是谁由消息的 `from` 得知，响应是对方的 `addresses`。被移除的机器发来的 offer、或本机已被移除时收到的 offer 一律拒绝。候选地址只出现在这次调用中，不进表，不进日志。
 - **同时发起**：两个节点同时发起时，id 较小一方的 offer 继续，id 较大的一方放弃自己的。收到 offer 时本节点还有到对方的路径：对方 2 秒内还在这条路径上回应，说明这个 offer 是和本节点的 offer 交错的旧 offer（对方已经接受了本节点的 offer，放弃了自己的，它那边不会再连），拒绝它，路径照常运行；否则路径已失效，先关闭，再接受。
@@ -422,6 +435,25 @@ SSH 连接或 session 结束，link 即结束，daemon 按退避重连。被拒�
 - **维持**：每秒向在用的地址发带标志的 probe，同时让 NAT 和防火墙的表项不过期，也让对方知道这一对还通。在用的一对 2 秒没有动静，就重新探测所有地址，重新确认的一对立刻顶替，所以一端换了网络时路径不用重建。3 秒什么都没收到（answer、对方带标志的 probe 和 WireGuard 的包都算；没有标志的 probe 不算），路径结束，包回到 SSH，WireGuard 的会话不受影响，所以程序的连接不断。只有一个方向断了时，听不到对方的一端先结束，另一端随后也收不到包，约 6 秒后两端都回到 SSH。UDP 发送出错的包当场改走 SSH。关闭时发 bye，对方立即知道。没找到路径的尝试结束时也发，发往对方 probe 来过的地址，由系统选源：对方可能已经走到第 2 步、正在上面发包，而本端没等到第 3 步；不告诉它，这些包要丢到它因沉默结束为止。
 - **空闲**：本端 45 秒没在路径上发过包（`Path.Idle`，probe 不算），就关闭路径，之后不再有 probe 和全量探测。只看发送就能代表双向的流量：WireGuard 收到数据后 10 秒内一定回包，没有数据可回时发 keepalive；发送的包都是本机 WireGuard 产生的，不会被伪造的来包续命。下一个包经 SSH 发出，同时触发新的尝试，不等待；这时 NAT 表项可能已过期，所以总是重新打洞，而不是先试旧地址。没有路由到对方时不因空闲关闭：这时路径是唯一的路，靠探测一直维持，直到对方沉默。
 - **移除**：对方被移除、或本机被移除时，路径和进行中的尝试立即关闭。路径不因 SSH link 断开而关闭，离线只影响信令。
+
+## 中转
+
+两个 node 之间找不到 UDP 路径（比如两边的 NAT 都对每个目的地换一个端口），但各自都有到第三个 node 的 UDP 路径时，可以经它发包，全程是 UDP。SSH link 是 TCP：丢一个包，后面的都等着，而且只通到 link 通的地方。这第三个 node 叫 relay，由人标记（`gst relay on`，写进配置的 `node.relay` 和它的 `node/<id>` 条目），代码在 `internal/mesh/relay.go`。
+
+- **包怎么走**：甲把 WireGuard 的包前面加上 `0x14` 和乙的 id，发到甲到 relay 的 UDP 路径上。relay 把它换成 `0x15` 和甲的 id，发到 relay 到乙的 UDP 路径上。乙收到，当作甲发来的包交给 WireGuard。relay 只看得到密文；`0x15` 的包只会被收下，不会再被转发。不是 relay 的 node 收到 `0x14` 就丢弃。
+- **relay 什么都不用知道**：没有给 relay 的信令。它收到 `0x14` 时有到目的 node 的 UDP 路径就走路径，没有就以原发送方的名义交给路由层沿 link 送（`Router.Forward`），所以一条腿断了也不丢包，只是慢。
+- **两端怎么选**：一次调用 `relay.offer`，沿 link 走，和 UDP 路径的信令一样。
+  1. 甲列出表里标记为 relay 的 node（不含自己和乙，最多 8 个），向每一个要 UDP 路径（就是平常的 `direct.offer`），8 秒内建成并测出来回时间的算数。
+  2. 甲把这些 relay 和来回时间发给乙。乙对其中自己表里也标记为 relay 的那些做同样的事，选「甲到它的来回时间 + 乙到它的来回时间」最小的一个，记下，答复甲；甲也记下。
+  3. 两边同时发起时，id 较小一方的 offer 继续，另一方的被拒绝，和 `direct.offer` 一样。
+
+  所以不认识 `relay.offer` 的旧版本永远不会被经 relay 发包：它答 `unsupported_method`，包照旧走 link。两端必须用同一个 relay，因为路径靠发包维持（见下）。
+- **什么时候找**：到一个 node 的直连尝试失败过（`directWaits` 里有它）、此刻没有 UDP 路径也没有 relay、而且 link 通得到它时，流量触发寻找，和触发 UDP 路径在同一处（`Node.SendPacket`，每 5 秒最多一次）。先试直连是为了不给本来就能直连的一对白白建到 relay 的路径；代价是第一次要等直连尝试的 15 秒。找不到时等 30 秒再试，连续失败加倍，最长 5 分钟。经 relay 发包期间照常继续尝试直连，直连建成后包立刻改走直连。
+- **维持**：UDP 路径 45 秒没有发过包就关闭（见 UDP 路径的「空闲」）。甲到 relay 的路径上有甲发的包，relay 到乙的路径上有 relay 转发的包（转发也算发包），反方向相同；WireGuard 收到数据 10 秒内一定回包，所以只要有流量，四段都不空闲。
+- **放弃**：发包时发现到 relay 的 UDP 路径没了，或者 45 秒没有从对方经这个 relay 收到过包（对方已经不用它了，或者 relay 那一腿断了、包改走了 link），就放弃这个 relay，包走 link，并重新寻找。relay 的条目不再标记 `relay`（`gst relay off`）或它被移除时，立刻放弃。
+- **公网地址**：到 relay 的 UDP 路径上，relay 的 answer 带着它看到的来源，这正是 STUN 做的事（见 UDP 路径的「公网地址」）。所以找过 relay 之后，下一次给对方的 `direct.offer` 就带着本机的公网地址和端口，NAT 对所有目的地用同一个端口的一对机器因此能打通直连，不必再经 relay。
+- **显示**：`PacketWay` 返回 `udp-relay`，`PacketRelay` 返回 relay 的 id；`Topology` 的 `via`、`NetPeer` 的 `via`（名字）和 `net.ping` 的 `via` 由此而来。用户看到 `relay via <name> over UDP`；`gst status` 在机器列表下列出 `Relays:`。
+- **没做的**：relay 不限速，也不统计转发的流量；经两个 relay 接力不支持。
 
 ## 虚拟网络
 
